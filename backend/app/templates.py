@@ -9,7 +9,7 @@ from .presets import (
     builtin_for,
     builtin_names,
     display_name,
-    localize_agent,
+    localize_member,
 )
 from .tools import display_skill_name
 
@@ -79,7 +79,7 @@ def member_view(agents: list[dict]) -> list[dict]:
 def agent_view(agent: dict, lang: str | None = None) -> dict:
     """One member, shown in `lang`."""
     lang = lang or i18n.current()
-    out = localize_agent(agent, lang)
+    out = localize_member(agent, lang)
     if out.get("skills"):
         out = dict(out)
         out["skills"] = [display_skill_name(n, lang) for n in out["skills"]]

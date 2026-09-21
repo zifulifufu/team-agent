@@ -345,7 +345,7 @@ def _short(v: Any, n: int = 120) -> Any:
     if isinstance(v, (int, float, bool)) or v is None:
         return v
     s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-    return s if len(s) <= n else s[:n] + "…"
+    return s if len(s) <= n else s[:n] + "…"  # i18n-keep: U+2026 ellipsis; correct in English too
 
 
 def _block_text(content: Any) -> str:
@@ -501,7 +501,7 @@ class StreamParser:
 
 DENIED_TEXT = re.compile(r"(?:Error:\s*)?Permission to use \S+ has been denied", re.I)
 
-AUTH_HINT = re.compile(r"log ?in|not logged|unauthori[sz]ed|\b401\b|\b403\b|auth|token|未登录|请登录|登录", re.I)
+AUTH_HINT = re.compile(r"log ?in|not logged|unauthori[sz]ed|\b401\b|\b403\b|auth|token|未登录|请登录|登录", re.I)  # i18n-keep: auth-failure detection; engines may answer in Chinese
 
 
 def explain_failure(rc: int | None, stderr: str, error: str) -> str:

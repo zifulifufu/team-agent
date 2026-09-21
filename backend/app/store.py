@@ -16,7 +16,16 @@ from . import strengths as strength_lib
 from .catalog import Catalog
 from .local_models import LocalCatalog
 from . import i18n
-from .presets import DEFAULT_SETTINGS, PRESET_BY_ID, SEED_AGENTS, SEED_PROMPTS, builtin_for
+from .presets import (
+    DEFAULT_SETTINGS,
+    PRESET_BY_ID,
+    SEED_AGENTS,
+    SEED_PROMPTS,
+    builtin_for,
+    model_member_prompt,
+    model_member_role,
+)
+
 from . import secrets as secrets_store
 from .store_ext import SCHEMA_EXT, ExtStore
 
@@ -45,7 +54,7 @@ CREATE TABLE IF NOT EXISTS agents (
     avatar TEXT NOT NULL DEFAULT '🤖',
     role TEXT NOT NULL DEFAULT '',
     prompt TEXT NOT NULL DEFAULT '',
-    model_id TEXT,                     -- NULL = 使用路由层默认链
+    model_id TEXT,                     -- NULL = use the router's default chain
     skills TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS groups (
@@ -73,8 +82,9 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, created_at);
--- 使用统计按「时间范围 + 只算 agent 消息」取数;没有这个索引时 5 万条消息要扫全表(实测 3.2ms),
--- 有索引走范围查找只要 0.26ms。IF NOT EXISTS 让老库在下次打开时自动补上。
+-- Usage stats are queried by "time range, agent messages only"; without this index a
+-- 50k-message table scans in full (measured 3.2ms) against 0.26ms for a range lookup.
+-- IF NOT EXISTS lets an older database pick it up the next time it is opened.
 CREATE INDEX IF NOT EXISTS idx_messages_agent_time ON messages(sender_type, created_at);
 CREATE TABLE IF NOT EXISTS mcp_servers (
     id TEXT PRIMARY KEY,
@@ -524,10 +534,6 @@ class Store(ExtStore):
         return self.get_agent(aid)  # type: ignore[return-value]
 
     MODEL_AVATARS = ("🐋", "🌙", "🔮", "🧠", "⚡", "🌟", "🦉", "🐼", "🦊", "🐙", "🌿", "🪐")
-    MODEL_PROMPT = (
-        "你就是模型「{{model_name}}」本身,以群成员的身份参与协作。发挥你这个模型的强项承担任务,"
-        "不擅长的部分交给更合适的成员,不要各说各话。"
-    )
 
     def ensure_model_agent(self, model_id: str) -> dict | None:
         """把「我添加的模型」变成可拉进群的成员:已有就复用,没有就创建(名字、强项都取自模型本身)。"""
@@ -537,7 +543,8 @@ class Store(ExtStore):
         for a in self.list_agents():
             if a.get("origin") == "model" and a["model_id"] == model_id:
                 return a
-        base = re.sub(r"[\s@]+", "-", (m["display_name"] or m["model_name"]).strip()).strip("-") or "模型"
+        base = re.sub(r"[\s@]+", "-", (m["display_name"] or m["model_name"]).strip()).strip("-") \
+            or i18n.pick_now("Model", "模型")
         taken = {a["name"] for a in self.list_agents()}
         name = base
         for cand in (base, f"{base}-{m.get('provider_name') or m['provider_id']}"):
@@ -549,9 +556,12 @@ class Store(ExtStore):
             while f"{name}-{n}" in taken:
                 n += 1
             name = f"{name}-{n}"
-        kind = "本地" if m["is_local"] else (m.get("provider_name") or "云端")
+        # Stored canonically in English: the display layer and the prompt builder both
+        # run this member through presets.localize_model_member().
+        kind = "Local" if m["is_local"] else (m.get("provider_name") or "Cloud")
         avatar = self.MODEL_AVATARS[sum(ord(ch) for ch in m["provider_id"]) % len(self.MODEL_AVATARS)]
-        return self.create_agent(name, avatar, f"模型成员 · {kind}", self.MODEL_PROMPT, model_id, [], [], origin="model")
+        return self.create_agent(name, avatar, model_member_role(kind), model_member_prompt(),
+                                 model_id, [], [], origin="model")
 
     def update_agent(self, aid: str, patch: dict) -> dict | None:
         for k in ("name", "avatar", "role", "prompt", "model_id"):
@@ -744,10 +754,10 @@ class Store(ExtStore):
             con = sqlite3.connect(work)
             try:
                 if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                    raise ValueError("文件已损坏")
+                    raise ValueError(i18n.pick_now("The file is damaged", "文件已损坏"))
                 tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not self.RESTORE_TABLES <= tables:
-                    raise ValueError("缺少必要的数据表")
+                    raise ValueError(i18n.pick_now("Required tables are missing", "缺少必要的数据表"))
                 con.executescript(SCHEMA)
                 con.executescript(SCHEMA_EXT)
                 for _k, v in con.execute("SELECT key, value FROM settings").fetchall():
@@ -756,9 +766,13 @@ class Store(ExtStore):
             finally:
                 con.close()
         except sqlite3.DatabaseError:
-            raise ValueError("这不是有效的备份文件(不是 Team Agent 的 SQLite 数据库,或者版本不兼容)") from None
+            raise ValueError(i18n.pick_now(
+                "This is not a valid backup (not a Team Agent SQLite database, or an unsupported version)",
+                "这不是有效的备份文件(不是 Team Agent 的 SQLite 数据库,或者版本不兼容)")) from None
         except ValueError as e:
-            raise ValueError(f"这不是可用的 Team Agent 备份:{e}") from None
+            raise ValueError(i18n.pick_now(
+                f"This backup cannot be used: {e}",
+                f"这不是可用的 Team Agent 备份:{e}")) from None
 
     def restore_from(self, src: Path | str) -> dict:
         """用备份文件替换当前全部数据。先自动留一份当前数据的副本(backups/pre-restore-*.db)。

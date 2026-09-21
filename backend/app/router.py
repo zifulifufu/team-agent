@@ -362,8 +362,8 @@ RATE_RE = re.compile(r"rate.?limit|too many requests|max rpm|\b429\b", re.I)
 # 服务商建议的等待时间:"retry after 20s"、"in 20ms"、"try again in 2.5 seconds"、"请 3 秒后重试"、"3秒后"
 AFTER_RES = [
     re.compile(r"(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?)\b", re.I),
-    re.compile(r"(\d+(?:\.\d+)?)\s*(毫秒|秒)\s*(?:钟)?\s*(?:后|之后|内)"),
-    re.compile(r"请\s*(\d+(?:\.\d+)?)\s*(毫秒|秒)"),
+    re.compile(r"(\d+(?:\.\d+)?)\s*(毫秒|秒)\s*(?:钟)?\s*(?:后|之后|内)"),  # i18n-keep: parses Chinese retry-after phrasing from upstream providers
+    re.compile(r"请\s*(\d+(?:\.\d+)?)\s*(毫秒|秒)"),  # i18n-keep: parses Chinese retry-after phrasing from upstream providers
 ]
 MAX_RETRY_WAIT = 5.0
 
@@ -396,10 +396,10 @@ def retry_after(e: BaseException) -> float | None:
 
 
 _SECRET_RES = [
-    (re.compile(r"\b(sk|ak|pk|key|tok)-[A-Za-z0-9_\-]{6,}"), r"\1-…"),
-    (re.compile(r"\borg-[A-Za-z0-9]{8,}"), "org-…"),
-    (re.compile(r"(Bearer\s+)\S+", re.I), r"\1…"),
-    (re.compile(r"(api[_-]?key[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_\-]{6,}", re.I), r"\1…"),
+    (re.compile(r"\b(sk|ak|pk|key|tok)-[A-Za-z0-9_\-]{6,}"), r"\1-…"),  # i18n-keep: redaction placeholder; U+2026 ellipsis is not Chinese
+    (re.compile(r"\borg-[A-Za-z0-9]{8,}"), "org-…"),  # i18n-keep: redaction placeholder; U+2026 ellipsis is not Chinese
+    (re.compile(r"(Bearer\s+)\S+", re.I), r"\1…"),  # i18n-keep: redaction placeholder; U+2026 ellipsis is not Chinese
+    (re.compile(r"(api[_-]?key[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_\-]{6,}", re.I), r"\1…"),  # i18n-keep: redaction placeholder; U+2026 ellipsis is not Chinese
 ]
 _HINTS = [
     ("RateLimit", " — the provider is rate-limiting you: most likely the account's per-minute request quota is too low (common on new or free plans). Wait a few seconds and retry, or raise the quota in the provider's console.", " —— 服务商限速了:多半是账号的每分钟请求数/额度太低(新账号或免费档常见),稍等几秒再试,或到服务商后台提高额度。"),

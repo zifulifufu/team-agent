@@ -266,7 +266,7 @@ def test_bad_custom_items_are_dropped_with_reasons(store) -> None:
     assert {i["id"] for i in ov["items"] if i["source"].startswith("custom:")} == {"prompt:ok"}
     reasons = {e["id"]: e["reason"] for e in ov["custom"]["errors"]}
     assert set(reasons) == {"bad id!", "noKind", "mcp-try", "emptyBody", "tooNew"}
-    assert "不支持 kind=mcp" in reasons["mcp-try"]      # 命令类必须由人自己加
+    assert "do not support kind=mcp" in reasons["mcp-try"]   # 命令类必须由人自己加
     assert "name" in reasons["noKind"] or "kind" in reasons["noKind"]
 
 
@@ -277,7 +277,7 @@ def test_custom_template_id_cannot_collide_with_builtin(store) -> None:
     })
     ov = gallery.overview(store)
     assert ov["custom"]["loaded"] == 0
-    assert "不唯一" in ov["custom"]["errors"][0]["reason"]
+    assert "is not unique" in ov["custom"]["errors"][0]["reason"]
 
 
 def test_custom_file_schema_and_size_are_guarded(store) -> None:
@@ -290,8 +290,8 @@ def test_custom_file_schema_and_size_are_guarded(store) -> None:
     assert set(errors) == {"future.json", "notjson.json", "broken.json", "huge.json"}
     assert "schema_version=99" in errors["future.json"]
     assert "items" in errors["notjson.json"]
-    assert "解析失败" in errors["broken.json"]
-    assert "已忽略" in errors["huge.json"]
+    assert "could not be read or parsed" in errors["broken.json"]
+    assert "ignored" in errors["huge.json"]
 
 
 def test_custom_templates_reload_after_the_file_changes(store) -> None:

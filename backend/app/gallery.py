@@ -167,7 +167,7 @@ class GalleryError(Exception):
 # --------------------------------------------------------------------- helpers
 def _clip(s: str, n: int) -> str:
     s = re.sub(r"\s+", " ", s or "").strip()
-    return s if len(s) <= n else s[: n - 1] + "…"
+    return s if len(s) <= n else s[: n - 1] + "…"  # i18n-keep: truncation marker; U+2026 is not Chinese
 
 
 def _ver(s: Any) -> tuple[int, ...]:
@@ -341,68 +341,68 @@ def _require(kind: str, raw: dict) -> str | None:
     if kind == "team":
         names = raw.get("members")
         if not isinstance(names, list) or not names or len(names) > 12:
-            return "team 需要 1~12 个 members(成员名数组)"
+            return i18n.pick_now("team needs 1-12 members (an array of member names)", "team 需要 1~12 个 members(成员名数组)")
         if any(not isinstance(n, str) or not n.strip() or len(n) > 60 for n in names):
-            return "team 的 members 必须是 1~60 字的成员名"
+            return i18n.pick_now("team members must be member names of 1-60 characters", "team 的 members 必须是 1~60 字的成员名")
         host = raw.get("host")
         if host is not None and (not isinstance(host, str) or not host.strip()):
-            return "team 的 host 必须是成员名"
+            return i18n.pick_now("team host must be a member name", "team 的 host 必须是成员名")
         skills = raw.get("skills", [])
         if not isinstance(skills, list) or len(skills) > 8 or any(not isinstance(x, str) for x in skills):
-            return "team 的 skills 必须是不超过 8 个的技能名数组"
+            return i18n.pick_now("team skills must be an array of at most 8 skill names", "team 的 skills 必须是不超过 8 个的技能名数组")
         if len(str(raw.get("prompt", ""))) > 4000:
-            return "team 的 prompt 超过 4000 字"
+            return i18n.pick_now("team prompt is over 4000 characters", "team 的 prompt 超过 4000 字")
     elif kind == "agent":
         if len(str(raw.get("role", ""))) > 60:
-            return "agent 的 role 超过 60 字"
+            return i18n.pick_now("agent role is over 60 characters", "agent 的 role 超过 60 字")
         if len(str(raw.get("prompt", ""))) > 4000:
-            return "agent 的 prompt 超过 4000 字"
+            return i18n.pick_now("agent prompt is over 4000 characters", "agent 的 prompt 超过 4000 字")
         tags = raw.get("tags", [])
         if not isinstance(tags, list) or len(tags) > 6:
-            return "agent 的 tags 必须是不超过 6 个的数组"
+            return i18n.pick_now("agent tags must be an array of at most 6 items", "agent 的 tags 必须是不超过 6 个的数组")
     elif kind == "skill":
         body = raw.get("body")
         if not isinstance(body, str) or not body.strip():
-            return "skill 需要非空的 body"
+            return i18n.pick_now("skill needs a non-empty body", "skill 需要非空的 body")
         if len(body) > 8000:
-            return "skill 的 body 超过 8000 字"
+            return i18n.pick_now("skill body is over 8000 characters", "skill 的 body 超过 8000 字")
         if raw.get("scope", "member") not in ("member", "group"):
-            return "skill 的 scope 只能是 member 或 group"
+            return i18n.pick_now("skill scope must be member or group", "skill 的 scope 只能是 member 或 group")
         if len(str(raw.get("description", ""))) > 200:
-            return "skill 的 description 超过 200 字"
+            return i18n.pick_now("skill description is over 200 characters", "skill 的 description 超过 200 字")
     elif kind == "prompt":
         content = raw.get("content")
         if not isinstance(content, str) or not content.strip():
-            return "prompt 需要非空的 content"
+            return i18n.pick_now("prompt needs a non-empty content", "prompt 需要非空的 content")
         if len(content) > 4000:
-            return "prompt 的 content 超过 4000 字"
+            return i18n.pick_now("prompt content is over 4000 characters", "prompt 的 content 超过 4000 字")
         # 注意:条目的 kind 已经用来表示「这是提示词」了,提示词自己的类型叫 prompt_kind
         if raw.get("prompt_kind", "general") not in ("general", "group"):
-            return "prompt 的 prompt_kind 只能是 general(通用) 或 group(群提示词)"
+            return i18n.pick_now("prompt_kind must be general or group", "prompt 的 prompt_kind 只能是 general(通用) 或 group(群提示词)")
     return None
 
 
 def _custom_row(raw: Any, seen: set[str]) -> tuple[dict | None, str]:
     """校验并归一化一条自定义模板。返回 (条目, 错误原因)。"""
     if not isinstance(raw, dict):
-        return None, "条目必须是对象"
+        return None, i18n.pick_now("an entry must be an object", "条目必须是对象")
     rid = raw.get("id")
     if not isinstance(rid, str) or not _ID_RE.match(rid):
-        return None, "id 必须是 1~64 位、以字母或数字开头的字母数字 . _ - 组合"
+        return None, i18n.pick_now("id must be 1-64 characters of letters, digits, dot, underscore or dash, starting with a letter or a digit", "id 必须是 1~64 位、以字母或数字开头的字母数字 . _ - 组合")
     kind = raw.get("kind")
     if kind == "mcp":
-        return None, "自定义模板不支持 kind=mcp(命令类请到「MCP」页自己添加)"
+        return None, i18n.pick_now("custom templates do not support kind=mcp (add command-based servers yourself on the MCP page)", "自定义模板不支持 kind=mcp(命令类请到「MCP」页自己添加)")
     if kind not in CUSTOM_KINDS:
-        return None, f"kind 只能是 {' / '.join(CUSTOM_KINDS)}"
+        return None, i18n.pick_now(f"kind must be one of {' / '.join(CUSTOM_KINDS)}", f"kind 只能是 {' / '.join(CUSTOM_KINDS)}")
     fid = f"{kind}:{rid}"
     if fid in seen:
-        return None, f"id「{rid}」与目录里已有的条目不唯一"
+        return None, i18n.pick_now(f"id \"{rid}\" is not unique among the entries already in the gallery", f"id「{rid}」与目录里已有的条目不唯一")
     name = raw.get("name")
     if not isinstance(name, str) or not name.strip() or len(name) > 60:
-        return None, "name 必须是 1~60 个字"
+        return None, i18n.pick_now("name must be 1-60 characters", "name 必须是 1~60 个字")
     req = raw.get("requires")
     if req and _ver(req) > _ver(CATALOG_VERSION):
-        return None, f"需要程序目录版本 {req} 以上,当前是 {CATALOG_VERSION}"
+        return None, i18n.pick_now(f"needs catalog version {req} or newer; this build is {CATALOG_VERSION}", f"需要程序目录版本 {req} 以上,当前是 {CATALOG_VERSION}")
     bad = _require(kind, raw)
     if bad:
         return None, bad
@@ -411,7 +411,7 @@ def _custom_row(raw: Any, seen: set[str]) -> tuple[dict | None, str]:
     icon = str(raw.get("icon") or _ICONS[kind])[:2] or _ICONS[kind]
     return {
         "id": fid, "kind": kind, "name": name.strip(), "summary": summary, "icon": icon,
-        "tags": [t for t in (raw.get("tags") or []) if isinstance(t, str)][:4] or ["自定义"],
+        "tags": [t for t in (raw.get("tags") or []) if isinstance(t, str)][:4] or [i18n.pick_now("Custom", "自定义")],
         "source": f"custom:{raw.get('_file', '')}".rstrip(":"),
         "preview": _custom_preview(kind, raw),
         "def": _custom_def(kind, raw, name.strip()),
@@ -455,25 +455,25 @@ def _parse_custom(d: Path, files: list[Path]) -> Custom:
     for p in files:
         try:
             if p.stat().st_size > CUSTOM_MAX_BYTES:
-                out.errors.append({"file": p.name, "reason": f"文件超过 {CUSTOM_MAX_BYTES // 1024} KB,已忽略"})
+                out.errors.append({"file": p.name, "reason": i18n.pick_now(f"file is over {CUSTOM_MAX_BYTES // 1024} KB, ignored", f"文件超过 {CUSTOM_MAX_BYTES // 1024} KB,已忽略")})
                 continue
             raw = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            out.errors.append({"file": p.name, "reason": f"读取或解析失败:{e}"})
+            out.errors.append({"file": p.name, "reason": i18n.pick_now(f"could not be read or parsed: {e}", f"读取或解析失败:{e}")})
             continue
         if not isinstance(raw, dict):
-            out.errors.append({"file": p.name, "reason": "顶层必须是对象"})
+            out.errors.append({"file": p.name, "reason": i18n.pick_now("the top level must be an object", "顶层必须是对象")})
             continue
         sv = raw.get("schema_version", SCHEMA_VERSION)
         if not isinstance(sv, int) or sv > SCHEMA_VERSION:
-            out.errors.append({"file": p.name, "reason": f"schema_version={sv} 不支持,本程序支持到 {SCHEMA_VERSION}"})
+            out.errors.append({"file": p.name, "reason": i18n.pick_now(f"schema_version={sv} is not supported; this build supports up to {SCHEMA_VERSION}", f"schema_version={sv} 不支持,本程序支持到 {SCHEMA_VERSION}")})
             continue
         items = raw.get("items")
         if not isinstance(items, list):
-            out.errors.append({"file": p.name, "reason": "缺少 items 数组"})
+            out.errors.append({"file": p.name, "reason": i18n.pick_now("the items array is missing", "缺少 items 数组")})
             continue
         if len(items) > CUSTOM_MAX_ITEMS:
-            out.errors.append({"file": p.name, "reason": f"条目超过 {CUSTOM_MAX_ITEMS} 条,已忽略整个文件"})
+            out.errors.append({"file": p.name, "reason": i18n.pick_now(f"more than {CUSTOM_MAX_ITEMS} entries, so the whole file was ignored", f"条目超过 {CUSTOM_MAX_ITEMS} 条,已忽略整个文件")})
             continue
         accepted = 0
         for i, it in enumerate(items):

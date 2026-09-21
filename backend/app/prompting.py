@@ -11,6 +11,7 @@ import re
 from datetime import datetime
 
 from . import i18n
+from .presets import localize_member
 from .router import ModelRouter
 from .store import Store
 from .tools import skills_prompt
@@ -38,7 +39,7 @@ VARIABLES = [
 
 def estimate_tokens(text: str) -> int:
     """粗估 token 数:汉字约 1 个/字,其它约 4 字符 1 个。仅供参考。"""
-    cjk = len(re.findall(r"[㐀-鿿]", text))
+    cjk = len(re.findall(r"[㐀-鿿]", text))  # i18n-keep: counts CJK characters to estimate tokens
     return cjk + (len(text) - cjk + 3) // 4
 
 
@@ -59,11 +60,22 @@ class PromptBuilder:
     def __init__(self, store: Store, router: ModelRouter):
         self.store, self.router = store, router
 
+    # ------------------------------------------------------------------ members
+    @staticmethod
+    def _shown(agent: dict | None) -> dict | None:
+        """A member as it should read in the request language.
+
+        The role and prompt of a seeded member sit in the database in whichever language
+        the install was created in, so they are swapped here before they reach the model
+        — otherwise an English run would carry Chinese role text into the prompt.
+        """
+        return localize_member(agent, i18n.current()) if agent else agent
+
     # ----------------------------------------------------------------- headings
     @staticmethod
     def _heading(en: str, zh: str) -> str:
         """A section heading in the request language."""
-        return f"[{en}]" if i18n.current() == "en" else f"【{zh}】"
+        return f"[{en}]" if i18n.current() == "en" else f"【{zh}】"  # i18n-keep: already bilingual: English gets [Head], Chinese gets 【Head】
 
     @staticmethod
     def _roster_hint() -> str:
@@ -76,6 +88,7 @@ class PromptBuilder:
     def values(self, group: dict, agent: dict | None, members: list[dict], user_name: str = "") -> dict[str, str]:
         now = datetime.now()
         lang = i18n.current()
+        agent = self._shown(agent)
         model = self.router.resolve(agent["model_id"], agent.get("tags")) if agent and not agent.get("engine") else None
         return {
             "agent_name": agent["name"] if agent else "",
@@ -85,7 +98,7 @@ class PromptBuilder:
             "model_name": (model["display_name"] if model else (agent["name"] if agent and agent.get("engine") else "")),
             "date": now.strftime("%Y-%m-%d"), "time": now.strftime("%H:%M"), "datetime": now.strftime("%Y-%m-%d %H:%M"),
             "weekday": (WEEKDAYS[lang] if lang in WEEKDAYS else WEEKDAYS["en"])[now.weekday()]
-                       if lang == "en" else "星期" + WEEKDAYS["zh"][now.weekday()],
+                       if lang == "en" else "星期" + WEEKDAYS["zh"][now.weekday()],  # i18n-keep: already bilingual: English spells the weekday, Chinese prefixes 星期
             "os": platform.system(),
             "username": user_name or i18n.pick(lang, "the user", "我"),
         }
@@ -93,7 +106,7 @@ class PromptBuilder:
     # ------------------------------------------------------------------ roster
     def roster_entries(self, members: list[dict]) -> list[dict]:
         out = []
-        for m in members:
+        for m in (self._shown(x) or x for x in members):
             if m.get("engine"):   # 外部智能体:不经过模型路由
                 out.append({"agent": m, "model": None, "strengths": merge_strengths(m, None),
                             "model_display": i18n.pick_now(f"external agent ({m['name']})",
@@ -137,13 +150,15 @@ class PromptBuilder:
             return ""
         head = i18n.pick_now("Additional requirements", "补充要求")
         body = "\n".join(f"- {p['content'].strip()}" for p in items)
-        return (f"[{head}]\n{body}" if i18n.current() == "en" else f"【{head}】\n{body}")
+        return (f"[{head}]\n{body}" if i18n.current() == "en" else f"【{head}】\n{body}")  # i18n-keep: already bilingual: [Head] vs 【Head】
 
     def system_prompt(
         self, group: dict, agent: dict, members: list[dict], *,
         memory_block: str = "", tools_block: str = "", extra: str = "",
     ) -> str:
         cfg = self.store.get_settings()
+        agent = self._shown(agent) or agent
+        members = [self._shown(m) or m for m in members]
         vals = self.values(group, agent, members)
         sk_dir = self.store.data_dir / "skills"
         extras = self.global_extras()
@@ -151,11 +166,11 @@ class PromptBuilder:
             render_vars(cfg["system_prompt"], vals).strip(),
             render_vars(agent["prompt"], vals).strip(),
             render_vars(extras, vals) if extras else "",
-            (self._heading("Group prompt", "本群提示词") + "\n"
+            (self._heading("Group prompt", "本群提示词") + "\n"  # i18n-keep: already bilingual pair
              + render_vars(group["prompt"].strip(), vals)) if (group.get("prompt") or "").strip() else "",
             skills_prompt(sk_dir, group["ext"]["skills"], group=True),
             skills_prompt(sk_dir, agent["skills"]),
-            self._heading("Members and their parts", "群成员与分工")
+            self._heading("Members and their parts", "群成员与分工")  # i18n-keep: already bilingual pair
             + self._roster_hint() + "\n"
             + self.roster_text(members, agent["id"], group.get("host_agent_id")),
             memory_block,

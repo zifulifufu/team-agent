@@ -35,7 +35,7 @@ def kind_label(kind: str) -> str:
     """The memory kind as it should read in the request language."""
     pair = KIND_LABEL.get(kind)
     return i18n.pick_now(*pair) if pair else kind
-_SECRETish = re.compile(r"(sk-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{12,}|\d{11,}|[A-Za-z0-9_\-]{32,}|password|密码|口令|secret|api[_ -]?key)", re.I)
+_SECRETish = re.compile(r"(sk-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{12,}|\d{11,}|[A-Za-z0-9_\-]{32,}|password|密码|口令|secret|api[_ -]?key)", re.I)  # i18n-keep: must still match 密码/口令 to catch secrets
 
 
 def looks_sensitive(text: str) -> bool:

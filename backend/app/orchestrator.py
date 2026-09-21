@@ -42,7 +42,7 @@ DELTA_BATCH_CHARS = 24
 DELTA_BATCH_SECONDS = 0.06
 
 # @ 前面是字母数字(邮箱 me@x.com)不算点名;@all 后面接字母(@Allen)也不算
-_ALL_RE = re.compile(r"(?<![A-Za-z0-9_.])@(?:所有人|all(?![A-Za-z0-9_]))", re.IGNORECASE)
+_ALL_RE = re.compile(r"(?<![A-Za-z0-9_.])@(?:所有人|all(?![A-Za-z0-9_]))", re.IGNORECASE)  # i18n-keep: accepts @all and @所有人 in any language
 
 
 def _mention_re(name: str) -> "re.Pattern[str]":
@@ -203,7 +203,7 @@ class Orchestrator:
             return ""
         allowed = self.library.scope_ids(group["ext"]["library"])
         out = []
-        for m in re.finditer(r"#([^\s#@,,。;;::!!??]{2,40})", text):
+        for m in re.finditer(r"#([^\s#@,,。;;::!!??]{2,40})", text):  # i18n-keep: hashtag regex; the CJK punctuation set is the delimiter list
             doc = self.library.find_by_title(m.group(1))
             if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed) and all(doc["title"] not in o for o in out):
                 r = self.library.read(doc["id"], 0, 2500)
@@ -703,5 +703,5 @@ def _short_args(args: dict) -> dict:
     out = {}
     for k, v in list(args.items())[:6]:
         s = v if isinstance(v, (int, float, bool)) or v is None else str(v)
-        out[k] = s if not isinstance(s, str) or len(s) <= 120 else s[:120] + "…"
+        out[k] = s if not isinstance(s, str) or len(s) <= 120 else s[:120] + "…"  # i18n-keep: U+2026 ellipsis; correct in English too
     return out
