@@ -691,6 +691,23 @@ function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * An error the backend raised, carrying its HTTP status.
+ *
+ * Callers that need to branch on *why* a request failed must use `status` rather than
+ * matching on the message: the text follows the interface language, so a check like
+ * `/已有同名/` silently stops matching as soon as the UI runs in English.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 /** Single entry point for fetch: attaches the token, explains a failed connection, and turns the error body into text */
 async function call(path: string, init: RequestInit): Promise<Response> {
   let r: Response;
@@ -706,7 +723,7 @@ async function call(path: string, init: RequestInit): Promise<Response> {
     } catch {
       /* Not JSON */
     }
-    throw new Error(errorText(detail, `${r.status} ${r.statusText}`.trim()));
+    throw new ApiError(errorText(detail, `${r.status} ${r.statusText}`.trim()), r.status);
   }
   return r;
 }

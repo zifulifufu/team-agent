@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowLeft, Archive, ExternalLink, FileText, Search, Star } from "lucide-react";
-import { api, type FilePreview, type RepoFile, type RepoHit, type UpdatesInfo } from "../api";
+import { api, ApiError, type FilePreview, type RepoFile, type RepoHit, type UpdatesInfo } from "../api";
+import { useI18n } from "../i18n";
 import { Modal, useConfirm } from "../ui";
 import { agoIso, Callout, dupMessage, ExtLink, fmtBytes, fmtStars, githubUrl, GithubMark, isHttps, Spin } from "./ExtBits";
 import PluginInstallModal from "./PluginInstall";
@@ -10,29 +11,46 @@ import "../styles/ext.css";
 
 type DiscoverKind = "skill" | "plugin" | "mcp";
 
-const KIND_TEXT: Record<DiscoverKind, { title: string; noun: string; topic: string; hint: string }> = {
+/**
+ * Both languages live here: `title`/`hint` are the English wording and `…Zh` the Chinese.
+ * `RepoDiscoverModal` picks one with the context's `pick` — a module-level `t()` would run before
+ * provider is mounted, so it cannot be used at this level.
+ */
+const KIND_TEXT: Record<
+  DiscoverKind,
+  { title: string; titleZh: string; noun: string; nounZh: string; topic: string; hint: string; hintZh: string }
+> = {
   skill: {
-    title: "从 GitHub 发现技能",
-    noun: "技能",
+    title: "Discover skills on GitHub",
+    titleZh: "从 GitHub 发现技能",
+    noun: "skill",
+    nounZh: "技能",
     topic: "agent-skills / claude-skills",
-    hint: "技能是纯文本提示词(SKILL.md),安装后只是一段文字,不会执行任何代码。",
+    hint: "A skill is a plain-text prompt (SKILL.md). Installing it adds text and nothing else — no code runs.",
+    hintZh: "技能是纯文本提示词(SKILL.md),安装后只是一段文字,不会执行任何代码。",
   },
   plugin: {
-    title: "从 GitHub 发现插件",
-    noun: "插件",
+    title: "Discover plugins on GitHub",
+    titleZh: "从 GitHub 发现插件",
+    noun: "plugin",
+    nounZh: "插件",
     topic: "team-agent-plugin",
-    hint: "插件是 Python 代码,会在本机运行。这里只负责找到它并让你先读源码,不会一键安装。",
+    hint: "A plugin is Python code that runs on this machine. This page only finds it and lets you read the source first; there is no one-click install.",
+    hintZh: "插件是 Python 代码,会在本机运行。这里只负责找到它并让你先读源码,不会一键安装。",
   },
   mcp: {
-    title: "从 GitHub 发现 MCP 服务器",
-    noun: "MCP 服务器",
+    title: "Discover MCP servers on GitHub",
+    titleZh: "从 GitHub 发现 MCP 服务器",
+    noun: "MCP server",
+    nounZh: "MCP 服务器",
     topic: "mcp-server / mcp-servers",
-    hint: "这里不会自动安装:按仓库 README 的说明,把启动命令填到「添加 MCP 服务器」表单里,确认后保存。",
+    hint: "Nothing is installed automatically here: read the repository README and type the start command into the Add MCP server form yourself, then save.",
+    hintZh: "这里不会自动安装:按仓库 README 的说明,把启动命令填到「添加 MCP 服务器」表单里,确认后保存。",
   },
 };
-
-/** 在渲染 GitHub README 时:只放行 https 链接、不加载远程图片(内容不可信)。 */
+/** Rendering a GitHub README: only https links are allowed through and remote images are never loaded (the content is untrusted). */
 function ReadmeView({ text }: { text: string }) {
+  const { t } = useI18n();
   return (
     <div className="md ext-readme">
       <ReactMarkdown
@@ -40,7 +58,7 @@ function ReadmeView({ text }: { text: string }) {
         components={{
           a: ({ href, children }) =>
             isHttps(href) ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : <span>{children}</span>,
-          img: ({ alt }) => <span className="muted">[图片{alt ? `:${alt}` : ""}]</span>,
+          img: ({ alt }) => <span className="muted">{t("[image{alt}]", { alt: alt ? `:${alt}` : "" })}</span>,
         }}
       >
         {text}
@@ -50,21 +68,22 @@ function ReadmeView({ text }: { text: string }) {
 }
 
 function RepoCard({ hit, onOpen }: { hit: RepoHit; onOpen: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="ext-repo">
       <div className="ext-repo-main">
         <div className="ext-repo-name">
           <GithubMark size={13} /> <b>{hit.repo}</b>
-          {hit.archived && <span className="tag warn"><Archive size={11} /> 已归档</span>}
-          {hit.license ? <span className="tag">{hit.license}</span> : <span className="tag warn" title="没有声明许可证">无许可证</span>}
+          {hit.archived && <span className="tag warn"><Archive size={11} /> {t("Archived")}</span>}
+          {hit.license ? <span className="tag">{hit.license}</span> : <span className="tag warn" title={t("No licence declared")}>{t("No licence")}</span>}
         </div>
         {hit.description && <div className="ext-repo-desc">{hit.description}</div>}
         <div className="ext-repo-meta muted small">
-          <span title="GitHub 星数"><Star size={11} /> {fmtStars(hit.stars)}</span>
-          {hit.updated_at && <span>最近更新 {agoIso(hit.updated_at) || hit.updated_at}</span>}
+          <span title={t("GitHub stars")}><Star size={11} /> {fmtStars(hit.stars)}</span>
+          {hit.updated_at && <span>{t("Updated")} {agoIso(hit.updated_at) || hit.updated_at}</span>}
         </div>
       </div>
-      <button className="btn small" onClick={onOpen}>查看</button>
+      <button className="btn small" onClick={onOpen}>{t("View")}</button>
     </div>
   );
 }
@@ -80,7 +99,14 @@ export function RepoDiscoverModal({
   onInstalled?: () => void;
   onPrefillMcp?: (name: string, description: string) => void;
 }) {
-  const T = KIND_TEXT[kind];
+  const { t, pick } = useI18n();
+  const raw = KIND_TEXT[kind];
+  const T = {
+    ...raw,
+    title: pick(raw.title, raw.titleZh),
+    noun: pick(raw.noun, raw.nounZh),
+    hint: pick(raw.hint, raw.hintZh),
+  };
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<RepoHit[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -118,41 +144,41 @@ export function RepoDiscoverModal({
           <RepoView kind={kind} repo={repo.repo} description={repo.description} onBack={() => setRepo(null)} onInstalled={onInstalled} onPrefillMcp={onPrefillMcp} onClose={onClose} />
         ) : (
           <>
-            <Callout tone="warn" title="来自 GitHub 的内容不可信,先看一眼再装">
-              {T.hint}星数、更新时间和许可证只是参考,不代表安全。
+            <Callout tone="warn" title={t("GitHub content is untrusted — read it before you install")}>
+              {T.hint}{t("Star counts, update times and licences are only hints, not a safety guarantee.")}
             </Callout>
             <form className="ext-search" onSubmit={(e) => { e.preventDefault(); void search(q); }}>
               <div className="search-box grow">
                 <Search size={14} />
-                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`搜索${T.noun}仓库(可留空,按星数列出话题 ${T.topic})`} aria-label={`搜索${T.noun}仓库`} />
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("Search {noun} repositories (leave it blank to list topic {topic} by stars)", { noun: T.noun, topic: T.topic })} aria-label={t("Search {noun} repositories", { noun: T.noun })} />
               </div>
-              <button className="btn primary" type="submit" disabled={searching}>{searching ? <><Spin /> 搜索中</> : "搜索"}</button>
+              <button className="btn primary" type="submit" disabled={searching}>{searching ? <><Spin /> {t("Searching")}</> : t("Search")}</button>
             </form>
 
             {curated.length > 0 && (
               <>
-                <div className="ext-sub">推荐来源</div>
+                <div className="ext-sub">{t("Curated sources")}</div>
                 {curated.map((c) => (
                   <div key={c.repo} className="ext-repo">
                     <div className="ext-repo-main">
                       <div className="ext-repo-name"><GithubMark size={13} /> <b>{c.repo}</b></div>
                       <div className="ext-repo-desc">{c.desc}</div>
                     </div>
-                    <button className="btn small" onClick={() => setRepo({ repo: c.repo, description: c.desc })}>打开</button>
+                    <button className="btn small" onClick={() => setRepo({ repo: c.repo, description: c.desc })}>{t("Open")}</button>
                   </div>
                 ))}
               </>
             )}
 
-            <div className="ext-sub">搜索结果{hits ? <span className="count-badge-plain">{hits.length}</span> : null}</div>
-            {searching && !hits && <div className="empty"><Spin /> 正在向 GitHub 搜索…</div>}
+            <div className="ext-sub">{t("Search results")}{hits ? <span className="count-badge-plain">{hits.length}</span> : null}</div>
+            {searching && !hits && <div className="empty"><Spin /> {t("Searching GitHub…")}</div>}
             {err && (
               <div className="ext-errbox">
-                <div className="err">搜索失败:{err}</div>
-                <button className="btn small" onClick={() => void search(q)}>重试</button>
+                <div className="err">{t("Search failed:")} {err}</div>
+                <button className="btn small" onClick={() => void search(q)}>{t("Retry")}</button>
               </div>
             )}
-            {hits && hits.length === 0 && <div className="empty">没有找到匹配的仓库,换个关键词试试。</div>}
+            {hits && hits.length === 0 && <div className="empty">{t("No matching repositories — try another keyword.")}</div>}
             {hits?.map((h) => (
               <RepoCard key={h.repo} hit={h} onOpen={() => setRepo({ repo: h.repo, description: h.description })} />
             ))}
@@ -163,7 +189,7 @@ export function RepoDiscoverModal({
   );
 }
 
-// ------------------------------------------------------------- 选中的仓库
+// -------------------------------------------------------------- selected repository
 function RepoView({
   kind, repo, description, onBack, onInstalled, onPrefillMcp, onClose,
 }: {
@@ -175,6 +201,7 @@ function RepoView({
   onPrefillMcp?: (name: string, description: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [files, setFiles] = useState<RepoFile[] | null>(null);
   const [readme, setReadme] = useState<{ content: string; url: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -197,26 +224,26 @@ function RepoView({
   return (
     <>
       <div className="ext-repo-head">
-        <button className="btn small ghost" onClick={onBack}><ArrowLeft size={14} /> 返回搜索</button>
+        <button className="btn small ghost" onClick={onBack}><ArrowLeft size={14} /> {t("Back to search")}</button>
         <div className="grow">
           <b>{repo}</b>
           {description && <div className="muted small">{description}</div>}
         </div>
-        <a className="btn small" href={githubUrl(repo)} target="_blank" rel="noreferrer"><ExternalLink size={13} /> 在 GitHub 打开</a>
+        <a className="btn small" href={githubUrl(repo)} target="_blank" rel="noreferrer"><ExternalLink size={13} /> {t("Open on GitHub")}</a>
       </div>
 
-      {loading && <div className="empty"><Spin /> 正在读取仓库…</div>}
+      {loading && <div className="empty"><Spin /> {t("Reading the repository…")}</div>}
       {err && (
         <div className="ext-errbox">
           <div className="err">{err}</div>
-          <button className="btn small" onClick={() => setTick((t) => t + 1)}>重试</button>
+          <button className="btn small" onClick={() => setTick((t) => t + 1)}>{t("Retry")}</button>
         </div>
       )}
 
       {kind === "skill" && files && (
         <>
-          <div className="ext-sub">仓库里的技能文件{files.length ? <span className="count-badge-plain">{files.length}</span> : null}</div>
-          {files.length === 0 && <div className="empty">没有找到 SKILL.md 文件。</div>}
+          <div className="ext-sub">{t("Skill files in this repository")}{files.length ? <span className="count-badge-plain">{files.length}</span> : null}</div>
+          {files.length === 0 && <div className="empty">{t("No SKILL.md files found.")}</div>}
           <div className="card flush">
             {files.map((f) => (
               <div key={f.path} className="model-row">
@@ -225,7 +252,7 @@ function RepoView({
                   <div className="mr-name">{f.name || f.path}</div>
                   <div className="mr-id">{f.path}</div>
                 </div>
-                <button className="btn small" onClick={() => setPick(f)}>预览</button>
+                <button className="btn small" onClick={() => setPick(f)}>{t("Preview")}</button>
               </div>
             ))}
           </div>
@@ -242,9 +269,9 @@ function RepoView({
 
       {kind === "plugin" && files && (
         <>
-          <div className="ext-sub">仓库里的 .py 文件{files.length ? <span className="count-badge-plain">{files.length}</span> : null}</div>
-          <p className="muted small" style={{ margin: "0 0 8px" }}>只列出根目录和 plugins/ 目录下的 .py 文件。每个文件都要先预览完整源码才能安装。</p>
-          {files.length === 0 && <div className="empty">没有找到可安装的 .py 文件。</div>}
+          <div className="ext-sub">{t(".py files in this repository")}{files.length ? <span className="count-badge-plain">{files.length}</span> : null}</div>
+          <p className="muted small" style={{ margin: "0 0 8px" }}>{t("Only .py files in the repository root and in plugins/ are listed. Every file has to be previewed in full before it can be installed.")}</p>
+          {files.length === 0 && <div className="empty">{t("No installable .py files found.")}</div>}
           <div className="card flush">
             {files.map((f) => (
               <div key={f.path} className="model-row">
@@ -253,7 +280,7 @@ function RepoView({
                   <div className="mr-name">{f.path}</div>
                   <div className="mr-id">{f.size != null ? fmtBytes(f.size) : ""}</div>
                 </div>
-                <button className="btn small" onClick={() => setPick(f)}>预览源码</button>
+                <button className="btn small" onClick={() => setPick(f)}>{t("Preview source")}</button>
               </div>
             ))}
           </div>
@@ -270,8 +297,8 @@ function RepoView({
 
       {kind === "mcp" && readme && (
         <>
-          <Callout title="这里不会自动安装">
-            MCP 服务器是要在本机运行的命令。请读下面的 README,按它的说明把「启动命令」和「参数」填到「添加 MCP 服务器」表单里,确认无误后再保存。
+          <Callout title={t("Nothing is installed automatically here")}>
+            {t("An MCP server is a command that runs on this machine. Read the README below and put the start command and its arguments into the Add MCP server form yourself; save only once you are sure.")}
           </Callout>
           <div className="row" style={{ margin: "10px 0" }}>
             <button
@@ -279,18 +306,18 @@ function RepoView({
               onClick={() => { onPrefillMcp?.(repo.split("/")[1] ?? repo, description); onClose(); }}
               disabled={!onPrefillMcp}
             >
-              用这个仓库名预填表单
+              {t("Prefill the form with this repository name")}
             </button>
-            <span className="muted small">只预填名称和说明,命令需要你自己填。</span>
+            <span className="muted small">{t("Only the name and description are prefilled; you fill in the command yourself.")}</span>
           </div>
-          <ReadmeView text={readme.content || "(这个仓库没有 README)"} />
+          <ReadmeView text={readme.content || t("(this repository has no README)")} />
         </>
       )}
     </>
   );
 }
 
-// ------------------------------------------------------------- 技能预览与安装
+// -------------------------------------------------------------- skill preview and install
 function SkillPreviewModal({
   repo, path, gitRef = "", onClose, onInstalled,
 }: {
@@ -300,6 +327,7 @@ function SkillPreviewModal({
   onClose: () => void;
   onInstalled: () => void;
 }) {
+  const { t } = useI18n();
   const confirm = useConfirm();
   const [pv, setPv] = useState<FilePreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -327,9 +355,11 @@ function SkillPreviewModal({
       onInstalled();
     } catch (e) {
       const msg = (e as Error).message;
-      if (/已有同名/.test(msg) && !overwrite) {
+      // 409 is the duplicate-name conflict; matching on the message text would break the
+      // moment the interface language changes (the server words it per request).
+      if (e instanceof ApiError && e.status === 409 && !overwrite) {
         setBusy(false);
-        if (await confirm(`${dupMessage(msg)}。覆盖会替换本地同名技能的内容,你在本地做过的修改会丢失。要覆盖吗?`, { okText: "覆盖安装" })) return install(true);
+        if (await confirm(t("{msg}. Overwriting replaces the content of the local skill with the same name, and anything you changed locally is lost. Overwrite it?", { msg: dupMessage(msg) }), { okText: t("Overwrite") })) return install(true);
       } else {
         setErr(msg);
       }
@@ -340,35 +370,35 @@ function SkillPreviewModal({
 
   return (
     <Modal
-      title="预览技能"
+      title={t("Preview skill")}
       onClose={onClose}
       wide
       actions={
         <>
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" disabled={!pv || busy} onClick={() => void install(false)}>{busy ? <><Spin /> 安装中…</> : "安装"}</button>
+          <button className="btn" onClick={onClose}>{t("Cancel")}</button>
+          <button className="btn primary" disabled={!pv || busy} onClick={() => void install(false)}>{busy ? <><Spin /> {t("Installing…")}</> : t("Install")}</button>
         </>
       }
     >
       <div className="ext-xl">
-        <Callout title="技能是纯文本提示词,不会执行代码">
-          安装后它只是一段文字,会被加进用到它的成员或群的提示词里。内容来自 GitHub,不可信,请先读一遍:一段恶意的提示词也可能诱导模型做你不想要的事。
+        <Callout title={t("A skill is a plain-text prompt; it does not run code")}>
+          {t("Installing only adds text, and that text then goes into the prompt of whichever member or group uses it. The content comes from GitHub and is untrusted, so read it first: a malicious prompt can still talk a model into doing something you did not ask for.")}
         </Callout>
         <div className="ext-meta">
           <ExtLink href={githubUrl(repo)}>{repo}</ExtLink>
           <span className="mono">/ {path}</span>
         </div>
-        {loading && <div className="empty"><Spin /> 正在下载…</div>}
+        {loading && <div className="empty"><Spin /> {t("Downloading…")}</div>}
         {loadErr && (
           <div className="ext-errbox">
             <div className="err">{loadErr}</div>
-            <button className="btn small" onClick={() => setTick((t) => t + 1)}>重试</button>
+            <button className="btn small" onClick={() => setTick((t) => t + 1)}>{t("Retry")}</button>
           </div>
         )}
         {pv && (
           <>
-            <div className="ext-meta"><span className="muted small">大小 {fmtBytes(pv.size)} · {pv.content.length} 字</span></div>
-            <pre className="ext-src ext-prose" tabIndex={0} aria-label="技能原文">{pv.content}</pre>
+            <div className="ext-meta"><span className="muted small">{t("Size {size} · {n} characters", { size: fmtBytes(pv.size), n: pv.content.length })}</span></div>
+            <pre className="ext-src ext-prose" tabIndex={0} aria-label={t("Skill text")}>{pv.content}</pre>
           </>
         )}
         {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}

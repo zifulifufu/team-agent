@@ -1058,6 +1058,48 @@ const ZH: Record<string, string> = {
   "Working directory (the scope it may read and write within; empty = an empty folder created for it under this app's data directory)": "工作目录(它读写文件的范围;留空 = 本程序数据目录下给它专门建的一个空文件夹)",
   "command-line engine bundled with WorkBuddy": "自带的命令行引擎",
   "empty = its own empty folder (safest)": "留空 = 专属空文件夹(最安全)",
+  // ---------------------------------------------------------------- GitHub 发现页
+  "(this repository has no README)": "(这个仓库没有 README)",
+  ".py files in this repository": "仓库里的 .py 文件",
+  "A skill is a plain-text prompt; it does not run code": "技能是纯文本提示词,不会执行代码",
+  "An MCP server is a command that runs on this machine. Read the README below and put the start command and its arguments into the Add MCP server form yourself; save only once you are sure.": "MCP 服务器是要在本机运行的命令。请读下面的 README,按它的说明把「启动命令」和「参数」填到「添加 MCP 服务器」表单里,确认无误后再保存。",
+  "Archived": "已归档",
+  "Back to search": "返回搜索",
+  "Curated sources": "推荐来源",
+  "Downloading…": "正在下载…",
+  "GitHub content is untrusted — read it before you install": "来自 GitHub 的内容不可信,先看一眼再装",
+  "GitHub stars": "GitHub 星数",
+  "Install": "安装",
+  "Installing only adds text, and that text then goes into the prompt of whichever member or group uses it. The content comes from GitHub and is untrusted, so read it first: a malicious prompt can still talk a model into doing something you did not ask for.": "安装后它只是一段文字,会被加进用到它的成员或群的提示词里。内容来自 GitHub,不可信,请先读一遍:一段恶意的提示词也可能诱导模型做你不想要的事。",
+  "Installing…": "安装中…",
+  "No SKILL.md files found.": "没有找到 SKILL.md 文件。",
+  "No installable .py files found.": "没有找到可安装的 .py 文件。",
+  "No licence": "无许可证",
+  "No licence declared": "没有声明许可证",
+  "No matching repositories — try another keyword.": "没有找到匹配的仓库,换个关键词试试。",
+  "Nothing is installed automatically here": "这里不会自动安装",
+  "Only .py files in the repository root and in plugins/ are listed. Every file has to be previewed in full before it can be installed.": "只列出根目录和 plugins/ 目录下的 .py 文件。每个文件都要先预览完整源码才能安装。",
+  "Only the name and description are prefilled; you fill in the command yourself.": "只预填名称和说明,命令需要你自己填。",
+  "Open": "打开",
+  "Open on GitHub": "在 GitHub 打开",
+  "Overwrite": "覆盖安装",
+  "Prefill the form with this repository name": "用这个仓库名预填表单",
+  "Preview skill": "预览技能",
+  "Preview source": "预览源码",
+  "Reading the repository…": "正在读取仓库…",
+  "Search": "搜索",
+  "Search failed:": "搜索失败:",
+  "Search {noun} repositories": "搜索{noun}仓库",
+  "Search {noun} repositories (leave it blank to list topic {topic} by stars)": "搜索{noun}仓库(可留空,按星数列出话题 {topic})",
+  "Searching": "搜索中",
+  "Searching GitHub…": "正在向 GitHub 搜索…",
+  "Size {size} · {n} characters": "大小 {size} · {n} 字",
+  "Skill files in this repository": "仓库里的技能文件",
+  "Skill text": "技能原文",
+  "Star counts, update times and licences are only hints, not a safety guarantee.": "星数、更新时间和许可证只是参考,不代表安全。",
+  "Updated": "最近更新",
+  "[image{alt}]": "[图片{alt}]",
+  "{msg}. Overwriting replaces the content of the local skill with the same name, and anything you changed locally is lost. Overwrite it?": "{msg}。覆盖会替换本地同名技能的内容,你在本地做过的修改会丢失。要覆盖吗?",
 };
 
 let current: Lang = DEFAULT_LANG;
@@ -1095,7 +1137,7 @@ interface I18nCtx {
   lang: Lang;
   setLang: (l: Lang) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
-  /** 双语内容取值(见 pickLang)。 */
+  /** Bilingual content lookup (see pickLang). */
   pick: (en: string, zh?: string) => string;
 }
 const Ctx = createContext<I18nCtx | null>(null);
@@ -1131,6 +1173,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
 export function useI18n(): I18nCtx {
   const c = useContext(Ctx);
-  if (!c) throw new Error("useI18n 必须在 I18nProvider 里使用");
+  if (!c) throw new Error("useI18n must be used inside an I18nProvider");
   return c;
 }

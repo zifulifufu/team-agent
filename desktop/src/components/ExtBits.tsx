@@ -68,7 +68,15 @@ export function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 后端 409 的原文里带有「勾选『覆盖』才会替换」之类给表单用的提示,放进确认框里要去掉。 */
+/**
+ * The backend's duplicate-name text carries a form-level hint ("tick Overwrite to replace
+ * it" / "勾选「覆盖」才会替换") that does not belong in a confirmation dialog.
+ *
+ * The caller works out that this *is* a duplicate-name conflict from the HTTP status, so
+ * stripping the hint has to work in either language.
+ */
 export function dupMessage(msg: string): string {
-  return msg.replace(/[,,。]?\s*勾选「覆盖」才会替换/, "").replace(/[。.]+$/, "");
+  return msg
+    .replace(/[,,。;]?\s*(tick Overwrite to replace it|勾选「覆盖」才会替换)/i, "")  // i18n-keep: a regex, not prose
+    .replace(/[。.]+$/, "");
 }
