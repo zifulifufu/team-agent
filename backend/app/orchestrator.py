@@ -670,8 +670,9 @@ protocol and should not decide what the others do."""
             return await fail(i18n.pick_now(f"{name} is an external agent, but the external-agent master switch is off, so it was skipped. Turn it on under Settings → External agents and try again.", f"「{name}」是外部智能体,而外部智能体总开关是关着的,已跳过。到「设置 → 外部智能体」里打开后再试。"))
         if not cfg["external_calls_enabled"]:
             return await fail(i18n.pick_now(f"{name} needs a cloud model, but outbound calls are switched off, so it was skipped.", f"「{name}」要连接云端模型,而「禁止外呼」正开着,已跳过。"))
+        engine = str(agent.get("engine") or "workbuddy")
         try:
-            ecfg = external.clean_cfg(agent.get("engine_cfg"))    # validate once more right before running (a restored backup or a hand-edited database can
+            ecfg = external.clean_cfg(agent.get("engine_cfg"), engine=engine)    # validate once more right before running (a restored backup or a hand-edited database can
 # bring in settings that do not comply)
         except ValueError as e:
             return await fail(i18n.pick_now(f"{name}'s external-agent settings are not valid: {e}", f"「{name}」的外部智能体设置不合规:{e}"))
@@ -685,10 +686,14 @@ protocol and should not decide what the others do."""
             group, agent, members, memory_block=memory_block, extra_system=run.refs_block,
             extra_user=extra_user, exclude_plan_id=exclude_plan_id,
         )
-        system = messages[0]["content"] + "\n\n" + external.addendum(
-            name, group["name"], external.level_view(ecfg["level"])["label"],
-            str(self.external.workspace(agent)),
-        )
+        # The addendum explains a working directory and a permission level, neither of which a chat
+        # gateway has — asking for its workspace would even create that directory for nothing.
+        system = messages[0]["content"]
+        if external.kind_of(engine) == "cli":
+            system += "\n\n" + external.addendum(
+                name, group["name"], external.level_view(ecfg["level"])["label"],
+                str(self.external.workspace(agent)),
+            )
         prompt = external.flatten_convo(messages[1:])
         trace: list[dict] = []
 

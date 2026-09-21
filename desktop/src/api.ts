@@ -133,12 +133,16 @@ export interface ExternalCfg {
   max_turns: number;
   timeout: number;
   handoff: boolean;
-  cli_path: string;
+  cli_path: string;                // command-line engines
+  base_url: string;                // chat gateways: the OpenAI-compatible endpoint
+  api_key: string;                 // chat gateways: never sent back to the UI (it shows "***")
+  has_key?: boolean;               // whether a key is stored — the UI never sees the key itself
 }
 export interface ExternalOverview {
   enabled: boolean;                // Master switch for external agents
   external_calls_enabled: boolean;
-  engines: { id: string; name: string; avatar: string; role: string; found: boolean; path: string; via: string; hint: string }[];
+  engines: { id: string; name: string; avatar: string; role: string; found: boolean; path: string; via: string; hint: string;
+             kind: "cli" | "http"; base_url: string; docs: string; key_hint: string }[];
   levels: { id: ExternalLevel; label: string; desc: string }[];
   defaults: ExternalCfg;
   members: { id: string; name: string; engine: string; cfg: ExternalCfg; workspace: string }[];
@@ -873,7 +877,7 @@ export const api = {
   externalOverview: () => get<ExternalOverview>("/api/external"),
   externalCreate: (b: { engine?: string; name?: string; group_id?: string; cfg: Partial<ExternalCfg> }) => post<Agent>("/api/external/agents", b),
   externalPatch: (id: string, cfg: Partial<ExternalCfg>) => patch<Agent>(`/api/external/agents/${id}`, { cfg }),
-  externalTest: (b: { live?: boolean; agent_id?: string; cli_path?: string }) => post<ExternalProbe>("/api/external/test", b),
+  externalTest: (b: { live?: boolean; agent_id?: string; engine?: string; cli_path?: string; base_url?: string; api_key?: string }) => post<ExternalProbe>("/api/external/test", b),
   /** Template gallery: the catalog (first-party templates shipped with the app + custom ones in the data directory) */
   gallery: () => get<GalleryOverview>("/api/gallery"),
   /** Template detail: brings back the full body so you can read it before installing */

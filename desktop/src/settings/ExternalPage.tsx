@@ -33,7 +33,7 @@ export default function ExternalPage(_: PageProps) {
   const test = async (live: boolean) => {
     setTesting(live ? "live" : "quick");
     setErr("");
-    try { setProbe(await api.externalTest({ live })); } catch (e) { setErr((e as Error).message); } finally { setTesting(""); }
+    try { setProbe(await api.externalTest({ live, engine: eng?.id })); } catch (e) { setErr((e as Error).message); } finally { setTesting(""); }
   };
 
   return (
@@ -73,18 +73,26 @@ export default function ExternalPage(_: PageProps) {
 
       <div className="sec">{t("External members that have been added")}</div>
       {members.length === 0 ? (
-        <div className="card muted small ext-none">{t("None yet. In a group chat, click Add member → External agent → WorkBuddy to add one.")}</div>
+        <div className="card muted small ext-none">{t("None yet. In a group chat, click Add member → External agents and pick one: WorkBuddy's command-line engine, or a chat gateway such as Cherry Studio or MetaChat.")}</div>
       ) : (
         <div className="card flush">
-          {members.map((a) => (
-            <div key={a.id} className="setting-row pad">
-              <div>
-                <div className="sr-title">{a.avatar} {a.name}</div>
-                <div className="sr-desc">{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")}</div>
+          {members.map((a) => {
+            // A chat gateway has no permission level and no working directory: show what it does have.
+            const gateway = a.engine !== "workbuddy";
+            return (
+              <div key={a.id} className="setting-row pad">
+                <div>
+                  <div className="sr-title">{a.avatar} {a.name}</div>
+                  <div className="sr-desc">{gateway ? (
+                    <>{t("Model")}: {a.engine_cfg?.model || t("Not set")} · {t("Address")}: {a.engine_cfg?.base_url || t("Not set")}</>
+                  ) : (
+                    <>{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")}</>
+                  )}</div>
+                </div>
+                <button className="btn small" onClick={() => setEditId(a.id)}><Settings2 size={12} /> {t("Settings")}</button>
               </div>
-              <button className="btn small" onClick={() => setEditId(a.id)}><Settings2 size={12} /> {t("Settings")}</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

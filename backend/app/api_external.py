@@ -1,5 +1,6 @@
-"""Endpoints for external agent members (WorkBuddy): detection, creation, settings updates,
-connectivity test."""
+"""Endpoints for external agent members: the engines on offer (a command-line engine such as
+WorkBuddy, or an OpenAI-compatible chat gateway such as Cherry Studio or MetaChat), detection,
+creation, settings updates, and the connectivity test."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from . import external
 from .store import Store
 
 NAME_BAD = re.compile(r"[\s@]")
+MASK = "***"          # what the UI is shown instead of a stored API key
 
 
 class ExternalCreate(BaseModel):
@@ -29,8 +31,11 @@ class ExternalPatch(BaseModel):
 
 class ExternalProbe(BaseModel):
     live: bool = False               # True = really send a message to try it (this calls a cloud model)
+    engine: str = "workbuddy"
     agent_id: str | None = None
     cli_path: str = ""
+    base_url: str = ""               # for a chat gateway that has not been saved yet
+    api_key: str = ""
 
 
 def build_external_router(store: Store, runner: external.ExternalRunner) -> APIRouter:
@@ -40,8 +45,36 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         if not store.get_settings()["external_agents_enabled"]:
             raise HTTPException(403, i18n.pick_now("The external-agent master switch is still off: turn it on under Settings → External agents, then try again", "外部智能体总开关还没打开:到「设置 → 外部智能体」里打开后再试"))
 
-    def cfg_of(agent: dict) -> dict:
-        return {**external.DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
+    def engine_of(agent: dict) -> str:
+        return str(agent.get("engine") or "workbuddy")
+
+    def cfg_of(agent: dict, *, reveal: bool = False) -> dict:
+        """The member's settings with the API key resolved. With `reveal=False` (everything the UI
+        sees) the key itself is left out and only `has_key` says whether one is stored — the same
+        rule model provider keys follow."""
+        cfg = {**external.DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
+        stored = str(cfg.get("api_key") or "")
+        if reveal:
+            cfg["api_key"] = store._secret_off(stored)
+        else:
+            cfg["api_key"] = ""
+            cfg["has_key"] = bool(stored)
+        return cfg
+
+    def keep_key(raw: dict, cur: dict) -> dict:
+        """A `***` coming back means "I did not touch the key" — it is the placeholder we sent."""
+        if str(raw.get("api_key") or "") == MASK:
+            return {**raw, "api_key": cur.get("api_key") or ""}
+        return raw
+
+    def save(agent: dict, cfg: dict) -> dict:
+        """Persist engine_cfg, putting any new key in the keychain and keeping only a reference."""
+        cfg = dict(cfg)
+        key = str(cfg.pop("api_key", "") or "")
+        if key:
+            cfg["api_key"] = store._secret_on("external", agent["id"], key)
+        updated = store.update_agent(agent["id"], {"engine_cfg": cfg})
+        return {**(updated or agent), "engine_cfg": cfg_of(updated or agent)}
 
     @r.get("/api/external")
     async def overview() -> dict:
@@ -50,7 +83,10 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         for eid, e in external.ENGINES.items():
             shown = i18n.localize(e)
             engines.append({"id": eid, "name": shown["name"], "avatar": shown["avatar"],
-                            "role": shown["role"], **runner.describe()})
+                            "role": shown["role"], "kind": external.kind_of(eid),
+                            "base_url": shown.get("base_url", ""), "docs": shown.get("docs", ""),
+                            "key_hint": shown.get("key_hint", ""),
+                            **runner.describe(eid)})
         return {
             "enabled": bool(s["external_agents_enabled"]),
             "external_calls_enabled": bool(s["external_calls_enabled"]),
@@ -58,8 +94,10 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
             "levels": [{"id": k, **external.level_view(k)} for k in external.LEVELS],
             "defaults": external.DEFAULT_CFG,
             "members": [
-                {"id": a["id"], "name": a["name"], "engine": a["engine"], "cfg": cfg_of(a),
-                 "workspace": str(runner.workspace(a)) if s["external_agents_enabled"] else ""}
+                {"id": a["id"], "name": a["name"], "engine": engine_of(a), "cfg": cfg_of(a),
+                 # a chat gateway has no working directory, and asking for one would create it
+                 "workspace": (str(runner.workspace(a))
+                               if s["external_agents_enabled"] and external.kind_of(engine_of(a)) == "cli" else "")}
                 for a in store.list_agents() if a.get("engine")
             ],
         }
@@ -71,10 +109,12 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         if not eng:
             raise HTTPException(400, i18n.pick_now("Unsupported external agent type", "不支持的外部智能体类型"))
         try:
-            cfg = external.clean_cfg(body.cfg)
+            cfg = external.clean_cfg(body.cfg, engine=body.engine)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        name = (body.name or eng["name"]).strip()
+        # An engine's display name may contain a space ("Cherry Studio") while a member name may
+        # not, so the default is squeezed into a legal one. An explicit name is still checked.
+        name = (body.name or re.sub(r"\s+", "", str(eng["name"]))).strip()
         if not name or len(name) > 30 or NAME_BAD.search(name):
             raise HTTPException(400, i18n.pick_now("A name cannot contain spaces or @, and is at most 30 characters long", "名字不能包含空格或 @,最长 30 字"))
         if any(a["name"] == name for a in store.list_agents()):
@@ -90,7 +130,8 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         # a Chinese role prompt and an English one gets the English text.
         shown = i18n.localize(eng)
         agent = store.create_agent(name, shown["avatar"], shown["role"], shown["prompt"], None, [], shown["tags"],
-                                   engine=body.engine, engine_cfg=cfg)
+                                   engine=body.engine, engine_cfg={**cfg, "api_key": ""})
+        agent = save(agent, cfg)                       # stores the key in the keychain, if one was given
         if body.group_id:
             store.add_member(body.group_id, agent["id"])
         return agent
@@ -100,22 +141,27 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         agent = store.get_agent(aid)
         if not agent or not agent.get("engine"):
             raise HTTPException(404, i18n.pick_now("That external agent member does not exist", "外部智能体成员不存在"))
+        engine = engine_of(agent)
+        current = cfg_of(agent, reveal=True)
         try:
-            cfg = external.clean_cfg(body.cfg, cfg_of(agent))
+            cfg = external.clean_cfg(keep_key(body.cfg, current), current, engine=engine)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        return store.update_agent(aid, {"engine_cfg": cfg})  # type: ignore[return-value]
+        return save(agent, cfg)
 
     @r.post("/api/external/test")
     async def test(body: ExternalProbe) -> dict:
-        cfg = {"cli_path": body.cli_path}
+        engine = body.engine or "workbuddy"
+        cfg = {**external.DEFAULT_CFG, "cli_path": body.cli_path, "base_url": body.base_url,
+               "api_key": body.api_key}
         if body.agent_id:
             agent = store.get_agent(body.agent_id)
             if not agent or not agent.get("engine"):
                 raise HTTPException(404, i18n.pick_now("That external agent member does not exist", "外部智能体成员不存在"))
-            cfg = cfg_of(agent)
+            engine = engine_of(agent)
+            cfg = cfg_of(agent, reveal=True)
         try:
-            cfg = external.clean_cfg(cfg)
+            cfg = external.clean_cfg(cfg, engine=engine)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         need_enabled()   # detection really starts a command line (to read the version), so it is skipped when the
@@ -123,6 +169,6 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         if body.live:
             if not store.get_settings()["external_calls_enabled"]:
                 raise HTTPException(403, i18n.pick_now("Outbound calls are switched off: an external agent needs a cloud model, so allow outbound calls under Routing first", "「禁止外呼」正开着:外部智能体要连接云端模型,先在「路由」里放开"))
-        return await runner.probe(cfg, live=body.live)
+        return await runner.probe(cfg, live=body.live, engine=engine)
 
     return r

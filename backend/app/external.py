@@ -21,6 +21,11 @@ Security conventions (consistent with the rest of the program):
     subprocess environment is allow-listed and carries neither this program's token nor any
     model provider's key;
   * its output is only chat text and is never parsed as <plan> / <tool_call>.
+
+A second kind of external member talks to an OpenAI-compatible chat gateway instead of a command
+line — Cherry Studio's local API gateway, or MetaChat. See `ENGINES[...]["kind"] == "http"`. Such a
+member is a conversation partner only: it has no tools and no files, and its endpoint is called
+directly rather than through the command-line machinery below.
 """
 
 from __future__ import annotations
@@ -36,6 +41,9 @@ import shutil
 import signal
 import sys
 import time
+
+import httpx
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -45,7 +53,13 @@ ENGINES: dict[str, dict] = {
     # `i18n.localize()` swaps them at the point of use. Keeping the pair in the data (rather
     # than calling pick_now here) matters because a module-level call would be evaluated
     # once at import and freeze whichever language happened to be current then.
+    #
+    # `kind` decides how a member is reached: "cli" runs a command-line engine as a subprocess,
+    # "http" talks to an OpenAI-compatible endpoint (a chat gateway). An http engine is a
+    # conversation partner only — it has no tools on this machine, so nothing here asks it to
+    # read files or run commands.
     "workbuddy": {
+        "kind": "cli",
         "name": "WorkBuddy",
         "avatar": "🧰",
         "role": "External agent · WorkBuddy",
@@ -63,6 +77,56 @@ ENGINES: dict[str, dict] = {
             "你是 WorkBuddy(桌面智能体),以群成员的身份参与协作。你自带读文件、检索等工具,"
             "适合承担需要「动手查、动手整理」的部分:读取本地资料、汇总检索结果、整理成文档。"
             "你的权限由用户限定,做不到或权限不够时直接说明,不要硬试。"
+        ),
+    },
+    "cherry": {
+        "kind": "http",
+        "name": "Cherry Studio",
+        "avatar": "🍒",
+        "role": "External agent · Cherry Studio",
+        "role_zh": "外部智能体 · Cherry Studio",
+        "tags": ["chat"],
+        "base_url": "http://127.0.0.1:23333/v1",
+        "docs": "https://docs.cherry-ai.com/",
+        "key_hint": "the cs-sk-… key from Cherry Studio → Settings → Tools → API gateway (turn the gateway on there first)",
+        "key_hint_zh": "Cherry Studio → 设置 → 工具 → API 网关里的 cs-sk-… 密钥(需要先在那里把网关打开)",
+        "prompt": (
+            "You are Cherry Studio, taking part as a member of the group chat, reached through its "
+            "local API gateway — you are whichever model the user picked inside Cherry Studio, so "
+            "you bring that model's knowledge and style. You have no tools on this machine: you "
+            "cannot read files, run commands or browse the web. When a task needs that, say what "
+            "you would need instead of pretending. Follow the group's conventions, and answer in "
+            "the language the group is using."
+        ),
+        "prompt_zh": (
+            "你是 Cherry Studio,以群成员的身份参与讨论,通过它的本地 API 网关接入——你以用户在 Cherry Studio 里"
+            "选定的那个模型的身份回答,带上该模型的知识与风格。你在这台机器上没有工具:读不了文件、执行不了命令、"
+            "上不了网。遇到这类任务,请说明你需要什么,不要假装能做到。请遵守群里的约定,并用群聊正在使用的语言回答。"
+        ),
+    },
+    "metachat": {
+        "kind": "http",
+        "name": "MetaChat",
+        "avatar": "🌐",
+        "role": "External agent · MetaChat",
+        "role_zh": "外部智能体 · MetaChat",
+        "tags": ["chat"],
+        "base_url": "https://llm-api.mmchat.xyz/v1",
+        "docs": "https://metachat.apifox.cn/",
+        "key_hint": "an API key created under API management on the MetaChat site (it needs credit there)",
+        "key_hint_zh": "在 MetaChat 官网「API 管理」里创建的密钥(需要先充值 API 元点)",
+        "prompt": (
+            "You are MetaChat, taking part as a member of the group chat through its "
+            "OpenAI-compatible gateway — you are whichever model the user configured there, so you "
+            "bring that model's knowledge and style. You have no tools on this machine: you cannot "
+            "read files, run commands or browse the web. When a task needs that, say what you would "
+            "need instead of pretending. Follow the group's conventions, and answer in the language "
+            "the group is using."
+        ),
+        "prompt_zh": (
+            "你是 MetaChat,通过它的 OpenAI 兼容网关以群成员的身份参与讨论——你以用户在那里配置的模型身份回答,"
+            "带上该模型的知识与风格。你在这台机器上没有工具:读不了文件、执行不了命令、上不了网。遇到这类任务,"
+            "请说明你需要什么,不要假装能做到。请遵守群里的约定,并用群聊正在使用的语言回答。"
         ),
     },
 }
@@ -97,11 +161,29 @@ LEVELS: dict[str, dict] = {
 }
 
 
+def kind_of(engine: str) -> str:
+    """How a member on this engine is reached: "cli" (a subprocess) or "http" (a chat gateway).
+
+    Unknown engines are treated as "cli", which is the stricter of the two: it goes through the
+    launcher lookup and the permission checks rather than quietly becoming a network call.
+    """
+    return str(ENGINES.get(engine, {}).get("kind") or "cli")
+
+
+def engine_meta(engine: str) -> dict:
+    """The engine's own defaults: display text plus, for http engines, the endpoint to talk to."""
+    return ENGINES.get(engine) or ENGINES["workbuddy"]
+
+
 def level_view(key: str) -> dict:
     """One permission level, labelled in the request language."""
     return i18n.localize(LEVELS[key])
 
 DEFAULT_CFG: dict[str, Any] = {
+    # Fields for the command-line engines (`kind: "cli"`) and for the chat gateways
+    # (`kind: "http"`) live in the same dict: a member uses one engine, and `clean_cfg` only
+    # validates the fields that engine actually reads, so switching engines never loses what the
+    # other one had configured.
     "level": "read",
     "risk_ack": False,          # picking "full" means the user explicitly confirmed the risk
     "cwd": "",                  # empty = a dedicated working directory under this program's data directory
@@ -111,7 +193,9 @@ DEFAULT_CFG: dict[str, Any] = {
     "max_turns": 20,
     "timeout": 600,             # maximum number of seconds for one reply
     "handoff": True,            # when its reply @-mentions another member, whether that member speaks next
-    "cli_path": "",             # command-line location set by hand (empty = look it up automatically)
+    "cli_path": "",             # cli engines: command-line location set by hand (empty = look it up automatically)
+    "base_url": "",             # http engines: the OpenAI-compatible endpoint (empty = the engine's default)
+    "api_key": "",              # http engines: a keychain reference once saved (see secrets.py), never the key itself
 }
 
 READ_TOOLS = ("Read", "Grep", "Glob")
@@ -147,9 +231,11 @@ def _dir(path: str, what: str) -> str:
     return str(p.resolve())
 
 
-def clean_cfg(raw: Any, base: dict | None = None) -> dict:
+def clean_cfg(raw: Any, base: dict | None = None, engine: str = "workbuddy") -> dict:
     """Merge the config submitted by the user into base and validate it. Raises ValueError (with
-a Chinese message). Unknown fields are ignored outright."""
+a Chinese message). Unknown fields are ignored outright. `engine` decides which fields are
+actually used — a chat gateway has no command line, and a command-line engine has no endpoint."""
+    kind = kind_of(engine)
     cur = {**DEFAULT_CFG, **(base or {})}
     if not isinstance(raw, dict):
         return cur
@@ -187,16 +273,33 @@ a Chinese message). Unknown fields are ignored outright."""
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(i18n.pick_now(f"{what} must be an integer between {lo} and {hi}", f"{what}需要是 {lo}~{hi} 的整数"))
             out[k] = v
-    if "cli_path" in raw:
-        v = str(raw["cli_path"] or "").strip()
-        if v:
-            p = Path(v).expanduser()
-            if not p.is_file():
-                raise ValueError(i18n.pick_now(f"That command-line file was not found: {v}", f"找不到这个命令行文件:{v}"))
-            if not re.match(r"(codebuddy|cbc)", p.name, re.I):
-                raise ValueError(i18n.pick_now("The command-line file name should start with codebuddy or cbc, so a different program is not picked by mistake", "命令行文件名应以 codebuddy 或 cbc 开头(避免误选成别的程序)"))
-            v = str(p.resolve())
-        out["cli_path"] = v
+    if kind == "cli":
+        if "cli_path" in raw:
+            v = str(raw["cli_path"] or "").strip()
+            if v:
+                p = Path(v).expanduser()
+                if not p.is_file():
+                    raise ValueError(i18n.pick_now(f"That command-line file was not found: {v}", f"找不到这个命令行文件:{v}"))
+                if not re.match(r"(codebuddy|cbc)", p.name, re.I):
+                    raise ValueError(i18n.pick_now("The command-line file name should start with codebuddy or cbc, so a different program is not picked by mistake", "命令行文件名应以 codebuddy 或 cbc 开头(避免误选成别的程序)"))
+                v = str(p.resolve())
+            out["cli_path"] = v
+    else:
+        # A chat gateway: an address to talk to and a key to talk with. Neither is required at save
+        # time — an empty base_url means "the engine's own default" — but a half-filled address is
+        # rejected rather than turned into a confusing failure on the first turn.
+        if "base_url" in raw:
+            v = str(raw["base_url"] or "").strip().rstrip("/")
+            if v and not re.match(r"^https?://[^\s/]+", v):
+                raise ValueError(i18n.pick_now("The address must start with http:// or https:// — for example http://127.0.0.1:23333/v1", "地址需要以 http:// 或 https:// 开头——例如 http://127.0.0.1:23333/v1"))
+            if len(v) > 200:
+                raise ValueError(i18n.pick_now("That address is too long", "这个地址太长了"))
+            out["base_url"] = v
+        if "api_key" in raw:
+            v = str(raw["api_key"] or "").strip()
+            if len(v) > 300 or any(c in v for c in "\r\n"):
+                raise ValueError(i18n.pick_now("That API key does not look right", "这个 API key 看起来不对"))
+            out["api_key"] = v
     if out["level"] in ("edit", "full"):
         for d in [out["cwd"], *out["add_dirs"]]:
             if d and (Path(d) == Path(Path(d).anchor) or Path(d) == Path.home().resolve()):
@@ -538,6 +641,21 @@ def scrub_secrets(text: str) -> str:
     return CREDENTIAL_LITERAL.sub("***", text)
 
 
+def explain_http(status: int, detail: str, engine: str) -> str:
+    """An HTTP failure from a chat gateway, phrased as what the user can do about it."""
+    tail = scrub_secrets(re.sub(r"\s+", " ", (detail or "").strip()))[-200:]
+    if status in (401, 403):
+        hint = i18n.pick_now("the key was refused — check the API key in this member's settings, and that it may use this model", "密钥被拒绝——请检查这个成员的 API key,以及它是否被允许调用这个模型")
+    elif status == 404:
+        hint = i18n.pick_now("the address or the model was not found — check the API address (it usually ends in /v1) and the model name", "地址或模型没找到——请检查 API 地址(通常以 /v1 结尾)和模型名")
+    elif status == 429:
+        hint = i18n.pick_now("too many requests right now — try again in a moment", "请求太频繁——稍等一下再试")
+    else:
+        hint = i18n.pick_now("the gateway refused the request", "网关拒绝了这次请求")
+    msg = i18n.pick_now(f"{engine} answered HTTP {status}: {hint}", f"{engine} 返回了 HTTP {status}:{hint}")
+    return f"{msg} · {tail}" if tail else msg
+
+
 def explain_failure(rc: int | None, stderr: str, error: str) -> str:
     detail = scrub_secrets(re.sub(r"\s+", " ", (error or stderr or "").strip()))[-300:]
     msg = i18n.pick_now(f"The command-line engine did not return properly (exit code {rc})", f"命令行引擎没有正常返回(退出码 {rc})") if rc else i18n.pick_now("The command-line engine reported an error", "命令行引擎报告了错误")
@@ -584,7 +702,11 @@ class ExternalRunner:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
-    def describe(self, cli_path: str = "") -> dict:
+    def describe(self, engine: str = "workbuddy", cli_path: str = "") -> dict:
+        if kind_of(engine) == "http":
+            # Nothing to look up on this machine: the member is reached over the network, and
+            # whether that endpoint is awake is what `probe` answers.
+            return {"found": True, "path": "", "via": "http", "hint": ""}
         lc = find_launcher(cli_path)
         return {
             "found": bool(lc), "path": lc.path if lc else "", "via": lc.via if lc else "",
@@ -651,12 +773,73 @@ class ExternalRunner:
             raise
         return rc, err.decode("utf-8", "replace")
 
+    async def _run_http(self, engine: str, cfg: dict, *, system: str, prompt: str,
+                        on_delta: DeltaFn | None = None) -> ExtResult:
+        """One turn against an OpenAI-compatible chat gateway (Cherry Studio, MetaChat, …).
+
+        Everything that makes the command-line engines interesting is absent here: no workspace, no
+        permission levels, no tools. What is left is a conversation, so the system prompt and the
+        flattened group history go out as messages and the reply streams straight back.
+        """
+        meta = engine_meta(engine)
+        name = meta["name"]
+        base = (cfg["base_url"] or meta.get("base_url") or "").rstrip("/")
+        if not base:
+            raise ExternalError(i18n.pick_now(f"{name} needs an address to talk to — fill in the API address in this member's settings", f"{name} 需要填一个地址:请在成员设置里填上 API 地址"))
+        model = str(cfg["model"] or "").strip()
+        if not model:
+            raise ExternalError(i18n.pick_now(f"{name} is a chat gateway: fill in the model name to call (for example gpt-5 or claude-sonnet-4-6)", f"{name} 是对话网关:请填上要调用的模型名(例如 gpt-5 或 claude-sonnet-4-6)"))
+        messages: list[dict] = []
+        if system.strip():
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        if cfg.get("api_key"):
+            headers["Authorization"] = f"Bearer {cfg['api_key']}"
+        parts: list[str] = []
+        started = time.time()
+        try:
+            # trust_env=False on purpose: the endpoint is often a gateway on this machine, and the
+            # environment's proxy variables must not be allowed to intercept a loopback call. The
+            # rest of the program talks to model providers the same way.
+            async with httpx.AsyncClient(timeout=float(cfg["timeout"]), trust_env=False) as client:
+                async with client.stream("POST", f"{base}/chat/completions", headers=headers,
+                                         json={"model": model, "messages": messages, "stream": True}) as resp:
+                    if resp.status_code >= 400:
+                        detail = (await resp.aread()).decode("utf-8", "replace")
+                        raise ExternalError(explain_http(resp.status_code, detail, name))
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            delta = (json.loads(payload).get("choices") or [{}])[0].get("delta") or {}
+                        except (ValueError, AttributeError, IndexError):
+                            continue
+                        piece = delta.get("content") or ""
+                        if piece:
+                            parts.append(piece)
+                            if on_delta:
+                                await on_delta(piece)
+        except httpx.HTTPError as e:
+            raise ExternalError(i18n.pick_now(f"Could not reach {name}: {type(e).__name__}: {e}", f"连不上 {name}:{type(e).__name__}: {e}")) from e
+        text = "".join(parts).strip()
+        if not text:
+            raise ExternalError(i18n.pick_now(f"{name} returned nothing", f"{name} 没有返回内容"))
+        return ExtResult(text=text, model=model, num_turns=1,
+                         duration_ms=int((time.time() - started) * 1000))
+
     async def run(self, agent: dict, *, system: str, prompt: str,
                   on_delta: DeltaFn | None = None, on_tool: ToolFn | None = None) -> ExtResult:
+        engine = str(agent.get("engine") or "workbuddy")
         cfg = {**DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
+        if kind_of(engine) == "http":
+            return await self._run_http(engine, cfg, system=system, prompt=prompt, on_delta=on_delta)
         lc = find_launcher(cfg["cli_path"])
         if not lc:
-            raise ExternalError(self.describe(cfg["cli_path"])["hint"])
+            raise ExternalError(self.describe(engine, cfg["cli_path"])["hint"])
         cwd = str(self.workspace(agent))
         if not Path(cwd).is_dir():
             raise ExternalError(i18n.pick_now(f"The working directory does not exist: {cwd}", f"工作目录不存在:{cwd}"))
@@ -672,12 +855,50 @@ class ExternalRunner:
             raise ExternalError(i18n.pick_now("The engine returned nothing", "引擎没有返回任何内容") + (f":{stderr.strip()[-200:]}" if stderr.strip() else ""))
         return out
 
-    async def probe(self, cfg: dict, *, live: bool = False) -> dict:
-        """Check: locate the command line and read its version (no network); with live=True it also
-sends one very short message to confirm it can sign in and reply (this calls a cloud model)."""
+    async def _probe_http(self, engine: str, cfg: dict, *, live: bool) -> dict:
+        """A chat gateway has no version to read. The useful checks are whether its /models endpoint
+        answers, and whether one short message actually comes back."""
+        meta = engine_meta(engine)
+        name = meta["name"]
+        base = (cfg["base_url"] or meta.get("base_url") or "").rstrip("/")
+        info: dict = {"found": True, "path": base, "via": "http", "hint": "", "version": ""}
+        if not cfg["model"]:
+            info["hint"] = i18n.pick_now("Fill in the model name to call — a gateway has to be told which model to run", "请填上要调用的模型名——网关需要知道运行哪个模型")
+        if live:
+            headers = {"Authorization": f"Bearer {cfg['api_key']}"} if cfg.get("api_key") else {}
+            try:
+                async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
+                    resp = await client.get(f"{base}/models", headers=headers)
+                if resp.status_code < 400:
+                    ids = [str(m.get("id")) for m in (resp.json().get("data") or []) if isinstance(m, dict)]
+                    info["version"] = i18n.pick_now(f"{len(ids)} models listed", f"列出 {len(ids)} 个模型")
+                    if ids and not cfg["model"]:
+                        info["hint"] = i18n.pick_now(f"Reachable — one of its models is {ids[0]}; put that in the model field above.", f"可以连通——它的模型之一是 {ids[0]};把它填到上面的模型里。")
+                else:
+                    # Some gateways do not implement /models; that is not fatal, the live message below decides.
+                    info["hint"] = explain_http(resp.status_code, resp.text, name)
+            except httpx.HTTPError as e:
+                info["hint"] = i18n.pick_now(f"Could not reach {name}: {type(e).__name__}: {e}", f"连不上 {name}:{type(e).__name__}: {e}")
+        result: dict = {**info, "live": None}
+        if live:
+            t0 = time.time()
+            try:
+                out = await self.run({"id": "_probe", "engine": engine, "engine_cfg": {**cfg, "timeout": 90}},
+                                     system="", prompt=i18n.pick_now("This is a connectivity test. Reply with exactly: OK", "这是连通性测试。请只回复:OK"))
+                result["live"] = {"ok": True, "reply": out.text[:200], "seconds": round(time.time() - t0, 1), "model": out.model}
+            except ExternalError as e:
+                result["live"] = {"ok": False, "error": str(e), "seconds": round(time.time() - t0, 1)}
+        return result
+
+    async def probe(self, cfg: dict, *, live: bool = False, engine: str = "workbuddy") -> dict:
+        """Check the member can be reached. A command-line engine: locate it and read its version (no
+network). A chat gateway: ask its /models endpoint, and with live=True send one short message
+(this calls a cloud model)."""
         cfg = {**DEFAULT_CFG, **cfg}
+        if kind_of(engine) == "http":
+            return await self._probe_http(engine, cfg, live=live)
         lc = find_launcher(cfg["cli_path"])
-        info = self.describe(cfg["cli_path"])
+        info = self.describe(engine, cfg["cli_path"])
         if not lc:
             return {**info, "version": "", "live": None}
         version = ""
@@ -700,7 +921,7 @@ sends one very short message to confirm it can sign in and reply (this calls a c
             probe_cfg = {**cfg, "level": "read", "web": False, "max_turns": 1, "timeout": 90, "add_dirs": []}
             tmp = self.data_dir / "external" / "_probe"
             tmp.mkdir(parents=True, exist_ok=True)
-            fake = {"id": "_probe", "engine_cfg": {**probe_cfg, "cwd": str(tmp)}}
+            fake = {"id": "_probe", "engine": engine, "engine_cfg": {**probe_cfg, "cwd": str(tmp)}}
             try:
                 out = await self.run(fake, system="", prompt=i18n.pick_now("This is a connectivity test. Reply with exactly: OK", "这是连通性测试。请只回复:OK"))
                 result["live"] = {"ok": True, "reply": out.text[:200], "seconds": round(time.time() - t0, 1),

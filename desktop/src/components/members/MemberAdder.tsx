@@ -22,7 +22,7 @@ export default function MemberAdder({ group }: { group: Group }) {
   const [mq, setMq] = useState("");
   const gid = group.id;
   const [ext, setExt] = useState<ExternalOverview | null>(null);
-  const [extOpen, setExtOpen] = useState(false);
+  const [extOpen, setExtOpen] = useState<string | null>(null);   // the engine id whose dialog is open
   const loadExt = useCallback(() => { api.externalOverview().then(setExt).catch(() => setExt(null)); }, []);
   useEffect(loadExt, [loadExt, group.member_ids.length]);
 
@@ -42,7 +42,6 @@ export default function MemberAdder({ group }: { group: Group }) {
   const mqs = mq.trim().toLowerCase();
   const others = agents.filter((a) => !group.member_ids.includes(a.id) && a.origin !== "model" && !a.engine);
   const extOthers = agents.filter((a) => !!a.engine && !group.member_ids.includes(a.id));
-  const wb = ext?.engines[0];
   const freshPresets = (presets ?? []).filter((p) => !p.exists);
 
   const run = async (key: string, fn: () => Promise<unknown>, full = false) => {
@@ -98,7 +97,7 @@ export default function MemberAdder({ group }: { group: Group }) {
       )}
 
       <div className="madd-sec">{t("External agents")}</div>
-      <div className="madd-note">{t("Let a command-line agent that brings its own tools join the discussion as a member. Read-only and off by default; you have to turn it on.")}</div>
+      <div className="madd-note">{t("Let an agent you already run join the discussion as a member — a command-line agent with its own tools, or a chat gateway such as Cherry Studio or MetaChat. Off by default, and you have to turn it on.")}</div>
       {extOthers.map((a) => (
         <div key={a.id} className="madd-item">
           <span className="avatar sm">{a.avatar}</span>
@@ -106,20 +105,28 @@ export default function MemberAdder({ group }: { group: Group }) {
           <button className="btn small" disabled={!!busy || !ext?.enabled} title={ext?.enabled ? "" : t("The external-agent master switch is still off")} onClick={() => run("add:" + a.id, () => api.addMember(gid, a.id))} aria-label={t("Add {name}", { name: a.name })}><Plus size={12} /> {t("Add")}</button>
         </div>
       ))}
-      <div className="madd-item">
-        <span className="avatar sm" aria-hidden><TerminalSquare size={15} /></span>
-        <div className="madd-main">
-          <div className="madd-name">WorkBuddy</div>
-          <div className="madd-sub wrap">
-            {!ext ? t("Reading status…")
-              : !ext.enabled ? t("Master switch is off (you can turn it on while adding)")
-              : wb?.found ? t("Command-line engine found")
-              : t("No command-line engine found (see the notes in the add dialog)")}
+      {ext?.engines.map((e) => (
+        <div key={e.id} className="madd-item">
+          <span className="avatar sm" aria-hidden>{e.avatar}</span>
+          <div className="madd-main">
+            <div className="madd-name">{e.name}</div>
+            <div className="madd-sub wrap">
+              {!ext.enabled ? t("Master switch is off (you can turn it on while adding)")
+                : e.kind === "http" ? e.base_url
+                : e.found ? t("Command-line engine found")
+                : t("No command-line engine found (see the notes in the add dialog)")}
+            </div>
           </div>
+          <button className="btn small" disabled={!!busy || !ext} onClick={() => setExtOpen(e.id)} aria-label={t("Add {name} as a member", { name: e.name })}><Plus size={12} /> {t("Add")}</button>
         </div>
-        <button className="btn small" disabled={!!busy || !ext} onClick={() => setExtOpen(true)} aria-label={t("Add a command-line agent as a member")}><Plus size={12} /> {t("Add")}</button>
-      </div>
-      {extOpen && <ExternalDialog mode="create" group={group} onClose={() => setExtOpen(false)} onDone={async () => { setExtOpen(false); await reloadGroups(); loadExt(); }} />}
+      ))}
+      {!ext && (
+        <div className="madd-item">
+          <span className="avatar sm" aria-hidden><TerminalSquare size={15} /></span>
+          <div className="madd-main"><div className="madd-name">{t("External agents")}</div><div className="madd-sub">{t("Reading status…")}</div></div>
+        </div>
+      )}
+      {extOpen && <ExternalDialog mode="create" group={group} engine={extOpen} onClose={() => setExtOpen(null)} onDone={async () => { setExtOpen(null); await reloadGroups(); loadExt(); }} />}
 
       <div className="madd-sec">{t("Existing members")}</div>
       {others.length === 0 ? (

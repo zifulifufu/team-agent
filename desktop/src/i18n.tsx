@@ -1506,6 +1506,30 @@ const ZH: Record<string, string> = {
   "Loading the clip…": "正在加载视频…",
   // ---------------------------------------------------------------- 视频生成
   "MiniMax H3 and other video-generation models are not on this list: they are diffusion pipelines with no chat endpoint, so nothing here could run them. Add one under Model providers (its kind is Video generation, served by SGLang or vLLM) and switch it on under Permissions & control → Video generation.": "MiniMax H3 之类的视频生成模型不在这个列表里:它们是 diffusion 生成管线,没有对话接口,这里的东西也跑不动它们。请在「模型服务商」里添加(类型是「视频生成」,由 SGLang 或 vLLM 提供服务),再到「权限与操控 → 视频生成」里打开。",
+  // ---------------------------------------------------------------- 外部智能体:对话网关
+  "Add external agent": "添加外部智能体",
+  "Which one should join?": "让哪一个加入?",
+  "A command-line engine that brings its own tools (files, retrieval). It can act on this machine, so its permissions are yours to set.": "自带工具(读文件、检索)的命令行引擎。它能在这台机器上动手,所以权限由你设定。",
+  "A chat gateway you already run, over its OpenAI-compatible endpoint. It joins the discussion only — no files, no commands.": "你已经在用的对话网关,通过它 OpenAI 兼容的接口接入。它只参与讨论——不碰文件、不执行命令。",
+  "Let an agent you already run join the discussion as a member — a command-line agent with its own tools, or a chat gateway such as Cherry Studio or MetaChat. Off by default, and you have to turn it on.": "让你已经在用的智能体以成员身份加入讨论——自带工具的命令行智能体,或 Cherry Studio、MetaChat 这样的对话网关。默认关闭,需要你打开。",
+  "It talks to {name}'s OpenAI-compatible endpoint: the group chat goes out as messages and the reply comes back.": "它通过 {name} 的 OpenAI 兼容接口对话:群聊内容作为消息发出去,回答再取回来。",
+  "It has no tools on this machine — it cannot read files, run commands or browse — so it takes part in the discussion, not in the work on your disk.": "它在这台机器上没有工具——读不了文件、不能执行命令、不能上网——所以它参与的是讨论,不是你磁盘上的活。",
+  "API address (empty = the default for this engine)": "API 地址(留空 = 用这个引擎的默认地址)",
+  "A key is stored already — leave this empty to keep it": "已经存过密钥了——留空就保持不变",
+  "Where to get a key:": "密钥从哪来:",
+  "Open the documentation": "打开文档",
+  "Model to call (required: a gateway has to be told which model to run)": "要调用的模型(必填:网关需要知道运行哪个模型)",
+  "Chat gateway · {url}": "对话网关 · {url}",
+  "This engine only exchanges messages: there is no working directory and no permission level to set.": "这个引擎只交换消息:没有工作目录,也没有权限级别要设。",
+  "Outbound calls are blocked right now: this engine reaches its endpoint over the network, so it will not run in this mode. Allow it under Settings → Routing first.": "「禁止外呼」正开着:这个引擎要联网访问它的接口,所以在这个模式下不会运行。请先在「路由」里放开。",
+  "Note: every turn is a separate request with no memory across turns (the context comes from the group chat), and its reply is treated purely as chat text — never executed as a plan or a tool call.": "注意:每一轮都是独立请求,轮与轮之间没有记忆(上下文来自群聊);它的回答只当聊天文本处理,不会被执行成分工计划或工具调用。",
+  "External agent · chat gateway": "外部智能体 · 对话网关",
+  "External agent: replies come from a chat gateway you configured, not through this app's model routing": "外部智能体:回答来自你配置的对话网关,不经过本程序的模型路由",
+  "Each reply is a separate request and takes a few seconds; it cannot host a group.": "每一次回答都是一次独立请求,几秒钟返回;它不能当群主。",
+  "Address": "地址",
+  "Not set": "未设置",
+  "Add {name} as a member": "把 {name} 加为成员",
+  "None yet. In a group chat, click Add member → External agents and pick one: WorkBuddy's command-line engine, or a chat gateway such as Cherry Studio or MetaChat.": "还没有。在群聊里点「添加成员 → 外部智能体」挑一个:WorkBuddy 的命令行引擎,或 Cherry Studio、MetaChat 这样的对话网关。",
 };
 
 let current: Lang = DEFAULT_LANG;

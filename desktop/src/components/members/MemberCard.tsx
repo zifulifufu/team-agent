@@ -45,8 +45,12 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
   };
 
   const ext = !!m.engine;
+  // Only the command-line engine has a working directory and permission levels; every other engine
+  // is a chat gateway (Cherry Studio, MetaChat), which just exchanges messages.
+  const gateway = ext && m.engine !== "workbuddy";
   const modelText = ext
-    ? t("External agent · {level}", { level: levelLabel(agent?.engine_cfg?.level ?? "read") })
+    ? (gateway ? t("External agent · chat gateway")
+               : t("External agent · {level}", { level: levelLabel(agent?.engine_cfg?.level ?? "read") }))
     : m.model
       ? (m.manual_model ? m.model.display_name : t("Auto · {model}", { model: m.model.display_name }))
       : hasCaps ? t("No model available") : "";
@@ -58,7 +62,9 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
           <span className="mc-name">
             {m.name}
             {m.is_host && <span className="chip host" title={t("Host")}>{t("Host")}</span>}
-            {ext && <span className="chip mc-model-chip" title={t("External agent: replies come from a command-line engine of its own, not through this app's model routing")}><TerminalSquare size={10} /> {t("External")}</span>}
+            {ext && <span className="chip mc-model-chip" title={gateway
+              ? t("External agent: replies come from a chat gateway you configured, not through this app's model routing")
+              : t("External agent: replies come from a command-line engine of its own, not through this app's model routing")}><TerminalSquare size={10} /> {t("External")}</span>}
             {m.origin === "model" && <span className="chip mc-model-chip" title={t("Added to the group from \"Models I added\"")}><Cpu size={10} /> {t("Model")}</span>}
           </span>
           <span className="mc-sub">{m.role || t("Member")}{modelText ? ` · ${modelText}` : ""}</span>
@@ -71,11 +77,19 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
       {open && (
         <div className="mc-detail">
           {ext ? (
-            <>
-              <div className="mc-line"><span className="mc-k">{t("Permissions")}</span>{levelLabel(agent?.engine_cfg?.level ?? "read")}{agent?.engine_cfg?.web ? t(" · web access") : ""}</div>
-              <div className="mc-line"><span className="mc-k">{t("Folder")}</span><span className="mc-path" title={agent?.engine_cfg?.cwd || t("A dedicated empty folder")}>{agent?.engine_cfg?.cwd || t("A dedicated empty folder")}</span></div>
-              <div className="mc-line muted small">{t("Each reply is a separate process and usually takes a while; it cannot host a group.")}</div>
-            </>
+            gateway ? (
+              <>
+                <div className="mc-line"><span className="mc-k">{t("Model")}</span>{agent?.engine_cfg?.model || t("Not set")}</div>
+                <div className="mc-line"><span className="mc-k">{t("Address")}</span><span className="mc-path" title={agent?.engine_cfg?.base_url}>{agent?.engine_cfg?.base_url || t("Not set")}</span></div>
+                <div className="mc-line muted small">{t("Each reply is a separate request and takes a few seconds; it cannot host a group.")}</div>
+              </>
+            ) : (
+              <>
+                <div className="mc-line"><span className="mc-k">{t("Permissions")}</span>{levelLabel(agent?.engine_cfg?.level ?? "read")}{agent?.engine_cfg?.web ? t(" · web access") : ""}</div>
+                <div className="mc-line"><span className="mc-k">{t("Folder")}</span><span className="mc-path" title={agent?.engine_cfg?.cwd || t("A dedicated empty folder")}>{agent?.engine_cfg?.cwd || t("A dedicated empty folder")}</span></div>
+                <div className="mc-line muted small">{t("Each reply is a separate process and usually takes a while; it cannot host a group.")}</div>
+              </>
+            )
           ) : m.origin === "model" ? (
             <div className="mc-line"><span className="mc-k">{t("Model")}</span>{m.model ? <><HealthDot h={health[m.model.id]} label />&nbsp;{m.model.display_name}</> : t("No model available")}{t("(a model member, pinned to this model)")}</div>
           ) : (

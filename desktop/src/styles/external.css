@@ -16,6 +16,14 @@
 .ext-ok small { color: var(--text-3); overflow-wrap: anywhere; flex-basis: 100%; }
 .ext-bad { color: #b64a00; }
 .ext-status-btns { display: flex; gap: 6px; flex: none; }
+.ext-engines { display: flex; flex-direction: column; gap: 8px; }
+.ext-engine { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); cursor: pointer; }
+.ext-engine:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.ext-engine.on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, var(--card)); }
+.ext-engine input[type="radio"] { width: auto; height: auto; flex: none; margin-top: 3px; padding: 0; box-shadow: none; }
+.ext-engine-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ext-engine-body b { font-weight: 600; }
+.ext-engine-body small { color: var(--text-2); line-height: 1.6; }
 .ext-levels { display: flex; flex-direction: column; gap: 8px; }
 .ext-level { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); cursor: pointer; }
 .ext-level:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
