@@ -259,6 +259,13 @@ spending extra tokens."""
         self, params: dict, messages: list[dict], timeout: float,
         on_delta: DeltaCb | None, extra: dict[str, Any],
     ) -> str:
+        # `timeout` is the budget for the whole request, not per chunk. Waiting on each `__anext__`
+        # with the full budget would let an endpoint that dribbles one token just under the limit
+        # hold a turn open indefinitely — and with it the group's lock, so every later message in
+        # that group queues behind it. So a deadline is taken once and the remaining budget is what
+        # each individual wait gets.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         resp = await asyncio.wait_for(
             self._fn(messages=messages, stream=True, timeout=timeout, **params, **extra), timeout
         )
@@ -266,8 +273,11 @@ spending extra tokens."""
         thinking = False
         it = resp.__aiter__()
         while True:
+            left = deadline - loop.time()
+            if left <= 0:
+                raise asyncio.TimeoutError
             try:
-                chunk = await asyncio.wait_for(it.__anext__(), timeout)
+                chunk = await asyncio.wait_for(it.__anext__(), left)
             except StopAsyncIteration:
                 break
             try:

@@ -305,12 +305,22 @@ When it is not supplied, calls needing confirmation are always denied."""
         try:
             text, ok, files = await asyncio.wait_for(self._dispatch(ctx, spec, args, timeout), timeout + 5)
         except asyncio.TimeoutError:
+            self._note_unstoppable(spec)
             text, ok, files = i18n.pick_now(f"Tool execution timed out ({int(timeout)} seconds)", f"工具执行超时({int(timeout)} 秒)"), False, []
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
             text, ok, files = i18n.pick_now(f"Tool execution failed: {type(e).__name__}: {e}", f"工具执行出错:{type(e).__name__}: {e}")[:500], False, []
         return ToolOutcome(text, ok, int((time.time() - t0) * 1000), False, files)
+
+    def _note_unstoppable(self, spec: dict) -> None:
+        """A plugin tool that is a plain function runs in a worker thread (see `tools.py`), and a
+        thread cannot be cancelled: the timeout above ends the *wait*, not the work, so the plugin may
+        still be writing files or spawning processes. Nothing here can stop it — code that has to be
+        killable belongs in a subprocess (`coderun`) — so at least leave a trace."""
+        if spec.get("source") == "plugin":
+            print(f"plugin tool {spec.get('name')!r} is still running in a worker thread after its "
+                  f"timeout; the side effects of that call were not stopped")
 
     async def _dispatch(self, ctx: ToolContext, spec: dict, args: dict, timeout: float) -> tuple[str, bool, list[dict]]:
         """Always (text, ok, files): whether the tool produced files is not a special case."""

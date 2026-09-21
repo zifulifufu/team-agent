@@ -286,8 +286,15 @@ straight into the context."""
         user_msg = self.store.add_message(gid, "user", "user", sender_name, text,
                                           meta={"images": images} if images else None)
         await emit({"type": "message", "message": user_msg})
+        # `add_message` and the broadcast stay outside the lock so the sender sees their own message
+        # immediately — which means another message can land while this round waits for the group
+        # lock. That later round reads both (the history is the whole group) and answers both, so this
+        # one stands down: answering as well would answer the same question twice, and whichever round
+        # grabbed the lock first would be replying to the *other* message's text.
         async with self._lock(gid):
             group = self.store.get_group(gid) or group
+            if self.store.has_later_user_message(gid, user_msg["id"]):
+                return
             run = RunState(gid, text)
             run.refs_block = self._refs_block(group, text)
             await self._run_turns(group, text, emit, run)

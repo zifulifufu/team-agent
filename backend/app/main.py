@@ -218,7 +218,8 @@ def create_app(
     TEAM_AGENT_TOKEN environment variable. Once set, every /api and WebSocket request must carry
     it, which stops other pages in the user's browser from reaching the local backend (DNS
     rebinding included). When it is unset (pure browser development mode), only cross-origin
-    requests from localhost are allowed."""
+    requests from localhost are allowed. The generated docs (/docs, /redoc, /openapi.json) live
+    outside /api, so they are served in that unset mode only."""
     token = token if token is not None else os.environ.get("TEAM_AGENT_TOKEN") or None
     ensure_loopback_no_proxy()
     store = Store(data_dir)
@@ -268,7 +269,14 @@ def create_app(
             await orch.drain()
             await mcp.shutdown()
 
-    app = FastAPI(title="Team Agent", lifespan=lifespan)
+    # The interactive docs live outside /api, so `require_token` never covers them: with a token in
+    # use, any local page could still read the whole API surface from /openapi.json. They are served
+    # in dev mode only (no token at all), where the API is open anyway.
+    expose_docs = not token
+    app = FastAPI(title="Team Agent", lifespan=lifespan,
+                  docs_url="/docs" if expose_docs else None,
+                  redoc_url="/redoc" if expose_docs else None,
+                  openapi_url="/openapi.json" if expose_docs else None)
     # Resolves the request language (?lang= or Accept-Language) for built-in content.
     app.add_middleware(i18n.LanguageMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -530,7 +538,9 @@ services is triggered by POST)."""
 backup file cannot leak secrets."""
         fd, tmp = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        store.backup_to(tmp, include_keys=include_keys)
+        # `backup_to` holds the store's global lock while it copies and VACUUMs. Run on the event loop
+        # thread that freezes every group chat, WebSocket broadcast and heartbeat for its duration.
+        await asyncio.to_thread(store.backup_to, tmp, include_keys=include_keys)
         bg.add_task(os.unlink, tmp)
         name = time.strftime("team-agent-backup-%Y%m%d-%H%M%S.db")
         return FileResponse(tmp, media_type="application/octet-stream", filename=name)

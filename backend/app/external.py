@@ -520,10 +520,26 @@ DENIED_TEXT = re.compile(r"(?:Error:\s*)?Permission to use \S+ has been denied",
 
 AUTH_HINT = re.compile(r"log ?in|not logged|unauthori[sz]ed|\b401\b|\b403\b|auth|token|未登录|请登录|登录", re.I)  # i18n-keep: auth-failure detection; engines may answer in Chinese
 
+# A CLI's stderr goes straight into an error the user reads, and from there into the group transcript.
+# It is never supposed to print credentials, but `--verbose` output is exactly where that would show
+# up, so anything credential-shaped is masked before the text travels any further.
+CREDENTIAL = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|authorization|bearer)"
+    r"\b(\s*[:=]\s*|\s+)(\S{6,})"
+)
+CREDENTIAL_LITERAL = re.compile(r"\b(?:sk|pk|rk|ghp|gho|ghu|xoxb|xoxp|AIza)[-_][A-Za-z0-9_\-]{12,}")
+
+
+def scrub_secrets(text: str) -> str:
+    """Mask anything credential-shaped, keeping the key name so the message still explains itself."""
+    if not text:
+        return text
+    text = CREDENTIAL.sub(lambda m: f"{m.group(1)}{m.group(2)}***", text)
+    return CREDENTIAL_LITERAL.sub("***", text)
+
 
 def explain_failure(rc: int | None, stderr: str, error: str) -> str:
-    detail = (error or stderr or "").strip()
-    detail = re.sub(r"\s+", " ", detail)[-300:]
+    detail = scrub_secrets(re.sub(r"\s+", " ", (error or stderr or "").strip()))[-300:]
     msg = i18n.pick_now(f"The command-line engine did not return properly (exit code {rc})", f"命令行引擎没有正常返回(退出码 {rc})") if rc else i18n.pick_now("The command-line engine reported an error", "命令行引擎报告了错误")
     if detail:
         msg += f":{detail}"
@@ -673,9 +689,9 @@ sends one very short message to confirm it can sign in and reply (this calls a c
 
             rc, err = await self._exec([*lc.argv, "--version"], stdin_text="", cwd=str(Path.home()),
                                        env=build_env(cfg, lc), timeout=30, on_line=grab)
-            version = (lines[0].strip() if lines else "") or err.strip()[:100]
+            version = (lines[0].strip() if lines else "") or scrub_secrets(err.strip())[:100]
             if rc:
-                info["hint"] = i18n.pick_now(f"Could not read the version (exit code {rc}): {err.strip()[-200:]}", f"读取版本失败(退出码 {rc}):{err.strip()[-200:]}")
+                info["hint"] = i18n.pick_now(f"Could not read the version (exit code {rc}): {scrub_secrets(err.strip())[-200:]}", f"读取版本失败(退出码 {rc}):{scrub_secrets(err.strip())[-200:]}")
         except ExternalError as e:
             info["hint"] = str(e)
         result: dict = {**info, "version": version, "live": None}

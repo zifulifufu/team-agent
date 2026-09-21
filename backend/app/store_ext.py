@@ -330,16 +330,29 @@ class ExtStore:
         return self.get_kb(kid)  # type: ignore[return-value]
 
     def update_kb(self, kb_id: str, patch: dict) -> dict | None:
-        for k in ("name", "description", "group_id"):
+        # `group_id` is not patchable here: it is the ownership field. Renaming and re-describing is
+        # all this exposes, so neither a client bug nor a hand-made request can move a knowledge base
+        # into another workspace (handing it that workspace's documents) or orphan a shared one.
+        for k in ("name", "description"):
             if patch.get(k) is not None:
                 self._x(f"UPDATE knowledge_bases SET {k}=? WHERE id=?", (str(patch[k]), kb_id))  # type: ignore[attr-defined]
         return self.get_kb(kb_id)
 
     def delete_kb(self, kb_id: str) -> None:
-        """Deletes the knowledge base and its documents (the chunks follow via ON DELETE CASCADE)."""
-        for d in self.list_docs(kb_id):
-            self.delete_doc(d["id"])
-        self._x("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))  # type: ignore[attr-defined]
+        """Deletes the knowledge base and its documents (the chunks follow via ON DELETE CASCADE).
+
+        Both statements go out in one transaction: removing the documents one at a time committed
+        each one separately, so a failure part way through left the knowledge base standing with a
+        half-emptied library behind it, and no way to tell that from "it was always like that".
+        """
+        with self._lock:  # type: ignore[attr-defined]
+            try:
+                self._db.execute("DELETE FROM library_docs WHERE kb_id=?", (kb_id,))  # type: ignore[attr-defined]
+                self._db.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))  # type: ignore[attr-defined]
+                self._db.commit()  # type: ignore[attr-defined]
+            except Exception:
+                self._db.rollback()  # type: ignore[attr-defined]
+                raise
 
     # ---------------------------------------------------------------- collections
     def list_collections(self) -> list[dict]:
@@ -374,12 +387,24 @@ class ExtStore:
 
     def set_collection_kbs(self, cid: str, kb_ids: list[str]) -> list[str]:
         """Replace a collection's members. Ids that no longer exist are dropped rather than
-        stored, so a collection cannot keep a dangling reference alive."""
+        stored, so a collection cannot keep a dangling reference alive.
+
+        The clearing and the re-inserting share one transaction: committed separately, a failure in
+        between emptied the collection and left it that way.
+        """
         known = {k["id"] for k in self.list_kbs()}
         want = [x for x in dict.fromkeys(kb_ids) if x in known]
-        self._x("DELETE FROM collection_kbs WHERE collection_id=?", (cid,))  # type: ignore[attr-defined]
-        for kb in want:
-            self._x("INSERT OR IGNORE INTO collection_kbs(collection_id,kb_id) VALUES(?,?)", (cid, kb))  # type: ignore[attr-defined]
+        with self._lock:  # type: ignore[attr-defined]
+            try:
+                self._db.execute("DELETE FROM collection_kbs WHERE collection_id=?", (cid,))  # type: ignore[attr-defined]
+                self._db.executemany(  # type: ignore[attr-defined]
+                    "INSERT OR IGNORE INTO collection_kbs(collection_id,kb_id) VALUES(?,?)",
+                    [(cid, kb) for kb in want],
+                )
+                self._db.commit()  # type: ignore[attr-defined]
+            except Exception:
+                self._db.rollback()  # type: ignore[attr-defined]
+                raise
         return want
 
     def get_doc(self, did: str) -> dict | None:
@@ -392,16 +417,23 @@ class ExtStore:
                 did: str | None = None, kb_id: str = "") -> dict:
         did = did or self.new_id()  # type: ignore[attr-defined]
         with self._lock:  # type: ignore[attr-defined]
-            self._db.execute(  # type: ignore[attr-defined]
-                "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,kb_id,created_at) "
-                "VALUES(?,?,?,?,?,?,?,1,?,?)",
-                (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), kb_id, time.time()),
-            )
-            self._db.executemany(  # type: ignore[attr-defined]
-                "INSERT INTO library_chunks(doc_id,idx,text) VALUES(?,?,?)",
-                [(did, i, c) for i, c in enumerate(chunks)],
-            )
-            self._db.commit()  # type: ignore[attr-defined]
+            try:
+                self._db.execute(  # type: ignore[attr-defined]
+                    "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,kb_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,1,?,?)",
+                    (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), kb_id, time.time()),
+                )
+                self._db.executemany(  # type: ignore[attr-defined]
+                    "INSERT INTO library_chunks(doc_id,idx,text) VALUES(?,?,?)",
+                    [(did, i, c) for i, c in enumerate(chunks)],
+                )
+                self._db.commit()  # type: ignore[attr-defined]
+            except Exception:
+                # Without this the implicit transaction stays open on the shared connection, and the
+                # next unrelated `_x` commit would land the half-written document (row + some chunks)
+                # together with whatever else was pending.
+                self._db.rollback()  # type: ignore[attr-defined]
+                raise
         return self.get_doc(did)  # type: ignore[return-value]
 
     def update_doc(self, did: str, patch: dict) -> dict | None:

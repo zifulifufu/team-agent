@@ -34,6 +34,17 @@ class LibraryError(Exception):
     pass
 
 
+def _check_text(text: str) -> str:
+    """The checks every incoming text has to pass, extracted so a caller that must not lose an
+    existing document can run them *before* replacing it (see `add_dir`)."""
+    text = text.strip()
+    if not text:
+        raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))
+    if len(text) > MAX_CHARS:
+        raise LibraryError(i18n.pick_now(f"The text is too long (limit {MAX_CHARS} characters); split it before importing", f"文本太长(上限 {MAX_CHARS // 10000} 万字),请拆分后再导入"))
+    return text
+
+
 class _Text(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -173,11 +184,7 @@ class Library:
         # through `workspace_kb` / `shared_kb` (the API's `_kb_for_new_doc`) to pick one.
         if not kb_id:
             raise LibraryError(i18n.pick_now("A document needs a knowledge base", "文档必须归属某个知识库"))
-        text = text.strip()
-        if not text:
-            raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))
-        if len(text) > MAX_CHARS:
-            raise LibraryError(i18n.pick_now(f"The text is too long (limit {MAX_CHARS} characters); split it before importing", f"文本太长(上限 {MAX_CHARS // 10000} 万字),请拆分后再导入"))
+        text = _check_text(text)
         chunks = chunk_text(text)
         doc = self.store.add_doc(title.strip() or filename or i18n.pick_now("Untitled", "未命名"), filename, kind,
                                  size if size is not None else len(text.encode()), chunks, did, kb_id)
@@ -242,6 +249,10 @@ skipped, files whose size changed are replaced with the new version."""
                     raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))   # check before touching the old version: if the new one is empty, keep the old
                 if old:   # changed files: replaced in place, keeping document id, title and enabled state, so
 # documents already selected in a group are not lost
+                    # Every check that can still reject the new text has to run before the old row is
+                    # deleted: `add_text` deletes nothing itself, so a rejection after `delete` would
+                    # leave the document simply gone, with a "skipped" line as the only trace.
+                    _check_text(text)
                     self.delete(old["id"])
                     doc = self.add_text(old["title"], text, str(p), kind, size, did=old["id"], kb_id=kb_id)
                     if not old["enabled"]:

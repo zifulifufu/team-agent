@@ -125,7 +125,14 @@ class KBIn(BaseModel):
 class KBPatch(BaseModel):
     name: str | None = None
     description: str | None = None
-    group_id: str | None = None
+    # `group_id` is deliberately not patchable: it is the ownership field, and rewriting it would hand
+    # one workspace's documents to another group (or orphan a shared base from every group at once).
+    # A knowledge base is created in the workspace it belongs to instead.
+
+
+class VideoProbeIn(BaseModel):
+    """`provider_id` empty = whichever provider would actually be used."""
+    provider_id: str = ""
 
 
 class CollectionIn(BaseModel):
@@ -241,6 +248,26 @@ def _need_octet(request: Request) -> None:
     cross-origin text/plain form in, the browser preflights it first and the request is rejected."""
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/octet-stream":
         raise HTTPException(415, i18n.pick_now("The request must be application/octet-stream", "请求需要是 application/octet-stream"))
+
+
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024       # above vision_max_mb's ceiling, below "a whole video"
+MAX_RESTORE_BYTES = 1024 * 1024 * 1024    # a local SQLite backup: generous, but not unbounded
+
+
+def _refuse_oversized(request: Request, limit: int) -> None:
+    """Reject an oversized body from its declared length, before a single byte is buffered.
+
+    The checks inside `images` / `library` all run on a body that is already in memory, so they cap
+    what gets *stored*, not what gets allocated: several GB sent at a route with no length check is
+    an out-of-memory before any of them ever runs. A missing Content-Length (chunked upload) still
+    falls through to those checks, which is why the callers verify the byte count once more after
+    reading.
+    """
+    raw = request.headers.get("content-length", "")
+    if raw.isdigit() and int(raw) > limit:
+        raise HTTPException(413, i18n.pick_now(
+            f"That file is too large (limit {limit // 1024 // 1024} MB)",
+            f"文件太大(上限 {limit // 1024 // 1024} MB)"))
 
 
 def _mask(d: dict[str, str]) -> dict[str, str]:
@@ -404,9 +431,12 @@ def build_router(c: Ctx) -> APIRouter:
         """The request body is the raw bytes of the backup file (.db). It replaces all current
         data, after automatically keeping a copy of the current data first."""
         _need_octet(request)
+        _refuse_oversized(request, MAX_RESTORE_BYTES)
         data = await request.body()
         if not data:
             raise HTTPException(400, i18n.pick_now("The file is empty", "文件是空的"))
+        if len(data) > MAX_RESTORE_BYTES:  # a chunked upload declares no length
+            raise HTTPException(413, i18n.pick_now("That backup is too large", "备份文件太大"))
         fd, tmp = tempfile.mkstemp(suffix=".db")
         try:
             with os.fdopen(fd, "wb") as f:
@@ -546,9 +576,6 @@ def build_router(c: Ctx) -> APIRouter:
         }
 
     # ============================================================ video generation
-    class VideoProbeIn(BaseModel):
-        provider_id: str = ""      # empty = the one that would actually be used
-
     @r.post("/api/video/test")
     async def video_test(body: VideoProbeIn | None = None) -> dict:
         """Is the video server awake? Renders nothing.
@@ -587,10 +614,25 @@ def build_router(c: Ctx) -> APIRouter:
             raise HTTPException(400, i18n.pick_now("That is not a video file name", "这不是一个视频文件名"))
         # `workspace_path`, not `workspace_dir`: a GET must not create directories as a side effect
         ws = coderun.workspace_path(Path(store.data_dir), store.get_settings(), gid)
-        path = (ws / "video" / name).resolve()
-        if not path.is_file():
+        folder = ws / "video"
+        path = folder / name
+        # The regex above only constrains the *requested* name, and `.resolve()` on its own is not a
+        # boundary either: a member's code tool (or an installed plugin) can leave a symlink in the
+        # workspace, and following it would turn this route into a way to read any file this account
+        # can read. Two checks, and the order of the second one matters: the leaf may not be a
+        # symlink, and the resolved path has to stay inside the workspace — resolving the *video
+        # folder itself* as the baseline would be useless, because that is a symlink in this very
+        # scenario and would carry the baseline out of the workspace with it.
+        if path.is_symlink():
             raise HTTPException(404, i18n.pick_now("That video is not there any more", "这个视频已经不在了"))
-        return Response(path.read_bytes(), media_type="video/mp4",
+        try:
+            real = path.resolve(strict=True)
+            real.relative_to(ws.resolve())
+        except (OSError, ValueError):
+            raise HTTPException(404, i18n.pick_now("That video is not there any more", "这个视频已经不在了")) from None
+        if not real.is_file():
+            raise HTTPException(404, i18n.pick_now("That video is not there any more", "这个视频已经不在了"))
+        return Response(real.read_bytes(), media_type="video/mp4",
                         headers={"Cache-Control": "private, max-age=3600"})
 
     # ============================================================ plugins
@@ -815,6 +857,7 @@ def build_router(c: Ctx) -> APIRouter:
         """Raw bytes, like the library upload. The image is checked before it is written."""
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         _need_octet(request)
+        _refuse_oversized(request, MAX_UPLOAD_BYTES)
         data = await request.body()
         problem = images.check(data, store.get_settings())
         if problem:
@@ -970,6 +1013,7 @@ def build_router(c: Ctx) -> APIRouter:
         """The request body is the raw bytes of the file (no multipart, which saves a dependency)."""
         kb = _kb_for_new_doc(kb_id, group_id)
         _need_octet(request)
+        _refuse_oversized(request, MAX_UPLOAD_BYTES)
         data = await request.body()
         if not data:
             raise HTTPException(400, i18n.pick_now("The file is empty", "文件是空的"))
@@ -1028,9 +1072,17 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.patch("/api/library/{did}")
     async def library_patch(did: str, body: DocPatch) -> dict:
-        _need(store.get_doc(did), i18n.pick_now("Document", "文档"))
+        doc = _need(store.get_doc(did), i18n.pick_now("Document", "文档"))
         if body.kb_id is not None:
-            _check_kb(body.kb_id)
+            target = _check_kb(body.kb_id)
+            # Moving a document between knowledge bases is normal inside one workspace, but moving it
+            # into another group's private base would silently change who may read it — which is the
+            # whole point of the per-group libraries. Shared bases stay reachable from everywhere.
+            source = store.get_kb(doc["kb_id"]) if doc["kb_id"] else None
+            if target["group_id"] and target["group_id"] != ((source or {}).get("group_id") or ""):
+                raise HTTPException(403, i18n.pick_now(
+                    "A document cannot be moved into another group's knowledge base",
+                    "不能把文档移进其他群的知识库"))
         return c.library.update(did, body.model_dump(exclude_unset=True))  # type: ignore[return-value]
 
     @r.delete("/api/library/{did}")

@@ -845,6 +845,23 @@ already exists, otherwise create it (name and strengths are both taken from the 
             r["meta"] = json.loads(r["meta"])
         return rows
 
+    def has_later_user_message(self, gid: str, mid: str) -> bool:
+        """Is there a user message in this group after `mid`?
+
+        A round of collaboration stores its user message and broadcasts it *before* it takes the
+        group lock, so that the sender sees their own message immediately. If someone sends another
+        one while it waits, the later round reads both (the history is the whole group) and answers
+        both — so this round must stand down rather than answer the same question twice. Ids are
+        opaque, hence the rowid comparison.
+        """
+        row = self._one("SELECT rowid AS rid FROM messages WHERE id=?", (mid,))
+        if row is None:
+            return False
+        return self._one(
+            "SELECT 1 AS x FROM messages WHERE group_id=? AND sender_type='user' AND rowid>? LIMIT 1",
+            (gid, row["rid"]),
+        ) is not None
+
     def clear_messages(self, gid: str) -> None:
         self._x("DELETE FROM messages WHERE group_id=?", (gid,))
 
