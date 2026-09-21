@@ -1,6 +1,7 @@
 import { useEffect, type ComponentType } from "react";
 import { ArrowLeft, BarChart3, type LucideIcon, BookOpen, Boxes, Brain, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Palette, Plug, Puzzle, Server, ShieldCheck, SlidersHorizontal, Sparkles, TerminalSquare } from "lucide-react";
 import { useData } from "../data";
+import { useI18n } from "../i18n";
 import ProvidersPage from "./ProvidersPage";
 import RoutingPage from "./RoutingPage";
 import LocalPage from "./LocalPage";
@@ -35,37 +36,37 @@ export interface PageProps {
 
 const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: LucideIcon; page: ComponentType<PageProps> }[] }[] = [
   {
-    title: "模型",
+    title: "Models",
     items: [
-      { id: "providers", label: "模型服务", icon: Boxes, page: ProvidersPage },
-      { id: "routing", label: "路由与回退", icon: GitBranch, page: RoutingPage },
-      { id: "local", label: "本地模型", icon: HardDrive, page: LocalPage },
+      { id: "providers", label: "Providers", icon: Boxes, page: ProvidersPage },
+      { id: "routing", label: "Routing & fallback", icon: GitBranch, page: RoutingPage },
+      { id: "local", label: "Local models", icon: HardDrive, page: LocalPage },
     ],
   },
   {
-    title: "工具",
+    title: "Tools",
     items: [
-      { id: "skills", label: "技能", icon: Sparkles, page: SkillsPage },
-      { id: "plugins", label: "插件", icon: Puzzle, page: PluginsPage },
+      { id: "skills", label: "Skills", icon: Sparkles, page: SkillsPage },
+      { id: "plugins", label: "Plugins", icon: Puzzle, page: PluginsPage },
       { id: "mcp", label: "MCP", icon: Plug, page: McpPage },
-      { id: "external", label: "外部智能体", icon: TerminalSquare, page: ExternalPage },
-      { id: "gallery", label: "模板中心", icon: LayoutTemplate, page: GalleryPage },
-      { id: "prompts", label: "提示词", icon: MessageSquareText, page: PromptsPage },
-      { id: "library", label: "资料库", icon: BookOpen, page: LibraryPage },
-      { id: "memory", label: "记忆", icon: Brain, page: MemoryPage },
+      { id: "external", label: "External agents", icon: TerminalSquare, page: ExternalPage },
+      { id: "gallery", label: "Template gallery", icon: LayoutTemplate, page: GalleryPage },
+      { id: "prompts", label: "Prompts", icon: MessageSquareText, page: PromptsPage },
+      { id: "library", label: "Library", icon: BookOpen, page: LibraryPage },
+      { id: "memory", label: "Memory", icon: Brain, page: MemoryPage },
     ],
   },
   {
-    title: "应用",
+    title: "App",
     items: [
-      { id: "general", label: "通用", icon: SlidersHorizontal, page: GeneralPage },
-      { id: "permissions", label: "权限与操控", icon: ShieldCheck, page: PermissionsPage },
-      { id: "updates", label: "更新与发现", icon: Download, page: UpdatesPage },
-      { id: "appearance", label: "外观", icon: Palette, page: AppearancePage },
-      { id: "data", label: "数据", icon: Database, page: DataPage },
-      { id: "stats", label: "使用统计", icon: BarChart3, page: StatsPage },
-      { id: "deps", label: "依赖", icon: Cpu, page: DepsPage },
-      { id: "about", label: "关于", icon: Info, page: AboutPage },
+      { id: "general", label: "General", icon: SlidersHorizontal, page: GeneralPage },
+      { id: "permissions", label: "Permissions & control", icon: ShieldCheck, page: PermissionsPage },
+      { id: "updates", label: "Updates & discovery", icon: Download, page: UpdatesPage },
+      { id: "appearance", label: "Appearance", icon: Palette, page: AppearancePage },
+      { id: "data", label: "Data", icon: Database, page: DataPage },
+      { id: "stats", label: "Usage stats", icon: BarChart3, page: StatsPage },
+      { id: "deps", label: "Dependencies", icon: Cpu, page: DepsPage },
+      { id: "about", label: "About", icon: Info, page: AboutPage },
     ],
   },
 ];
@@ -81,21 +82,22 @@ export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { ta
   }, [onClose]);
 
   const { updateCount } = useData();
+  const { t } = useI18n();
   const Page = GROUPS.flatMap((g) => g.items).find((i) => i.id === tab)?.page ?? ProvidersPage;
   return (
-    <div className="settings" role="dialog" aria-label="设置">
+    <div className="settings" role="dialog" aria-label={t("Settings")}>
       <div className="settings-top drag">
-        <button className="back-btn nodrag" onClick={onClose}><ArrowLeft size={16} /> 返回</button>
-        <span className="settings-title"><Server size={15} /> 设置</span>
+        <button className="back-btn nodrag" onClick={onClose}><ArrowLeft size={16} /> {t("Back")}</button>
+        <span className="settings-title"><Server size={15} /> {t("Settings")}</span>
       </div>
       <div className="settings-body">
         <nav className="settings-nav">
           {GROUPS.map((g) => (
             <div key={g.title} className="nav-group">
-              <div className="nav-group-title">{g.title}</div>
+              <div className="nav-group-title">{t(g.title)}</div>
               {g.items.map((i) => (
                 <button key={i.id} className={"nav-item" + (tab === i.id ? " on" : "")} onClick={() => onTab(i.id)}>
-                  <i.icon size={16} /> {i.label}
+                  <i.icon size={16} /> {t(i.label)}
                   {i.id === "updates" && updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}
                 </button>
               ))}

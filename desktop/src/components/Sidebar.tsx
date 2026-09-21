@@ -3,6 +3,7 @@ import { BookOpen, Brain, ChevronDown, ChevronRight, Download, Info, MessageSqua
 import { api, relTime } from "../api";
 import { useData } from "../data";
 import { Switch, useConfirm, useOutside } from "../ui";
+import { useI18n } from "../i18n";
 import type { SettingsTab } from "../settings/SettingsModal";
 import AddMemberButton from "./members/AddMemberButton";
 import MemberDock from "./members/MemberDock";
@@ -21,12 +22,12 @@ export type View =
 
 /** 侧边栏「工具」区:每一项对应一个独立页面(设置 → 工具 里也能进到同样的页面) */
 const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "prompts" | "library" | "memory"; label: string; icon: typeof Sparkles }[] = [
-  { kind: "skills", label: "技能", icon: Sparkles },
-  { kind: "plugins", label: "插件", icon: Puzzle },
+  { kind: "skills", label: "Skills", icon: Sparkles },
+  { kind: "plugins", label: "Plugins", icon: Puzzle },
   { kind: "mcp", label: "MCP", icon: Plug },
-  { kind: "prompts", label: "提示词", icon: MessageSquareText },
-  { kind: "library", label: "资料库", icon: BookOpen },
-  { kind: "memory", label: "记忆", icon: Brain },
+  { kind: "prompts", label: "Prompts", icon: MessageSquareText },
+  { kind: "library", label: "Library", icon: BookOpen },
+  { kind: "memory", label: "Memory", icon: Brain },
 ];
 
 interface Props {
@@ -40,6 +41,7 @@ interface Props {
 export default function Sidebar({ view, onView, onSettings, onCollapse, version }: Props) {
   const { groups, settings, online, reload, reloadGroups, updateCount } = useData();
   const confirm = useConfirm();
+  const { t } = useI18n();
   const [open, setOpen] = useState(true);
   const [searching, setSearching] = useState(false);
   const [q, setQ] = useState("");
@@ -62,7 +64,7 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
   const offline = settings ? !settings.external_calls_enabled : false;
 
   const remove = async (id: string, name: string) => {
-    if (!(await confirm(`删除群聊「${name}」及其全部聊天记录?`, { okText: "删除" }))) return;
+    if (!(await confirm(t('Delete the group chat "{name}" and all of its messages?', { name }), { okText: t("Delete") }))) return;
     await api.delGroup(id);
     await reloadGroups();
     if (activeGid === id) onView({ kind: "home" });
@@ -71,10 +73,10 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
   return (
     <aside className="sidebar">
       <div className="side-top drag">
-        <button className="icon-btn nodrag" title="收起侧边栏" aria-label="收起侧边栏" onClick={onCollapse}><PanelLeftClose size={17} /></button>
+        <button className="icon-btn nodrag" title={t("Collapse sidebar")} aria-label={t("Collapse sidebar")} onClick={onCollapse}><PanelLeftClose size={17} /></button>
         <div className="grow" />
-        <button className="icon-btn nodrag" title="搜索群聊" aria-label="搜索群聊" onClick={() => { setSearching((s) => !s); setQ(""); }}><Search size={17} /></button>
-        <button className="icon-btn nodrag" title="新建群聊" aria-label="新建群聊" onClick={() => onView({ kind: "home" })}><MessageSquarePlus size={17} /></button>
+        <button className="icon-btn nodrag" title={t("Search group chats")} aria-label={t("Search group chats")} onClick={() => { setSearching((s) => !s); setQ(""); }}><Search size={17} /></button>
+        <button className="icon-btn nodrag" title={t("New group chat")} aria-label={t("New group chat")} onClick={() => onView({ kind: "home" })}><MessageSquarePlus size={17} /></button>
       </div>
 
       <div className="brand">
@@ -85,37 +87,37 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
       {searching && (
         <div className="side-search">
           <Search size={14} />
-          <input autoFocus placeholder="搜索群聊…" value={q} onChange={(e) => setQ(e.target.value)} />
-          {q && <button className="icon-btn tiny" aria-label="清除" onClick={() => setQ("")}><X size={13} /></button>}
+          <input autoFocus placeholder={t("Search group chats…")} value={q} onChange={(e) => setQ(e.target.value)} />
+          {q && <button className="icon-btn tiny" aria-label={t("Clear")} onClick={() => setQ("")}><X size={13} /></button>}
         </div>
       )}
 
       <nav className="side-nav">
         <button className={"nav-item" + (view.kind === "home" ? " on" : "")} onClick={() => onView({ kind: "home" })}>
-          <MessageSquarePlus size={16} /> 新建群聊
+          <MessageSquarePlus size={16} /> {t("New group chat")}
         </button>
         <div className="nav-split">
           <button className={"nav-item" + (view.kind === "agents" ? " on" : "")} onClick={() => onView({ kind: "agents" })}>
-            <Users size={16} /> 成员{dockGroup && <span className="count">({dockGroup.member_ids.length})</span>}
+            <Users size={16} /> {t("Members")}{dockGroup && <span className="count">({dockGroup.member_ids.length})</span>}
           </button>
           {dockGroup && <AddMemberButton group={dockGroup} />}
-          <button className="icon-btn tiny" title={memOpen ? "收起群成员" : "展开群成员"} aria-label={memOpen ? "收起群成员" : "展开群成员"} aria-expanded={memOpen} onClick={() => setMemOpen((o) => !o)}>
+          <button className="icon-btn tiny" title={t(memOpen ? "Collapse members" : "Expand members")} aria-label={t(memOpen ? "Collapse members" : "Expand members")} aria-expanded={memOpen} onClick={() => setMemOpen((o) => !o)}>
             {memOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </button>
         </div>
-        {memOpen && (dockGroup ? <MemberDock group={dockGroup} /> : <div className="side-empty">打开一个群聊后,这里显示群成员,可随时添加</div>)}
+        {memOpen && (dockGroup ? <MemberDock group={dockGroup} /> : <div className="side-empty">{t("Open a group chat and its members show up here — you can add more at any time")}</div>)}
       </nav>
-      <div className="nav-cap">工具</div>
-      <nav className="side-nav" aria-label="工具">
-        {TOOL_NAV.map((t) => (
-          <button key={t.kind} className={"nav-item" + (view.kind === t.kind ? " on" : "")} onClick={() => onView({ kind: t.kind } as View)}>
-            <t.icon size={16} /> {t.label}
+      <div className="nav-cap">{t("Tools")}</div>
+      <nav className="side-nav" aria-label={t("Tools")}>
+        {TOOL_NAV.map((item) => (
+          <button key={item.kind} className={"nav-item" + (view.kind === item.kind ? " on" : "")} onClick={() => onView({ kind: item.kind } as View)}>
+            <item.icon size={16} /> {t(item.label)}
           </button>
         ))}
       </nav>
 
       <button className="side-section" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} 群聊 <span className="count">({list.length})</span>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {t("Group chats")} <span className="count">({list.length})</span>
       </button>
       <div className="side-list">
         {open &&
@@ -125,39 +127,39 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
                 <span className="conv-name">{g.name}</span>
                 <span className="conv-time">{relTime(g.last_at)}</span>
               </button>
-              <button className="icon-btn tiny conv-del" title="删除群聊" aria-label={`删除群聊 ${g.name}`} onClick={() => void remove(g.id, g.name)}><Trash2 size={13} /></button>
+              <button className="icon-btn tiny conv-del" title={t("Delete group chat")} aria-label={t("Delete group chat {name}", { name: g.name })} onClick={() => void remove(g.id, g.name)}><Trash2 size={13} /></button>
             </div>
           ))}
-        {open && list.length === 0 && <div className="side-empty">{q ? "没有匹配的群聊" : "还没有群聊"}</div>}
+        {open && list.length === 0 && <div className="side-empty">{t(q ? "No matching group chats" : "No group chats yet")}</div>}
       </div>
 
       <div className="user-wrap" ref={menuRef}>
         {menu && (
           <div className="user-menu" role="menu">
-            <button role="menuitem" onClick={() => { setMenu(false); onSettings("providers"); }}><Settings size={15} /> 设置</button>
-            <button role="menuitem" onClick={() => { setMenu(false); onSettings("appearance"); }}><Palette size={15} /> 外观</button>
+            <button role="menuitem" onClick={() => { setMenu(false); onSettings("providers"); }}><Settings size={15} /> {t("Settings")}</button>
+            <button role="menuitem" onClick={() => { setMenu(false); onSettings("appearance"); }}><Palette size={15} /> {t("Appearance")}</button>
             <div className="menu-row">
-              <WifiOff size={15} /> <span>离线模式</span>
+              <WifiOff size={15} /> <span>{t("Offline mode")}</span>
               <Switch
                 checked={offline}
-                label="离线模式"
+                label={t("Offline mode")}
                 onChange={async (v) => {
                   await api.putSettings({ external_calls_enabled: !v });
                   await reload();
                 }}
               />
             </div>
-            <button role="menuitem" onClick={() => { setMenu(false); onSettings("updates"); }}><Download size={15} /> 更新与发现{updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}</button>
-            <button role="menuitem" onClick={() => { setMenu(false); onSettings("about"); }}><Info size={15} /> 关于</button>
+            <button role="menuitem" onClick={() => { setMenu(false); onSettings("updates"); }}><Download size={15} /> {t("Updates & discovery")}{updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}</button>
+            <button role="menuitem" onClick={() => { setMenu(false); onSettings("about"); }}><Info size={15} /> {t("About")}</button>
           </div>
         )}
         <button className="user-row" onClick={() => setMenu((m) => !m)} aria-haspopup="menu" aria-expanded={menu}>
-          <span className="user-ava">我</span>
+          <span className="user-ava">{t("Me")}</span>
           <span className="user-meta">
-            <span className="user-name">本地用户</span>
-            <span className="user-sub"><i className={"dot " + (!online ? "bad" : offline ? "off" : "ok")} />{!online ? "后端未连接" : offline ? "离线模式" : "云端 + 本地"}</span>
+            <span className="user-name">{t("Local user")}</span>
+            <span className="user-sub"><i className={"dot " + (!online ? "bad" : offline ? "off" : "ok")} />{t(!online ? "Backend not connected" : offline ? "Offline mode" : "Hosted + local")}</span>
           </span>
-          {updateCount > 0 ? <span className="count-badge" title="有可用更新">{updateCount}</span> : <Settings size={16} className="user-gear" />}
+          {updateCount > 0 ? <span className="count-badge" title={t("Updates available")}>{updateCount}</span> : <Settings size={16} className="user-gear" />}
         </button>
       </div>
     </aside>
