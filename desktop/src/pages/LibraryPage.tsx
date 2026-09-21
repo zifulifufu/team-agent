@@ -7,18 +7,20 @@ import {
 import { api, relTime, type LibraryDoc, type LibraryHit } from "../api";
 import { Modal, Switch, useConfirm } from "../ui";
 import "../styles/know.css";
+import { tr, useI18n } from "../i18n";
 
 const ACCEPT = ".txt,.md,.markdown,.csv,.json,.html,.htm,.pdf,.docx";
-const FORMATS = ["txt", "md", "csv", "json", "html", "pdf(需有文字层)", "docx"];
+const FORMATS = ["txt", "md", "csv", "json", "html", tr("pdf (needs a text layer)"), "docx"];
 
 // ------------------------------------------------------------------ helpers
 function fmtChars(n: number): string {
-  if (n >= 10000) return `约 ${(n / 10000).toFixed(1)} 万字`;
-  if (n >= 1000) return `约 ${(n / 1000).toFixed(1)} 千字`;
-  return `${n} 字`;
+  if (n >= 10000) return tr("about {v}0k chars", { v: (n / 10000).toFixed(1) });
+  if (n >= 1000) return tr("about {v}k chars", { v: (n / 1000).toFixed(1) });
+  return tr("{n} chars", { n });
 }
 
-/** 和后端 textindex.tokenize 保持一致:英文数字按词,中文按相邻两字,用来给检索结果做关键词高亮。 */
+/** Kept in step with textindex.tokenize on the backend: words for Latin text and
+ * digits, adjacent character pairs for Chinese, used to highlight search hits. */
 function queryTokens(q: string): string[] {
   const out = new Set<string>();
   for (const w of q.toLowerCase().match(/[a-z0-9_]+|[一-鿿]+/g) ?? []) {
@@ -30,7 +32,7 @@ function queryTokens(q: string): string[] {
   return [...out].slice(0, 40);
 }
 
-/** 文本高亮(纯 React 节点,不用 dangerouslySetInnerHTML)。 */
+/** Text highlighting as plain React nodes (no dangerouslySetInnerHTML). */
 function Highlight({ text, tokens }: { text: string; tokens: string[] }) {
   const parts = useMemo(() => {
     const low = text.toLowerCase();
@@ -60,7 +62,7 @@ function Highlight({ text, tokens }: { text: string; tokens: string[] }) {
   );
 }
 
-/** 把过长的片段截成以第一个命中为中心的一小段。 */
+/** Trim an over-long snippet to a short window centred on the first hit. */
 function snippet(text: string, tokens: string[], max = 240): string {
   const flat = text.replace(/\n{2,}/g, "\n");
   if (flat.length <= max) return flat;
@@ -85,7 +87,7 @@ function KindIcon({ kind }: { kind: string }) {
     default: return <FileText {...p} />;
   }
 }
-const kindLabel = (k: string) => (k === "note" ? "笔记" : k.toUpperCase());
+const kindLabel = (k: string) => (k === "note" ? tr("Note") : k.toUpperCase());
 
 interface UpItem {
   key: number;
@@ -97,6 +99,7 @@ let upSeq = 1;
 
 // --------------------------------------------------------------------- page
 export default function LibraryPage() {
+  const { t } = useI18n();
   const confirm = useConfirm();
   const { reloadGroups } = useData();
   const [docs, setDocs] = useState<LibraryDoc[]>([]);
@@ -137,7 +140,7 @@ export default function LibraryPage() {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => window.clearTimeout(openTimer.current), []);
 
-  // ---- 上传:逐个进行,互不影响
+  // ---- Uploads: one at a time, independent of each other
   const patchUp = (key: number, p: Partial<UpItem>) => setUps((l) => l.map((u) => (u.key === key ? { ...u, ...p } : u)));
   const upload = async (files: File[]) => {
     if (!files.length) return;
@@ -169,7 +172,7 @@ export default function LibraryPage() {
     void upload(Array.from(e.dataTransfer.files));
   };
 
-  // ---- 搜索(300ms 防抖)
+  // ---- Search (300ms debounce)
   const tokens = useMemo(() => queryTokens(q), [q]);
   useEffect(() => {
     const key = q.trim();
@@ -196,7 +199,7 @@ export default function LibraryPage() {
     return () => { alive = false; window.clearTimeout(t); };
   }, [q, docs]);
 
-  // ---- 行内操作
+  // ---- Row actions
   const toggle = async (d: LibraryDoc, enabled: boolean) => {
     setRowErr("");
     setDocs((l) => l.map((x) => (x.id === d.id ? { ...x, enabled } : x)));
@@ -216,7 +219,7 @@ export default function LibraryPage() {
       await api.patchDoc(d.id, { title });
       await load();
     } catch (e) {
-      setRowErr(`重命名失败:${(e as Error).message}`);
+      setRowErr(t("Rename failed: {err}", { err: (e as Error).message }));
     }
   };
   const startRename = (d: LibraryDoc) => {
@@ -225,14 +228,15 @@ export default function LibraryPage() {
     setRenaming(d.id);
   };
   const remove = async (d: LibraryDoc) => {
-    if (!(await confirm(`删除文档「${d.title}」?它会从资料库中移除,同时从各群「扩展 → 资料库」的「仅选定文档」里去掉,无法恢复。`, { okText: "删除" }))) return;
+    if (!(await confirm(t("Delete the document \"{title}\"? It is removed from the library and from every group's selected-documents list. This cannot be undone.", { title: d.title }), { okText: t("Delete") }))) return;
     setRowErr("");
     try {
       await api.delDoc(d.id);
       await load();
-      await reloadGroups();   // 后端已把它从各群「仅选定文档」里去掉,这里同步一下,免得之后保存时又写回来
+      await reloadGroups();   // the backend already dropped it from every group's selected
+                              // documents; sync here so a later save cannot write it back
     } catch (e) {
-      setRowErr(`删除失败:${(e as Error).message}`);
+      setRowErr(t("Delete failed: {err}", { err: (e as Error).message }));
     }
   };
   const open = (d: { id: string; title: string }, query = "") => setReading({ id: d.id, title: d.title, q: query });
@@ -242,11 +246,11 @@ export default function LibraryPage() {
     <div className={"kn-drop" + (drag ? " over" : "") + (empty ? " big" : "")}>
       <Upload size={empty ? 26 : 18} strokeWidth={1.6} />
       <div className="kn-drop-text">
-        <b>{drag ? "松开鼠标,开始上传" : empty ? "把文件拖到这里,或点击「上传文件」" : "拖拽文件到这里上传"}</b>
-        <span>支持 {FORMATS.join(" / ")};可一次选多个,逐个上传。</span>
+        <b>{drag ? t("Release to start uploading") : empty ? t("Drop files here, or use Upload file") : t("Drag files here to upload")}</b>
+        <span>{t("Supports {formats}; select several at once and they upload one by one.", { formats: FORMATS.join(" / ") })}</span>
       </div>
       {!drag && (
-        <button className="btn small" onClick={() => fileInput.current?.click()}>选择文件</button>
+        <button className="btn small" onClick={() => fileInput.current?.click()}>{t("Choose files")}</button>
       )}
     </div>
   );
@@ -256,23 +260,23 @@ export default function LibraryPage() {
       <div className="kn-inner">
         <div className="kn-head">
           <div className="kn-head-main">
-            <h1>资料库</h1>
+            <h1>{t("Library")}</h1>
             <p className="kn-desc">
-              上传的文档会被切成片段并建立索引。群聊里成员需要查资料时会自动检索(可在每个群的「扩展」里选择用全部、只用指定文档或不用);也可以在消息里写 <code>#文档标题</code> 直接引用整篇文档。
+              {t("Uploaded documents are split into chunks and indexed. Members search them automatically when they need material (each group can use all documents, only selected ones, or none under Extensions); you can also write")} <code>#document title</code> {t("in a message to cite a whole document.")}
             </p>
           </div>
           <div className="kn-head-actions">
-            <button className="btn" onClick={() => setSource("url")}><Link2 size={15} /> 从链接</button>
-            <button className="btn" onClick={() => setSource("dir")}><FolderInput size={15} /> 从文件夹</button>
-            <button className="btn" onClick={() => setNoteOpen(true)}><StickyNote size={15} /> 新建笔记</button>
-            <button className="btn primary" onClick={() => fileInput.current?.click()}><Upload size={15} /> 上传文件</button>
+            <button className="btn" onClick={() => setSource("url")}><Link2 size={15} /> {t("From a link")}</button>
+            <button className="btn" onClick={() => setSource("dir")}><FolderInput size={15} /> {t("From a folder")}</button>
+            <button className="btn" onClick={() => setNoteOpen(true)}><StickyNote size={15} /> {t("New note")}</button>
+            <button className="btn primary" onClick={() => fileInput.current?.click()}><Upload size={15} /> {t("Upload file")}</button>
             <input
               ref={fileInput}
               type="file"
               multiple
               accept={ACCEPT}
               hidden
-              aria-label="选择要上传的文件"
+              aria-label={t("Files to upload")}
               onChange={(e) => {
                 const fs = Array.from(e.target.files ?? []);
                 e.target.value = "";
@@ -285,7 +289,7 @@ export default function LibraryPage() {
         {dropZone}
 
         {ups.length > 0 && (
-          <ul className="kn-ups" aria-label="上传进度">
+          <ul className="kn-ups" aria-label={t("Upload progress")}>
             {ups.map((u) => (
               <li key={u.key} className={"kn-up " + u.state}>
                 <span className="kn-up-ico">
@@ -296,13 +300,13 @@ export default function LibraryPage() {
                 </span>
                 <span className="kn-up-name">{u.name}</span>
                 <span className="kn-up-msg">
-                  {u.state === "wait" && "等待上传"}
-                  {u.state === "up" && "正在上传并建立索引…"}
-                  {u.state === "ok" && "已添加"}
+                  {u.state === "wait" && t("Waiting")}
+                  {u.state === "up" && t("Uploading and indexing…")}
+                  {u.state === "ok" && t("Added")}
                   {u.state === "err" && u.msg}
                 </span>
                 {(u.state === "err" || u.state === "ok") && (
-                  <button className="icon-btn tiny" aria-label={`清除「${u.name}」的上传记录`} title="清除" onClick={() => setUps((l) => l.filter((x) => x.key !== u.key))}>
+                  <button className="icon-btn tiny" aria-label={t("Clear the upload record for \"{name}\"", { name: u.name })} title={t("Clear")} onClick={() => setUps((l) => l.filter((x) => x.key !== u.key))}>
                     <X size={13} />
                   </button>
                 )}
@@ -312,13 +316,13 @@ export default function LibraryPage() {
         )}
 
         {loadErr && <div className="err kn-block">{loadErr}</div>}
-        {loading && <div className="empty"><LoaderCircle size={16} className="kn-spin" /> 加载中…</div>}
+        {loading && <div className="empty"><LoaderCircle size={16} className="kn-spin" /> {t("Loading…")}</div>}
 
         {empty && (
           <div className="kn-empty">
-            <p><b>资料库还是空的。</b>把制度、手册、往期方案、产品资料放进来,成员在群聊里需要时会自己去查。</p>
+            <p><b>{t("The library is empty.")}</b>{t("Add policies, manuals, past proposals or product material, and members will look them up when they need to.")}</p>
             <p className="muted">
-              文件只保存在本机数据目录里(存的是提取出的文字,不保留原文件)。但成员检索到的片段会随问题一起发给所用的模型,如果用的是云端模型,这些片段就会发到云端。扫描件 PDF(没有文字层)暂不支持。
+              {t("Files are kept in the local data directory as extracted text; the original file is not retained. Snippets a member retrieves are sent to the model along with the question, so with a hosted model they leave your machine. Scanned PDFs (no text layer) are not supported yet.")}
             </p>
           </div>
         )}
@@ -326,43 +330,43 @@ export default function LibraryPage() {
         {docs.length > 0 && (
           <>
             <div className="kn-toolbar">
-              <div className="kn-stats">共 {docs.length} 篇 · {fmtChars(total)}</div>
+              <div className="kn-stats">{t("{n} documents", { n: docs.length })} · {fmtChars(total)}</div>
               <label className="search-box kn-search">
                 <Search size={15} />
                 <input
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  placeholder="试试检索:输入关键词,看成员会查到什么"
-                  aria-label="检索资料库"
+                  placeholder={t("Try it: type a keyword and see what members would find")}
+                  aria-label={t("Search the library")}
                 />
                 {q && (
-                  <button className="icon-btn tiny" aria-label="清空检索" title="清空" onClick={() => setQ("")}><X size={13} /></button>
+                  <button className="icon-btn tiny" aria-label={t("Clear the search")} title={t("Clear all")} onClick={() => setQ("")}><X size={13} /></button>
                 )}
               </label>
             </div>
 
             {q.trim() && (
-              <section className="kn-results" aria-label="检索结果">
+              <section className="kn-results" aria-label={t("Search results")}>
                 <div className="kn-results-head">
-                  <b>检索结果</b>
+                  <b>{t("Search results")}</b>
                   <span className="muted small">
-                    这就是成员在群聊里检索时看到的内容:按关键词匹配(中文按相邻两字),取最相关的片段;已停用的文档不参与。
+                    {t("This is exactly what a member sees when searching in a group chat: keyword matches (adjacent character pairs for Chinese), most relevant snippets first; disabled documents are excluded.")}
                   </span>
                   {searching && <LoaderCircle size={14} className="kn-spin" />}
                 </div>
                 {searchErr && <div className="err">{searchErr}</div>}
                 {!searchErr && hits && hits.length === 0 && !searching && (
-                  <div className="empty">没有命中的片段,换个关键词试试。</div>
+                  <div className="empty">{t("No matching snippets — try another keyword.")}</div>
                 )}
                 {hits?.map((h) => (
                   <article key={`${h.doc_id}-${h.idx}`} className="kn-hit">
                     <div className="kn-hit-head">
-                      <button className="kn-hit-title" onClick={() => open({ id: h.doc_id, title: h.title }, q.trim())} title="打开这篇文档阅读">
+                      <button className="kn-hit-title" onClick={() => open({ id: h.doc_id, title: h.title }, q.trim())} title={t("Open this document to read it")}>
                         {h.title}
                       </button>
-                      <span className="muted small">第 {h.idx + 1} 段</span>
+                      <span className="muted small">{t("section {n}")}</span>
                       <span className="grow" />
-                      <span className="tag" title="BM25 相关度,只用于相对排序">相关度 {h.score}</span>
+                      <span className="tag" title={t("BM25 relevance, only meaningful for relative ordering")}>{t("relevance {score}")}</span>
                     </div>
                     <p className="kn-hit-text"><Highlight text={snippet(h.text, tokens)} tokens={tokens} /></p>
                   </article>
@@ -371,13 +375,13 @@ export default function LibraryPage() {
             )}
 
             {rowErr && <div className="err kn-block">{rowErr}</div>}
-            <div className="kn-docs" role="table" aria-label="文档列表">
+            <div className="kn-docs" role="table" aria-label={t("Document list")}>
               <div className="kn-doc-row kn-doc-th" role="row">
                 <span />
-                <span>标题</span>
-                <span className="kn-col-size">字数 · 片段</span>
-                <span className="kn-col-time">上传时间</span>
-                <span className="kn-col-sw">启用</span>
+                <span>{t("Title")}</span>
+                <span className="kn-col-size">{t("Chars · chunks")}</span>
+                <span className="kn-col-time">{t("Added")}</span>
+                <span className="kn-col-sw">{t("On")}</span>
                 <span />
               </div>
               {docs.map((d) => (
@@ -389,7 +393,7 @@ export default function LibraryPage() {
                         className="kn-rename"
                         autoFocus
                         value={renameText}
-                        aria-label="文档标题"
+                        aria-label={t("Document title")}
                         onChange={(e) => setRenameText(e.target.value)}
                         onBlur={() => void commitRename(d)}
                         onKeyDown={(e) => {
@@ -400,7 +404,7 @@ export default function LibraryPage() {
                     ) : (
                       <button
                         className="kn-doc-title"
-                        title="点击阅读,双击重命名"
+                        title={t("Click to read, double-click to rename")}
                         onClick={() => {
                           window.clearTimeout(openTimer.current);
                           openTimer.current = window.setTimeout(() => open(d), 230);
@@ -412,16 +416,16 @@ export default function LibraryPage() {
                     )}
                     <div className="kn-doc-sub">
                       <span className="tag">{kindLabel(d.kind)}</span>
-                      <span className="kn-doc-file">{d.filename ? d.filename : "手动笔记"}</span>
-                      {!d.enabled && <span className="tag warn">已停用,不会被检索</span>}
+                      <span className="kn-doc-file">{d.filename ? d.filename : t("Manual note")}</span>
+                      {!d.enabled && <span className="tag warn">{t("Disabled — not searched")}</span>}
                     </div>
                   </div>
-                  <span className="kn-col-size kn-num">{d.chars.toLocaleString()} 字 · {d.chunks} 段</span>
+                  <span className="kn-col-size kn-num">{t("{chars} chars · {chunks} chunks", { chars: d.chars.toLocaleString(), chunks: d.chunks })}</span>
                   <span className="kn-col-time kn-num muted">{relTime(d.created_at)}</span>
-                  <span className="kn-col-sw"><Switch checked={d.enabled} onChange={(v) => void toggle(d, v)} label={`启用「${d.title}」`} /></span>
+                  <span className="kn-col-sw"><Switch checked={d.enabled} onChange={(v) => void toggle(d, v)} label={t("Enable \"{title}\"", { title: d.title })} /></span>
                   <span className="kn-doc-ops">
-                    <button className="icon-btn tiny" aria-label={`重命名「${d.title}」`} title="重命名" onClick={() => startRename(d)}><Pencil size={14} /></button>
-                    <button className="icon-btn tiny kn-del" aria-label={`删除「${d.title}」`} title="删除" onClick={() => void remove(d)}><Trash2 size={14} /></button>
+                    <button className="icon-btn tiny" aria-label={t("Rename \"{title}\"", { title: d.title })} title={t("Rename")} onClick={() => startRename(d)}><Pencil size={14} /></button>
+                    <button className="icon-btn tiny kn-del" aria-label={t("Delete \"{title}\"", { title: d.title })} title={t("Delete")} onClick={() => void remove(d)}><Trash2 size={14} /></button>
                   </span>
                 </div>
               ))}
@@ -439,13 +443,14 @@ export default function LibraryPage() {
 
 // --------------------------------------------------------------- new note
 function NoteModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const save = async () => {
-    if (!title.trim()) return setErr("请填写标题");
-    if (!content.trim()) return setErr("请填写内容");
+    if (!title.trim()) return setErr(t("Please enter a title"));
+    if (!content.trim()) return setErr(t("Please enter the content"));
     setBusy(true);
     setErr("");
     try {
@@ -458,25 +463,25 @@ function NoteModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
   };
   return (
     <Modal
-      title="新建笔记"
+      title={t("New note")}
       wide
       onClose={onClose}
       actions={
         <>
           {err && <span className="err" style={{ marginRight: "auto" }}>{err}</span>}
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" disabled={busy} onClick={save}>{busy ? "保存中…" : "保存"}</button>
+          <button className="btn" onClick={onClose}>{t("Cancel")}</button>
+          <button className="btn primary" disabled={busy} onClick={save}>{busy ? t("Saving…") : t("Save")}</button>
         </>
       }
     >
-      <p className="muted small" style={{ margin: "0 0 12px" }}>笔记和上传的文档一样会被切片、建立索引,适合记一些制度要点、术语、固定口径。</p>
+      <p className="muted small" style={{ margin: "0 0 12px" }}>{t("A note is chunked and indexed just like an uploaded document — handy for policy highlights, terminology or standard wording.")}</p>
       <label className="field">
-        <span>标题</span>
-        <input value={title} autoFocus onChange={(e) => setTitle(e.target.value)} placeholder="如:报销制度要点" />
+        <span>{t("Title")}</span>
+        <input value={title} autoFocus onChange={(e) => setTitle(e.target.value)} placeholder={t("e.g. key points of the expenses policy")} />
       </label>
       <label className="field">
-        <span>内容</span>
-        <textarea rows={10} value={content} onChange={(e) => setContent(e.target.value)} placeholder="在这里输入或粘贴文字" />
+        <span>{t("Content")}</span>
+        <textarea rows={10} value={content} onChange={(e) => setContent(e.target.value)} placeholder={t("Type or paste text here")} />
       </label>
     </Modal>
   );
@@ -485,6 +490,7 @@ function NoteModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
 // ------------------------------------------------------------------ reader
 const PAGE = 6000;
 function Reader({ doc, onClose }: { doc: { id: string; title: string; q: string }; onClose: () => void }) {
+  const { t } = useI18n();
   const [start, setStart] = useState(0);
   const [data, setData] = useState<Awaited<ReturnType<typeof api.readDoc>> | null>(null);
   const [err, setErr] = useState("");
@@ -511,25 +517,26 @@ function Reader({ doc, onClose }: { doc: { id: string; title: string; q: string 
       actions={
         <>
           <span className="kn-range">
-            {data ? (data.total === 0 ? "内容为空" : `第 ${from.toLocaleString()}–${data.end.toLocaleString()} / 总 ${data.total.toLocaleString()} 字`) : ""}
+            {data ? (data.total === 0 ? t("No content")
+              : t("chars {from}-{to} of {total}", { from: from.toLocaleString(), to: data.end.toLocaleString(), total: data.total.toLocaleString() })) : ""}
           </span>
           <button className="btn small" disabled={!data || data.start <= 0 || busy} onClick={() => setStart(Math.max(0, (data?.start ?? 0) - PAGE))}>
-            <ChevronLeft size={14} /> 上一段
+            <ChevronLeft size={14} /> {t("Previous")}
           </button>
           <button className="btn small" disabled={!data || data.end >= data.total || busy} onClick={() => setStart(data?.end ?? 0)}>
-            下一段 <ChevronRight size={14} />
+            {t("Next")} <ChevronRight size={14} />
           </button>
         </>
       }
     >
       <div className="kn-reader" ref={box}>
         {err && <div className="err">{err}</div>}
-        {!data && !err && <div className="empty"><LoaderCircle size={16} className="kn-spin" /> 加载中…</div>}
+        {!data && !err && <div className="empty"><LoaderCircle size={16} className="kn-spin" /> {t("Loading…")}</div>}
         {data && (
           <>
             <div className="kn-reader-meta muted small">
-              {kindLabel(data.doc.kind)}{data.doc.filename ? ` · ${data.doc.filename}` : ""} · 共 {data.doc.chunks} 个片段。
-              这里显示的是提取出的文字,可能与原文件的排版不同。
+              {kindLabel(data.doc.kind)}{data.doc.filename ? ` · ${data.doc.filename}` : ""}{t(" · {n} chunks in total.", { n: data.doc.chunks })}
+              {t("This is the extracted text, so the layout may differ from the original file.")}
             </div>
             <div className={"kn-reader-text" + (busy ? " busy" : "")}>
               <Highlight text={data.text} tokens={tokens} />
@@ -541,8 +548,9 @@ function Reader({ doc, onClose }: { doc: { id: string; title: string; q: string 
   );
 }
 
-/** 从链接 / 文件夹导入:链接会联网抓取(受「允许外呼」开关约束);文件夹只读取本机,再次导入只更新变化的文件。 */
+/** Import from a link or a folder: links are fetched over the network (subject to the hosted-calls switch), folders are read locally and a second import only updates what changed. */
 function SourceModal({ kind, onClose, onDone }: { kind: "url" | "dir"; onClose: () => void; onDone: () => void }) {
+  const { t } = useI18n();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -571,32 +579,32 @@ function SourceModal({ kind, onClose, onDone }: { kind: "url" | "dir"; onClose: 
 
   return (
     <Modal
-      title={kind === "url" ? "从链接导入" : "从文件夹导入"}
+      title={kind === "url" ? t("Import from a link") : t("Import from a folder")}
       onClose={onClose}
       actions={
         <>
-          <button className="btn" onClick={onClose}>{res ? "完成" : "取消"}</button>
-          <button className="btn primary" disabled={busy || !value.trim()} onClick={() => void go()}>{busy ? "导入中…" : "导入"}</button>
+          <button className="btn" onClick={onClose}>{res ? t("Done") : t("Cancel")}</button>
+          <button className="btn primary" disabled={busy || !value.trim()} onClick={() => void go()}>{busy ? t("Importing…") : t("Import")}</button>
         </>
       }
     >
       <p className="muted small" style={{ marginTop: 0, lineHeight: 1.7 }}>
         {kind === "url"
-          ? "抓取网页(或 PDF / 文本链接)的正文存进资料库。需要联网;抓取到的只是那一刻的内容,之后网页更新不会自动同步。"
-          : "把文件夹(含子文件夹)里的文档批量导入,支持的格式同上传。再次导入同一个文件夹时,没变的文件会跳过,变了的会替换成新版。隐藏文件和符号链接不会导入。"}
+          ? t("Fetch the body of a web page (or a PDF / text link) into the library. Needs network access, and it captures that moment only — later changes to the page are not synced.")
+          : t("Import every document in a folder (including subfolders); the supported formats match uploads. Importing the same folder again skips unchanged files and replaces changed ones. Hidden files and symlinks are skipped.")}
       </p>
       <div className="input-group">
         <input value={value} autoFocus onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && !busy && value.trim() && void go()} spellCheck={false}
-          placeholder={kind === "url" ? "https://…" : "文件夹的完整路径,如 /Users/你/Documents/制度"} aria-label={kind === "url" ? "链接" : "文件夹路径"} />
-        {kind === "dir" && pick && <button className="btn" onClick={async () => { const p = await pick(); if (p) setValue(p); }}><FolderInput size={14} /> 选择…</button>}
+          placeholder={kind === "url" ? "https://…" : t("Full path of the folder, e.g. /Users/you/Documents/policies")} aria-label={kind === "url" ? t("Link") : t("Folder path")} />
+        {kind === "dir" && pick && <button className="btn" onClick={async () => { const p = await pick(); if (p) setValue(p); }}><FolderInput size={14} /> {t("Choose…")}</button>}
       </div>
       {err && <div className="err" role="alert" style={{ marginTop: 8 }}>{err}</div>}
       {res && (
         <div className="ok-text" role="status" style={{ marginTop: 8 }}>
-          已导入 {res.added} 篇。
+          {t("Imported {n} documents.", { n: res.added })}
           {res.skipped.length > 0 && (
             <details style={{ marginTop: 4 }}>
-              <summary>跳过 {res.skipped.length} 个</summary>
+              <summary>{t("Skipped {n}")}</summary>
               <ul className="kn-obs-warn">{res.skipped.slice(0, 30).map((s, i) => <li key={i}>{s.name}:{s.reason}</li>)}</ul>
             </details>
           )}
