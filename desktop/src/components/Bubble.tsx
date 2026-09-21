@@ -120,8 +120,9 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
   const mine = m.sender_type === "user";
   const attempts = m.meta?.attempts ?? [];
   const tools = m.meta?.tools ?? [];
-  // The reason string comes from the backend, which still sends it in Chinese.
-  const offline = attempts.some((a) => a.status === "skipped" && (a.detail === "外呼已禁用" || a.detail === "Hosted calls are disabled"));
+  // `reason` is a stable code from the backend; `detail` follows the interface language, so
+  // matching on the message text would stop working as soon as the UI language changes.
+  const offline = attempts.some((a) => a.status === "skipped" && a.reason === "offline");
   const tip = attempts
     .map((a) => `${modelLabel(a.model_id, models)}: ` + (a.status === "ok"
       ? t("Succeeded")

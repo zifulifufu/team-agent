@@ -147,3 +147,23 @@ def test_mcp_templates_are_bilingual(client) -> None:
     assert all(not HAN.search(m["name"] + m["note"]) for m in en_m)
     # 命令本身在任何语言下都一样(不然导入就不对了)
     assert [m["args"] for m in en_m] == [m["args"] for m in zh_m]
+
+
+# --------------------------------------------------------------- stable reason codes
+
+async def test_skipped_models_carry_a_reason_code(store, make_router):
+    """A skipped model carries a stable `reason` code, not just a message.
+
+    The bubble shows `detail`, whose wording follows the interface language, so the
+    frontend decides whether to show the offline hint from `reason` — matching on the
+    text would silently stop working the moment the UI language changes.
+    """
+    from tests.conftest import FakeLLM
+
+    store.update_settings({"external_calls_enabled": False})
+    r = await make_router(FakeLLM()).complete([{"role": "user", "content": "hi"}])
+    codes = {a.reason for a in r.attempts}
+    assert "offline" in codes
+    assert all(isinstance(a.reason, str) for a in r.attempts)
+    # And the serialised form the frontend actually reads must carry it too.
+    assert any(a.to_dict().get("reason") == "offline" for a in r.attempts)

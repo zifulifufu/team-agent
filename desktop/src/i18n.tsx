@@ -97,7 +97,7 @@ const ZH: Record<string, string> = {
   // ---------------------------------------------------------------- 首页
   "Pull hosted and local models into one group and let each do what it is best at — office documents, video production, writing.":
     "把国内外大模型拉进同一个群,各展所长,协同完成办公、视频制作与创作。",
-  "Describe your task; type @ to assign members, or leave it and 小助 will coordinate":
+  "Describe your task; type @ to assign members, or leave it and Aide will coordinate":
     "描述你的任务;输入 @ 点名成员分工,不点名则由小助统筹",
   "Which group chat to send to": "发送到哪个群聊",
   "Send to": "发送到",

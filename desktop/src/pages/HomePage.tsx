@@ -10,7 +10,7 @@ import type { SettingsTab } from "../settings/SettingsModal";
 import "../styles/chat.css";
 
 export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string, autoSend: string) => void; onSettings?: (tab: SettingsTab) => void }) {
-  const { t, pick } = useI18n();
+  const { t, pick, lang } = useI18n();
   const { agents, groups, reload, reloadGroups } = useData();
   const route = useRoute();
   const [sceneId, setSceneId] = useState(SCENES[0].id);
@@ -49,7 +49,10 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   const homeTemplates = useMemo(() => templates.filter((tpl) => tpl.home !== false), [templates]);
   const scene = SCENES.find((s) => s.id === sceneId)!;
   const sceneAgents = useMemo(() => {
-    const picked = scene.members.map((n) => agents.find((a) => a.name === n)).filter(Boolean) as typeof agents;
+    // `/api/agents` answers with the name in the request language, so look up the list of
+  // that same language rather than always the English one.
+  const names = lang === "zh" ? scene.membersZh : scene.members;
+  const picked = names.map((n) => agents.find((a) => a.name === n)).filter(Boolean) as typeof agents;
     return picked.length ? picked : agents;
   }, [scene, agents]);
 
@@ -101,7 +104,7 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           onSend={start}
           busy={busy}
           members={mentionable}
-          placeholder={t("Describe your task; type @ to assign members, or leave it and 小助 will coordinate")}
+          placeholder={t("Describe your task; type @ to assign members, or leave it and Aide will coordinate")}
           routeText={route.text}
           offline={route.offline}
           onToggleExternal={route.toggleExternal}

@@ -46,10 +46,14 @@ class Attempt:
     status: str  # ok | failed | skipped
     detail: str = ""
     latency_ms: int = 0
+    # A stable code for *why* a model was skipped: "" | "offline" | "tripped".
+    # `detail` is shown to the user and therefore follows the request language, so clients
+    # must branch on this instead of matching the message text.
+    reason: str = ""
 
     def to_dict(self) -> dict:
         return {"model_id": self.model_id, "status": self.status, "detail": self.detail,
-                "latency_ms": self.latency_ms}
+                "latency_ms": self.latency_ms, "reason": self.reason}
 
 
 @dataclass
@@ -177,7 +181,9 @@ class ModelRouter:
             if not m["enabled"] or not p["enabled"]:
                 skipped.append(Attempt(mid, "skipped", i18n.pick_now("disabled", "已停用")))
             elif not p["is_local"] and not external_ok:
-                skipped.append(Attempt(mid, "skipped", i18n.pick_now("outbound calls are disabled", "外呼已禁用")))
+                skipped.append(Attempt(mid, "skipped",
+                                    i18n.pick_now("outbound calls are disabled", "外呼已禁用"),
+                                    reason="offline"))
             elif not has_credentials(p):
                 skipped.append(Attempt(mid, "skipped", i18n.pick_now("no API key configured", "未配置 API Key")))
             else:
@@ -295,7 +301,9 @@ class ModelRouter:
             mid = cand["id"]
             is_last = i == len(candidates) - 1
             if not only and not is_last and self._is_open(mid):
-                attempts.append(Attempt(mid, "skipped", i18n.pick_now("Tripped and cooling down; retry shortly", "熔断中,稍后重试")))
+                attempts.append(Attempt(mid, "skipped",
+                                    i18n.pick_now("Tripped and cooling down; retry shortly", "熔断中,稍后重试"),
+                                    reason="tripped"))
                 continue
 
             emitted = False

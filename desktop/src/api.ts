@@ -233,6 +233,8 @@ interface Attempt {
   status: "ok" | "failed" | "skipped";
   detail: string;
   latency_ms: number;
+  /** Stable code for why a model was skipped: "" | "offline" | "tripped". */
+  reason?: string;
 }
 export interface ToolCall {
   name: string;
