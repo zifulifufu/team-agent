@@ -1,20 +1,24 @@
-第三方组件声明 / Third-Party Notices
-====================================
+Third-Party Notices
+===================
 
-本程序（Team Agent）自身采用 **Business Source License 1.1**（见 [LICENSE](LICENSE)，权利人 zifulifufu，
-Change Date 2030-09-21，到期转为 **MPL 2.0**）。**本许可只覆盖本仓库自有内容**，不改变下方各第三方组件
-各自的许可条款 —— 那些组件仍按其原许可使用与分发。
+Team Agent itself is released under the **Business Source License 1.1**
+(see [LICENSE](LICENSE); Licensor `zifulifufu`, Change Date 2030-09-21, after which it
+converts to **MPL 2.0**). That license covers only this project's own content and does
+not change the terms of the third-party components listed below — those remain under
+their own licenses.
 
-下面列出本程序使用的第三方开源组件及其许可证。**本程序不分发、不附带任何第三方内容**：
-模板中心里的团队 / 角色 / 技能 / 提示词都是本程序自己写的原创文本，不含任何第三方项目的数据，
-因此随程序分发（包括打包出售）不产生第三方许可义务。
+This project bundles no third-party content. Everything shipped with it — including the
+team / role / skill / prompt templates in the template gallery — is original text written
+for this project, so redistributing the program (including selling packaged builds)
+creates no third-party license obligations for that content.
 
-Last verified: 2026-09-21（按本机实际安装的版本逐个核对元数据与 LICENSE 文件）
+Last verified: 2026-09-21 (checked against the versions actually installed on a local
+machine, reading each package's metadata and LICENSE file).
 
-后端（Python，见 `backend/requirements.txt`）
---------------------------------------------
+Backend (Python — see `backend/requirements.txt`)
+-------------------------------------------------
 
-| 组件 | 许可证 |
+| Component | License |
 | --- | --- |
 | litellm | MIT |
 | fastapi | MIT |
@@ -31,50 +35,65 @@ Last verified: 2026-09-21（按本机实际安装的版本逐个核对元数据�
 | anyio | MIT |
 | tiktoken | MIT |
 
-前端（Node，见 `desktop/package.json`）
---------------------------------------
+Frontend (Node — see `desktop/package.json`)
+--------------------------------------------
 
-| 组件 | 许可证 |
+| Component | License |
 | --- | --- |
 | react / react-dom | MIT |
 | react-markdown | MIT |
 | remark-gfm | MIT |
 | lucide-react | ISC |
 
-传递依赖
---------
-以上组件的依赖链中**没有 GPL / AGPL**（即不存在要求本程序开源自有代码的强 copyleft 依赖）。
-其中 `tqdm`、`certifi` 采用 **MPL-2.0**（弱 copyleft、基于文件）：只要你不对其源文件做修改再分发，
-就不会影响本程序的授权。完整清单可在你的环境中用 `pip-licenses`（后端）与
-`license-checker`（前端）重新生成。
+Transitive dependencies
+-----------------------
 
-分发时的义务
-------------
-上述组件均为宽松许可（MIT / BSD / Apache-2.0 / ISC）。**当你把本程序打包分发给他人时**
-（例如 PyInstaller 打包后端 + electron-builder 打包桌面端），需在分发物中：
+There is **no GPL / AGPL** anywhere in the dependency chain, so no dependency requires
+this project to open-source its own code. `tqdm` and `certifi` are **MPL-2.0** (weak,
+file-based copyleft): as long as you do not modify their source files and then
+redistribute them, they do not affect this project's licensing. You can regenerate the
+full list in your own environment with `pip-licenses` (backend) and `license-checker`
+(frontend).
 
-1. 保留这些组件的版权声明与许可证文本；
-2. 对 Apache-2.0 组件（pytest-asyncio、openai）额外保留其 NOTICE 文件（如有）并标注修改；
-3. 建议在应用内提供「开源许可」页面，或在安装目录放置本文件与各许可证全文。
+Obligations when you distribute
+-------------------------------
 
-生成完整清单的参考命令：
+All of the components above use permissive licenses (MIT / BSD / Apache-2.0 / ISC).
+**When you distribute the program to others** (for example a PyInstaller backend bundle
+plus an electron-builder desktop build), you must:
+
+1. keep the copyright notices and license texts of those components;
+2. for the Apache-2.0 components (pytest-asyncio, openai), also keep their NOTICE file
+   if present, and mark any files you modified;
+3. ideally ship an "Open source licenses" screen in the app, or place this file and the
+   full license texts in the installation directory.
+
+Reference commands to generate the complete list:
 
 ```bash
-# 后端
+# backend
 .venv/bin/pip install pip-licenses && .venv/bin/pip-licenses --format=markdown
-# 前端
+# frontend
 cd desktop && npx license-checker --summary
 ```
 
-可选的外部集成（不属于本仓库内容）
-----------------------------------
-「模板中心」的团队 / 角色 / 技能 / 提示词由本程序自带，是本项目的原创文本（见 `backend/app/presets.py`
-与 `backend/app/tools.py` 的 `EXAMPLE_SKILLS`），**不是**从第三方项目提取的，可以随程序分发。
+External integrations (not part of this repository)
+---------------------------------------------------
 
-- 你自己放进数据目录 `templates/` 的模板由你负责其内容与来源；若其中含第三方内容，
-  由你履行对应许可的义务（保留署名与许可证副本、标注「已修改」等）。
-- 「模板中心 → MCP」列出的服务器（如 `@modelcontextprotocol/server-filesystem`）只是**命令与参数的
-  推荐写法**，本程序不包含也不分发这些软件；使用前请自行阅读其许可与文档，导入后它们一律是停用状态。
+The template gallery's team / role / skill / prompt entries ship with the program and are
+original text written for this project (see `backend/app/presets.py` and `EXAMPLE_SKILLS`
+in `backend/app/tools.py`). They are not extracted from any third-party project and may
+be redistributed with the program.
 
-「外部智能体」功能同理：它只是调用你本机已安装的某个命令行程序。那些程序的许可与服务条款
-由你自行遵守，本程序与其开发者之间不存在任何关联、赞助或背书关系。
+- Templates you place in the `templates/` directory are your own responsibility; if they
+  contain third-party content, you are the one who must meet the corresponding license
+  obligations (attribution, a copy of the license, marking modifications, and so on).
+- The servers listed in the template gallery under **MCP** (for example
+  `@modelcontextprotocol/server-filesystem`) are only suggested commands and arguments.
+  This program neither contains nor distributes that software. Read its license and
+  documentation before using it; imported servers are always left disabled.
+
+The same applies to the external-agent feature: it only invokes a command-line program
+that is already installed on your machine. You are responsible for complying with that
+program's license and terms of service. This project has no affiliation with, and is not
+sponsored or endorsed by, its developers.

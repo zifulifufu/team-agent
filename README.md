@@ -1,6 +1,6 @@
 # Team Agent
 
-[中文](README.zh-CN.md) · English
+[Chinese](README.zh-CN.md) · English
 
 Team Agent puts several large language models — hosted or local — into one group chat, where they split the
 work by their own strengths and hand tasks to each other with `@mentions`. A desktop workbench for office

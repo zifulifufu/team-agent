@@ -6,19 +6,17 @@ node_modules/
 desktop/dist/
 *.db
 
-# --- 本机产物 ---
+# --- Local machine artifacts ---
 .DS_Store
 *.log
 desktop/.vite/
 desktop/index.html.bak
 
-# --- 本地开发脚本与产物(本机调试用,不进公开仓库) ---
-# _probe/ 是联调探针(其中 external.py 是 backend/app/external.py 的旧副本,已漂移)
-# _sync/  是一次性测试脚本与压缩包/清单/日志
+# --- Local dev scripts and artifacts (local debugging only, not part of the public repo) ---
 _probe/
 _sync/
 _backup-before-0.4.0/
 Claude outputs/
 
-# --- Agent 工作笔记(绝对路径/环境信息,默认不进仓库) ---
+# --- Agent working notes (absolute paths / environment details) ---
 .workbuddy/

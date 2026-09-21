@@ -2,7 +2,7 @@
   "name": "team-agent",
   "productName": "Team Agent",
   "version": "0.5.0",
-  "description": "多模型 agent 群聊协作工作台",
+  "description": "A multi-model agent group-chat workbench",
   "main": "electron/main.cjs",
   "private": true,
   "scripts": {
