@@ -22,3 +22,4 @@
 .pm-mode input[type="radio"] { width: auto; height: auto; flex: none; padding: 0; box-shadow: none; }
 .pm-mode > span { flex: 1; min-width: 0; }
 .pm-tool select { width: auto; flex: none; min-width: 130px; }
+.pm-text { width: 100%; max-width: 340px; flex: none; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }

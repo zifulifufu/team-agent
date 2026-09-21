@@ -258,6 +258,11 @@ DEFAULT_SETTINGS: dict = {
     "perm_timeout": 120,       # how many seconds to wait for your confirmation, after which it counts as a denial
     "perm_allow": [],          # tool names that are "always allowed"
     "perm_deny": [],           # tool names that are "always forbidden"
+    # ---- members writing and running code, off by default. Running code is an `exec`-risk
+    # tool, so with the default perm_mode the user is asked before every single run.
+    "code_enabled": False,
+    "code_timeout": 60,        # how long one run may take before it is killed (seconds)
+    "code_workdir": "",        # empty = <data dir>/workspace; only this directory is reachable as cwd
     # ---- memory <-> Obsidian: one folder in the vault to sync with (empty = disabled)
     "obsidian_dir": "",
     "obsidian_auto": False,    # when enabled, sync automatically every 30 seconds

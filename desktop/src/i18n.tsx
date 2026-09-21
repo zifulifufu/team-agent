@@ -1424,6 +1424,15 @@ const ZH: Record<string, string> = {
   "A read-only working directory is a starting point, not a fence. To limit what it can read, do not give it an account that can read what it should not.": "「只读」的工作目录只是起点,不是围栏;要限制读取范围,请不要给它读不该读的东西的账户权限。",
   "Files and web pages it reads can contain text trying to tell it what to do (prompt injection). The higher the permission, the bigger the risk.": "它读到的文件、网页内容都可能包含试图指挥它的文字(提示词注入),越高的权限风险越大。",
   "This app never changes any setting of the WorkBuddy application itself, including its own \"allow full access\".": "本程序不会改动 WorkBuddy 应用本身的任何设置(包括它自己的「允许完全访问」)。",
+  // ---------------------------------------------------------------- 设置 · 写代码与运行代码
+  "Writing and running code": "写代码与运行代码",
+  "Let members write and run code": "允许成员写并运行代码",
+  "Off by default. When on, members get a run_code tool: they write a program, it runs on this machine inside the workspace below, and the output comes back to them. There is no sandbox — the code runs with this app's privileges — so it asks you first under the rules above, and a run that exceeds the timeout is killed along with anything it started.": "默认关闭。打开后成员会获得一个「运行代码」工具:他们写一段程序,在本机下面的工作目录里运行,输出交回给他们。这里没有沙箱——代码以本程序的权限运行——所以按上面的规则会先问你;超过超时的运行会被终止,它启动的进程也一并终止。",
+  "Code run timeout": "代码运行超时",
+  "How long one run may take before it is killed, together with any process it started.": "单次运行最多允许多久,超过就终止,它启动的进程也一并终止。",
+  "Workspace": "工作目录",
+  "Runs happen here, and this is the only directory they can use as their working directory. Files written by a run stay here. Leave it empty to use {dir}.": "代码在这里运行,这也是它们唯一能用作工作目录的位置。运行中写出的文件都留在这里。留空则使用 {dir}。",
+  "the app's own workspace folder": "程序自己的工作目录",
 };
 
 let current: Lang = DEFAULT_LANG;

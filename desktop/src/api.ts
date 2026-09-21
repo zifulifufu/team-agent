@@ -321,6 +321,9 @@ export interface Settings {
   perm_timeout: number;            // Seconds to wait for your confirmation; a timeout counts as a refusal
   perm_allow: string[];            // Tool names set to Always allow
   perm_deny: string[];             // Tool names set to Always block
+  code_enabled: boolean;           // Let members write and run code in a workspace; off by default
+  code_timeout: number;            // Seconds one run may take before it is killed
+  code_workdir: string;            // Empty = <data dir>/workspace
 }
 export interface ObsidianReport {
   ok: boolean;
@@ -378,6 +381,8 @@ export interface Permissions {
     mcp: { id: string; name: string; enabled: boolean; kind: string; command: string }[];
     library_docs: number;
     groups: { id: string; name: string; plugins: number; mcp: number }[];
+    /** Where runs go when no custom workspace is set; shown as the placeholder */
+    code_default_dir: string;
   };
 }
 export interface RoutePreview {

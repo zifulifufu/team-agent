@@ -33,6 +33,9 @@ export default function PermissionsPage({ onTab }: PageProps) {
   const { set, err: saveErr, saving } = useSettingsSaver();
   const [perm, setPerm] = useState<Permissions | null>(null);
   const [loadErr, setLoadErr] = useState("");
+  // The workspace path is edited locally and committed on blur: saving every keystroke would
+  // fire a request per character, and a half-typed path is not a value worth storing.
+  const [workdir, setWorkdir] = useState<string | null>(null);
   const err = saveErr || loadErr;
 
   const load = useCallback(() => api.permissions().then(setPerm).catch((e) => setLoadErr((e as Error).message)), []);
@@ -135,6 +138,25 @@ export default function PermissionsPage({ onTab }: PageProps) {
         </Row>
         <Row title={t("Which groups enabled plugins / MCP")} desc={acc.groups.length ? acc.groups.map((g) => t("{name} ({plugins} plugins, {mcp} MCP)", { name: g.name, plugins: g.plugins, mcp: g.mcp })).join(", ") : t("No group has enabled any. A plugin or MCP server becomes visible to a group's members only after you tick it for that group.")}>
         </Row>
+      </div>
+
+      <div className="sec">{t("Writing and running code")}</div>
+      <div className="card flush">
+        <Row title={t("Let members write and run code")} desc={t("Off by default. When on, members get a run_code tool: they write a program, it runs on this machine inside the workspace below, and the output comes back to them. There is no sandbox — the code runs with this app's privileges — so it asks you first under the rules above, and a run that exceeds the timeout is killed along with anything it started.")}>
+          <Switch checked={settings.code_enabled} label={t("Let members write and run code")} onChange={(v) => void set({ code_enabled: v })} />
+        </Row>
+        {settings.code_enabled && (
+          <>
+            <Row title={t("Code run timeout")} desc={t("How long one run may take before it is killed, together with any process it started.")}>
+              <NumInput v={settings.code_timeout} min={5} max={600} unit={t("sec")} label={t("Code run timeout")} onCommit={(n) => set({ code_timeout: n })} />
+            </Row>
+            <Row title={t("Workspace")} desc={t("Runs happen here, and this is the only directory they can use as their working directory. Files written by a run stay here. Leave it empty to use {dir}.", { dir: acc.code_default_dir ?? t("the app's own workspace folder") })}>
+              <input className="pm-text" value={workdir ?? settings.code_workdir} placeholder={acc.code_default_dir ?? ""} spellCheck={false} aria-label={t("Workspace")}
+                onChange={(e) => setWorkdir(e.target.value)}
+                onBlur={() => { const v = workdir; setWorkdir(null); if (v !== null && v !== settings.code_workdir) void set({ code_workdir: v.trim() }); }} />
+            </Row>
+          </>
+        )}
       </div>
 
       <div className="sec">{t("Automation")}</div>

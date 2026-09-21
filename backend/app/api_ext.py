@@ -11,13 +11,14 @@ import re
 import tempfile
 import time
 import urllib.parse
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import i18n, modelopts, strengths as strength_lib
+from . import coderun, i18n, modelopts, strengths as strength_lib
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -33,7 +34,7 @@ from .prompting import VARIABLES, PromptBuilder, estimate_tokens, render_vars
 from .router import ModelRouter, has_credentials
 from .store import Store
 from .templates import create_group_from_template, ensure_agent_from_key
-from .toolhub import BUILTIN_TOOL_NAMES, ToolHub, builtin_specs
+from .toolhub import ToolHub, builtin_specs
 from .tools import (
     ToolRegistry,
     delete_skill,
@@ -464,8 +465,11 @@ def build_router(c: Ctx) -> APIRouter:
             tools.append({"name": spec["name"], "group": group, "risk": risk_of(spec), "risk_label": risk_label(risk_of(spec)),
                           "policy": c.toolhub.policy(spec)})
 
-        for n in BUILTIN_TOOL_NAMES:
-            row({"name": n, "source": "builtin"}, i18n.pick_now("built-in", "内置"))
+        # Built-ins are listed from their canonical specs, so the page shows the same risk the
+        # dispatcher uses. Handing this loop a hand-built {"name", "source"} dict would make
+        # every new built-in look read-only here — on the one page where the user decides.
+        for n, spec in builtin_specs().items():
+            row({**spec, "name": n, "source": "builtin"}, i18n.pick_now("built-in", "内置"))
         for p in c.registry.plugins.values():
             for t in c.registry.plugin_tools([p.id]):
                 row({"name": t.name, "source": "plugin"}, i18n.pick_now(f"Plugin · {p.name or p.id}", f"插件 · {p.name or p.id}"))
@@ -489,6 +493,7 @@ def build_router(c: Ctx) -> APIRouter:
                 "library_docs": len(store.list_docs()),
                 "groups": [{"id": g["id"], "name": g["name"], "plugins": len(g["ext"]["plugins"]), "mcp": len(g["ext"]["mcp"])}
                            for g in groups if g["ext"]["plugins"] or g["ext"]["mcp"]],
+                "code_default_dir": str(coderun.workspace_path(Path(store.data_dir), cfg)),
             },
         }
 

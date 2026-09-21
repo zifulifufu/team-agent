@@ -135,6 +135,25 @@ def test_policy_matrix():
     assert policy_for({**base, "perm_mode": "allow_all", "perm_deny": ["p"]}, plug) == "deny"
 
 
+def test_builtin_risk_comes_from_the_spec_not_the_name():
+    """A built-in that runs something must not be advertised as read-only.
+
+    Two consumers read the risk: dispatch (through the per-call spec) and the Permissions
+    page. They have to agree, so the value lives in BUILTIN_SPECS and both read it from
+    there. The name-based fallback files anything unknown under "read", which is how
+    `run_code` would have been shown as safe while actually asking (or, once "always
+    allowed", running without asking).
+    """
+    from app.toolhub import builtin_specs
+
+    specs = builtin_specs()
+    assert risk_of({**specs["run_code"], "name": "run_code", "source": "builtin"}) == "exec"
+    assert risk_of({**specs["memory_save"], "name": "memory_save", "source": "builtin"}) == "write"
+    assert risk_of({**specs["library_search"], "name": "library_search", "source": "builtin"}) == "read"
+    # The fallback still exists for specs built without the field (MCP, plugin, older shapes)
+    assert risk_of({"name": "run_code", "source": "builtin"}) == "read"
+
+
 def test_api_permissions_and_validation(tmp_path):
     app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好"))
     c = TestClient(app, base_url="http://127.0.0.1")
@@ -142,6 +161,9 @@ def test_api_permissions_and_validation(tmp_path):
     assert p["mode"] == "ask_risky" and p["timeout"] == 120 and p["allow"] == [] and p["deny"] == []
     names = {t["name"]: t for t in p["tools"]}
     assert names["current_time"]["policy"] == "allow" and names["memory_save"]["risk"] == "write"
+    # What the page reports has to equal what the dispatcher does, else the user is told a
+    # tool is read-only while it asks (or runs) like an exec tool.
+    assert names["run_code"]["risk"] == "exec" and names["run_code"]["policy"] == "ask"
     assert p["access"]["external_calls"] is True and p["access"]["data_dir"]
     assert c.put("/api/settings", json={"perm_mode": "yolo"}).status_code == 400
     assert c.put("/api/settings", json={"perm_timeout": 5}).status_code == 400

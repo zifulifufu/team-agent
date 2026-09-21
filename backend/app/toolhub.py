@@ -1,22 +1,24 @@
 """Unified tool dispatch: built-in tools + plugin tools + MCP tools, giving each member a list
 of what is usable based on "what this group has enabled".
 
-Built-in tools: current_time / library_search / library_read / memory_search / memory_save.
-Whether they are available depends on the group settings (library switch, memory switch),
-while plugins and MCP tools only become usable once ticked for the group — ticking is your
-authorization for "let members of this group call it on their own". Every call is recorded in
-the message's tool trace and is visible below the bubble.
+Built-in tools: current_time / library_search / library_read / memory_search / memory_save /
+run_code (only when "let members run code" is on). Whether they are available depends on the
+group settings (library switch, memory switch), while plugins and MCP tools only become usable
+once ticked for the group — ticking is your authorization for "let members of this group call
+it on their own". Every call is recorded in the message's tool trace and is visible below the
+bubble.
 """
 
 from __future__ import annotations
 
-from . import i18n
+from . import coderun, i18n
 
 import asyncio
 import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .approvals import policy_for
@@ -94,11 +96,37 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "preference, a decision, a lesson). Never record keys, passwords or personal "
                        "data.",
         "description_zh": "把一条长期有用的信息记入本群记忆(偏好、决定、教训)。不要记密钥、密码和个人隐私。",
+        # The risk lives with the spec so that every consumer — dispatch and the Permissions
+        # page alike — sees the same value. Building a spec by hand and letting risk_of infer
+        # from the name is how a new built-in ends up advertised as read-only.
+        "risk": "write",
         "parameters": {"type": "object", "properties": {
             "content": {"type": "string", "description": "One sentence, at most 120 characters",
                         "description_zh": "一句话,不超过 120 字"},
             "kind": {"type": "string", "enum": ["preference", "fact", "decision", "lesson"]}},
             "required": ["content"]},
+    },
+    "run_code": {
+        "description": "Write a program and run it, then read its output. Use it to calculate "
+                       "something, transform a file, or try a snippet out. The working directory "
+                       "is a private workspace: files you write there stay there. There is no "
+                       "interaction and no long-running process — the run is killed when it "
+                       "times out. Python is the usual choice; shell is for short commands.",
+        "description_zh": "写一段程序并运行,再读它的输出。适合做计算、转换文件、试一小段代码。工作目录是"
+                          "专属的:你在里面写的文件就留在里面。不支持交互和长时间运行的进程,超时会被终止。"
+                          "一般用 python,shell 适合短命令。",
+        # Every built-in carries its own `risk` (see BUILTIN_SPECS); this is the one place
+        # that copies it into the per-call spec, so dispatch and the Permissions page agree.
+        "risk": "exec",
+        "parameters": {"type": "object", "properties": {
+            "language": {"type": "string", "enum": ["python", "shell"],
+                         "description": "python or shell", "description_zh": "python 或 shell"},
+            "code": {"type": "string", "description": "The program text",
+                     "description_zh": "程序正文"},
+            "cwd": {"type": "string",
+                    "description": "Optional subdirectory of the workspace to run in",
+                    "description_zh": "可选:工作目录下的子目录,在这里运行"}},
+            "required": ["language", "code"]},
     },
 }
 
@@ -133,7 +161,8 @@ class ToolHub:
         specs = builtin_specs()          # descriptions in the request language
 
         def add(name: str, spec: dict, **extra: Any) -> None:
-            ctx.tools[name] = {"name": name, "description": spec["description"], "parameters": spec["parameters"], **extra}
+            ctx.tools[name] = {"name": name, "description": spec["description"], "parameters": spec["parameters"],
+                               "risk": spec.get("risk"), **extra}
 
         add("current_time", specs["current_time"], source="builtin")
         if ext["library"]["mode"] != "off" and self.store.list_docs():
@@ -142,6 +171,8 @@ class ToolHub:
         if cfg["memory_enabled"] and ext["memory"]:
             add("memory_search", specs["memory_search"], source="builtin")
             add("memory_save", specs["memory_save"], source="builtin")
+        if cfg["code_enabled"]:
+            add("run_code", specs["run_code"], source="builtin")
         for t in self.registry.plugin_tools(ext["plugins"]):
             if t.name in ctx.tools or t.name in BUILTIN_TOOL_NAMES:   # a plugin cannot displace a built-in tool (permission checks go by name)
                 ctx.problems.append(i18n.pick_now(f"The plugin tool \"{t.name}\" has the same name as a built-in tool, so it was ignored.", f"插件工具「{t.name}」和内置工具重名,已忽略。"))
@@ -256,4 +287,15 @@ When it is not supplied, calls needing confirmation are always denied."""
             kind = args.get("kind") if args.get("kind") in ("preference", "fact", "decision", "lesson") else "fact"
             self.memory.save_manual(content, "group", group["id"], kind, "auto")
             return i18n.pick_now("Saved to this group's memory.", "已记入本群记忆。"), True
+        if name == "run_code":
+            cfg = self.store.get_settings()
+            workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg)
+            cwd, why = coderun.resolve_cwd(workspace, str(args.get("cwd") or ""))
+            if cwd is None:
+                return why, False
+            limit = max(500, int(cfg["tool_output_limit"]))
+            return await coderun.run(
+                str(args.get("language") or "python"), str(args.get("code") or ""),
+                cwd, workspace, max(1.0, float(cfg["code_timeout"])), limit,
+            )
         return i18n.pick_now(f"Built-in tool {name} is not implemented", f"未实现的内置工具 {name}"), False
