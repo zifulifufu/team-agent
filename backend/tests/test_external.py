@@ -306,7 +306,9 @@ def test_external_turn_replies_in_group_and_hands_off(store, make_router, fake_e
     log = json.loads(fake_env.read_text())
     assert "帮我读一下文件" in log["stdin"] and "【群聊记录】" in log["stdin"]
     sysprompt = opt(log["argv"], "--append-system-prompt")
-    assert "外部智能体须知" in sysprompt and "只读" in sysprompt and "外部智能体(WorkBuddy)" in sysprompt
+    # 「须知」是外部智能体自己的提示词(仍为中文);分工表里的模型一栏按界面语言走
+    assert "外部智能体须知" in sysprompt and "只读" in sysprompt
+    assert "external agent (WorkBuddy)" in sysprompt
     assert "<tool_call>" not in log["stdin"]                     # 不把本程序的文本工具协议塞给它
     deltas = "".join(e["text"] for e in col.events if e["type"] == "delta" and e["message_id"] == wb["id"])
     assert "先看看" not in deltas and "读完了" in deltas or "我先看看文件" in deltas
@@ -375,7 +377,8 @@ def test_roster_and_variables_do_not_route_external_member(store, make_router, f
     orch, g, a = group_with_external(store, make_router, FakeLLM(default="x"))
     members = store.group_members(g["id"])
     text = orch.prompts.roster_text(members)
-    assert "WorkBuddy(外部智能体)" in text and "模型:外部智能体(WorkBuddy)" in text
+    # 成员的岗位来自数据(这里是测试自己建的「外部智能体」),模型一栏才是本地化的
+    assert "WorkBuddy(外部智能体)" in text and "model: external agent (WorkBuddy)" in text
     vals = orch.prompts.values(store.get_group(g["id"]), a, members)
     assert vals["model_name"] == "WorkBuddy"
 

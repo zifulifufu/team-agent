@@ -21,9 +21,9 @@ from .approvals import RISK_LABEL, Approvals, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
 from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug
-from .presets import builtin_names
-from .templates import member_view
-from .gallery import MCP_TEMPLATES
+from .presets import builtin_names, localize_prompt, localize_system_prompt
+from .templates import group_view, member_view, skill_list_view, template_rows
+from .gallery import MCP_TEMPLATES, mcp_display_name as display_mcp_name
 from .memory import MemoryService
 from .obsidian import ObsidianError, ObsidianSync
 from .orchestrator import Orchestrator
@@ -33,7 +33,15 @@ from .router import ModelRouter, has_credentials
 from .store import Store
 from .templates import create_group_from_template, ensure_agent_from_key
 from .toolhub import BUILTIN_SPECS, ToolHub
-from .tools import ToolRegistry, delete_skill, list_skills, safe_skill_name, write_skill
+from .tools import (
+    ToolRegistry,
+    delete_skill,
+    list_skills,
+    localize_skill,
+    safe_skill_name,
+    skill_names,
+    write_skill,
+)
 from .updater import CURATED, GitHubError, Updater
 
 MASK = "••••••"
@@ -280,7 +288,8 @@ def build_router(c: Ctx) -> APIRouter:
                 problem = next((s.detail for s in skipped if s.model_id == m["model_id"]), "") or "暂时不可用"
             rows.append({
                 "agent_id": m["id"], "name": m["name"], "avatar": m["avatar"], "role": m["role"], "tags": m["tags"],
-                "is_host": bool(host and m["id"] == host["id"]), "skills": m["skills"],
+                "is_host": bool(host and m["id"] == host["id"]),
+                "skills": skill_list_view(m["skills"]),
                 "model": ({"id": model["id"], "display_name": model["display_name"], "strengths": model["strengths"],
                            "is_local": model["is_local"]} if model else None),
                 "manual_model": bool(m["model_id"]), "strengths": e["strengths"], "origin": m.get("origin", ""), "engine": m.get("engine", ""),
@@ -300,7 +309,7 @@ def build_router(c: Ctx) -> APIRouter:
         group = _need(store.get_group(gid), "群聊")
         p = _need(store.get_prompt(body.prompt_id), "提示词")
         text = p["content"] if body.mode == "replace" or not group["prompt"].strip() else group["prompt"].rstrip() + "\n\n" + p["content"]
-        return store.update_group(gid, {"prompt": text})  # type: ignore[return-value]
+        return group_view(store.update_group(gid, {"prompt": text}))  # type: ignore[arg-type]
 
     @r.get("/api/agent-presets")
     async def agent_presets() -> list[dict]:
@@ -313,7 +322,7 @@ def build_router(c: Ctx) -> APIRouter:
         _need(store.get_group(gid), "群聊")
         agent = _need(ensure_agent_from_key(store, body.key), "预设")
         store.add_member(gid, agent["id"])
-        return store.get_group(gid)  # type: ignore[return-value]
+        return group_view(store.get_group(gid))  # type: ignore[arg-type]
 
     @r.post("/api/groups/{gid}/members/from-model")
     async def member_from_model(gid: str, body: ModelMemberIn) -> dict:
@@ -324,11 +333,11 @@ def build_router(c: Ctx) -> APIRouter:
             raise HTTPException(400, "这个模型或它的服务商已停用,先在「模型服务」里启用")
         agent = _need(store.ensure_model_agent(body.model_id), "模型")
         store.add_member(gid, agent["id"])
-        return store.get_group(gid)  # type: ignore[return-value]
+        return group_view(store.get_group(gid))  # type: ignore[arg-type]
 
     @r.get("/api/templates")
     async def templates() -> list[dict]:
-        return TEMPLATES
+        return template_rows()
 
     @r.post("/api/templates/{tid}/create-group")
     async def template_create(tid: str, body: TemplateIn) -> dict:
@@ -516,8 +525,10 @@ def build_router(c: Ctx) -> APIRouter:
     # ================================================================ mcp
     def mcp_view(m: dict) -> dict:
         st = c.mcp.state(m["id"])
+        lang = i18n.current()
         return {
             **{k: v for k, v in m.items() if k not in ("env", "headers")},
+            "name": display_mcp_name(m["name"], lang),
             "env": _mask(m["env"]), "headers": _mask(m["headers"]),
             "transport_effective": pick_transport(m),
             "status": st.status if st else "idle", "error": st.error if st else "",
@@ -536,7 +547,7 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/mcp/templates")
     async def mcp_templates() -> list[dict]:
-        return MCP_TEMPLATES
+        return i18n.localize(MCP_TEMPLATES)
 
     @r.get("/api/mcp")
     async def mcp_list() -> list[dict]:
@@ -627,20 +638,27 @@ def build_router(c: Ctx) -> APIRouter:
 
     # ============================================================ skills
     def skill_view(s, with_body: bool = False) -> dict:  # type: ignore[no-untyped-def]
+        # A built-in skill is stored language-neutrally; show it in the request language
+        # (anything the user rewrote stays as they wrote it).
+        shown = localize_skill(s, i18n.current())
         src = store.get_source("skill", s.name)
-        out = {**s.summary(), "source": ({"repo": src["repo"], "path": src["path"]} if src else None)}
+        out = {**shown.summary(), "source": ({"repo": src["repo"], "path": src["path"]} if src else None)}
         if with_body:
-            out["body"] = s.body
+            out["body"] = shown.body
         return out
 
     @r.get("/api/skills")
     async def skills() -> list[dict]:
         return [skill_view(s) for s in list_skills(store.data_dir / "skills")]
 
+    def find_skill(name: str):  # type: ignore[no-untyped-def]
+        """The installed skill answering to `name`, in either language."""
+        return next((x for x in list_skills(store.data_dir / "skills")
+                     if x.name == name or name in skill_names(x.name)), None)
+
     @r.get("/api/skills/{name}")
     async def skill_get(name: str) -> dict:
-        s = next((x for x in list_skills(store.data_dir / "skills") if x.name == name), None)
-        return skill_view(_need(s, "技能"), True)
+        return skill_view(_need(find_skill(name), i18n.pick_now("Skill", "技能")), True)
 
     @r.post("/api/skills")
     async def skill_create(body: SkillIn) -> dict:
@@ -791,11 +809,13 @@ def build_router(c: Ctx) -> APIRouter:
     # ============================================================ prompts
     @r.get("/api/prompts")
     async def prompts_list() -> dict:
+        lang = i18n.current()
         return {
-            "prompts": store.list_prompts(),
-            "system_prompt": store.get_settings()["system_prompt"],
-            "default_system_prompt": DEFAULT_SYSTEM_PROMPT,
-            "variables": [{"name": n, "desc": d} for n, d in VARIABLES],
+            "prompts": [localize_prompt(p, lang) for p in store.list_prompts()],
+            "system_prompt": localize_system_prompt(store.get_settings()["system_prompt"], lang),
+            "default_system_prompt": localize_system_prompt(DEFAULT_SYSTEM_PROMPT, lang),
+            "variables": [{"name": n, "desc": i18n.pick(lang, d_en, d_zh)}
+                          for n, d_en, d_zh in VARIABLES],
         }
 
     @r.post("/api/prompts")

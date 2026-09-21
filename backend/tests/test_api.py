@@ -89,7 +89,11 @@ def test_empty_message_rejected(client):
 
 
 def test_skills_tools_mcp(client):
-    assert {s["name"] for s in client.get("/api/skills").json()} >= {"公文写作规范", "短视频分镜规范"}
+    # 内置技能默认以英文返回;中文界面下同一批技能以中文名返回
+    assert {s["name"] for s in client.get("/api/skills").json()} >= {
+        "Office writing conventions", "Short video storyboards"}
+    assert {s["name"] for s in client.get("/api/skills", params={"lang": "zh"}).json()} >= {
+        "公文写作规范", "短视频分镜规范"}
     assert "current_time" in [t["name"] for t in client.get("/api/tools").json()["tools"]]
     m = client.post("/api/mcp", json={"name": "fs", "command": "npx", "args": ["-y", "x"]}).json()
     assert client.get("/api/mcp").json()[0]["args"] == ["-y", "x"]

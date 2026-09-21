@@ -28,10 +28,28 @@ from typing import Any
 
 from .presets import builtin_for, builtin_names
 from . import i18n
-from .presets import AGENT_PRESETS, SEED_AGENTS, SEED_PROMPTS, TEMPLATES
+from .presets import (
+    AGENT_PRESETS,
+    SEED_AGENTS,
+    SEED_PROMPTS,
+    TEMPLATES,
+    display_name,
+    localize_prompt,
+    prompt_for,
+    prompt_titles,
+)
 from .store import Store
 from .templates import ensure_agent
-from .tools import EXAMPLE_SKILLS, list_skills, write_skill
+from .templates import group_view
+from .tools import (
+    EXAMPLE_SKILLS,
+    canonical_skill_name,
+    display_skill_name,
+    list_skills,
+    skill_for,
+    skill_names,
+    write_skill,
+)
 
 CATALOG_VERSION = "2.0.0"      # 目录内容版本(语义化):模板有增改时升这个号
 SCHEMA_VERSION = 1            # 自定义模板文件格式版本
@@ -43,31 +61,93 @@ PLACEHOLDER_DIR = "/path/to/allowed/dir"
 # MCP 用法清单(唯一数据源;api_ext 的 /api/mcp/templates 也从这里取)。
 # 这些只是「预填表单」:命令与参数都要你自己核对,导入后一律停用。
 MCP_TEMPLATES: list[dict] = [
-    {"name": "文件系统", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", PLACEHOLDER_DIR],
-     "env_keys": [], "note": "让成员读写指定目录里的文件。最后一个参数换成你允许访问的目录。需要 Node.js。"},
-    {"name": "网页抓取", "command": "uvx", "args": ["mcp-server-fetch"],
-     "env_keys": [], "note": "抓取网页并转成文本,成员可以读链接内容。需要 uv(uvx)。"},
-    {"name": "知识图谱记忆", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"],
-     "env_keys": [], "note": "MCP 官方的记忆服务器(与本程序自带的「记忆」是两套东西)。需要 Node.js。"},
-    {"name": "顺序思考", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-     "env_keys": [], "note": "帮助模型把复杂问题分步思考。需要 Node.js。"},
-    {"name": "浏览器(Playwright)", "command": "npx", "args": ["@playwright/mcp@latest"],
+    # Pre-filled forms, not a one-click install: the command and arguments are yours to
+    # check, and anything imported this way starts disabled. English is the canonical
+    # value; `<field>_zh` carries the Chinese wording and i18n.localize() picks one.
+    {"key": "filesystem", "name": "Filesystem", "name_zh": "文件系统",
+     "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", PLACEHOLDER_DIR],
      "env_keys": [],
-     "note": "让成员驱动真实的浏览器:打开网页、点击、填写。属于执行类工具,默认每次调用前都会问你。"
-             "首次使用可能要下载浏览器,具体参数以 Playwright MCP 项目的文档为准。需要 Node.js。"},
-    {"name": "时间与时区", "command": "uvx", "args": ["mcp-server-time"], "env_keys": [],
-     "note": "查询和换算各地时间。需要 uv(uvx)。"},
-    {"name": "Git", "command": "uvx", "args": ["mcp-server-git", "--repository", "/path/to/repo"],
-     "env_keys": [], "note": "读取指定 Git 仓库的历史和差异。把最后的路径换成你的仓库。需要 uv(uvx)。"},
+     "note": "Let members read and write files in one directory. Replace the last argument with the directory they may access. Requires Node.js.",
+     "note_zh": "让成员读写指定目录里的文件。最后一个参数换成你允许访问的目录。需要 Node.js。"},
+    {"key": "fetch", "name": "Web fetch", "name_zh": "网页抓取",
+     "command": "uvx", "args": ["mcp-server-fetch"],
+     "env_keys": [],
+     "note": "Fetch a web page and turn it into text so members can read what is behind a link. Requires uv (uvx).",
+     "note_zh": "抓取网页并转成文本,成员可以读链接内容。需要 uv(uvx)。"},
+    {"key": "memory", "name": "Knowledge-graph memory", "name_zh": "知识图谱记忆",
+     "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"],
+     "env_keys": [],
+     "note": "The official MCP memory server — a different thing from the built-in Memory feature of this app. Requires Node.js.",
+     "note_zh": "MCP 官方的记忆服务器(与本程序自带的「记忆」是两套东西)。需要 Node.js。"},
+    {"key": "sequential-thinking", "name": "Sequential thinking", "name_zh": "顺序思考",
+     "command": "npx", "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+     "env_keys": [],
+     "note": "Helps the model work through a complex problem step by step. Requires Node.js.",
+     "note_zh": "帮助模型把复杂问题分步思考。需要 Node.js。"},
+    {"key": "playwright", "name": "Browser (Playwright)", "name_zh": "浏览器(Playwright)",
+     "command": "npx", "args": ["@playwright/mcp@latest"],
+     "env_keys": [],
+     "note": "Let members drive a real browser: open pages, click, fill things in. This is an "
+             "execution-class tool, so by default you are asked before every call. The browser may "
+             "need downloading on first use; check the Playwright MCP project docs for the exact "
+             "arguments. Requires Node.js.",
+     "note_zh": "让成员驱动真实的浏览器:打开网页、点击、填写。属于执行类工具,默认每次调用前都会问你。"
+                "首次使用可能要下载浏览器,具体参数以 Playwright MCP 项目的文档为准。需要 Node.js。"},
+    {"key": "time", "name": "Time and time zones", "name_zh": "时间与时区",
+     "command": "uvx", "args": ["mcp-server-time"],
+     "env_keys": [],
+     "note": "Look up and convert the time in other places. Requires uv (uvx).",
+     "note_zh": "查询和换算各地时间。需要 uv(uvx)。"},
+    {"key": "git", "name": "Git", "name_zh": "Git",
+     "command": "uvx", "args": ["mcp-server-git", "--repository", "/path/to/repo"],
+     "env_keys": [],
+     "note": "Read the history and diffs of a Git repository. Replace the trailing path with your repository. Requires uv (uvx).",
+     "note_zh": "读取指定 Git 仓库的历史和差异。把最后的路径换成你的仓库。需要 uv(uvx)。"},
 ]
 
 CATEGORIES: list[dict] = [
-    {"id": "team", "label": "团队", "hint": "一键建成群聊:成员、群主、群规则、依赖的技能一次装好。"},
-    {"id": "agent", "label": "角色", "hint": "单个成员:可以单独创建,也可以直接拉进已有的群。"},
-    {"id": "skill", "label": "技能", "hint": "写给模型看的纯文本方法与规范,不会执行任何代码。"},
-    {"id": "prompt", "label": "提示词", "hint": "常用提示词:存进提示词库后,可挂给某个群或设为全局。"},
-    {"id": "mcp", "label": "MCP", "hint": "外部工具的接入写法:导入后一律停用,核对命令并填好密钥再启用。"},
+    {"id": "team", "label": "Teams", "label_zh": "团队",
+     "hint": "One click builds a group chat: the members, the host, the group rules, and the skills they need are all installed together.",
+     "hint_zh": "一键建成群聊:成员、群主、群规则、依赖的技能一次装好。"},
+    {"id": "agent", "label": "Roles", "label_zh": "角色",
+     "hint": "A single member: create it on its own, or pull it straight into a group you already have.",
+     "hint_zh": "单个成员:可以单独创建,也可以直接拉进已有的群。"},
+    {"id": "skill", "label": "Skills", "label_zh": "技能",
+     "hint": "Plain-text methods and conventions written for the model to read; nothing is executed.",
+     "hint_zh": "写给模型看的纯文本方法与规范,不会执行任何代码。"},
+    {"id": "prompt", "label": "Prompts", "label_zh": "提示词",
+     "hint": "Prompt snippets: keep them in the library, then attach one to a group or make it global.",
+     "hint_zh": "常用提示词:存进提示词库后,可挂给某个群或设为全局。"},
+    {"id": "mcp", "label": "MCP", "label_zh": "MCP",
+     "hint": "How to wire in an external tool: it is imported disabled, so check the command and fill in the keys before you enable it.",
+     "hint_zh": "外部工具的接入写法:导入后一律停用,核对命令并填好密钥再启用。"},
 ]
+
+# Both spellings of a built-in MCP server name resolve to the same entry, so a server
+# added before the content was translated still counts as "already added".
+MCP_ALIASES: dict[str, dict] = {}
+for _m in MCP_TEMPLATES:
+    for _name in (_m.get("key"), _m.get("name"), _m.get("name_zh")):
+        if _name:
+            MCP_ALIASES.setdefault(_name, _m)
+
+
+def mcp_display_name(name: str | None, lang: str) -> str:
+    """A built-in MCP server name as shown in `lang` (either spelling resolves)."""
+    entry = MCP_ALIASES.get(name or "")
+    if not entry:
+        return name or ""
+    return (entry.get("name_zh") if lang == "zh" else entry["name"]) or (name or "")
+
+
+def mcp_names(name: str | None) -> list[str]:
+    """Every spelling a stored MCP server name might have been written in."""
+    entry = MCP_ALIASES.get(name or "")
+    if not entry:
+        return [name] if name else []
+    return [n for n in (entry.get("name"), entry.get("name_zh")) if n]
+
+
 KINDS: tuple[str, ...] = tuple(c["id"] for c in CATEGORIES)
 CUSTOM_KINDS: tuple[str, ...] = ("team", "agent", "skill", "prompt")   # 自定义模板不允许 mcp
 
@@ -102,20 +182,40 @@ def _member_defs() -> dict[str, dict]:
 
 
 # --------------------------------------------------------------------- 内置条目
+def _skill_display(name: str, lang: str | None = None) -> str:
+    """A built-in skill name as shown in `lang` (either spelling resolves)."""
+    return display_skill_name(name, lang or i18n.current())
+
+
 def _team_rows() -> list[dict]:
     who = _member_defs()
     out = []
     for t in TEMPLATES:
-        members = [{"name": n, "avatar": (who.get(n) or {}).get("avatar", "🤖"),
-                    "role": (who.get(n) or {}).get("role", "")} for n in t.get("members", [])]
+        members = []
+        for n in t.get("members", []):
+            d = who.get(n) or {}
+            members.append({"name": d.get("name", n), "name_zh": d.get("name_zh", ""),
+                            "avatar": d.get("avatar", "🤖"),
+                            "role": d.get("role", ""), "role_zh": d.get("role_zh", "")})
+        skills = list(t.get("skills", []))
         out.append({
-            "id": f"team:{t['id']}", "kind": "team", "name": t["name"],
-            "summary": t.get("desc", ""), "icon": _TEAM_ICONS.get(t["id"], _ICONS["team"]),
-            "tags": [f"{len(members)} 个角色"], "source": "builtin", "home": bool(t.get("home", True)),
-            "preview": {"members": members, "host": t.get("host", ""), "skills": list(t.get("skills", [])),
-                        "prompt": _clip(t.get("prompt", ""), 200)},
+            "id": f"team:{t['id']}", "kind": "team",
+            "name": t["name"], "name_zh": t.get("name_zh", ""),
+            "summary": t.get("desc", ""), "summary_zh": t.get("desc_zh", ""),
+            "icon": _TEAM_ICONS.get(t["id"], _ICONS["team"]),
+            "tags": [f"{len(members)} roles"], "tags_zh": [f"{len(members)} 个角色"],
+            "source": "builtin", "home": bool(t.get("home", True)),
+            # `preview` is for display only, so it carries both languages; `def` is what
+            # gets installed and therefore stays canonical.
+            "preview": {"members": members,
+                        "host": display_name(t.get("host", ""), "en"),
+                        "host_zh": display_name(t.get("host", ""), "zh"),
+                        "skills": [_skill_display(s, "en") for s in skills],
+                        "skills_zh": [_skill_display(s, "zh") for s in skills],
+                        "prompt": _clip(t.get("prompt", ""), 200),
+                        "prompt_zh": _clip(t.get("prompt_zh", ""), 200)},
             "def": {"members": list(t.get("members", [])), "host": t.get("host", ""),
-                    "skills": list(t.get("skills", [])), "prompt": t.get("prompt", ""), "name": t["name"]},
+                    "skills": skills, "prompt": t.get("prompt", ""), "name": t["name"]},
         })
     return out
 
@@ -147,15 +247,21 @@ def _agent_rows() -> list[dict]:
 
 def _skill_rows() -> list[dict]:
     out = []
-    for name, ex in EXAMPLE_SKILLS.items():
+    for key, ex in EXAMPLE_SKILLS.items():
         scope = ex.get("scope", "member")
         out.append({
-            "id": f"skill:{name}", "kind": "skill", "name": name,
-            "summary": ex.get("description", ""), "icon": _ICONS["skill"],
-            "tags": ["群聊规则" if scope == "group" else "成员技能"], "source": "builtin",
-            "preview": {"description": ex.get("description", ""), "scope": scope,
-                        "body": _clip(ex.get("body", ""), 220)},
-            "def": {"name": name, "description": ex.get("description", ""),
+            "id": f"skill:{key}", "kind": "skill",
+            "name": ex["name"], "name_zh": ex.get("name_zh", ""),
+            "summary": ex.get("description", ""), "summary_zh": ex.get("description_zh", ""),
+            "icon": _ICONS["skill"],
+            "tags": ["Group rule" if scope == "group" else "Member skill"],
+            "tags_zh": ["群聊规则" if scope == "group" else "成员技能"],
+            "source": "builtin",
+            "preview": {"description": ex.get("description", ""),
+                        "description_zh": ex.get("description_zh", ""), "scope": scope,
+                        "body": _clip(ex.get("body", ""), 220),
+                        "body_zh": _clip(ex.get("body_zh", ""), 220)},
+            "def": {"name": ex["name"], "description": ex.get("description", ""),
                     "body": ex.get("body", ""), "scope": scope},
         })
     return out
@@ -166,10 +272,16 @@ def _prompt_rows() -> list[dict]:
     for p in SEED_PROMPTS:
         kind = p.get("kind", "general")
         out.append({
-            "id": f"prompt:{p['title']}", "kind": "prompt", "name": p["title"],
-            "summary": _clip(p.get("content", ""), 90), "icon": _ICONS["prompt"],
-            "tags": ["群提示词" if kind == "group" else "通用"], "source": "builtin",
-            "preview": {"kind": kind, "content": _clip(p.get("content", ""), 200)},
+            "id": f"prompt:{p['key']}", "kind": "prompt",
+            "name": p["title"], "name_zh": p.get("title_zh", ""),
+            "summary": _clip(p.get("content", ""), 90),
+            "summary_zh": _clip(p.get("content_zh", ""), 90),
+            "icon": _ICONS["prompt"],
+            "tags": ["Group prompt" if kind == "group" else "General"],
+            "tags_zh": ["群提示词" if kind == "group" else "通用"],
+            "source": "builtin",
+            "preview": {"kind": kind, "content": _clip(p.get("content", ""), 200),
+                        "content_zh": _clip(p.get("content_zh", ""), 200)},
             "def": {"title": p["title"], "content": p.get("content", ""),
                     "kind": kind, "use_globally": bool(p.get("use_globally"))},
         })
@@ -180,11 +292,15 @@ def _mcp_rows() -> list[dict]:
     out = []
     for m in MCP_TEMPLATES:
         out.append({
-            "id": f"mcp:{m['name']}", "kind": "mcp", "name": m["name"],
-            "summary": m.get("note", ""), "icon": _ICONS["mcp"],
-            "tags": ["导入后停用"], "source": "builtin",
+            "id": f"mcp:{m['key']}", "kind": "mcp",
+            "name": m["name"], "name_zh": m.get("name_zh", ""),
+            "summary": m.get("note", ""), "summary_zh": m.get("note_zh", ""),
+            "icon": _ICONS["mcp"],
+            "tags": ["Imported disabled"], "tags_zh": ["导入后停用"],
+            "source": "builtin",
             "preview": {"command": m.get("command", ""), "args": list(m.get("args", [])),
-                        "env_keys": list(m.get("env_keys", [])), "note": m.get("note", "")},
+                        "env_keys": list(m.get("env_keys", [])), "note": m.get("note", ""),
+                        "note_zh": m.get("note_zh", "")},
             "def": {"name": m["name"], "command": m.get("command", ""),
                     "args": list(m.get("args", [])), "env_keys": list(m.get("env_keys", [])),
                     "note": m.get("note", "")},
@@ -403,27 +519,51 @@ def _states(store: Store) -> dict:
     return {
         "groups": [g["name"] for g in store.list_groups()],
         "agents": {n for a in store.list_agents() for n in (builtin_names(builtin_for(a["name"])) or [a["name"]])},
-        "skills": {s.name for s in list_skills(store.data_dir / "skills")},
-        "prompts": {p["title"] for p in store.list_prompts()},
-        "mcp": {m["name"] for m in store.list_mcp()},
+        "skills": {n for s in list_skills(store.data_dir / "skills") for n in skill_names(s.name)},
+        "prompts": {n for p in store.list_prompts() for n in prompt_titles(p["title"])},
+        "mcp": {n for m in store.list_mcp() for n in mcp_names(m["name"])},
     }
 
 
-def _state(item: dict, st: dict) -> tuple[bool, str]:
-    kind, name = item["kind"], item["name"]
+def _spellings(item: dict) -> list[str]:
+    """Every spelling the built-in item's name may have been stored under.
+
+    An item returned to the client carries only the requested language, so the other
+    spelling is recovered from the id (teams) or from the built-in tables — that is what
+    keeps the "already installed" badge correct after a language switch.
+    """
+    kind, ident = item["kind"], item.get("id", "")
     if kind == "team":
-        n = sum(1 for g in st["groups"] if g == name or g.startswith(name + " "))
+        t = next((x for x in TEMPLATES if f"team:{x['id']}" == ident), None)
+        out = [n for n in ((t or {}).get("name"), (t or {}).get("name_zh")) if n]
+        return out or [item["name"]]
+    if kind == "agent":
+        return builtin_names(builtin_for(item["name"])) or [item["name"]]
+    if kind == "skill":
+        return skill_names(item["name"]) or [item["name"]]
+    if kind == "prompt":
+        return prompt_titles(item["name"]) or [item["name"]]
+    if kind == "mcp":
+        return mcp_names(item["name"]) or [item["name"]]
+    return [item["name"]]
+
+
+def _state(item: dict, st: dict) -> tuple[bool, str]:
+    kind = item["kind"]
+    names = _spellings(item)
+    if kind == "team":
+        n = sum(1 for g in st["groups"] if any(g == nm or g.startswith(nm + " ") for nm in names))
         return (n > 0, i18n.pick_now(f"{n} already created", f"已建 {n} 个群") if n else "")
     if kind == "agent":
-        ok = name in st["agents"]
+        ok = any(nm in st["agents"] for nm in names)
         return (ok, i18n.pick_now("A member with this name exists", "已有同名成员") if ok else "")
     if kind == "skill":
-        ok = name in st["skills"]
+        ok = any(nm in st["skills"] for nm in names)
         return (ok, i18n.pick_now("Already in the skill library", "已在技能库") if ok else "")
     if kind == "prompt":
-        ok = name in st["prompts"]
+        ok = any(nm in st["prompts"] for nm in names)
         return (ok, i18n.pick_now("Already in the prompt library", "已在提示词库") if ok else "")
-    ok = name in st["mcp"]
+    ok = any(nm in st["mcp"] for nm in names)
     return (ok, i18n.pick_now("Already added", "已添加") if ok else "")
 
 
@@ -448,7 +588,7 @@ def overview(store: Store) -> dict:
     return {
         "catalog_version": CATALOG_VERSION,
         "schema_version": SCHEMA_VERSION,
-        "categories": CATEGORIES,
+        "categories": _localized(CATEGORIES),
         "counts": counts,
         "total": len(items),
         "items": [_slim(it, st) for it in items],
@@ -467,7 +607,8 @@ def find(store: Store, item_id: str) -> dict | None:
 
 # --------------------------------------------------------------------- 应用
 def _unique_group_name(store: Store, base: str) -> str:
-    base = _clip(base or "新群聊", 60) or "新群聊"
+    fallback = i18n.pick_now("New group", "新群聊")
+    base = _clip(base or fallback, 60) or fallback
     taken = {g["name"] for g in store.list_groups()}
     if base not in taken:
         return base
@@ -475,12 +616,33 @@ def _unique_group_name(store: Store, base: str) -> str:
         cand = _clip(base, 60 - len(str(n)) - 1) + f" {n}"
         if cand not in taken:
             return cand
-    return _clip(base, 55) + " 副本"
+    return _clip(base, 55) + i18n.pick_now(" copy", " 副本")
+
+
+def _same_member(stored: str | None, wanted: str | None) -> bool:
+    """Does a stored member name answer to `wanted`, in either language?"""
+    return wanted in (builtin_names(builtin_for(stored)) or [stored])
+
+
+def _skill_label(name: str, lang: str) -> str:
+    return _skill_display(name, lang)
+
+
+def _prompt_label(title: str, lang: str) -> str:
+    entry = prompt_for(title)
+    if not entry:
+        return title
+    return (entry.get("title_zh") if lang == "zh" else entry["title"]) or title
 
 
 def _defs_index(store: Store) -> dict[str, dict]:
-    """按名字索引可用的技能与成员定义(内置 + 自定义)。"""
-    skills: dict[str, dict] = {n: {**e, "name": n} for n, e in EXAMPLE_SKILLS.items()}
+    """按名字索引可用的技能与成员定义(内置 + 自定义),中英两种写法都能查到。"""
+    skills: dict[str, dict] = {}
+    for key, ex in EXAMPLE_SKILLS.items():
+        entry = {**ex, "name": ex["name"], "key": key}
+        for nm in (key, ex["name"], ex.get("name_zh")):
+            if nm:
+                skills.setdefault(nm, entry)
     agents: dict[str, dict] = {}
     for it in _load_custom(store).items:
         d = it.get("def") or {}
@@ -494,7 +656,7 @@ def _defs_index(store: Store) -> dict[str, dict]:
 def _ensure_member(store: Store, name: str, idx: dict) -> dict | None:
     """复用同名成员;没有就按岗位预设/自定义角色创建。"""
     for a in store.list_agents():
-        if a["name"] == name:
+        if _same_member(a["name"], name):
             return a
     a = ensure_agent(store, name)
     if a is not None:
@@ -508,12 +670,17 @@ def _ensure_member(store: Store, name: str, idx: dict) -> dict | None:
 
 def _install_skill(store: Store, name: str, idx: dict, overwrite: bool) -> str:
     d = store.data_dir / "skills"
-    if name in {s.name for s in list_skills(d)} and not overwrite:
+    # A built-in skill always lands under its canonical name, so installing a template on
+    # a Chinese install does not create a second copy next to the one the first run
+    # seeded. Custom skills keep whatever name they were written with.
+    target = canonical_skill_name(name) if skill_for(name) else name
+    have = {s.name for s in list_skills(d)}
+    if (target in have or name in have) and not overwrite:
         return "skipped"
     sk = idx["skills"].get(name)
     if not sk:
         return "missing"
-    write_skill(d, name, sk.get("description", ""), sk.get("body", ""),
+    write_skill(d, target, sk.get("description", ""), sk.get("body", ""),
                 sk.get("scope", "member"), version=CATALOG_VERSION)
     return "written"
 
@@ -522,7 +689,8 @@ def apply(store: Store, item_id: str, opts: dict | None = None) -> dict:
     opts = opts or {}
     item = find(store, item_id)
     if item is None:
-        raise GalleryError("模板不存在(可能刚被移除)")
+        raise GalleryError(i18n.pick_now("That template no longer exists (it may just have been removed).",
+                                         "模板不存在(可能刚被移除)"))
     fn = {"team": _apply_team, "agent": _apply_agent, "skill": _apply_skill,
           "prompt": _apply_prompt, "mcp": _apply_mcp}[item["kind"]]
     return fn(store, item, opts)
@@ -536,121 +704,186 @@ def _result(item: dict, summary: str, **kw: Any) -> dict:
 def _apply_team(store: Store, item: dict, opts: dict) -> dict:
     src = item["def"]
     idx = _defs_index(store)
+    lang = i18n.current()
     members, created, reused, notes = [], [], [], []
     for n in src.get("members", []):
-        existed = any(a["name"] in (builtin_names(builtin_for(n)) or [n]) for a in store.list_agents())
+        label = display_name(n, lang)
+        existed = any(_same_member(a["name"], n) for a in store.list_agents())
         a = _ensure_member(store, n, idx)
         if a is None:
-            notes.append(f"找不到成员「{n}」的定义(自定义团队模板里的成员要能被岗位预设或自定义角色解析),已跳过")
+            notes.append(i18n.pick_now(
+                f"No definition found for member \"{label}\" — members of a custom team "
+                "template have to resolve to a role preset or a custom role, so it was skipped",
+                f"找不到成员「{label}」的定义(自定义团队模板里的成员要能被岗位预设或自定义角色解析),已跳过"))
             continue
         if a["id"] not in {m["id"] for m in members}:
             members.append(a)
-            (reused if existed else created).append(n)
+            (reused if existed else created).append(label)
     if not members:
-        raise GalleryError("这个模板没有可用的成员")
+        raise GalleryError(i18n.pick_now("This template has no usable members",
+                                         "这个模板没有可用的成员"))
 
-    host = next((m for m in members if m["name"] == src.get("host")), members[0])
+    host = next((m for m in members if _same_member(m["name"], src.get("host"))), members[0])
     added, skipped = [], []
     skills, fresh, already = [], 0, 0
     for s in src.get("skills", []) or []:
         r = _install_skill(store, s, idx, bool(opts.get("overwrite")))
+        label = _skill_label(s, lang)
         if r == "missing":
-            notes.append(f"技能「{s}」不在模板中心里,没有挂上去")
+            notes.append(i18n.pick_now(
+                f"Skill \"{label}\" is not in the template gallery, so it was not attached",
+                f"技能「{label}」不在模板中心里,没有挂上去"))
             continue
-        skills.append(s)
+        skills.append(canonical_skill_name(s))
         if r == "skipped":
             already += 1
-            skipped.append(f"技能:{s}")
+            skipped.append(i18n.pick_now(f"Skill: {label}", f"技能:{label}"))
         else:
             fresh += 1
-            added.append(f"技能:{s}")
+            added.append(i18n.pick_now(f"Skill: {label}", f"技能:{label}"))
 
     if fresh and already:
-        extra = f",新装 {fresh} 个技能({already} 个本来就有)"
+        extra = i18n.pick_now(f", and installed {fresh} skill(s) ({already} already present)",
+                              f",新装 {fresh} 个技能({already} 个本来就有)")
     elif fresh:
-        extra = f",并装好 {fresh} 个技能"
+        extra = i18n.pick_now(f", and installed {fresh} skill(s)", f",并装好 {fresh} 个技能")
     elif already:
-        extra = f",随附的 {already} 个技能本来就有"
+        extra = i18n.pick_now(f"; its {already} skill(s) were already present",
+                              f",随附的 {already} 个技能本来就有")
     else:
         extra = ""
 
-    name = _unique_group_name(store, str(opts.get("name") or src.get("name") or item["name"]))
-    g = store.create_group(name, host["id"], [m["id"] for m in members],
-                           ext={"skills": skills}, prompt=src.get("prompt", ""))
+    # `item["name"]` is already in the request language, so a group created from the
+    # template is named the way the user sees the template.
+    name = _unique_group_name(store, str(opts.get("name") or item["name"] or src.get("name")))
+    g = group_view(store.create_group(name, host["id"], [m["id"] for m in members],
+                                      ext={"skills": skills}, prompt=src.get("prompt", "")))
     return _result(
-        item, f"已建好群聊「{g['name']}」:群主 {host['name']},成员 {len(members)} 人{extra}。",
-        group=g, agents=[m["name"] for m in members], added=added, skipped=skipped, notes=notes,
+        item,
+        i18n.pick_now(
+            f"Group \"{g['name']}\" is ready: host {display_name(host['name'], lang)}, "
+            f"{len(members)} members{extra}.",
+            f"已建好群聊「{g['name']}」:群主 {display_name(host['name'], lang)},"
+            f"成员 {len(members)} 人{extra}。"),
+        group=g, agents=[display_name(m["name"], lang) for m in members],
+        added=added, skipped=skipped, notes=notes,
     )
 
 
 def _apply_agent(store: Store, item: dict, opts: dict) -> dict:
     idx = _defs_index(store)
-    existed = any(a["name"] in (builtin_names(builtin_for(item["name"])) or [item["name"]]) for a in store.list_agents())
+    lang = i18n.current()
+    label = display_name(item["name"], lang)
+    existed = any(_same_member(a["name"], item["name"]) for a in store.list_agents())
     a = _ensure_member(store, item["name"], idx)
     if a is None:
-        raise GalleryError("无法创建这个角色")
+        raise GalleryError(i18n.pick_now("This role could not be created", "无法创建这个角色"))
     added, notes = [], []
     if existed:
-        notes.append(f"已有同名成员「{a['name']}」,直接复用了它")
+        notes.append(i18n.pick_now(f'A member named "{label}" already existed, so it was reused',
+                                   f"已有同名成员「{label}」,直接复用了它"))
     else:
-        added.append(f"成员:{a['name']}")
+        added.append(i18n.pick_now(f"Member: {label}", f"成员:{label}"))
 
     gid = opts.get("group_id")
+    g = store.get_group(str(gid)) if gid else None
     if gid:
-        g = store.get_group(str(gid))
         if not g:
-            raise GalleryError("要拉进的群聊不存在")
+            raise GalleryError(i18n.pick_now("The group to add them to does not exist",
+                                             "要拉进的群聊不存在"))
         if a["id"] in set(g.get("member_ids") or []):
-            notes.append(f"「{a['name']}」本来就在这个群里")
+            notes.append(i18n.pick_now(f'"{label}" is already in this group',
+                                       f"「{label}」本来就在这个群里"))
         else:
             store.add_member(g["id"], a["id"])
-            added.append(f"入群:{g['name']}")
-    summary = f"已准备好成员「{a['name']}」"
-    summary += f",并加入群「{g['name']}」。" if gid and not notes else "。"
-    return _result(item, summary, agents=[a["name"]], added=added, notes=notes)
+            added.append(i18n.pick_now(f"Joined: {g['name']}", f"入群:{g['name']}"))
+    summary = i18n.pick_now(f'Member "{label}" is ready', f"已准备好成员「{label}」")
+    summary += (i18n.pick_now(f', and joined the group "{g["name"]}".', f",并加入群「{g['name']}」。")
+                if gid and not notes else i18n.pick_now(".", "。"))
+    return _result(item, summary, agents=[label], added=added, notes=notes)
 
 
 def _apply_skill(store: Store, item: dict, opts: dict) -> dict:
     idx = _defs_index(store)
-    r = _install_skill(store, item["name"], idx, bool(opts.get("overwrite")))
+    lang = i18n.current()
+    label = item["name"]
+    r = _install_skill(store, label, idx, bool(opts.get("overwrite")))
     if r == "missing":
-        raise GalleryError("这个技能没有可写入的正文")
+        raise GalleryError(i18n.pick_now("This skill has no body to write",
+                                         "这个技能没有可写入的正文"))
     if r == "skipped":
-        return _result(item, f"技能「{item['name']}」已经在技能库里了(要覆盖请选「重新导入」)。",
-                       skipped=[f"技能:{item['name']}"],
-                       notes=["同名技能已存在。想用模板里的版本覆盖它,点「重新导入」。"])
-    scope = (idx["skills"].get(item["name"]) or {}).get("scope", "member")
-    where = "在群聊右侧「扩展」里勾给某个群" if scope == "group" else "勾给需要的成员"
-    return _result(item, f"已导入技能「{item['name']}」:{where}即可生效。",
-                   added=[f"技能:{item['name']}"])
+        return _result(item, i18n.pick_now(
+            f'Skill "{label}" is already in the skill library (choose Re-import to overwrite it).',
+            f"技能「{label}」已经在技能库里了(要覆盖请选「重新导入」)。"),
+            skipped=[i18n.pick_now(f"Skill: {label}", f"技能:{label}")],
+            notes=[i18n.pick_now(
+                "A skill with this name already exists. To replace it with the version from the "
+                "template, click Re-import.",
+                "同名技能已存在。想用模板里的版本覆盖它,点「重新导入」。")])
+    scope = (idx["skills"].get(label) or {}).get("scope", "member")
+    where = (i18n.pick_now("tick it for a group under Extensions on the right-hand side of the chat",
+                           "在群聊右侧「扩展」里勾给某个群") if scope == "group"
+             else i18n.pick_now("tick it for the members that need it", "勾给需要的成员"))
+    return _result(item, i18n.pick_now(
+        f'Skill "{label}" imported: {where} and it takes effect.',
+        f"已导入技能「{label}」:{where}即可生效。"),
+        added=[i18n.pick_now(f"Skill: {label}", f"技能:{label}")])
 
 
 def _apply_prompt(store: Store, item: dict, opts: dict) -> dict:
     d = item["def"]
     title = d["title"]
-    have = {p["title"]: p for p in store.list_prompts()}
-    if title in have:
+    lang = i18n.current()
+    label = _prompt_label(title, lang)
+    entry = prompt_for(title)
+    # A library seeded before the content was translated still holds the other spelling
+    # of the title, so match on the built-in entry rather than on the literal string.
+    hit = next((p for p in store.list_prompts()
+                if p["title"] == title or (entry and prompt_for(p["title"]) is entry)), None)
+    if hit is not None:
         if not opts.get("overwrite"):
-            return _result(item, f"提示词「{title}」已经在库里了(要覆盖请选「重新导入」)。",
-                           skipped=[f"提示词:{title}"],
-                           notes=["同名提示词已存在。想用模板里的版本覆盖它,点「重新导入」。"])
-        store.update_prompt(have[title]["id"], {"content": d["content"]})
-        return _result(item, f"提示词「{title}」已更新为模板里的版本。", added=[f"提示词:{title}"])
+            return _result(item, i18n.pick_now(
+                f'Prompt "{label}" is already in the library (choose Re-import to overwrite it).',
+                f"提示词「{label}」已经在库里了(要覆盖请选「重新导入」)。"),
+                skipped=[i18n.pick_now(f"Prompt: {label}", f"提示词:{label}")],
+                notes=[i18n.pick_now(
+                    "A prompt with this title already exists. To replace it with the version from "
+                    "the template, click Re-import.",
+                    "同名提示词已存在。想用模板里的版本覆盖它,点「重新导入」。")])
+        store.update_prompt(hit["id"], {"content": d["content"]})
+        return _result(item, i18n.pick_now(
+            f'Prompt "{label}" was updated to the version from the template.',
+            f"提示词「{label}」已更新为模板里的版本。"),
+            added=[i18n.pick_now(f"Prompt: {label}", f"提示词:{label}")])
     store.add_prompt(title, d["content"], d.get("kind", "general"), bool(d.get("use_globally")))
-    return _result(item, f"已存入提示词库:「{title}」。到「提示词」页可以挂给某个群或设为全局。",
-                   added=[f"提示词:{title}"])
+    return _result(item, i18n.pick_now(
+        f'Saved to the prompt library: "{label}". Attach it to a group, or make it global on the '
+        "Prompts page.",
+        f"已存入提示词库:「{label}」。到「提示词」页可以挂给某个群或设为全局。"),
+        added=[i18n.pick_now(f"Prompt: {label}", f"提示词:{label}")])
 
 
 def _apply_mcp(store: Store, item: dict, opts: dict) -> dict:
     d = item["def"]
-    if any(m["name"] == d["name"] for m in store.list_mcp()):
-        return _result(item, f"MCP 服务器「{d['name']}」已经添加过了。",
-                       skipped=[f"MCP:{d['name']}"])
+    label = item["name"]
+    if any(nm in {m["name"] for m in store.list_mcp()} for nm in mcp_names(d["name"])):
+        return _result(item, i18n.pick_now(f'MCP server "{label}" has already been added.',
+                                           f"MCP 服务器「{label}」已经添加过了。"),
+                       skipped=[i18n.pick_now(f"MCP: {label}", f"MCP:{label}")])
     args = [PLACEHOLDER_DIR if a == "/tmp" else str(a) for a in d.get("args", [])]
+    note = (item.get("summary") or "") + i18n.pick_now(
+        " It is imported disabled: check the command, fill in the keys it needs, then enable it "
+        "on the MCP page.",
+        " 导入后是停用状态:核对命令、填好密钥后再到「MCP」页启用。")
     row = store.add_mcp(d["name"], d.get("command", ""), args,
-                        {k: "" for k in d.get("env_keys", [])}, "", "", {},
-                        (d.get("note", "") + " 导入后是停用状态:核对命令、填好密钥后再到「MCP」页启用。").strip())
+                        {k: "" for k in d.get("env_keys", [])}, "", "", {}, note.strip())
     store.update_mcp(row["id"], {"enabled": False})
-    return _result(item, f"已添加 MCP 服务器「{d['name']}」(停用状态)。到「MCP」页核对命令、填好需要的东西再启用。",
-                   added=[f"MCP:{d['name']}"],
-                   notes=["MCP 会在你电脑上运行命令,本程序不会替你启用,也不会替你填任何密钥。"])
+    return _result(item, i18n.pick_now(
+        f'Added MCP server "{label}" (disabled). Check the command on the MCP page, fill in what it '
+        "needs, then enable it.",
+        f"已添加 MCP 服务器「{label}」(停用状态)。到「MCP」页核对命令、填好需要的东西再启用。"),
+        added=[i18n.pick_now(f"MCP: {label}", f"MCP:{label}")],
+        notes=[i18n.pick_now(
+            "MCP runs commands on your computer. This app will not enable it for you, and will not "
+            "fill in any key for you.",
+            "MCP 会在你电脑上运行命令,本程序不会替你启用,也不会替你填任何密钥。")])

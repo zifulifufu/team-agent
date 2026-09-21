@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from app import gallery
 from app.main import create_app
 from app.presets import AGENT_PRESETS, SEED_AGENTS
-from app.tools import EXAMPLE_SKILLS, delete_skill
+from app.tools import EXAMPLE_SKILLS, delete_skill, skill_for
 from tests.conftest import FakeLLM
 
 
@@ -63,7 +63,7 @@ def test_team_templates_reference_existing_members_and_skills() -> None:
         assert d["members"], f"{item['name']} 没有成员"
         assert all(n in known_agents for n in d["members"]), f"{item['name']} 引用了未知成员"
         assert d["host"] in d["members"], f"{item['name']} 的群主不在成员里"
-        assert all(s in EXAMPLE_SKILLS for s in d["skills"]), f"{item['name']} 引用了未知技能"
+        assert all(skill_for(s) for s in d["skills"]), f"{item['name']} 引用了未知技能"
 
 
 def test_catalog_ships_no_third_party_source_metadata(store) -> None:
@@ -79,23 +79,29 @@ def test_catalog_ships_no_third_party_source_metadata(store) -> None:
 def test_team_template_builds_group_with_members_and_skills(client) -> None:
     r = client.post("/api/gallery/team:office/apply", json={}).json()
     g = r["group"]
-    assert g["name"] == "办公文档" and len(g["member_ids"]) == 4
+    assert g["name"] == "Office documents" and len(g["member_ids"]) == 4
     assert r["agents"] == ["Aide", "Librarian", "Copywriter", "Proofreader"]
-    assert g["ext"]["skills"] == ["公文写作规范"]          # 依赖的技能挂成群规则
+    assert g["ext"]["skills"] == ["Office writing conventions"]    # 依赖的技能挂成群规则
     host = next(a for a in client.get("/api/agents").json() if a["id"] == g["host_agent_id"])
     assert host["name"] == "Aide"
     # 技能本身也要真的在技能库里(内置示例技能启动时已写入 → 这次算「已存在」)
-    assert "公文写作规范" in {s["name"] for s in client.get("/api/skills").json()}
-    assert r["summary"].startswith("已建好群聊")
+    assert "Office writing conventions" in {s["name"] for s in client.get("/api/skills").json()}
+    assert r["summary"].startswith('Group "Office documents" is ready')
     # 技能本来就有时,措辞不能吹成「装好了」
-    assert r["skipped"] == ["技能:公文写作规范"] and "本来就有" in r["summary"]
-    assert "并装好" not in r["summary"]
+    assert r["skipped"] == ["Skill: Office writing conventions"] and "already present" in r["summary"]
+    assert "and installed" not in r["summary"]
+    # 中文界面下同一套模板与技能以中文名呈现
+    zh = client.post("/api/gallery/team:office/apply", json={"name": "办公文档"}, headers={"Accept-Language": "zh-CN"}).json()
+    assert zh["group"]["ext"]["skills"] == ["公文写作规范"]
+    assert zh["skipped"] == ["技能:公文写作规范"] and "本来就有" in zh["summary"]
+    assert client.get("/api/gallery/team:office", headers={"Accept-Language": "zh-CN"}).json()["name"] == "办公文档"
 
 
 def test_team_template_reports_newly_installed_skills(client) -> None:
-    delete_skill(Path(client.data_dir) / "skills", "公文写作规范")
+    delete_skill(Path(client.data_dir) / "skills", "Office writing conventions")
     r = client.post("/api/gallery/team:office/apply", json={}).json()
-    assert r["added"] == ["技能:公文写作规范"] and "并装好 1 个技能" in r["summary"]
+    assert r["added"] == ["Skill: Office writing conventions"]
+    assert "and installed 1 skill" in r["summary"]
 
 
 def test_team_template_never_overwrites_an_existing_group(client) -> None:
@@ -103,10 +109,10 @@ def test_team_template_never_overwrites_an_existing_group(client) -> None:
     second = client.post("/api/gallery/team:office/apply", json={}).json()["group"]
     third = client.post("/api/gallery/team:office/apply", json={"name": "我的文档组"}).json()["group"]
     names = {g["name"] for g in client.get("/api/groups").json()}
-    assert first["id"] != second["id"] and first["name"] == "办公文档"
-    assert second["name"] == "办公文档 2"
+    assert first["id"] != second["id"] and first["name"] == "Office documents"
+    assert second["name"] == "Office documents 2"
     assert third["name"] == "我的文档组"
-    assert {"办公文档", "办公文档 2", "我的文档组"} <= names
+    assert {"Office documents", "Office documents 2", "我的文档组"} <= names
 
 
 def test_team_template_is_idempotent_for_members(client) -> None:
@@ -120,16 +126,16 @@ def test_team_template_is_idempotent_for_members(client) -> None:
 
 def test_agent_template_creates_member_and_can_join_group(client) -> None:
     r = client.post("/api/gallery/agent:researcher/apply", json={}).json()
-    assert r["agents"] == ["Researcher"] and r["added"] == ["成员:Researcher"]
+    assert r["agents"] == ["Researcher"] and r["added"] == ["Member: Researcher"]
     gid = client.get("/api/groups").json()[0]["id"]
     r2 = client.post("/api/gallery/agent:researcher/apply", json={"group_id": gid}).json()
-    assert r2["added"] == ["入群:Product launch group"]
+    assert r2["added"] == ["Joined: Product launch group"]
     g = next(g for g in client.get("/api/groups").json() if g["id"] == gid)
     aid = next(a["id"] for a in client.get("/api/agents").json() if a["name"] == "Researcher")
     assert aid in g["member_ids"]
     # 再点一次:已经在群里了,应该只是提示,不再加
     r3 = client.post("/api/gallery/agent:researcher/apply", json={"group_id": gid}).json()
-    assert any("本来就在这个群" in n for n in r3["notes"])
+    assert any("is already in this group" in n for n in r3["notes"])
 
 
 def test_agent_template_requires_an_existing_group(client) -> None:
@@ -138,23 +144,25 @@ def test_agent_template_requires_an_existing_group(client) -> None:
 
 def test_skill_apply_is_idempotent_and_overwritable(client) -> None:
     # 内置示例技能在启动时已经写进技能库 → 直接应用算「已存在」
-    already = client.post("/api/gallery/skill:代码评审清单/apply", json={}).json()
-    assert already["added"] == [] and already["skipped"] == ["技能:代码评审清单"]
+    already = client.post("/api/gallery/skill:code-review/apply", json={}).json()
+    assert already["added"] == [] and already["skipped"] == ["Skill: Code review checklist"]
     # 删掉之后再应用:应该重新写进去
-    delete_skill(Path(client.data_dir) / "skills", "代码评审清单")
-    first = client.post("/api/gallery/skill:代码评审清单/apply", json={}).json()
-    assert first["added"] == ["技能:代码评审清单"]
-    again = client.post("/api/gallery/skill:代码评审清单/apply", json={}).json()
-    assert again["skipped"] == ["技能:代码评审清单"] and again["added"] == []
-    forced = client.post("/api/gallery/skill:代码评审清单/apply", json={"overwrite": True}).json()
-    assert forced["added"] == ["技能:代码评审清单"]
+    delete_skill(Path(client.data_dir) / "skills", "Code review checklist")
+    first = client.post("/api/gallery/skill:code-review/apply", json={}).json()
+    assert first["added"] == ["Skill: Code review checklist"]
+    again = client.post("/api/gallery/skill:code-review/apply", json={}).json()
+    assert again["skipped"] == ["Skill: Code review checklist"] and again["added"] == []
+    forced = client.post("/api/gallery/skill:code-review/apply", json={"overwrite": True}).json()
+    assert forced["added"] == ["Skill: Code review checklist"]
 
 
 def test_skill_directory_matches_the_catalog_body(client) -> None:
     """导入的技能正文必须和目录里的一致(不能只写了个标题)。"""
-    client.post("/api/gallery/skill:风险自查清单/apply", json={})
-    body = (Path(client.data_dir) / "skills" / "风险自查清单" / "SKILL.md").read_text(encoding="utf-8")
-    assert EXAMPLE_SKILLS["风险自查清单"]["body"].strip()[:20] in body
+    client.post("/api/gallery/skill:risk-check/apply", json={})
+    body = (Path(client.data_dir) / "skills" / "Risk self-check" / "SKILL.md").read_text(encoding="utf-8")
+    assert EXAMPLE_SKILLS["risk-check"]["body"].strip()[:20] in body
+    # 从中文名导入也写进同一个（规范名）目录,不会多出一份
+    assert not (Path(client.data_dir) / "skills" / "风险自查清单").exists()
 
 
 def test_prompt_apply_skips_then_overwrites(client) -> None:
@@ -162,23 +170,30 @@ def test_prompt_apply_skips_then_overwrites(client) -> None:
         return [p["title"] for p in client.get("/api/prompts").json()["prompts"]]
 
     # 种子提示词默认已经写进库里
-    skip = client.post("/api/gallery/prompt:先给结论/apply", json={}).json()
-    assert skip["skipped"] == ["提示词:先给结论"] and skip["added"] == []
-    forced = client.post("/api/gallery/prompt:先给结论/apply", json={"overwrite": True}).json()
-    assert forced["added"] == ["提示词:先给结论"]
-    assert titles().count("先给结论") == 1
+    skip = client.post("/api/gallery/prompt:leading-conclusion/apply", json={}).json()
+    assert skip["skipped"] == ["Prompt: Lead with the conclusion"] and skip["added"] == []
+    forced = client.post("/api/gallery/prompt:leading-conclusion/apply", json={"overwrite": True}).json()
+    assert forced["added"] == ["Prompt: Lead with the conclusion"]
+    assert titles().count("Lead with the conclusion") == 1
+    # 老库里的中文标题也算同一个提示词:不会写成第二份
+    zh = client.post("/api/gallery/prompt:leading-conclusion/apply", json={},
+                     headers={"Accept-Language": "zh-CN"}).json()
+    assert zh["skipped"] == ["提示词:先给结论"]
+    assert client.get("/api/prompts", headers={"Accept-Language": "zh-CN"}).json()["prompts"][0]["title"] == "先给结论"
 
 
 def test_mcp_template_is_added_but_disabled(client) -> None:
-    r = client.post("/api/gallery/mcp:文件系统/apply", json={}).json()
-    assert r["added"] == ["MCP:文件系统"]
-    m = next(m for m in client.get("/api/mcp").json() if m["name"] == "文件系统")
+    r = client.post("/api/gallery/mcp:filesystem/apply", json={}).json()
+    assert r["added"] == ["MCP: Filesystem"]
+    m = next(m for m in client.get("/api/mcp").json() if m["name"] == "Filesystem")
     assert m["enabled"] is False                       # 一律停用,必须用户自己核对后启用
     assert m["command"] == "npx" and m["args"][-1] == gallery.PLACEHOLDER_DIR
     assert m["env"] == {}
-    assert "停用" in r["summary"]
-    assert any("不会替你启用" in n for n in r["notes"])   # 明确告诉用户:启用由人来做
-    assert client.post("/api/gallery/mcp:文件系统/apply", json={}).json()["skipped"] == ["MCP:文件系统"]
+    assert "disabled" in r["summary"]
+    assert any("will not enable it" in n for n in r["notes"])   # 明确告诉用户:启用由人来做
+    assert client.post("/api/gallery/mcp:filesystem/apply", json={}).json()["skipped"] == ["MCP: Filesystem"]
+    # 中文界面下同一个服务器显示中文名
+    assert client.get("/api/mcp", headers={"Accept-Language": "zh-CN"}).json()[0]["name"] == "文件系统"
 
 
 def test_mcp_page_templates_share_one_source(client) -> None:
@@ -193,10 +208,16 @@ def test_unknown_template_is_404_and_bad_group_is_400(client) -> None:
 
 
 def test_detail_endpoint_returns_full_body(client) -> None:
-    d = client.get("/api/gallery/skill:风险自查清单").json()
-    assert d["def"]["body"] == EXAMPLE_SKILLS["风险自查清单"]["body"]
+    d = client.get("/api/gallery/skill:risk-check").json()
+    assert d["def"]["body"] == EXAMPLE_SKILLS["risk-check"]["body"]
     assert d["kind"] == "skill" and d["installed"] is True
     assert client.get("/api/gallery/team:report").json()["def"]["members"]
+    # 模板详情按请求语言返回(名称、正文、分类提示都是)
+    zh = client.get("/api/gallery/skill:risk-check", headers={"Accept-Language": "zh-CN"}).json()
+    assert zh["name"] == "风险自查清单" and zh["preview"]["body"].startswith("对外发布")
+    cats = client.get("/api/gallery", headers={"Accept-Language": "zh-CN"}).json()["categories"]
+    assert [c["label"] for c in cats][:2] == ["团队", "角色"]
+    assert "一键建成群聊" in cats[0]["hint"]
 
 
 # --------------------------------------------------------------- 团队自定义模板
@@ -221,9 +242,10 @@ def test_custom_templates_are_loaded_and_can_be_applied(store) -> None:
 
     r = gallery.apply(store, "team:weekly")
     assert r["group"]["name"] == "科室周会" and r["group"]["prompt"] == "本群每周复盘一次。"
-    assert r["group"]["ext"]["skills"] == ["头脑风暴规则"]
+    # 自定义模板引用的内置技能统一存成规范名(中英两种写法都指向同一个技能)
+    assert r["group"]["ext"]["skills"] == ["Brainstorming rules"]
     r2 = gallery.apply(store, "skill:polite")
-    assert r2["added"] == ["技能:对外措辞规范"]
+    assert r2["added"] == ["Skill: 对外措辞规范"]
     assert (Path(store.data_dir) / "skills" / "对外措辞规范" / "SKILL.md").exists()
 
 

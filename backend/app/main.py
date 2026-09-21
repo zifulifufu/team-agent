@@ -572,7 +572,7 @@ def create_app(
     # ------------------------------------------------------------ groups
     @app.get("/api/groups")
     async def groups() -> list[dict]:
-        return store.list_groups()
+        return [templates.group_view(g) for g in store.list_groups()]  # type: ignore[misc]
 
     @app.post("/api/groups")
     async def create_group(body: GroupIn) -> dict:
@@ -580,7 +580,8 @@ def create_app(
         if any(i not in known for i in [*body.member_ids, *([body.host_agent_id] if body.host_agent_id else [])]):
             raise HTTPException(400, "成员或群主不存在")
         check_host(body.host_agent_id)
-        return store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt)
+        return templates.group_view(
+            store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt))
 
     def check_host(host_id: str | None) -> None:
         host = store.get_agent(host_id) if host_id else None
@@ -592,7 +593,8 @@ def create_app(
         need(store.get_group(gid), "群聊")
         if body.host_agent_id:
             check_host(body.host_agent_id)
-        return store.update_group(gid, body.model_dump(exclude_unset=True))  # type: ignore[return-value]
+        return templates.group_view(
+            store.update_group(gid, body.model_dump(exclude_unset=True)))  # type: ignore[arg-type]
 
     @app.delete("/api/groups/{gid}")
     async def del_group(gid: str) -> dict:
@@ -605,13 +607,13 @@ def create_app(
         need(store.get_group(gid), "群聊")
         need(store.get_agent(body.agent_id), "成员")
         store.add_member(gid, body.agent_id)
-        return store.get_group(gid)  # type: ignore[return-value]
+        return templates.group_view(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.delete("/api/groups/{gid}/members/{aid}")
     async def remove_member(gid: str, aid: str) -> dict:
         need(store.get_group(gid), "群聊")
         store.remove_member(gid, aid)
-        return store.get_group(gid)  # type: ignore[return-value]
+        return templates.group_view(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.get("/api/groups/{gid}/messages")
     async def messages(gid: str) -> list[dict]:

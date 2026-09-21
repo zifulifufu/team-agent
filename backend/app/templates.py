@@ -8,8 +8,10 @@ from .presets import (
     TEMPLATES,
     builtin_for,
     builtin_names,
+    display_name,
     localize_agent,
 )
+from .tools import display_skill_name
 
 
 def _find(store: Store, name: str) -> dict | None:
@@ -65,6 +67,51 @@ def create_group_from_template(store: Store, tid: str, name: str | None = None) 
 
 
 def member_view(agents: list[dict]) -> list[dict]:
-    """Members with built-in names/roles/prompts shown in the request language."""
+    """Members with built-in names/roles/prompts shown in the request language.
+
+    Attached skill names are stored language-neutrally and resolved back to a display
+    name here, so the skills a client reads are the same ones it can tick and send back.
+    """
     lang = i18n.current()
-    return [localize_agent(a, lang) for a in agents]
+    return [agent_view(a, lang) for a in agents]
+
+
+def agent_view(agent: dict, lang: str | None = None) -> dict:
+    """One member, shown in `lang`."""
+    lang = lang or i18n.current()
+    out = localize_agent(agent, lang)
+    if out.get("skills"):
+        out = dict(out)
+        out["skills"] = [display_skill_name(n, lang) for n in out["skills"]]
+    return out
+
+
+def skill_list_view(names: list[str] | None, lang: str | None = None) -> list[str]:
+    """Stored skill names (either spelling) as shown in `lang`."""
+    lang = lang or i18n.current()
+    return [display_skill_name(n, lang) for n in (names or [])]
+
+
+def group_view(group: dict | None, lang: str | None = None) -> dict | None:
+    """A group with the built-in skill names it carries shown in `lang`."""
+    if not group:
+        return group
+    out = dict(group)
+    ext = dict(out.get("ext") or {})
+    if ext.get("skills"):
+        ext["skills"] = skill_list_view(ext["skills"], lang)
+    out["ext"] = ext
+    return out
+
+
+def template_rows() -> list[dict]:
+    """Group templates with every displayed name and text in the request language."""
+    lang = i18n.current()
+    out = []
+    for t in TEMPLATES:
+        row = i18n.localize(t, lang)
+        row["members"] = [display_name(n, lang) for n in t.get("members", [])]
+        row["host"] = display_name(t.get("host", ""), lang)
+        row["skills"] = [display_skill_name(s, lang) for s in t.get("skills", [])]
+        out.append(row)
+    return out

@@ -13,8 +13,9 @@ from tests.conftest import FakeLLM, chunk
 
 
 def role(messages):
-    m = re.match(r"你是「(.+?)」", messages[0]["content"])
-    return m.group(1) if m else ""
+    """System prompt 里的成员名(中英两种内置提示词都认)。"""
+    m = re.match(r'(?:你是「(.+?)」|You are "(.+?)")', messages[0]["content"][:90])
+    return (m.group(1) or m.group(2)) if m else ""
 
 
 def last_user(messages):
@@ -95,7 +96,7 @@ async def test_host_plans_by_strengths_and_chains_outputs(store, make_router):
     p = last_user(calls[("Proofreader", "任务")])
     assert "初稿正文ABC" in p and "各位同事" in p and "【分工】" in p and "← 你" in p
     sysmsg = calls[("Proofreader", "任务")][0]["content"]
-    assert "强项:" in sysmsg and "〔群主〕" in sysmsg and "模型:" in sysmsg
+    assert "strengths:" in sysmsg and "(host)" in sysmsg and "model:" in sysmsg
     # 文案的历史里不重复出现自己/他人的分工成果(成果只通过任务提示传递)
     assert "审校意见XYZ" not in json.dumps(calls[("Copywriter", "任务")], ensure_ascii=False)
     # 群主整合时看到两位成员的成果
@@ -116,7 +117,8 @@ async def test_planning_instruction_lists_members_strengths_and_past_actions(sto
     msgs = fake.calls[0][1]
     u = last_user(msgs)
     assert "【分工模式】" in u and "先判断" in u and "以往类似任务的做法" in u and "Copywriter(deepseek-flash)" in u
-    assert "【群成员与分工】" in msgs[0]["content"] and "Aide(Coordinator)〔群主〕" in msgs[0]["content"]
+    assert "[Members and their parts]" in msgs[0]["content"] and "Aide(Coordinator) (host)" in msgs[0]["content"]
+    assert msgs[0]["content"].count("(host)") == 1
     assert [m["sender_name"] for m in c.ends()] == ["Aide"]                # 群主判断不需要分工 → 直接回答
 
 
@@ -424,9 +426,9 @@ async def test_global_prompt_group_prompt_and_group_skills_reach_system_prompt(s
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     s = fake.calls[0][1][0]["content"]
     assert s.startswith("你是「Copywriter」。今天 20") and "群名 Product launch group" in s
-    assert "【补充要求】" in s and "回答不超过 100 字" in s and "这句不该出现" not in s
-    assert "【本群提示词】\n本群项目:Product launch group;成员 Aide、Copywriter、Storyboard、Proofreader" in s
-    assert "【群聊规则:头脑风暴规则】" in s and "【技能:公文写作规范】" in s     # 群技能 + 成员自己的技能
+    assert "[Additional requirements]" in s and "回答不超过 100 字" in s and "这句不该出现" not in s
+    assert "[Group prompt]\n本群项目:Product launch group;成员 Aide, Copywriter, Storyboard, Proofreader" in s
+    assert "[Group rule: Brainstorming rules]" in s and "[Skill: Office writing conventions]" in s   # 群技能 + 成员自己的技能
     assert "{{" not in s
 
 

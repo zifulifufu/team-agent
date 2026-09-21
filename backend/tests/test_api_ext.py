@@ -49,9 +49,10 @@ def test_settings_validation_and_token_is_write_only(client):
 def test_group_ext_merge_and_create_with_ext(client):
     g = gid(client)
     r = client.patch(f"/api/groups/{g}", json={"ext": {"skills": ["头脑风暴规则"]}, "prompt": "本群写文案"}).json()
-    assert r["ext"]["skills"] == ["头脑风暴规则"] and r["prompt"] == "本群写文案" and r["ext"]["plan"] == "inherit"
+    # 内置技能名按请求语言返回(提交时用中文写法,读回来是当前语言的名字)
+    assert r["ext"]["skills"] == ["Brainstorming rules"] and r["prompt"] == "本群写文案" and r["ext"]["plan"] == "inherit"
     r = client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "ids": ["a"]}, "plan": "bogus"}}).json()
-    assert r["ext"]["skills"] == ["头脑风暴规则"] and r["ext"]["library"] == {"mode": "selected", "ids": ["a"]}
+    assert r["ext"]["skills"] == ["Brainstorming rules"] and r["ext"]["library"] == {"mode": "selected", "ids": ["a"]}
     assert r["ext"]["plan"] == "inherit"                                        # 非法值被忽略
     new = client.post("/api/groups", json={"name": "新群", "ext": {"plugins": ["p"]}, "prompt": "hi"}).json()
     assert new["ext"]["plugins"] == ["p"] and new["prompt"] == "hi"
@@ -84,14 +85,14 @@ def test_apply_prompt_and_preview(client):
     prev = client.post("/api/prompts/preview", json={"content": "你在「{{group_name}}」,日期 {{date}}", "group_id": g}).json()
     assert "{{" not in prev["text"] and prev["tokens"] > 0 and prev["raw_tokens"] > 0
     sp = client.get(f"/api/groups/{g}/system-prompt-preview").json()
-    assert "【本群提示词】" in sp["text"] and "【群成员与分工】" in sp["text"] and "{{" not in sp["text"]
+    assert "[Group prompt]" in sp["text"] and "[Members and their parts]" in sp["text"] and "{{" not in sp["text"]
     lst = client.get("/api/prompts").json()
     assert lst["variables"] and lst["default_system_prompt"] and len(lst["prompts"]) >= 3
 
 
 def test_global_prompt_reset_and_delete(client):
     client.put("/api/settings", json={"system_prompt": "自定义"})
-    assert client.post("/api/prompts/reset-system").json()["system_prompt"].startswith("你是")
+    assert client.post("/api/prompts/reset-system").json()["system_prompt"].startswith("You are")
     p = client.post("/api/prompts", json={"title": "t", "content": "c"}).json()
     assert client.patch(f"/api/prompts/{p['id']}", json={"use_globally": True}).json()["use_globally"] is True
     assert client.delete(f"/api/prompts/{p['id']}").status_code == 200

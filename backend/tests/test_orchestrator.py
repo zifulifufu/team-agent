@@ -21,12 +21,12 @@ class Collector:
 
 
 def by_sender(fake_reply_map):
-    """按 system prompt 里的「名字」返回不同回复。"""
+    """按 system prompt 里的名字返回不同回复(中英两种内置提示词都认)。"""
 
     def pick(messages):
-        sys = messages[0]["content"]
+        head = messages[0]["content"][:90]
         for name, reply in fake_reply_map.items():
-            if sys.startswith(f"你是「{name}」"):
+            if f"「{name}」" in head or f'"{name}"' in head:
                 return reply
         return "好的"
 
@@ -104,7 +104,7 @@ async def test_context_labels_speakers_and_merges_roles(store, make_router):
     fake = FakeLLM(default=by_sender({"Aide": "@Copywriter 写", "Copywriter": "写好了"}))
     orch, g, ag = setup(store, make_router, fake)
     await orch.handle_user_message(g["id"], "来个通知", Collector())
-    msgs = next(m for _, m in fake.calls if m[0]["content"].startswith("你是「Copywriter」"))
+    msgs = next(m for _, m in fake.calls if "Copywriter" in m[0]["content"][:90])
     roles = [m["role"] for m in msgs]
     assert roles[0] == "system" and roles[1] == "user"
     assert all(a != b for a, b in zip(roles[1:], roles[2:]))  # 严格交替
@@ -120,7 +120,18 @@ async def test_skill_injected_into_system_prompt(store, make_router):
     orch, g, ag = setup(store, make_router, fake)
     await orch.handle_user_message(g["id"], "@Copywriter 写", Collector())
     sys = fake.calls[0][1][0]["content"]
-    assert "【技能:公文写作规范】" in sys and "开头一句话交代目的和结论" in sys
+    assert "[Skill: Office writing conventions]" in sys
+    assert "Open with one sentence giving the purpose and the conclusion" in sys
+
+    # 中文界面下,同一个技能以中文名与中文正文注入
+    from app import i18n
+    from app.tools import skills_prompt
+    i18n.set_current("zh")
+    try:
+        zh = skills_prompt(store.data_dir / "skills", ["Office writing conventions"])
+    finally:
+        i18n.set_current("en")
+    assert "【技能:公文写作规范】" in zh and "开头一句话交代目的和结论" in zh
 
 
 async def test_all_models_down_emits_system_notice_not_crash(store, make_router):

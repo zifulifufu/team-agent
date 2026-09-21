@@ -169,6 +169,23 @@ PRESETS: list[dict] = [
 PRESET_BY_ID = {p["preset"]: p for p in PRESETS}
 
 DEFAULT_SYSTEM_PROMPT = (
+    "You are \"{{agent_name}}\" ({{agent_role}}), working in the group chat \"{{group_name}}\" "
+    "alongside the human user and the other AI members. "
+    "Today is {{date}} {{weekday}}.\n\n"
+    "How we work:\n"
+    "1. Know your own strengths and your share of the job: do only your part, hand the rest to "
+    "whoever is better suited to it, do not talk past each other, and do not repeat what someone "
+    "has already said.\n"
+    "2. When you need another member, @mention them by name and say exactly what you need from "
+    "them; the member you named will receive it and reply. When you need no one, mention no one — "
+    "and never mention yourself.\n"
+    "3. Build on what others have produced instead of restating it; when you disagree, say so and "
+    "give your evidence.\n"
+    "4. Answer with the result. Do not paraphrase the user's message and skip the pleasantries.\n"
+    "5. A prefix like [Name] in the transcript only marks who is speaking — never add one to your "
+    "own reply."
+)
+DEFAULT_SYSTEM_PROMPT_ZH = (
     "你是「{{agent_name}}」({{agent_role}}),正在群聊「{{group_name}}」中与人类用户和其他 AI 成员协作。"
     "今天是 {{date}} {{weekday}}。\n\n"
     "协作规则:\n"
@@ -265,7 +282,7 @@ SEED_AGENTS: list[dict] = [
         "tags": ["writing", "chinese"],
         "prompt": "You are at home in office documents, public-account posts, marketing copy, and creative writing. Your prose is tight, logical, and persuasive.",
         "prompt_zh": "你擅长办公文档、公众号、营销文案与创意写作。文字精炼、有逻辑、有感染力。",
-        "skills": ["公文写作规范"],
+        "skills": ["Office writing conventions"],
     },
     {
         "name": "Storyboard",
@@ -282,7 +299,7 @@ SEED_AGENTS: list[dict] = [
         "prompt_zh": (
             "你擅长视频脚本与分镜设计。输出时用表格列出:镜号、画面、台词/旁白、时长、镜头运动、配乐/音效。"
         ),
-        "skills": ["短视频分镜规范"],
+        "skills": ["Short video storyboards"],
     },
     {
         "name": "Proofreader",
@@ -445,114 +462,235 @@ def localize_agent(agent: dict, lang: str) -> dict:
 
 # ---------------------------------------------------------------- 群聊模板
 TEMPLATES: list[dict] = [
+    # Group-chat templates. `name`/`desc`/`prompt` are the canonical English text and
+    # `<field>_zh` the Chinese wording; templates.create_group_from_template() picks one
+    # by request language, and the API returns whichever matches. `skills` points at the
+    # canonical skill names in tools.EXAMPLE_SKILLS (aliases resolve the old Chinese ones).
     {
-        "id": "office", "name": "办公文档", "scene": "office",
-        "desc": "通知、汇报、方案:资料员查资料,文案起草,校对把关。",
+        "id": "office", "name": "Office documents", "name_zh": "办公文档", "scene": "office",
+        "desc": "Notices, reports, proposals: the librarian digs out the material, the copywriter drafts, the proofreader checks it.",
+        "desc_zh": "通知、汇报、方案:资料员查资料,文案起草,校对把关。",
         "members": ["Aide", "Librarian", "Copywriter", "Proofreader"], "host": "Aide",
-        "skills": ["公文写作规范"], "prompt": "",
+        "skills": ["Office writing conventions"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "video", "name": "视频制作", "scene": "video",
-        "desc": "选题 → 脚本 → 分镜 → 审校。",
+        "id": "video", "name": "Video production", "name_zh": "视频制作", "scene": "video",
+        "desc": "Topic -> script -> storyboard -> review.",
+        "desc_zh": "选题 → 脚本 → 分镜 → 审校。",
         "members": ["Aide", "Copywriter", "Storyboard", "Proofreader"], "host": "Aide",
-        "skills": ["短视频分镜规范"], "prompt": "",
+        "skills": ["Short video storyboards"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "writing", "name": "创作写作", "scene": "writing",
-        "desc": "策划出方向,文案成稿,校对润色。",
+        "id": "writing", "name": "Creative writing", "name_zh": "创作写作", "scene": "writing",
+        "desc": "The planner sets the direction, the copywriter drafts, the proofreader polishes.",
+        "desc_zh": "策划出方向,文案成稿,校对润色。",
         "members": ["Aide", "Planner", "Copywriter", "Proofreader"], "host": "Aide",
-        "skills": [], "prompt": "",
+        "skills": [], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "brainstorm", "name": "头脑风暴", "scene": "writing",
-        "desc": "主持人控场,先发散再收敛,记录员出纪要。",
+        "id": "brainstorm", "name": "Brainstorming", "name_zh": "头脑风暴", "scene": "writing",
+        "desc": "The facilitator keeps it moving: diverge first, converge after, and the scribe writes up the notes.",
+        "desc_zh": "主持人控场,先发散再收敛,记录员出纪要。",
         "members": ["Facilitator", "Planner", "Reviewer", "Scribe"], "host": "Facilitator",
-        "skills": ["头脑风暴规则"], "prompt": "",
+        "skills": ["Brainstorming rules"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "review", "name": "评审会", "scene": "office",
-        "desc": "提交材料 → 多角度评审 → 结论与待办。",
+        "id": "review", "name": "Review meeting", "name_zh": "评审会", "scene": "office",
+        "desc": "Submit the material -> review it from several angles -> verdict and to-dos.",
+        "desc_zh": "提交材料 → 多角度评审 → 结论与待办。",
         "members": ["Facilitator", "Reviewer", "Analyst", "Scribe"], "host": "Facilitator",
-        "skills": ["评审会规则"], "prompt": "",
+        "skills": ["Review meeting rules"], "prompt": "", "prompt_zh": "",
     },
-    # 以下模板只在「设置 → 模板中心」里展示,不放首页(首页保持 5 张卡片,不喧宾夺主)。
+    # The templates below only appear in Settings -> Template gallery; the home page keeps
+    # its five cards so the important actions stay in front.
     {
-        "id": "research", "name": "资料调研", "scene": "office", "home": False,
-        "desc": "资料员检索、分析师核算、记录汇总成调研纪要。",
+        "id": "research", "name": "Research", "name_zh": "资料调研", "scene": "office", "home": False,
+        "desc": "The librarian searches, the analyst checks the numbers, the scribe writes the findings up.",
+        "desc_zh": "资料员检索、分析师核算、记录汇总成调研纪要。",
         "members": ["Aide", "Librarian", "Analyst", "Scribe"], "host": "Aide",
-        "skills": ["调研报告规范"], "prompt": "",
+        "skills": ["Research findings write-up"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "code", "name": "代码开发", "scene": "office", "home": False,
-        "desc": "澄清需求 → 实现 → 评审 → 记录结论。",
+        "id": "code", "name": "Code development", "name_zh": "代码开发", "scene": "office", "home": False,
+        "desc": "Clarify the requirement -> implement -> review -> record the outcome.",
+        "desc_zh": "澄清需求 → 实现 → 评审 → 记录结论。",
         "members": ["Aide", "Programmer", "Reviewer", "Scribe"], "host": "Aide",
-        "skills": ["代码评审清单"], "prompt": "",
+        "skills": ["Code review checklist"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "data", "name": "数据分析", "scene": "office", "home": False,
-        "desc": "说清口径 → 计算 → 复核 → 结论与限制。",
+        "id": "data", "name": "Data analysis", "name_zh": "数据分析", "scene": "office", "home": False,
+        "desc": "Agree the definitions -> compute -> cross-check -> conclusion and limits.",
+        "desc_zh": "说清口径 → 计算 → 复核 → 结论与限制。",
         "members": ["Aide", "Analyst", "Librarian", "Fact-checker"], "host": "Aide",
-        "skills": ["数据分析规范"], "prompt": "",
+        "skills": ["Data analysis conventions"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "translate", "name": "翻译校对", "scene": "writing", "home": False,
-        "desc": "先译后校:术语统一,保留原文对照。",
+        "id": "translate", "name": "Translation and proofreading", "name_zh": "翻译校对",
+        "scene": "writing", "home": False,
+        "desc": "Translate first, check after: one consistent terminology, source kept alongside.",
+        "desc_zh": "先译后校:术语统一,保留原文对照。",
         "members": ["Aide", "Translator", "Proofreader"], "host": "Aide",
-        "skills": ["中英互译规范"], "prompt": "",
+        "skills": ["Chinese-English translation"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "proposal", "name": "方案撰写", "scene": "office", "home": False,
-        "desc": "策划定方向,文案成稿,风控挑风险,编辑收尾。",
+        "id": "proposal", "name": "Proposal writing", "name_zh": "方案撰写", "scene": "office", "home": False,
+        "desc": "The planner sets the direction, the copywriter drafts, the risk role hunts for problems, the editor finishes.",
+        "desc_zh": "策划定方向,文案成稿,风控挑风险,编辑收尾。",
         "members": ["Aide", "Planner", "Copywriter", "Risk", "Editor"], "host": "Aide",
-        "skills": ["公文写作规范"], "prompt": "",
+        "skills": ["Office writing conventions"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "report", "name": "研究报告", "scene": "writing", "home": False,
-        "desc": "查资料 → 定口径 → 写 → 核查 → 校对,面向论文与正式报告。",
+        "id": "report", "name": "Research report", "name_zh": "研究报告", "scene": "writing", "home": False,
+        "desc": "Search -> agree the definitions -> write -> fact-check -> proofread, for papers and formal reports.",
+        "desc_zh": "查资料 → 定口径 → 写 → 核查 → 校对,面向论文与正式报告。",
         "members": ["Aide", "Researcher", "Librarian", "Analyst", "Proofreader"], "host": "Aide",
-        "skills": ["研究报告结构"], "prompt": "",
+        "skills": ["Research report structure"], "prompt": "", "prompt_zh": "",
     },
     {
-        "id": "clinical", "name": "研究方案讨论", "scene": "office", "home": False,
-        "desc": "讨论研究设计、统计口径与合规边界;只谈方法与流程,不要输入患者信息。",
+        "id": "clinical", "name": "Study design discussion", "name_zh": "研究方案讨论",
+        "scene": "office", "home": False,
+        "desc": "Discuss the study design, the statistical definitions, and where compliance draws the line. Method and process only — never enter patient information.",
+        "desc_zh": "讨论研究设计、统计口径与合规边界;只谈方法与流程,不要输入患者信息。",
         "members": ["Facilitator", "Researcher", "Analyst", "Risk", "Scribe"], "host": "Facilitator",
-        "skills": ["风险自查清单"],
-        "prompt": "本群用于讨论研究设计与流程。请勿在此输入任何患者个人信息或可识别数据;"
-                  "需要举例时用虚构或脱敏的描述。结论仅作方法层面的讨论,不构成医疗建议。",
+        "skills": ["Risk self-check"],
+        "prompt": "This group is for discussing study design and process. Do not enter any patient "
+                  "personal information or identifiable data here; when you need an example, describe "
+                  "it in fictional or de-identified terms. Conclusions are methodological discussion "
+                  "only and are not medical advice.",
+        "prompt_zh": "本群用于讨论研究设计与流程。请勿在此输入任何患者个人信息或可识别数据;"
+                     "需要举例时用虚构或脱敏的描述。结论仅作方法层面的讨论,不构成医疗建议。",
     },
 ]
 
 # ---------------------------------------------------------------- 提示词库示例
 SEED_PROMPTS: list[dict] = [
+    # Prompt library entries seeded on first run. `title` is the canonical English value
+    # and therefore the identity that gets stored and de-duplicated against; `title_zh`
+    # and `content_zh` carry the Chinese wording. localize_prompt() swaps them in for the
+    # request language, and PROMPT_ALIASES makes both spellings of a title resolve to the
+    # same entry, so a library seeded before the translation still matches.
     {
-        "title": "先给结论", "kind": "general", "use_globally": False,
-        "content": "回答先给一句话结论,再按重要性分点展开;能用数字和例子说明的不要空泛描述。",
+        "key": "leading-conclusion", "title": "Lead with the conclusion", "title_zh": "先给结论",
+        "kind": "general", "use_globally": False,
+        "content": "State the conclusion in one sentence first, then expand point by point in order "
+                   "of importance; where a number or an example would make it concrete, use one "
+                   "instead of a vague description.",
+        "content_zh": "回答先给一句话结论,再按重要性分点展开;能用数字和例子说明的不要空泛描述。",
     },
     {
-        "title": "严谨核查", "kind": "general", "use_globally": False,
-        "content": "涉及事实、数据、日期时,注明来源或说明不确定;没有把握就直接说不知道,不要编造。",
+        "key": "verify-sources", "title": "Verify before you assert", "title_zh": "严谨核查",
+        "kind": "general", "use_globally": False,
+        "content": "For facts, figures, and dates, cite a source or say that you are unsure; when you "
+                   "do not know, say so plainly rather than making something up.",
+        "content_zh": "涉及事实、数据、日期时,注明来源或说明不确定;没有把握就直接说不知道,不要编造。",
     },
     {
-        "title": "本群项目背景", "kind": "group", "use_globally": False,
-        "content": "项目:{{group_name}}。参与者:{{members}}。请围绕 {{date}} 之前需要交付的成果协作,交付物用 Markdown 输出。",
+        "key": "group-background", "title": "Project background for this group", "title_zh": "本群项目背景",
+        "kind": "group", "use_globally": False,
+        "content": "Project: {{group_name}}. Participants: {{members}}. Work towards the deliverables "
+                   "due before {{date}}, and output deliverables as Markdown.",
+        "content_zh": "项目:{{group_name}}。参与者:{{members}}。请围绕 {{date}} 之前需要交付的成果协作,"
+                      "交付物用 Markdown 输出。",
     },
     {
-        "title": "先问清楚再动手", "kind": "general", "use_globally": False,
-        "content": "动手前先用不超过 3 个问题确认目标、交付形式和边界;如果信息已经足够,不要反问,"
-                   "直接给结果并说明你采用的假设。",
+        "key": "ask-first", "title": "Ask first, then act", "title_zh": "先问清楚再动手",
+        "kind": "general", "use_globally": False,
+        "content": "Before starting, confirm the goal, the deliverable format, and the boundaries in no "
+                   "more than 3 questions; if you already have enough, do not ask back — give the "
+                   "result and state the assumptions you made.",
+        "content_zh": "动手前先用不超过 3 个问题确认目标、交付形式和边界;如果信息已经足够,不要反问,"
+                      "直接给结果并说明你采用的假设。",
     },
     {
-        "title": "输出即交付物", "kind": "general", "use_globally": False,
-        "content": "不要描述你打算怎么写,直接给出可用的成品:完整段落、可运行的代码、能直接发出去的文本。"
-                   "需要解释时放在成品后面,不要混在成品里。",
+        "key": "output-deliverable", "title": "Output the deliverable itself", "title_zh": "输出即交付物",
+        "kind": "general", "use_globally": False,
+        "content": "Do not describe how you intend to write it — give the finished thing: complete "
+                   "paragraphs, runnable code, text that could be sent as it stands. Put any "
+                   "explanation after the deliverable, not mixed into it.",
+        "content_zh": "不要描述你打算怎么写,直接给出可用的成品:完整段落、可运行的代码、能直接发出去的文本。"
+                      "需要解释时放在成品后面,不要混在成品里。",
     },
     {
-        "title": "给出推荐方案", "kind": "general", "use_globally": False,
-        "content": "有多个可行方案时,明确推荐一个并说清理由和代价;不要只罗列选项让人自己挑。",
+        "key": "recommend-one", "title": "Recommend one option", "title_zh": "给出推荐方案",
+        "kind": "general", "use_globally": False,
+        "content": "When several approaches would work, recommend one explicitly and say what it costs; "
+                   "do not just list the options and leave the choice to the reader.",
+        "content_zh": "有多个可行方案时,明确推荐一个并说清理由和代价;不要只罗列选项让人自己挑。",
     },
     {
-        "title": "交接给下一位", "kind": "group", "use_globally": False,
-        "content": "本轮发言结束时,用单独一行写「给下一位:@成员名 + 需要他接着做什么」;"
-                   "不需要接力时写「无需接力」。",
+        "key": "handoff", "title": "Hand off to the next member", "title_zh": "交接给下一位",
+        "kind": "group", "use_globally": False,
+        "content": "End your turn with a line of its own reading \"Next: @name + what they should pick "
+                   "up\"; if nothing needs handing on, write \"No hand-off needed\".",
+        "content_zh": "本轮发言结束时,用单独一行写「给下一位:@成员名 + 需要他接着做什么」;"
+                      "不需要接力时写「无需接力」。",
     },
 ]
+
+
+# Both spellings of a built-in prompt title resolve to the same entry, so a library
+# seeded before the content was translated still de-duplicates correctly.
+PROMPT_ALIASES: dict[str, dict] = {}
+for _p in SEED_PROMPTS:
+    for _name in (_p.get("title"), _p.get("title_zh")):
+        if _name:
+            PROMPT_ALIASES.setdefault(_name, _p)
+
+
+def prompt_for(title: str | None) -> dict | None:
+    """The built-in prompt a stored title belongs to, in either language."""
+    return PROMPT_ALIASES.get(title or "")
+
+
+def localize_system_prompt(text: str, lang: str) -> str:
+    """The system prompt in `lang`, while it is still one of the built-in defaults.
+
+    An install from before the prompt was translated holds the Chinese text; it is
+    recognised here so the Prompts page shows one language at a time. Anything the user
+    wrote themselves comes back untouched.
+    """
+    if text == DEFAULT_SYSTEM_PROMPT:
+        return DEFAULT_SYSTEM_PROMPT_ZH if lang == "zh" else DEFAULT_SYSTEM_PROMPT
+    if text == DEFAULT_SYSTEM_PROMPT_ZH:
+        return DEFAULT_SYSTEM_PROMPT if lang == "en" else DEFAULT_SYSTEM_PROMPT_ZH
+    return text
+
+
+def display_name(name: str | None, lang: str) -> str:
+    """A built-in member's name as it should be shown in `lang`."""
+    entry = builtin_for(name)
+    if not entry:
+        return name or ""
+    return (entry.get("name_zh") if lang == "zh" else entry.get("name")) or name or ""
+
+
+def prompt_key(title: str | None) -> str | None:
+    """The stable key of the built-in prompt a stored title belongs to."""
+    entry = prompt_for(title)
+    return entry.get("key") if entry else None
+
+
+def prompt_titles(title: str | None) -> list[str]:
+    """Every spelling a stored prompt title might have been written in."""
+    entry = prompt_for(title)
+    if not entry:
+        return [title] if title else []
+    return [n for n in (entry.get("title"), entry.get("title_zh")) if n]
+
+
+def localize_prompt(row: dict, lang: str) -> dict:
+    """Show a stored prompt in `lang`, leaving anything the user edited alone."""
+    entry = prompt_for(row.get("title"))
+    if not entry:
+        return row
+    out = dict(row)
+    for field, zh_field in (("title", "title_zh"), ("content", "content_zh")):
+        zh = entry.get(zh_field)
+        base = entry.get(field) or ""
+        if not zh:
+            continue
+        current = row.get(field) or ""
+        if current not in {base, zh}:
+            continue                       # user edited this field — keep their text
+        out[field] = zh if lang == "zh" else base
+    return out
