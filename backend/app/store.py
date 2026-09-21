@@ -86,6 +86,17 @@ CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, created_at);
 -- 50k-message table scans in full (measured 3.2ms) against 0.26ms for a range lookup.
 -- IF NOT EXISTS lets an older database pick it up the next time it is opened.
 CREATE INDEX IF NOT EXISTS idx_messages_agent_time ON messages(sender_type, created_at);
+-- Images attached to a message. The bytes live in <data dir>/attachments/, the row here
+-- only carries what the UI and the prompt need; a message references its images by id
+-- inside its own `meta`, so the transcript keeps working without a join.
+CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS mcp_servers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -727,6 +738,46 @@ already exists, otherwise create it (name and strengths are both taken from the 
             self._db.execute("DELETE FROM messages")
             self._db.commit()
         return n
+
+    # ------------------------------------------------------------------ attachments
+    def add_attachment(self, gid: str, aid: str, name: str, mime: str, nbytes: int) -> dict:
+        self._x(
+            "INSERT INTO attachments(id,group_id,name,mime,bytes,created_at) VALUES(?,?,?,?,?,?)",
+            (aid, gid, name, mime, nbytes, time.time()),
+        )
+        return self.get_attachment(aid)  # type: ignore[return-value]
+
+    def get_attachment(self, aid: str) -> dict | None:
+        return self._one("SELECT * FROM attachments WHERE id=?", (aid,))
+
+    def delete_attachment(self, aid: str) -> None:
+        self._x("DELETE FROM attachments WHERE id=?", (aid,))
+
+    def clear_attachments(self, gid: str | None = None) -> list[str]:
+        """Forget attachments, returning their ids so the caller can unlink the files."""
+        rows = self._q("SELECT id FROM attachments" + (" WHERE group_id=?" if gid else ""), (gid,) if gid else ())
+        self._x("DELETE FROM attachments" + (" WHERE group_id=?" if gid else ""), (gid,) if gid else ())
+        return [r["id"] for r in rows]
+
+    def used_attachment_ids(self) -> set[str]:
+        """Ids referenced by a message. Only messages that carry images are scanned."""
+        used: set[str] = set()
+        for r in self._q("SELECT meta FROM messages WHERE meta LIKE '%\"images\"%'"):
+            try:
+                used |= {str(i["id"]) for i in (json.loads(r["meta"]).get("images") or []) if isinstance(i, dict) and i.get("id")}
+            except (TypeError, ValueError):
+                continue
+        return used
+
+    def stale_attachments(self, older_than: float) -> list[dict]:
+        """Attachments old enough to sweep and not referenced by any message.
+
+        An image the user uploaded but never sent would otherwise sit in the data directory
+        for good. One that a message does reference is kept, however old the message is —
+        the thumbnail in the transcript has to keep working.
+        """
+        used = self.used_attachment_ids()
+        return [r for r in self._q("SELECT * FROM attachments WHERE created_at<?", (older_than,)) if r["id"] not in used]
 
     def agent_message_rows(self, since: float = 0) -> list[dict]:
         """For statistics: the model, fallback and elapsed-time info of every agent message."""

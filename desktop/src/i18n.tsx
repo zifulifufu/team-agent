@@ -1433,6 +1433,16 @@ const ZH: Record<string, string> = {
   "Workspace": "工作目录",
   "Runs happen here, and this is the only directory they can use as their working directory. Files written by a run stay here. Leave it empty to use {dir}.": "代码在这里运行,这也是它们唯一能用作工作目录的位置。运行中写出的文件都留在这里。留空则使用 {dir}。",
   "the app's own workspace folder": "程序自己的工作目录",
+  // ---------------------------------------------------------------- 群聊 · 图片
+  "Send attached images to cloud models": "把附带的图片发给云端模型",
+  "Off by default, and separate from allowing outbound calls on purpose: sending text off this machine and sending a picture you attached are different decisions. With it off, only local models that can look at images receive them — every other member is told an image is there that it cannot see, and says so instead of guessing. A message never carries more than {n} images; PNG, JPEG, GIF and WebP up to {mb} MB each.": "默认关闭,而且故意与「允许外呼」分开:把文字发出去,和把你附的图片发出去,是两件事。关着时,只有能看图的本地模型会收到图片——其他成员会被告知「有一张图但你看不到」,并如实说明而不是瞎猜。一条消息最多 {n} 张图;支持 PNG、JPEG、GIF、WebP,每张不超过 {mb} MB。",
+  "Images in the group chat": "群聊里的图片",
+  "Attach an image": "附带图片",
+  "Remove this image": "移除此图片",
+  "Uploading…": "上传中…",
+  "Image unavailable": "图片不可用",
+  "Attached image": "附带的图片",
+  "image": "图片",
 };
 
 let current: Lang = DEFAULT_LANG;

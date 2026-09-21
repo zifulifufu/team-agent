@@ -263,6 +263,12 @@ DEFAULT_SETTINGS: dict = {
     "code_enabled": False,
     "code_timeout": 60,        # how long one run may take before it is killed (seconds)
     "code_workdir": "",        # empty = <data dir>/workspace; only this directory is reachable as cwd
+    # ---- images. `vision_cloud` is deliberately separate from `external_calls_enabled`:
+    # sending text off the machine and sending a picture the user chose to attach are
+    # different decisions, so the second one needs its own yes. Local vision models are
+    # never affected by it.
+    "vision_cloud": False,
+    "vision_max_mb": 8,        # per-image cap, checked before anything is written to disk
     # ---- memory <-> Obsidian: one folder in the vault to sync with (empty = disabled)
     "obsidian_dir": "",
     "obsidian_auto": False,    # when enabled, sync automatically every 30 seconds

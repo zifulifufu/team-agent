@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, modelopts, strengths as strength_lib
+from . import coderun, i18n, images, modelopts, strengths as strength_lib
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -32,7 +32,7 @@ from .orchestrator import Orchestrator
 from .presets import AGENT_PRESETS, DEFAULT_SYSTEM_PROMPT, TEMPLATES
 from .prompting import VARIABLES, PromptBuilder, estimate_tokens, render_vars
 from .router import ModelRouter, has_credentials
-from .store import Store
+from .store import Store, new_id
 from .templates import create_group_from_template, ensure_agent_from_key
 from .toolhub import ToolHub, builtin_specs
 from .tools import (
@@ -711,6 +711,43 @@ def build_router(c: Ctx) -> APIRouter:
         for g in store.list_groups():
             if name in g["ext"]["skills"]:
                 store.update_group(g["id"], {"ext": {"skills": [x for x in g["ext"]["skills"] if x != name]}})
+        return {"ok": True}
+
+    # ============================================================ attachments (images)
+    @r.post("/api/groups/{gid}/attachments")
+    async def attachment_upload(request: Request, gid: str, filename: str = "image.png") -> dict:
+        """Raw bytes, like the library upload. The image is checked before it is written."""
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        _need_octet(request)
+        data = await request.body()
+        problem = images.check(data, store.get_settings())
+        if problem:
+            raise HTTPException(400, problem)
+        found = images.sniff(data)
+        assert found is not None                      # `check` already refused anything else
+        mime, ext = found
+        aid = new_id()
+        images.path_for(store.data_dir, aid, ext).write_bytes(data)
+        row = store.add_attachment(gid, aid, images.display_name(filename), mime, len(data))
+        return {**row, "url": f"/api/attachments/{aid}"}
+
+    @r.get("/api/attachments/{aid}")
+    async def attachment_get(aid: str) -> Response:
+        row = store.get_attachment(aid)
+        f = images.find_file(store.data_dir, aid) if row else None
+        if not row or not f:
+            raise HTTPException(404, i18n.pick_now("This image is no longer available", "这张图片已经不在了"))
+        return Response(f.read_bytes(), media_type=row["mime"],
+                        headers={"Cache-Control": "private, max-age=86400"})
+
+    @r.delete("/api/attachments/{aid}")
+    async def attachment_delete(aid: str) -> dict:
+        row = store.get_attachment(aid)
+        if row:
+            f = images.find_file(store.data_dir, aid)
+            if f:
+                f.unlink(missing_ok=True)
+            store.delete_attachment(aid)
         return {"ok": True}
 
     # ============================================================ library

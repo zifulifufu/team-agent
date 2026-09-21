@@ -33,6 +33,7 @@ from .mcp_client import McpManager
 from .memory import MemoryService
 from . import templates
 from . import i18n
+from . import images
 from . import net
 from .obsidian import ObsidianSync
 from .orchestrator import Orchestrator
@@ -116,6 +117,9 @@ class MemberIn(BaseModel):
 
 class MessageIn(BaseModel):
     text: str
+    # Ids returned by POST /api/groups/{gid}/attachments. A message may carry images with no
+    # text at all ("have a look at this"), but not the other way round.
+    images: list[str] = []
 
 
 class PullIn(BaseModel):
@@ -225,6 +229,13 @@ def create_app(
                     print("obsidian auto-sync error:", e)
 
         bg = [asyncio.create_task(updater.run_forever()), asyncio.create_task(obsidian_loop())] if background else []
+        if background:
+            # Uploads the user picked but never sent would otherwise sit in the data directory
+            # for good; images a message references are kept (see store.stale_attachments)
+            try:
+                images.sweep(store, store.data_dir)
+            except Exception as e:  # noqa: BLE001 — housekeeping must never stop startup
+                print("attachment sweep failed:", e)
         try:
             yield
         finally:
@@ -272,6 +283,20 @@ def create_app(
             raise HTTPException(404, i18n.pick_now(f"{what} not found", f"{what}不存在"))
         return x
 
+    def images_for(gid: str, ids: list[str]) -> list[dict]:
+        """Descriptors for the attachment ids a message references.
+
+        An id belonging to another group, or one whose file has gone, is dropped rather than
+        trusted: the client is not the authority on what an image is or where it came from.
+        """
+        out: list[dict] = []
+        for aid in list(dict.fromkeys(ids))[:10]:          # a message carries at most ten
+            row = store.get_attachment(aid)
+            if not row or row["group_id"] != gid or not images.find_file(store.data_dir, aid):
+                continue
+            out.append({"id": aid, "name": row["name"], "mime": row["mime"], "bytes": row["bytes"]})
+        return out
+
     # -------------------------------------------------------------- misc
     @app.get("/api/health")
     async def health() -> dict:
@@ -290,7 +315,8 @@ def create_app(
     ENUMS = {"plan_mode": ("auto", "on", "off"), "perm_mode": ("ask_risky", "ask_all", "allow_all")}
     RANGES = {"tool_rounds": (0, 10), "tool_timeout": (5, 600), "plan_max_tasks": (2, 12), "memory_top_k": (0, 20),
               "library_top_k": (1, 10), "max_hops": (1, 30), "history_limit": (1, 200), "history_clip": (200, 20000), "tool_output_limit": (500, 50000), "update_interval_hours": (1, 168),
-              "perm_timeout": (10, 600), "request_timeout": (5, 600), "circuit_threshold": (1, 10), "circuit_cooldown": (5, 600)}
+              "perm_timeout": (10, 600), "request_timeout": (5, 600), "circuit_threshold": (1, 10), "circuit_cooldown": (5, 600),
+              "code_timeout": (5, 600), "vision_max_mb": (1, 64)}
     # obsidian_dir can only be set through /api/obsidian (which validates the path); it is not
 # accepted here
     READONLY = {"obsidian_dir"}
@@ -642,7 +668,8 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     async def send_message(gid: str, body: MessageIn) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         text = body.text.strip()
-        if not text:
+        picked = images_for(gid, body.images)
+        if not text and not picked:
             raise HTTPException(400, i18n.pick_now("A message cannot be empty", "消息不能为空"))
 
         async def emit(ev: dict) -> None:
@@ -650,7 +677,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
 
         async def run() -> None:
             try:
-                await orch.handle_user_message(gid, text, emit)
+                await orch.handle_user_message(gid, text, emit, images=picked)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — what went wrong has to be visible in the UI, not just printed in the background

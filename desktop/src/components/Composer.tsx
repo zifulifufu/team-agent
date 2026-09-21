@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowUp, AtSign, Cloud, Lock, Square } from "lucide-react";
+import { ArrowUp, AtSign, Cloud, ImagePlus, Lock, Square, X } from "lucide-react";
+import { api, type Attachment } from "../api";
 import { useI18n } from "../i18n";
+import MessageImage from "./MessageImage";
 
 interface Mentionable {
   name: string;
@@ -28,13 +30,48 @@ interface Props {
   error?: string;
   /** Extra control at the bottom-left of the box (the home page uses it for "send to which group") */
   extra?: ReactNode;
+  /** Images already uploaded and waiting to be sent with the next message */
+  images?: Attachment[];
+  onImages?: (next: Attachment[]) => void;
+  /** Where uploads go. Without a group there is nothing to attach to, so the button stays hidden. */
+  groupId?: string;
 }
 
 /** Large rounded composer: @ button on the left, routing status in the middle, round send button on the right. */
 export default function Composer(p: Props) {
   const { t, lang } = useI18n();
   const [mention, setMention] = useState<{ q: string; idx: number } | null>(null);
+  const [imgErr, setImgErr] = useState("");
+  const [uploading, setUploading] = useState(0);
+  const [over, setOver] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const images = p.images ?? [];
+  const canAttach = !!p.groupId && !!p.onImages;
+
+  /** Upload picks, one file at a time. A rejected file reports and does not block the others. */
+  const addFiles = async (files: File[]) => {
+    if (!canAttach || !files.length) return;
+    setImgErr("");
+    setUploading((n) => n + files.length);
+    for (const file of files.slice(0, 10)) {
+      try {
+        const got = await api.uploadImage(p.groupId!, file);
+        p.onImages!([...(p.images ?? []), got]);
+      } catch (e) {
+        setImgErr((e as Error).message);
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+  };
+
+  const removeImage = (id: string) => {
+    p.onImages?.(images.filter((i) => i.id !== id));
+    void api.dropImage(id).catch(() => undefined);      // best effort: the sweep gets it later
+  };
+
+  const sendable = !p.disabled && !p.busy && (!!p.value.trim() || images.length > 0);
 
   const candidates = useMemo(() => {
     if (!mention) return [];
@@ -90,7 +127,27 @@ export default function Composer(p: Props) {
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      if (!p.busy && p.value.trim() && !p.disabled) p.onSend();
+      if (sendable) p.onSend();
+    }
+  };
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...e.clipboardData.items]
+      .filter((i) => i.kind === "file" && i.type.startsWith("image/"))
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => !!f);
+    if (files.length) {
+      e.preventDefault();                                // a screenshot pastes as an image, not as a filename
+      void addFiles(files);
+    }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
+    setOver(false);
+    if (files.length) {
+      e.preventDefault();
+      void addFiles(files);
     }
   };
 
@@ -107,14 +164,31 @@ export default function Composer(p: Props) {
           ))}
         </div>
       )}
-      {p.error && <div className="err composer-err">{p.error}</div>}
-      <div className="composer-box">
+      {(p.error || imgErr) && <div className="err composer-err">{p.error || imgErr}</div>}
+      <div className={"composer-box" + (over ? " over" : "")}
+        onDragOver={(e) => { if (canAttach) { e.preventDefault(); setOver(true); } }}
+        onDragLeave={() => setOver(false)}
+        onDrop={onDrop}>
+        {(images.length > 0 || uploading > 0) && (
+          <div className="composer-imgs">
+            {images.map((im) => (
+              <span key={im.id} className="ci-thumb">
+                <MessageImage id={im.id} name={im.name} alt={im.name} />
+                <button className="ci-x" title={t("Remove this image")} aria-label={t("Remove {name}", { name: im.name })} onClick={() => removeImage(im.id)}>
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+            {uploading > 0 && <span className="ci-uploading">{t("Uploading…")}</span>}
+          </div>
+        )}
         <textarea
           ref={ta}
           value={p.value}
           autoFocus={p.autoFocus}
           onChange={(e) => onInput(e.target.value)}
           onKeyDown={onKey}
+          onPaste={onPaste}
           placeholder={p.placeholder}
           rows={p.rows ?? 3}
           aria-label={t("Message input")}
@@ -123,6 +197,15 @@ export default function Composer(p: Props) {
           <button className="round-btn" title={t("@-mention a member")} aria-label={t("@-mention a member")} onClick={insertAt}>
             <AtSign size={16} />
           </button>
+          {canAttach && (
+            <>
+              <button className="round-btn" title={t("Attach an image")} aria-label={t("Attach an image")} disabled={p.busy || uploading > 0} onClick={() => fileRef.current?.click()}>
+                <ImagePlus size={16} />
+              </button>
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden
+                onChange={(e) => { const picked = [...(e.target.files ?? [])]; e.target.value = ""; void addFiles(picked); }} />
+            </>
+          )}
           {p.extra}
           <div className="grow" />
           {p.routeText !== undefined && (
@@ -136,7 +219,7 @@ export default function Composer(p: Props) {
               <Square size={13} fill="currentColor" />
             </button>
           ) : (
-            <button className="send-btn" title={t("Send")} aria-label={t("Send")} disabled={!p.value.trim() || p.disabled || p.busy} onClick={p.onSend}>
+            <button className="send-btn" title={t("Send")} aria-label={t("Send")} disabled={!sendable} onClick={p.onSend}>
               <ArrowUp size={17} />
             </button>
           )}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Eraser, PanelRight } from "lucide-react";
-import { api, downloadChat, useGroupSocket, type Approval, type ChatEvent, type Message } from "../api";
+import { api, downloadChat, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
 import { useData } from "../data";
 import { useRoute } from "../hooks";
 import { useConfirm, useOutside } from "../ui";
@@ -28,6 +28,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   const route = useRoute();
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [text, setText] = useState("");
+  const [images, setImages] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [wsUp, setWsUp] = useState(false);
   const [panel, setPanel] = useState(() => window.innerWidth >= 1100);
@@ -160,11 +161,11 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   useGroupSocket(gid, onEvent, setWsUp);
 
   const sendText = useCallback(
-    async (body: string): Promise<boolean> => {
+    async (body: string, imageIds: string[] = []): Promise<boolean> => {
       setErr("");
       setBusy(true);
       try {
-        await api.send(gid, body);
+        await api.send(gid, body, imageIds);
         return true;
       } catch (e) {
         setBusy(false);
@@ -187,10 +188,16 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
 
   const send = () => {
     const body = text.trim();
-    if (!body || busy) return;
+    const ids = images.map((i) => i.id);
+    if ((!body && !ids.length) || busy) return;
     setText("");
-    void sendText(body).then((ok) => {
-      if (!ok) setText((cur) => cur || body);   // not sent: give the text back to the user
+    setImages([]);
+    void sendText(body, ids).then((ok) => {
+      if (!ok) {
+        // Not sent: give the text and the images back to the user
+        setText((cur) => cur || body);
+        setImages((cur) => (cur.length ? cur : images));
+      }
     });
   };
 
@@ -273,6 +280,9 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
             onToggleExternal={route.toggleExternal}
             rows={2}
             error={err}
+            groupId={gid}
+            images={images}
+            onImages={setImages}
           />
           <div className="composer-hint">{t(busy ? "Members are working — you can stop at any time" : "With no @mention, the group host answers")}</div>
         </div>

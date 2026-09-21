@@ -1,5 +1,6 @@
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import MessageImage from "./MessageImage";
 import remarkGfm from "remark-gfm";
 import { Check, ChevronDown, ChevronRight, CornerUpLeft, Lock, LoaderCircle, Megaphone, ShieldAlert, ShieldOff, Wrench, X } from "lucide-react";
 import { modelLabel, type Agent, type Message, type Model, type ToolCall } from "../api";
@@ -129,6 +130,7 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
       : a.status === "skipped" ? t("Skipped ({detail})", { detail: a.detail ?? "" }) : t("Failed ({detail})", { detail: a.detail ?? "" })))
     .join("\n");
   const { decl, rest } = mine ? { decl: null, rest: m.content } : splitDeclaration(m.content, !!m.streaming);
+  const pics = m.meta?.images ?? [];
   const taskChip = m.meta?.task_id
     ? m.meta.task_id === "final"
       ? t("Consolidated")
@@ -137,6 +139,17 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
       ? t("Task · {title}", { title: m.meta.task_title })
       : "";
   const showBubble = mine || rest !== "" || decl === null || !!m.streaming;
+  // Images stand on their own: a message may be nothing but a picture, and then the empty bubble
+  // underneath would just be a stray line.
+  if (pics.length && !mine && rest === "") return (
+    <div className={"msg theirs" + (highlight ? " hl" : "")} data-mid={m.id}>
+      <div className="avatar">{agent?.avatar ?? "🤖"}</div>
+      <div className="msg-body">
+        <div className="msg-name">{m.sender_name}{agent?.role && <span className="msg-role">{agent.role}</span>}</div>
+        <div className="msg-imgs">{pics.map((im) => <MessageImage key={im.id} id={im.id} name={im.name} />)}</div>
+      </div>
+    </div>
+  );
   return (
     <div className={"msg " + (mine ? "mine" : "theirs") + (highlight ? " hl" : "")} data-mid={m.id}>
       <div className="avatar">{mine ? "🙂" : agent?.avatar ?? "🤖"}</div>
@@ -155,6 +168,9 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
         )}
         {showBubble && (
           <div className={"bubble" + (decl !== null ? " under-decl" : "")}>
+            {pics.length > 0 && (
+              <div className="msg-imgs">{pics.map((im) => <MessageImage key={im.id} id={im.id} name={im.name} />)}</div>
+            )}
             {mine ? (
               <span style={{ whiteSpace: "pre-wrap" }}>{m.content}</span>
             ) : rest ? (

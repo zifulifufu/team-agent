@@ -154,6 +154,32 @@ def test_builtin_risk_comes_from_the_spec_not_the_name():
     assert risk_of({"name": "run_code", "source": "builtin"}) == "read"
 
 
+def test_every_setting_can_actually_be_written(tmp_path):
+    """A setting the API refuses to store is a control that silently does nothing.
+
+    PUT /api/settings falls back to `isinstance(value, str)` for anything it does not know
+    about, so adding an int or bool to DEFAULT_SETTINGS without also listing it in RANGES (or
+    ENUMS) makes it read-only on the wire while the UI happily offers to change it.
+    """
+    from app.presets import DEFAULT_SETTINGS
+    from tests.conftest import FakeLLM
+
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好"))
+    c = TestClient(app, base_url="http://127.0.0.1")
+    # Values that cannot be written back by design: derived from the request language, or
+    # write-only secrets, or set through a dedicated endpoint.
+    skip = {"obsidian_dir", "obsidian_auto", "github_token", "app_repo", "catalog_url",
+            "system_prompt", "route_chain", "perm_allow", "perm_deny"}
+    refused = []
+    for key, value in DEFAULT_SETTINGS.items():
+        if key in skip or isinstance(value, str):
+            continue
+        r = c.put("/api/settings", json={key: value})
+        if r.status_code != 200:
+            refused.append((key, type(value).__name__, r.status_code))
+    assert refused == [], f"settings the API will not store: {refused}"
+
+
 def test_api_permissions_and_validation(tmp_path):
     app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好"))
     c = TestClient(app, base_url="http://127.0.0.1")

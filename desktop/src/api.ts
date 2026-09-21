@@ -271,6 +271,8 @@ export interface Message {
   meta?: {
     attempts?: Attempt[];
     tools?: ToolCall[];
+    /** Images the user attached to this message; only a model that can look at images receives them */
+    images?: Attachment[];
     plan_id?: string;              // Which plan board this message belongs to
     task_id?: string;              // Task ID; "final" = the host's synthesis
     task_title?: string;
@@ -324,6 +326,15 @@ export interface Settings {
   code_enabled: boolean;           // Let members write and run code in a workspace; off by default
   code_timeout: number;            // Seconds one run may take before it is killed
   code_workdir: string;            // Empty = <data dir>/workspace
+  vision_cloud: boolean;           // May attached images reach a cloud model? Separate from external_calls_enabled
+  vision_max_mb: number;           // Per-image size cap, checked before anything is written to disk
+}
+/** One image attached to a message. `bytes` is the stored size, `mime` what the server sniffed. */
+export interface Attachment {
+  id: string;
+  name: string;
+  mime: string;
+  bytes: number;
 }
 export interface ObsidianReport {
   ok: boolean;
@@ -849,7 +860,7 @@ export const api = {
   /** Whether a collaboration round is running in this group (used after a page refresh or WebSocket reconnect to restore the sending state) */
   groupStatus: (gid: string) => get<{ busy: boolean }>(`/api/groups/${gid}/status`),
   clearMessages: (gid: string) => del(`/api/groups/${gid}/messages`),
-  send: (gid: string, text: string) => post(`/api/groups/${gid}/messages`, { text }),
+  send: (gid: string, text: string, images: string[] = []) => post(`/api/groups/${gid}/messages`, { text, images }),
   stop: (gid: string) => post(`/api/groups/${gid}/stop`),
   // ---- Skills / plugins / MCP (kept separate)
   skills: () => get<Skill[]>("/api/skills"),
@@ -876,6 +887,12 @@ export const api = {
   addNote: (title: string, content: string) => post<LibraryDoc>("/api/library/note", { title, content }),
   /** The request body is the file's raw bytes (txt/md/csv/json/html/pdf/docx) */
   uploadDoc: (file: File) => postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name })}`, file),
+  // ---- Images attached to a message
+  /** Raw bytes, like the library upload. The server decides the type from the bytes, not the name. */
+  uploadImage: (gid: string, file: File) => postRaw<Attachment>(`/api/groups/${gid}/attachments${qs({ filename: file.name })}`, file),
+  dropImage: (id: string) => del<{ ok: boolean }>(`/api/attachments/${id}`),
+  /** The bytes, fetched with the token in a header — see `getBlob` for why an <img src> will not do. */
+  imageBytes: (id: string) => getBlob(`/api/attachments/${id}`),
   addDocUrl: (url: string) => post<LibraryDoc>("/api/library/url", { url }),
   addDocDir: (path: string, recursive = true) =>
     post<{ added: LibraryDoc[]; skipped: { name: string; reason: string }[] }>("/api/library/dir", { path, recursive }),
@@ -925,6 +942,16 @@ export const api = {
 async function postRaw<T>(path: string, body: Blob): Promise<T> {
   const r = await call(path, { method: "POST", headers: { ...authHeaders(), "Content-Type": "application/octet-stream" }, body });
   return (await r.json()) as T;
+}
+
+/**
+ * GET returning the raw body. Needed for images: the backend wants the token in a header, and
+ * an <img src> cannot send one — its request would come back 401. Callers turn the blob into an
+ * object URL and revoke it when they are done with it.
+ */
+async function getBlob(path: string): Promise<Blob> {
+  const r = await call(path, { method: "GET", headers: authHeaders() });
+  return await r.blob();
 }
 
 /** Download a file returned by the backend; the name comes from Content-Disposition (handles the filename*=UTF-8'' form) */

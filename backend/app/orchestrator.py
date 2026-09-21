@@ -16,6 +16,7 @@ Processing one user message:
 from __future__ import annotations
 
 from . import i18n
+from . import images as images_lib
 
 import asyncio
 import re
@@ -205,7 +206,55 @@ class Orchestrator:
         convo[-1]["content"] += i18n.pick_now(f"\n\n(it is now your turn, {agent['name']})", f"\n\n(现在轮到你「{agent['name']}」发言)")
         if extra_user:
             convo[-1]["content"] += "\n\n" + extra_user
+        self._attach_images(convo[-1], history, agent)
         return [{"role": "system", "content": sysmsg}] + convo
+
+    def _attach_images(self, turn: dict, history: list[dict], agent: dict) -> None:
+        """Attach the user's images to the turn being answered, if this member may see them.
+
+        Where they come from: the most recent user message that carries any. That covers both
+        the immediate reply and a later hand-off (the host delegates to another member inside
+        the same user turn), while keeping the cost to one message's worth of images — older
+        images are never re-uploaded on every reply.
+
+        Whether they are sent: the model that will actually be tried first has to be able to
+        look at images (the `multimodal` strength, which the catalog, the model-name hints and
+        the user's own tagging all feed). A cloud model additionally needs `vision_cloud`:
+        sending text off the machine and sending a picture the user attached are different
+        decisions, so they have separate switches.
+        """
+        source = next((h for h in reversed(history) if h["sender_type"] == "user" and h["meta"].get("images")), None)
+        images = list(source["meta"]["images"]) if source else []
+        if not images:
+            return
+        cfg = self.store.get_settings()
+        head = self._head_model(agent)
+        if not self._may_see_images(head, cfg):
+            # Say so rather than letting the member guess what the picture shows
+            turn["content"] += "\n\n" + i18n.pick_now(
+                "(the user attached an image, but you cannot see it — do not guess its content; say so, and let a member that can look at images answer)",
+                "(用户附了一张图片,但你看不到它——不要猜内容,直接说明,并让能看图的成员来回答)",
+            )
+            return
+        parts: list[dict] = [{"type": "text", "text": turn["content"]}]
+        for meta in images:
+            got = images_lib.read(self.store.data_dir, meta)
+            if not got:
+                continue
+            mime, data = got
+            parts.append({"type": "image_url", "image_url": {"url": images_lib.data_uri(data, mime)}})
+        if len(parts) > 1:
+            turn["content"] = parts
+
+    def _head_model(self, agent: dict) -> dict | None:
+        """The model this member will try first — the one that decides whether images fit."""
+        chain, _ = self.router.build_chain(agent.get("model_id") or "", agent.get("tags"))
+        return chain[0] if chain else None
+
+    def _may_see_images(self, model: dict | None, cfg: dict) -> bool:
+        if not model or "multimodal" not in (model.get("strengths") or []):
+            return False
+        return bool(model.get("is_local")) or bool(cfg["vision_cloud"])
 
     def _refs_block(self, group: dict, text: str) -> str:
         """`#document-title` references in the user message: the beginning of those documents goes
@@ -226,14 +275,16 @@ straight into the context."""
 
     # ------------------------------------------------------------- entrypoint
     async def handle_user_message(self, gid: str, text: str, emit: Emit,
-                               sender_name: str | None = None) -> None:
+                               sender_name: str | None = None,
+                               images: list[dict] | None = None) -> None:
         # The name the user is labelled with in the transcript; resolved per request
         # rather than as a default argument, which is evaluated once at import time.
         sender_name = sender_name or i18n.pick_now("me", "我")
         group = self.store.get_group(gid)
         if not group:
             return
-        user_msg = self.store.add_message(gid, "user", "user", sender_name, text)
+        user_msg = self.store.add_message(gid, "user", "user", sender_name, text,
+                                          meta={"images": images} if images else None)
         await emit({"type": "message", "message": user_msg})
         async with self._lock(gid):
             group = self.store.get_group(gid) or group

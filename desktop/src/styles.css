@@ -222,6 +222,19 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .composer { position: relative; }
 .composer-box { background: var(--card); border: 1px solid var(--border-strong); border-radius: 20px; padding: 12px 12px 10px 16px; box-shadow: var(--shadow); }
 .composer-box:focus-within { border-color: var(--primary); box-shadow: var(--shadow), 0 0 0 3px var(--primary-soft); }
+.composer-box.over { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+.composer-imgs { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 10px; }
+.ci-thumb { position: relative; display: block; }
+.ci-thumb .msg-img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
+.ci-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--card); border: 1px solid var(--border-strong); color: var(--text-2); cursor: pointer; }
+.ci-x:hover { color: #c0392b; border-color: #c0392b; }
+.ci-uploading { align-self: center; font-size: 12px; color: var(--text-3); }
+.msg-imgs { display: flex; flex-wrap: wrap; gap: 8px; }
+.msg-imgs + *:not(:empty) { margin-top: 10px; }
+.msg-img { max-width: 320px; max-height: 320px; border-radius: 10px; border: 1px solid var(--border); display: block; cursor: zoom-in; }
+.msg-img-loading { display: block; width: 160px; height: 100px; border-radius: 10px; background: var(--hover); }
+.msg-img-broken { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); border: 1px dashed var(--border-strong); border-radius: 8px; padding: 6px 10px; }
+
 .composer-box textarea { border: 0; box-shadow: none !important; padding: 2px 0; resize: none; background: transparent; line-height: 1.6; max-height: 260px; }
 .composer-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .round-btn { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); flex: none; }
