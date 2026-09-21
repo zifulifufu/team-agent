@@ -1,14 +1,14 @@
 import { useEffect, useRef } from "react";
-import { currentLang } from "./i18n";
+import { currentLang, tr } from "./i18n";
 
 declare global {
   interface Window {
     teamAgent?: { token?: string; api?: string; pickFolder?: () => Promise<string | null> };
   }
 }
-// 后端地址:构建时的 VITE_API 优先;桌面版由 Electron 预加载脚本给出(和主进程用的是同一个端口);都没有则默认 8765
+// Backend address: VITE_API at build time wins; the desktop build gets it from the Electron preload script (same port the main process uses); otherwise 8765
 const API: string = ((import.meta.env.VITE_API as string | undefined) || window.teamAgent?.api || "http://127.0.0.1:8765").replace(/\/+$/, "");
-/** Electron 预加载脚本注入的后端访问令牌;浏览器开发模式下为空。 */
+/** Backend access token injected by the Electron preload script; empty when running in a plain browser. */
 const TOKEN: string = window.teamAgent?.token ?? "";
 const authHeaders = (json = false): Record<string, string> => ({
   ...(json ? { "Content-Type": "application/json" } : {}),
@@ -27,7 +27,7 @@ const authHeaders = (json = false): Record<string, string> => ({
  */
 export type Tag = string;
 
-/** ok 连通 / limited 限速或熔断 / bad 连不通 / unknown 没检测过 / off 现在不会被调用 */
+/** ok reachable / limited rate-limited or tripped the breaker / bad unreachable / unknown never probed / off not called right now */
 export type HealthState = "ok" | "limited" | "bad" | "unknown" | "off";
 export interface ModelHealth {
   state: HealthState;
@@ -48,7 +48,7 @@ export interface Model {
   kind?: string;
   is_local?: boolean;
   provider_enabled?: boolean;
-  strengths: Tag[];                // 当前生效的强项(自定义优先,否则自动推断)
+  strengths: Tag[];                // Strengths in effect (a custom list wins, otherwise the auto-inferred one)
   strengths_auto: Tag[];
   strengths_custom: boolean;
   summary?: string;
@@ -79,26 +79,26 @@ export interface Preset {
   models: string[];
   hint: string;
 }
-/** 「选择模型」对话框里的一行:某服务商名下的一个型号(目录 + 实时清单 + 已添加的合并结果)。 */
+/** One row in the Choose model dialog: a model under some provider (catalog + live list + already-added, merged). */
 export interface ModelOption {
-  id: string;                      // 型号名(不含服务商前缀)
+  id: string;                      // Model name (without the provider prefix)
   name: string;
   summary: string;
   context: number | null;
   tier: "flagship" | "balanced" | "fast" | null;
-  size_gb: number | null;          // 本地模型的体积
+  size_gb: number | null;          // Size of a local model
   params: string | null;
   strengths: Tag[];
   in_catalog: boolean;
   legacy: boolean;
   preview: boolean;
-  added: boolean;                  // 已添加到本程序
+  added: boolean;                  // Already added to this app
   enabled: boolean;
-  live: boolean | null;            // 服务商实时清单里是否有(null = 还没刷新过)
-  is_new: boolean;                 // 上次看过之后新出现的
+  live: boolean | null;            // Present in the provider's live list (null = never refreshed)
+  is_new: boolean;                 // Appeared after the last time you looked
   retired_reason: string | null;
-  gone: boolean;                   // 已添加但服务商实时清单里已经没有(多半下线)
-  installed?: boolean | null;      // 仅本地服务商
+  gone: boolean;                   // Added, but no longer in the provider's live list (most likely retired)
+  installed?: boolean | null;      // Local providers only
 }
 export interface ModelOptions {
   provider_id: string;
@@ -115,18 +115,18 @@ export interface Agent {
   avatar: string;
   role: string;
   prompt: string;
-  model_id: string | null;         // null = 按强项自动选模型
+  model_id: string | null;         // null = pick a model automatically from the strength tags
   skills: string[];
-  tags: Tag[];                     // 这个岗位需要的强项,用来给成员选模型、也用来做分工
-  origin?: "" | "model";           // "model" = 由「我添加的模型」直接拉进群时自动创建的成员(就是这个模型本身)
-  engine?: string;                 // 非空 = 外部智能体成员(如 workbuddy):不走模型路由,由它自带的命令行引擎发言
+  tags: Tag[];                     // Strengths this role needs; used to pick models for the member and to split work
+  origin?: "" | "model";           // "model" = a member created automatically when a model from My models was pulled into the group (the member is that model itself)
+  engine?: string;                 // Non-empty = an external agent member (e.g. workbuddy): it bypasses model routing and speaks through its own CLI engine
   engine_cfg?: ExternalCfg;
 }
 export type ExternalLevel = "read" | "edit" | "full";
 export interface ExternalCfg {
   level: ExternalLevel;
   risk_ack: boolean;
-  cwd: string;                     // 空 = 数据目录下专属工作目录
+  cwd: string;                     // Empty = a dedicated working directory under the data directory
   add_dirs: string[];
   web: boolean;
   model: string;
@@ -136,7 +136,7 @@ export interface ExternalCfg {
   cli_path: string;
 }
 export interface ExternalOverview {
-  enabled: boolean;                // 外部智能体总开关
+  enabled: boolean;                // Master switch for external agents
   external_calls_enabled: boolean;
   engines: { id: string; name: string; avatar: string; role: string; found: boolean; path: string; via: string; hint: string }[];
   levels: { id: ExternalLevel; label: string; desc: string }[];
@@ -151,20 +151,20 @@ export interface ExternalProbe {
   version: string;
   live: null | { ok: boolean; reply?: string; error?: string; seconds: number; model?: string; cost_usd?: number | null };
 }
-/** 模板中心(设置 → 模板中心)的条目。kind 决定点「使用」时发生什么。 */
+/** An entry in the template gallery (Settings → Template gallery). kind decides what happens when you click Use. */
 export type GalleryKind = "team" | "agent" | "skill" | "prompt" | "mcp";
 export interface GalleryMember { name: string; avatar: string; role: string }
 export interface GalleryItem {
-  id: string;                        // team:office / agent:reviewer / skill:xxx 这样带类别前缀
+  id: string;                        // Carries a category prefix such as team:office / agent:reviewer / skill:xxx
   kind: GalleryKind;
   name: string;
   summary: string;
   icon: string;                      // emoji
   tags: string[];
-  source: string;                    // builtin = 程序自带;custom:<文件名> = 你自己放进数据目录的
-  home?: boolean;                    // 团队模板:是否也出现在首页(首页只放常用的几张)
+  source: string;                    // builtin = shipped with the app; custom:<filename> = one you dropped into the data directory
+  home?: boolean;                    // Team templates: whether it also shows on the home screen (which only lists the common ones)
   installed: boolean;
-  state_note: string;                // 「已在技能库」这类状态说明,没有就是空
+  state_note: string;                // A status note such as already in the skill library; empty when there is none
   preview: {
     members?: GalleryMember[]; host?: string; skills?: string[]; prompt?: string;
     avatar?: string; role?: string; tags?: string[];
@@ -181,7 +181,7 @@ export interface GalleryOverview {
   total: number;
   items: GalleryItem[];
   custom: {
-    dir: string;                     // 放自定义模板的目录(只读展示,界面上不用填路径)
+    dir: string;                     // Directory holding custom templates (display only; the UI never asks for a path)
     exists: boolean;
     loaded: number;
     files: { name: string; items: number; version: string; author: string }[];
@@ -192,12 +192,12 @@ export interface GalleryApplyResult {
   kind: GalleryKind;
   id: string;
   name: string;
-  summary: string;                   // 可以直接显示给用户的一句话
+  summary: string;                   // A one-liner that can be shown to the user as is
   group: Group | null;
   agents: string[];
-  added: string[];                   // 这次真正写入的东西
-  skipped: string[];                 // 因为已存在而没动的
-  notes: string[];                   // 需要用户知道的提醒
+  added: string[];                   // What was actually written this time
+  skipped: string[];                 // Skipped because it already existed
+  notes: string[];                   // Reminders the user should know about
 }
 export interface AgentPreset {
   key: string;
@@ -206,16 +206,16 @@ export interface AgentPreset {
   role: string;
   tags: Tag[];
   prompt: string;
-  exists: boolean;                 // 已经有同名成员(添加时会复用)
+  exists: boolean;                 // A member with this name already exists (adding reuses it)
 }
 export type LibraryMode = "all" | "selected" | "off";
 export type PlanMode = "inherit" | "auto" | "on" | "off";
 export interface GroupExt {
-  skills: string[];                // 挂到本群的技能(群聊规则类 + 成员类均可)
-  plugins: string[];               // 启用的插件 ID
-  mcp: string[];                   // 启用的 MCP 服务器 ID
+  skills: string[];                // Skills attached to this group (both chat-rule and member kinds)
+  plugins: string[];               // Enabled plugin IDs
+  mcp: string[];                   // Enabled MCP server IDs
   library: { mode: LibraryMode; ids: string[] };
-  plan: PlanMode;                  // inherit = 跟随全局设置
+  plan: PlanMode;                  // inherit = follow the global setting
   memory: boolean;
 }
 export interface Group {
@@ -224,7 +224,7 @@ export interface Group {
   host_agent_id: string | null;
   member_ids: string[];
   ext: GroupExt;
-  prompt: string;                  // 本群提示词(支持 {{变量}})
+  prompt: string;                  // Group prompt (supports {{variables}})
   last_message?: string;
   last_at?: number;
 }
@@ -237,7 +237,7 @@ interface Attempt {
 export interface ToolCall {
   name: string;
   args: Record<string, string | number | boolean | null>;
-  status: "running" | "waiting" | "ok" | "failed" | "denied";   // waiting = 等你在聊天里确认;denied = 被拒绝/超时/被禁止,没有执行
+  status: "running" | "waiting" | "ok" | "failed" | "denied";   // waiting = waiting for you to confirm in the chat; denied = refused, timed out, or blocked, so it never ran
   ms?: number;
   preview?: string;
 }
@@ -269,14 +269,14 @@ export interface Message {
   meta?: {
     attempts?: Attempt[];
     tools?: ToolCall[];
-    plan_id?: string;              // 该发言属于哪张任务板
-    task_id?: string;              // 任务 ID;"final" = 群主整合
+    plan_id?: string;              // Which plan board this message belongs to
+    task_id?: string;              // Task ID; "final" = the host's synthesis
     task_title?: string;
-    engine?: string;               // 外部智能体发言:引擎名(如 workbuddy)
-    level?: ExternalLevel;         // 外部智能体发言时的权限级别
-    denied?: string[];             // 被权限挡下的工具名
+    engine?: string;               // External agent message: engine name (e.g. workbuddy)
+    level?: ExternalLevel;         // Permission level for the external agent's message
+    denied?: string[];             // Names of tools blocked by permissions
     external?: { cost_usd?: number; duration_ms?: number; num_turns?: number; model?: string };
-    // sender_type === "plan" 时的任务板内容
+    // Plan board contents when sender_type === "plan"
     kind?: "plan";
     goal?: string;
     conventions?: string;
@@ -288,37 +288,37 @@ export interface Message {
 }
 export interface Settings {
   external_calls_enabled: boolean;
-  external_agents_enabled: boolean;   // 外部智能体(如 WorkBuddy)总开关,默认关
+  external_agents_enabled: boolean;   // Master switch for external agents (e.g. WorkBuddy); off by default
   route_chain: string[];
   max_hops: number;
   history_limit: number;
-  history_clip: number;            // 过去的单条消息最多带入多少字
-  tool_output_limit: number;       // 工具结果回填给模型时最多多少字
+  history_clip: number;            // Max characters of past messages carried into the prompt
+  tool_output_limit: number;       // Max characters of tool output fed back to the model
   request_timeout: number;
   circuit_threshold: number;
   circuit_cooldown: number;
-  system_prompt: string;           // 全局系统提示词(支持 {{变量}})
-  plan_mode: Exclude<PlanMode, "inherit">;   // auto = 复杂任务由群主先做分工
+  system_prompt: string;           // Global system prompt (supports {{variables}})
+  plan_mode: Exclude<PlanMode, "inherit">;   // auto = the host splits complex tasks first
   plan_max_tasks: number;
-  tool_rounds: number;             // 每条回复最多几轮工具调用(0 = 不用工具)
+  tool_rounds: number;             // Max tool-call rounds per reply (0 = no tools)
   tool_timeout: number;
   memory_enabled: boolean;
   memory_auto_extract: boolean;
   memory_top_k: number;
   library_top_k: number;
-  app_repo: string;                // 程序本体所在的 GitHub 仓库 owner/repo
+  app_repo: string;                // GitHub repository of the app itself, owner/repo
   catalog_url: string;
-  github_token: string;            // 只写:读出来永远是空串,是否已设置看 github_token_set
+  github_token: string;            // Write-only: always reads back empty; use github_token_set to tell whether it is set
   github_token_set: boolean;
   auto_check_updates: boolean;
   update_interval_hours: number;
   auto_update_skills: boolean;
-  obsidian_dir: string;            // 只读:通过 /api/obsidian 设置
+  obsidian_dir: string;            // Read-only: set through /api/obsidian
   obsidian_auto: boolean;
-  perm_mode: PermMode;             // 工具调用审批模式
-  perm_timeout: number;            // 等你确认多少秒,超时按拒绝
-  perm_allow: string[];            // 「总是允许」的工具名
-  perm_deny: string[];             // 「永远禁止」的工具名
+  perm_mode: PermMode;             // Tool call approval mode
+  perm_timeout: number;            // Seconds to wait for your confirmation; a timeout counts as a refusal
+  perm_allow: string[];            // Tool names set to Always allow
+  perm_deny: string[];             // Tool names set to Always block
 }
 export interface ObsidianReport {
   ok: boolean;
@@ -345,7 +345,7 @@ export interface ObsidianStatus {
 }
 export type PermMode = "ask_risky" | "ask_all" | "allow_all";
 type ToolRisk = "read" | "write" | "exec";
-/** 一条等你确认的工具调用 */
+/** A tool call waiting for your confirmation */
 export interface Approval {
   id: string;
   group_id: string;
@@ -387,12 +387,12 @@ export interface LocalStatus {
   installed: string[];
   error?: string;
 }
-/** 本地模型推荐目录(后端 /api/local/catalog)。fit/disk_ok/slow 是按本机内存、磁盘、加速方式的粗略估算,不是保证。 */
+/** Local model recommendation catalog (backend /api/local/catalog). fit/disk_ok/slow are rough estimates from this machine's memory, disk, and acceleration, not guarantees. */
 export type LocalFit = "ok" | "tight" | "no" | "unknown";
 interface LocalHardware {
   system: string;
   machine: string;
-  /** 当前 Python 是 x86_64 版、被 Rosetta 转译着在苹果芯片上运行 */
+  /** The current Python is the x86_64 build, running translated by Rosetta on Apple silicon */
   translated?: boolean;
   ram_gb: number | null;
   disk_free_gb: number | null;
@@ -472,10 +472,10 @@ export interface Skill {
   name: string;
   description: string;
   path: string;
-  scope: "member" | "group";       // group = 群聊提示词类技能,挂到整个群
+  scope: "member" | "group";       // group = a chat-prompt skill attached to the whole group
   version: string;
   source: { repo: string; path: string } | null;
-  body?: string;                   // 只有单个读取/创建/更新时才返回
+  body?: string;                   // Returned only for a single read, create, or update
 }
 export interface PluginInfo {
   id: string;
@@ -498,7 +498,7 @@ export interface McpServer {
   transport_effective: "stdio" | "sse" | "http";
   description: string;
   enabled: boolean;
-  env: Record<string, string>;     // 值已被掩码成 ••••••;原样回传表示保持不变
+  env: Record<string, string>;     // Values are masked as ••••••; sending one back unchanged keeps it
   headers: Record<string, string>;
   status: McpStatus;
   error: string;
@@ -573,10 +573,10 @@ export interface Capabilities {
     skills: string[];
     model: { id: string; display_name: string; strengths: Tag[]; is_local: boolean } | null;
     manual_model: boolean;
-    strengths: Tag[];              // 成员岗位强项 ∪ 所用模型强项(最多 6 个)
+    strengths: Tag[];              // Member role strengths ∪ strengths of the models used (at most 6)
     origin: "" | "model";
-    engine?: string;               // 非空 = 外部智能体
-    model_problem: string;         // 指定的模型现在用不了时的原因(此时实际会回退到别的模型);空 = 正常
+    engine?: string;               // Non-empty = an external agent
+    model_problem: string;         // Why the assigned model is unusable right now (another model is used instead); empty = fine
   }[];
   tools: { name: string; description: string; source: string }[];
   problems: string[];
@@ -592,7 +592,7 @@ export interface GroupTemplate {
   host: string;
   skills: string[];
   prompt: string;
-  /** false = 只在「设置 → 模板中心」里出现,不放首页(首页保持精简) */
+  /** false = only shown in Settings → Template gallery, not on the home screen (which stays lean) */
   home?: boolean;
 }
 type UpdateKind = "app" | "catalog" | "skill" | "plugin" | "model" | "localmodel" | "localcatalog";
@@ -609,7 +609,7 @@ export interface UpdatesInfo {
   items: UpdateItem[];
   last_check: (Record<string, unknown> & { at?: number; errors?: string[] }) | null;
   checking: boolean;
-  configured: boolean;             // 是否填了程序仓库
+  configured: boolean;             // Whether an app repository is configured
   curated: { kind: "skill" | "mcp" | "plugin"; repo: string; desc: string }[];
   catalog: { version: string; source: string };
   sources: { kind: string; name: string; repo: string; path: string; ref: string; sha: string; installed_at: number }[];
@@ -636,7 +636,7 @@ export interface FilePreview {
   ref: string;
   content: string;
   sha: string;
-  sha256: string;                  // 安装插件时必须带上,服务器会重新下载并比对
+  sha256: string;                  // Required to install a plugin; the server re-downloads and compares it
   size: number;
 }
 
@@ -669,15 +669,15 @@ export type ChatEvent =
   | { type: "reset"; message_id: string }
   | { type: "message_end"; message: Message }
   | { type: "message_discard"; message_id: string }
-  | { type: "plan"; message: Message }                                        // 任务板有更新(整条替换)
-  | { type: "tool"; message_id: string; index: number; call: ToolCall }       // 第 index 个工具调用的状态变化
-  | { type: "approval"; approval: Approval }                                  // 有工具调用在等你确认
+  | { type: "plan"; message: Message }                                        // Plan board updated (the whole message is replaced)
+  | { type: "tool"; message_id: string; index: number; call: ToolCall }       // Status change for the tool call at index
+  | { type: "approval"; approval: Approval }                                  // A tool call is waiting for your confirmation
   | { type: "approval_done"; id: string; group_id: string; decision: "allow" | "deny" | "timeout" | "cancelled" }
   | { type: "stopped" }
   | { type: "idle" };
 
 // ------------------------------------------------------------------- http
-/** 把后端的错误体变成一句人话:FastAPI 的校验错误是数组,不能直接 JSON.stringify 给用户看 */
+/** Turn the backend error body into something readable: FastAPI validation errors are arrays and must not be JSON.stringify'd straight to the user */
 function errorText(detail: unknown, fallback: string): string {
   if (typeof detail === "string" && detail) return detail;
   if (Array.isArray(detail) && detail.length) {
@@ -691,20 +691,20 @@ function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
-/** fetch 的统一入口:带令牌、连不上时给出能看懂的提示、把错误体转成文字 */
+/** Single entry point for fetch: attaches the token, explains a failed connection, and turns the error body into text */
 async function call(path: string, init: RequestInit): Promise<Response> {
   let r: Response;
   try {
     r = await fetch(API + path, init);
   } catch {
-    throw new Error("连不上本地后端(它可能还在启动,或已经退出了)");
+    throw new Error(tr("Cannot reach the local backend (it may still be starting up, or it has exited)"));
   }
   if (!r.ok) {
     let detail: unknown;
     try {
       detail = (await r.json()).detail;
     } catch {
-      /* 不是 JSON */
+      /* Not JSON */
     }
     throw new Error(errorText(detail, `${r.status} ${r.statusText}`.trim()));
   }
@@ -731,26 +731,26 @@ const qs = (o: Record<string, string | number | boolean | undefined>) => {
 };
 
 export const api = {
-  /** 心跳:后端还活着吗(不需要令牌) */
+  /** Heartbeat: is the backend alive? (no token needed) */
   ping: () => get<{ ok: boolean }>("/api/health"),
   presets: () => get<Preset[]>("/api/presets"),
-  // ---- 模型服务
+  // ---- Model services
   providers: () => get<Provider[]>("/api/providers"),
   addProvider: (b: Record<string, unknown>) => post<Provider>("/api/providers", b),
   patchProvider: (id: string, b: Record<string, unknown>) => patch<Provider>(`/api/providers/${id}`, b),
   delProvider: (id: string) => del(`/api/providers/${id}`),
   addModel: (pid: string, model_name: string) => post<Model>(`/api/providers/${pid}/models`, { model_name }),
-  /** strengths: string[] = 自定义;null = 恢复自动推断 */
+  /** strengths: string[] = a custom list; null = go back to auto-inference */
   patchModel: (id: string, b: { enabled?: boolean; display_name?: string; strengths?: Tag[] | null }) => patch<Model>(`/api/models/${id}`, b),
   delModel: (id: string) => del(`/api/models/${id}`),
   addModels: (pid: string, model_names: string[]) => post<Model[]>(`/api/providers/${pid}/models/batch`, { model_names }),
   strengthTags: () => get<{ tags: { id: Tag; label?: string; desc: string }[] }>("/api/strengths"),
   modelOptions: (pid: string) => get<ModelOptions>(`/api/providers/${pid}/model-options`),
-  /** 向服务商查询实时清单并返回合并后的选项(联网,外呼关闭时云端服务商返回 403) */
+  /** Ask providers for their live list and return the merged options (needs network; cloud providers return 403 when outbound calls are off) */
   refreshModelOptions: (pid: string) => post<ModelOptions>(`/api/providers/${pid}/model-options/refresh`),
-  /** 把当前所有型号标为「已看过」(清掉「新」标记) */
+  /** Mark every current model as seen (clears the new flags) */
   markModelsSeen: (pid: string) => post<ModelOptions>(`/api/providers/${pid}/model-options/seen`),
-  /** 按强项给「当前可用」的模型排序(score = 命中的强项数);没填 Key 且没有本地模型时返回空数组 */
+  /** Rank currently available models by strengths (score = number of matching strengths); returns an empty array when no key is set and there are no local models */
   recommendModels: (tags: Tag[], limit = 5) =>
     get<{ tags: Tag[]; models: (Model & { score: number })[] }>(`/api/models/recommend${qs({ tags: tags.join(","), limit })}`),
   stats: (days: number) => get<Stats>(`/api/stats?days=${days}`),
@@ -767,7 +767,7 @@ export const api = {
     post<{ ok: boolean }>(`/api/approvals/${id}`, { decision, remember }),
   permissions: () => get<Permissions>("/api/permissions"),
   modelsHealth: () => get<{ health: Record<string, ModelHealth> }>("/api/models-health"),
-  /** 检测连通性。cloud=false 只探测本地服务(不花 token);云端模型会发一条极短的请求 */
+  /** Probe reachability. cloud=false only tests local services (no tokens spent); cloud models get a very short request */
   checkModelsHealth: (model_ids?: string[], cloud = true) =>
     post<{ checked: number; health: Record<string, ModelHealth> }>("/api/models-health/check", { model_ids, cloud }),
   testModel: (model_id: string) =>
@@ -782,7 +782,7 @@ export const api = {
   localAdd: (tag: string, note = "") => post<{ tag: string; size_gb: number }>("/api/local/catalog/add", { tag, note }),
   localRemoveExtra: (tag: string) => del<{ ok: boolean }>(`/api/local/catalog/extra?tag=${encodeURIComponent(tag)}`),
   applyLocalCatalog: () => post<{ applied?: boolean; latest?: string }>("/api/local/catalog/apply", {}),
-  // ---- 成员与群聊
+  // ---- Members and group chats
   agents: () => get<Agent[]>("/api/agents"),
   createAgent: (b: Partial<Agent>) => post<Agent>("/api/agents", b),
   patchAgent: (id: string, b: Partial<Agent>) => patch<Agent>(`/api/agents/${id}`, b),
@@ -795,17 +795,17 @@ export const api = {
     patch<Group>(`/api/groups/${id}`, b),
   delGroup: (id: string) => del(`/api/groups/${id}`),
   addMember: (gid: string, agent_id: string) => post<Group>(`/api/groups/${gid}/members`, { agent_id }),
-  /** 随时把预设岗位(主持/评审/记录/资料员/程序员/翻译/分析师/策划…)拉进群;已有同名成员则复用 */
+  /** Pull preset roles (host/reviewer/scribe/librarian/programmer/translator/analyst/planner…) into a group at any time; a member with the same name is reused */
   addMemberFromPreset: (gid: string, key: string) => post<Group>(`/api/groups/${gid}/members/from-preset`, { key }),
   externalOverview: () => get<ExternalOverview>("/api/external"),
   externalCreate: (b: { engine?: string; name?: string; group_id?: string; cfg: Partial<ExternalCfg> }) => post<Agent>("/api/external/agents", b),
   externalPatch: (id: string, cfg: Partial<ExternalCfg>) => patch<Agent>(`/api/external/agents/${id}`, { cfg }),
   externalTest: (b: { live?: boolean; agent_id?: string; cli_path?: string }) => post<ExternalProbe>("/api/external/test", b),
-  /** 模板中心:目录(程序自带的一手模板 + 数据目录里的自定义模板) */
+  /** Template gallery: the catalog (first-party templates shipped with the app + custom ones in the data directory) */
   gallery: () => get<GalleryOverview>("/api/gallery"),
-  /** 模板详情:带回完整正文,安装前可以先读一遍 */
+  /** Template detail: brings back the full body so you can read it before installing */
   galleryDetail: (id: string) => get<GalleryItem & { def: Record<string, unknown> }>(`/api/gallery/${encodeURIComponent(id)}`),
-  /** 一键应用:team 建群、agent 建成员(可顺带入群)、skill/prompt 入库、mcp 添加为停用状态 */
+  /** One-click apply: team creates a group, agent creates a member (optionally joining the group), skill/prompt go into their libraries, mcp is added disabled */
   galleryApply: (id: string, body: { name?: string; group_id?: string; overwrite?: boolean } = {}) =>
     post<GalleryApplyResult>(`/api/gallery/${encodeURIComponent(id)}/apply`, body),
   addMemberFromModel: (gid: string, model_id: string) => post<Group>(`/api/groups/${gid}/members/from-model`, { model_id }),
@@ -818,12 +818,12 @@ export const api = {
   templates: () => get<GroupTemplate[]>("/api/templates"),
   createFromTemplate: (tid: string, name?: string) => post<Group>(`/api/templates/${tid}/create-group`, { name }),
   messages: (gid: string) => get<Message[]>(`/api/groups/${gid}/messages`),
-  /** 这个群现在有没有一轮协作在跑(刷新页面、WebSocket 重连后用来恢复「发送中」状态) */
+  /** Whether a collaboration round is running in this group (used after a page refresh or WebSocket reconnect to restore the sending state) */
   groupStatus: (gid: string) => get<{ busy: boolean }>(`/api/groups/${gid}/status`),
   clearMessages: (gid: string) => del(`/api/groups/${gid}/messages`),
   send: (gid: string, text: string) => post(`/api/groups/${gid}/messages`, { text }),
   stop: (gid: string) => post(`/api/groups/${gid}/stop`),
-  // ---- 技能 / 插件 / MCP(三者分开)
+  // ---- Skills / plugins / MCP (kept separate)
   skills: () => get<Skill[]>("/api/skills"),
   skill: (name: string) => get<Skill>(`/api/skills/${encodeURIComponent(name)}`),
   addSkill: (b: { name: string; description: string; body: string; scope: "member" | "group" }) => post<Skill>("/api/skills", b),
@@ -843,10 +843,10 @@ export const api = {
   delMcp: (id: string) => del(`/api/mcp/${id}`),
   connectMcp: (id: string) => post<McpServer>(`/api/mcp/${id}/connect`),
   disconnectMcp: (id: string) => post<McpServer>(`/api/mcp/${id}/disconnect`),
-  // ---- 资料库
+  // ---- Library
   library: () => get<{ docs: LibraryDoc[]; total_chars: number; count: number }>("/api/library"),
   addNote: (title: string, content: string) => post<LibraryDoc>("/api/library/note", { title, content }),
-  /** 请求体就是文件原始字节(txt/md/csv/json/html/pdf/docx) */
+  /** The request body is the file's raw bytes (txt/md/csv/json/html/pdf/docx) */
   uploadDoc: (file: File) => postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name })}`, file),
   addDocUrl: (url: string) => post<LibraryDoc>("/api/library/url", { url }),
   addDocDir: (path: string, recursive = true) =>
@@ -856,7 +856,7 @@ export const api = {
     get<{ doc: LibraryDoc; start: number; end: number; total: number; text: string }>(`/api/library/${id}${qs({ start })}`),
   patchDoc: (id: string, b: { title?: string; enabled?: boolean }) => patch<LibraryDoc>(`/api/library/${id}`, b),
   delDoc: (id: string) => del(`/api/library/${id}`),
-  // ---- 记忆
+  // ---- Memory
   memories: (f: { scope?: MemoryScope; scope_id?: string; kind?: MemoryKind; q?: string } = {}) =>
     get<{ memories: Memory[]; count: number }>(`/api/memories${qs(f)}`),
   addMemory: (b: { content: string; scope?: MemoryScope; scope_id?: string; kind?: MemoryKind; pinned?: boolean }) =>
@@ -865,17 +865,17 @@ export const api = {
   delMemory: (id: string) => del(`/api/memories/${id}`),
   clearMemories: (f: { scope?: MemoryScope; scope_id?: string; source?: string }) =>
     del<{ deleted: number }>(`/api/memories${qs(f)}`),
-  // ---- 提示词
+  // ---- Prompts
   prompts: () => get<PromptsInfo>("/api/prompts"),
   addPrompt: (b: { title: string; content: string; kind?: "general" | "group"; use_globally?: boolean }) => post<PromptItem>("/api/prompts", b),
   patchPrompt: (id: string, b: Partial<Pick<PromptItem, "title" | "content" | "kind" | "use_globally">>) =>
     patch<PromptItem>(`/api/prompts/${id}`, b),
   delPrompt: (id: string) => del(`/api/prompts/${id}`),
-  /** 用真实的成员/群信息代入 {{变量}},并估算 token */
+  /** Substitute real member/group data into {{variables}} and estimate tokens */
   previewPrompt: (content: string, ids: { agent_id?: string; group_id?: string } = {}) =>
     post<{ text: string; tokens: number; raw_tokens: number }>("/api/prompts/preview", { content, ...ids }),
   resetSystemPrompt: () => post<{ system_prompt: string }>("/api/prompts/reset-system"),
-  // ---- 更新与发现(GitHub)
+  // ---- Updates & discovery (GitHub)
   updates: () => get<UpdatesInfo>("/api/updates"),
   checkUpdates: () => post<Record<string, unknown>>("/api/updates/check"),
   dismissUpdate: (id: string) => post(`/api/updates/${id}/dismiss`),
@@ -887,25 +887,25 @@ export const api = {
   installSkill: (repo: string, path: string, ref = "", overwrite = false) =>
     post<Skill>("/api/updates/skill/install", { repo, path, ref, overwrite }),
   updateSkill: (name: string) => post<Skill>(`/api/updates/skill/update/${encodeURIComponent(name)}`),
-  /** sha256 必须来自 previewFile 的结果;服务器会重新下载并比对,内容变了就拒绝 */
+  /** sha256 must come from a previewFile result; the server re-downloads and compares it, and refuses if the content changed */
   installPlugin: (repo: string, path: string, sha256: string, ref = "", overwrite = false) =>
     post<{ id: string; plugins: PluginInfo[] }>("/api/updates/plugin/install", { repo, path, ref, sha256, overwrite }),
   applyCatalog: () => post<Record<string, unknown>>("/api/updates/catalog/apply"),
 };
 
-/** 请求体就是文件原始字节的 POST(资料库上传、恢复备份) */
+/** POST whose body is the file's raw bytes (library upload, backup restore) */
 async function postRaw<T>(path: string, body: Blob): Promise<T> {
   const r = await call(path, { method: "POST", headers: { ...authHeaders(), "Content-Type": "application/octet-stream" }, body });
   return (await r.json()) as T;
 }
 
-/** 下载后端返回的文件;文件名取自 Content-Disposition(支持 filename*=UTF-8'' 写法) */
+/** Download a file returned by the backend; the name comes from Content-Disposition (handles the filename*=UTF-8'' form) */
 async function download(path: string, fallbackName: string, what: string): Promise<void> {
   let r: Response;
   try {
     r = await call(path, { headers: authHeaders() });
   } catch (e) {
-    throw new Error(`${what}失败:${(e as Error).message}`);
+    throw new Error(tr("{what} failed: {message}", { what, message: (e as Error).message }));
   }
   const blob = await r.blob();
   const cd = r.headers.get("content-disposition") ?? "";
@@ -921,10 +921,10 @@ async function download(path: string, fallbackName: string, what: string): Promi
   window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-export const downloadBackup = (includeKeys: boolean) => download(`/api/data/export?include_keys=${includeKeys}`, "team-agent-backup.db", "导出");
-export const downloadChat = (gid: string) => download(`/api/groups/${gid}/export`, "chat.md", "导出");
+export const downloadBackup = (includeKeys: boolean) => download(`/api/data/export?include_keys=${includeKeys}`, "team-agent-backup.db", tr("Export"));
+export const downloadChat = (gid: string) => download(`/api/groups/${gid}/export`, "chat.md", tr("Export"));
 
-/** 拉取 Ollama 模型,逐行回调进度;结束返回是否成功。 */
+/** Pull an Ollama model, reporting progress line by line; returns whether it succeeded. */
 export async function pullLocalModel(
   model: string,
   onProgress: (p: { status?: string; completed?: number; total?: number; error?: string }) => void,
@@ -982,7 +982,7 @@ export function useGroupSocket(gid: string | null, onEvent: (e: ChatEvent) => vo
         }
       };
       ws.onclose = () => {
-        if (closed) return;   // 主动关掉的(切群/卸载)不再通知,免得把新连接的状态覆盖成「已断开」
+        if (closed) return;   // Deliberately closed (group switch / unmount): stop notifying, so the new connection's state is not overwritten with disconnected
         st.current?.(false);
         timer = window.setTimeout(connect, 1500);
       };
@@ -1000,16 +1000,16 @@ export function useGroupSocket(gid: string | null, onEvent: (e: ChatEvent) => vo
 export function relTime(ts?: number): string {
   if (!ts) return "";
   const d = Date.now() / 1000 - ts;
-  if (d < 60) return "刚刚";
-  if (d < 3600) return `${Math.floor(d / 60)} 分钟前`;
-  if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
-  if (d < 86400 * 30) return `${Math.floor(d / 86400)} 天前`;
+  if (d < 60) return tr("Just now");
+  if (d < 3600) return tr("{n} min ago", { n: Math.floor(d / 60) });
+  if (d < 86400) return tr("{n} h ago", { n: Math.floor(d / 3600) });
+  if (d < 86400 * 30) return tr("{n} d ago", { n: Math.floor(d / 86400) });
   return new Date(ts * 1000).toLocaleDateString();
 }
 
 export function modelLabel(id: string | null | undefined, models: Model[]): string {
-  if (!id) return "默认路由";
-  if (id.startsWith("ext:")) return `${id.slice(4).replace(/^./, (c) => c.toUpperCase())}(外部)`;
+  if (!id) return tr("Default routing");
+  if (id.startsWith("ext:")) return tr("{name} (external)", { name: id.slice(4).replace(/^./, (c) => c.toUpperCase()) });
   const m = models.find((x) => x.id === id);
   return m ? m.display_name : id.split("/").slice(1).join("/") || id;
 }

@@ -798,6 +798,16 @@ const ZH: Record<string, string> = {
   "owner/repo, for example me/team-agent": "owner/repo,例如 me/team-agent",
   "published {when}": "发布于 {when}",
   "…{n} in total": "…共 {n} 个",
+  // ---------------------------------------------------------------- API 与时间显示
+  "Cannot reach the local backend (it may still be starting up, or it has exited)": "连不上本地后端(它可能还在启动,或已经退出了)",
+  "Default routing": "默认路由",
+  "Export": "导出",
+  "Just now": "刚刚",
+  "{name} (external)": "{name}(外部)",
+  "{n} d ago": "{n} 天前",
+  "{n} h ago": "{n} 小时前",
+  "{n} min ago": "{n} 分钟前",
+  "{what} failed: {message}": "{what}失败:{message}",
 };
 
 let current: Lang = DEFAULT_LANG;
