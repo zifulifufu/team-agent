@@ -175,11 +175,41 @@ def test_library_file_formats_and_errors(store):
 
 
 def test_library_scope_ids_and_find_by_title(store):
+    """`all` is no longer "every document in the database": the library is per group, so it
+    resolves to that group's own documents plus the shared ones. Returning the explicit list
+    (rather than None, which `read` and `find_by_title` read as "no restriction") is what stops
+    a member opening another group's document by title."""
     lib = Library(store)
-    d = lib.add_text("报价单 2026", "内容内容内容")
-    assert lib.find_by_title("报价单")["id"] == d["id"] and lib.find_by_title("不存在") is None
-    assert lib.scope_ids({"mode": "all"}) is None and lib.scope_ids({"mode": "off"}) == []
-    assert lib.scope_ids({"mode": "selected", "ids": ["x"]}) == ["x"]
+    gid = store.list_groups()[0]["id"]
+    other = store.create_group("Another project")["id"]
+    shared = lib.add_text("报价单 2026", "内容内容内容")
+    mine = lib.add_text("本群资料", "本群的内容", group_id=gid)
+    theirs = lib.add_text("别的群资料", "别的群的内容", group_id=other)
+
+    assert lib.find_by_title("报价单")["id"] == shared["id"] and lib.find_by_title("不存在") is None
+    assert set(lib.scope_ids({"mode": "all"}, gid)) == {shared["id"], mine["id"]}
+    assert theirs["id"] not in lib.scope_ids({"mode": "all"}, gid)
+    assert lib.scope_ids({"mode": "off"}, gid) == []
+    assert lib.scope_ids({"mode": "selected", "ids": ["x"]}, gid) == ["x"]
+    # With no group at all (`gid` left empty) only the shared documents are visible
+    assert lib.scope_ids({"mode": "all"}, "") == [shared["id"]]
+
+
+def test_a_group_cannot_search_another_groups_library(store):
+    lib = Library(store)
+    gid = store.list_groups()[0]["id"]
+    other = store.create_group("Another project")["id"]
+    lib.add_text("别人的预算口径", "含税价口径按百分之十三算", group_id=other)
+    lib.add_text("共享的报销制度", "单笔超过 500 元必须附发票")
+    lib.add_text("本群的验收标准", "验收以现场演示为准")
+
+    def found(scope_gid, q):
+        return {h["title"] for h in lib.search(q, 5, lib.scope_ids({"mode": "all"}, scope_gid))}
+
+    assert found(gid, "发票") == {"共享的报销制度"}          # shared documents stay reachable
+    assert found(gid, "验收") == {"本群的验收标准"}
+    assert found(gid, "含税价") == set()                     # another group's document is not
+    assert found(other, "含税价") == {"别人的预算口径"}
 
 
 # -------------------------------------------------------------------- memory

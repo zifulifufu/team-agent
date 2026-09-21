@@ -165,7 +165,9 @@ class ToolHub:
                                "risk": spec.get("risk"), **extra}
 
         add("current_time", specs["current_time"], source="builtin")
-        if ext["library"]["mode"] != "off" and self.store.list_docs():
+        # `list_docs(group["id"])` = this group's own documents + the shared ones, which is what
+        # "the library is not empty" means for this group now
+        if ext["library"]["mode"] != "off" and self.store.list_docs(group["id"]):
             add("library_search", specs["library_search"], source="builtin")
             add("library_read", specs["library_read"], source="builtin")
         if cfg["memory_enabled"] and ext["memory"]:
@@ -260,7 +262,7 @@ When it is not supplied, calls needing confirmation are always denied."""
 # index; run it in a thread pool so it cannot block the event loop (which would slow down
 # everyone's streaming output)
             hits = await asyncio.to_thread(
-                self.library.search, str(args["query"]), k, self.library.scope_ids(group["ext"]["library"])
+                self.library.search, str(args["query"]), k, self.library.scope_ids(group["ext"]["library"], group["id"])
             )
             if not hits:
                 return i18n.pick_now("Nothing relevant was found in the library.", "资料库里没有找到相关内容。"), True
@@ -269,7 +271,7 @@ When it is not supplied, calls needing confirmation are always denied."""
             doc = self.library.find_by_title(str(args["doc"]))
             if not doc or not doc["enabled"]:
                 return i18n.pick_now(f"The library has no document called {args['doc']}.", f"资料库里没有《{args['doc']}》。"), False
-            allowed = self.library.scope_ids(group["ext"]["library"])
+            allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
             if allowed is not None and doc["id"] not in allowed:
                 return i18n.pick_now("This document is not enabled for this group.", "本群没有启用这份文档。"), False
             r = await asyncio.to_thread(self.library.read, doc["id"], max(0, int(args.get("start") or 0)), 3000)

@@ -167,7 +167,7 @@ class Library:
 
     # ------------------------------------------------------------------ write
     def add_text(self, title: str, text: str, filename: str = "", kind: str = "note", size: int | None = None,
-                 did: str | None = None) -> dict:
+                 did: str | None = None, group_id: str = "") -> dict:
         text = text.strip()
         if not text:
             raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))
@@ -175,15 +175,15 @@ class Library:
             raise LibraryError(i18n.pick_now(f"The text is too long (limit {MAX_CHARS} characters); split it before importing", f"文本太长(上限 {MAX_CHARS // 10000} 万字),请拆分后再导入"))
         chunks = chunk_text(text)
         doc = self.store.add_doc(title.strip() or filename or i18n.pick_now("Untitled", "未命名"), filename, kind,
-                                 size if size is not None else len(text.encode()), chunks, did)
+                                 size if size is not None else len(text.encode()), chunks, did, group_id)
         self.invalidate()
         return doc
 
-    def add_file(self, filename: str, data: bytes, title: str | None = None) -> dict:
+    def add_file(self, filename: str, data: bytes, title: str | None = None, group_id: str = "") -> dict:
         kind, text = extract_text(filename, data)
-        return self.add_text(title or Path(filename).stem, text, filename, kind, len(data))
+        return self.add_text(title or Path(filename).stem, text, filename, kind, len(data), group_id=group_id)
 
-    def add_url(self, url: str) -> dict:
+    def add_url(self, url: str, group_id: str = "") -> dict:
         final, ctype, data = fetch_url(url)
         if ctype == "application/pdf" or final.lower().split("?")[0].endswith(".pdf"):
             kind, text = extract_text("x.pdf", data)
@@ -198,16 +198,18 @@ class Library:
             title = Path(urlparse(final).path).name or urlparse(final).netloc
         else:
             raise LibraryError(i18n.pick_now(f"This content type is not supported yet: {ctype or 'unknown'}", f"暂不支持这种内容类型:{ctype or '未知'}"))
-        return self.add_text(title[:120], text, final, "link", len(data))
+        return self.add_text(title[:120], text, final, "link", len(data), group_id=group_id)
 
-    def add_dir(self, path: str, recursive: bool = True) -> dict:
+    def add_dir(self, path: str, recursive: bool = True, group_id: str = "") -> dict:
         """Bulk import the documents in a folder. Re-importing the same folder: unchanged files are
 skipped, files whose size changed are replaced with the new version."""
         root = Path(path.strip()).expanduser()
         if not root.is_absolute() or not root.is_dir():
             raise LibraryError(i18n.pick_now("Give the full path of a folder that exists", "请填写一个存在的文件夹的完整路径"))
         root = root.resolve()
-        by_name = {d["filename"]: d for d in self.store.list_docs() if d["filename"]}
+        # Only this group's own documents and the shared ones take part in "already imported":
+        # the same file may legitimately live in two groups' libraries.
+        by_name = {d["filename"]: d for d in self.store.list_docs(group_id) if d["filename"]}
         added: list[dict] = []
         skipped: list[dict] = []
         seen = 0
@@ -240,7 +242,7 @@ skipped, files whose size changed are replaced with the new version."""
                     if not old["enabled"]:
                         doc = self.update(doc["id"], {"enabled": False}) or doc
                 else:
-                    doc = self.add_text(p.stem, text, str(p), kind, size)
+                    doc = self.add_text(p.stem, text, str(p), kind, size, group_id=group_id)
                 added.append(doc)
             except (LibraryError, OSError) as e:
                 skipped.append({"name": rel, "reason": str(e)})
@@ -287,12 +289,17 @@ skipped, files whose size changed are replaced with the new version."""
         return next((d for d in docs if d["id"] == key or d["title"].lower() == key), None) or \
             next((d for d in docs if key and key in d["title"].lower()), None)
 
-    def scope_ids(self, ext_library: dict) -> list[str] | None:
-        """Group settings -> searchable document ids. None = no restriction (all enabled ones);
-[] = none may be used."""
+    def scope_ids(self, ext_library: dict, gid: str = "") -> list[str] | None:
+        """The document ids a group may search, from its group settings.
+
+        "all" no longer means every document in the database: the library is per group, so it
+        means that group's own documents plus the shared ones (`group_id=''`). Returning an
+        explicit list rather than None matters — None reads as "no restriction" in `read` and
+        `find_by_title` below, which would let a member open another group's document by title.
+        """
         mode = (ext_library or {}).get("mode", "all")
         if mode == "off":
             return []
         if mode == "selected":
             return list(ext_library.get("ids", []))
-        return None
+        return [d["id"] for d in self.store.list_docs(gid) if d["enabled"]]

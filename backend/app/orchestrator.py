@@ -261,7 +261,7 @@ class Orchestrator:
 straight into the context."""
         if group["ext"]["library"]["mode"] == "off":
             return ""
-        allowed = self.library.scope_ids(group["ext"]["library"])
+        allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
         out = []
         for m in re.finditer(r"#([^\s#@,,。;;::!!??]{2,40})", text):  # i18n-keep: hashtag regex; the CJK punctuation set is the delimiter list
             doc = self.library.find_by_title(m.group(1))

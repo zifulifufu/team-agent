@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS library_docs (
     chars INTEGER NOT NULL DEFAULT 0,
     chunks INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
+    -- Which group chat this document belongs to. '' means shared: visible to every group.
+    -- (Added by _migrate for databases created before the library was per group; the index on
+    -- it is created there too, because on an older database this CREATE TABLE is a no-op and
+    -- the column only appears afterwards.)
+    group_id TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS library_chunks (
@@ -250,8 +255,21 @@ class ExtStore:
         )
 
     # ------------------------------------------------------------------ library
-    def list_docs(self) -> list[dict]:
-        rows = self._q("SELECT * FROM library_docs ORDER BY created_at DESC, rowid DESC")  # type: ignore[attr-defined]
+    def list_docs(self, gid: str | None = None) -> list[dict]:
+        """Documents, optionally narrowed to one group.
+
+        gid=None -> everything (the overview and the statistics); gid="" -> the shared ones
+        only; gid="<id>" -> that group's own documents plus the shared ones, which is exactly
+        what its members may search.
+        """
+        sql = "SELECT * FROM library_docs"
+        args: tuple = ()
+        if gid == "":
+            sql += " WHERE group_id=''"
+        elif gid is not None:
+            sql += " WHERE group_id IN (?, '')"
+            args = (gid,)
+        rows = self._q(sql + " ORDER BY created_at DESC, rowid DESC", args)  # type: ignore[attr-defined]
         for r in rows:
             r["enabled"] = bool(r["enabled"])
         return rows
@@ -262,13 +280,14 @@ class ExtStore:
             r["enabled"] = bool(r["enabled"])
         return r
 
-    def add_doc(self, title: str, filename: str, kind: str, size: int, chunks: list[str], did: str | None = None) -> dict:
+    def add_doc(self, title: str, filename: str, kind: str, size: int, chunks: list[str],
+                did: str | None = None, group_id: str = "") -> dict:
         did = did or self.new_id()  # type: ignore[attr-defined]
         with self._lock:  # type: ignore[attr-defined]
             self._db.execute(  # type: ignore[attr-defined]
-                "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,created_at) "
-                "VALUES(?,?,?,?,?,?,?,1,?)",
-                (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), time.time()),
+                "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,group_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,1,?,?)",
+                (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), group_id, time.time()),
             )
             self._db.executemany(  # type: ignore[attr-defined]
                 "INSERT INTO library_chunks(doc_id,idx,text) VALUES(?,?,?)",
@@ -282,6 +301,8 @@ class ExtStore:
             self._x("UPDATE library_docs SET title=? WHERE id=?", (patch["title"], did))  # type: ignore[attr-defined]
         if patch.get("enabled") is not None:
             self._x("UPDATE library_docs SET enabled=? WHERE id=?", (int(bool(patch["enabled"])), did))  # type: ignore[attr-defined]
+        if patch.get("group_id") is not None:
+            self._x("UPDATE library_docs SET group_id=? WHERE id=?", (str(patch["group_id"]), did))  # type: ignore[attr-defined]
         return self.get_doc(did)
 
     def delete_doc(self, did: str) -> None:

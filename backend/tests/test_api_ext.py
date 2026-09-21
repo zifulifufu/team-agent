@@ -4,6 +4,7 @@ library uploads, prompts, templates, MCP, plugins, skills, backups.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import sys
 from pathlib import Path
@@ -183,6 +184,84 @@ def test_aggregator_presets_stay_remote(client):
     assert r["ok"] is False and "Outbound calls are disabled" in r["error"]
 
 
+# -------------------------------------------------------------------- library (per group)
+def test_the_library_is_scoped_to_a_group(client):
+    """Each group has its own library; documents with no group are shared with all of them."""
+    g = gid(client)
+    other = client.post("/api/groups", json={"name": "Another project"}).json()["id"]
+    OCTET = {"Content-Type": "application/octet-stream"}
+    up = lambda gid_, name, body: client.post(  # noqa: E731
+        "/api/library/upload", params={"filename": name, "group_id": gid_}, content=body, headers=OCTET).json()
+
+    mine = up(g, "本群.txt", "本群的验收标准以现场演示为准".encode())
+    theirs = up(other, "别群.txt", "别人的预算口径按含税价算".encode())
+    shared = up("", "共享.txt", "单笔超过 500 元必须附发票".encode())
+    assert (mine["group_id"], theirs["group_id"], shared["group_id"]) == (g, other, "")
+
+    # The group's list is its own plus the shared ones, never another group's
+    names = {d["title"] for d in client.get("/api/library", params={"group_id": g}).json()["docs"]}
+    assert names == {"本群", "共享"}
+    # No group_id = the whole library, which is what the overview page shows
+    assert len(client.get("/api/library").json()["docs"]) == 3
+    # "" = the shared ones only
+    assert {d["title"] for d in client.get("/api/library", params={"group_id": ""}).json()["docs"]} == {"共享"}
+
+    # Searching inside a group cannot reach another group's document
+    assert {h["title"] for h in client.get("/api/library/search", params={"q": "发票", "group_id": g}).json()} == {"共享"}
+    assert client.get("/api/library/search", params={"q": "含税价", "group_id": g}).json() == []
+    assert {h["title"] for h in client.get("/api/library/search", params={"q": "含税价", "group_id": other}).json()} == {"别群"}
+
+    # An unknown group is refused rather than silently treated as shared
+    assert client.get("/api/library", params={"group_id": "nope"}).status_code == 404
+    assert client.post("/api/library/note", json={"title": "x", "content": "y", "group_id": "nope"}).status_code == 404
+    assert client.post("/api/library/upload", params={"filename": "x.txt", "group_id": "nope"},
+                       content=b"hi", headers=OCTET).status_code == 404
+
+
+def test_a_note_can_belong_to_a_group(client):
+    g = gid(client)
+    note = client.post("/api/library/note", json={"title": "本群备忘", "content": "周五下午开会", "group_id": g}).json()
+    assert note["group_id"] == g
+    assert [d["title"] for d in client.get("/api/library", params={"group_id": g}).json()["docs"]] == ["本群备忘"]
+
+
+def test_a_member_cannot_read_another_groups_document_by_title(store, make_router):
+    """Through the tool the members actually call.
+
+    `library_read` resolves a document by title, and its guard only refuses when the scope is a
+    concrete list. A `None` there reads as "no restriction" and would hand over any document in
+    the database — including one belonging to a different project's group.
+    """
+    from tests.conftest import FakeLLM
+    from tests.test_collab import setup
+
+    store.update_settings({"perm_mode": "allow_all"})
+    orch, g = setup(store, make_router, FakeLLM(default="好"))
+    other = store.create_group("Another project")
+
+    async def run():
+        mine = store.add_doc("本群资料", "本群.txt", "txt", 6, ["本群的内容在此"], group_id=g["id"])
+        theirs = store.add_doc("别人的资料", "别群.txt", "txt", 6, ["机密内容在此"], group_id=other["id"])
+        store.add_doc("共享规范", "共享.txt", "txt", 6, ["所有群都能看的规范"])
+
+        async def read(title, group):
+            ctx = await orch.toolhub.context(store.get_group(group["id"]), store.list_agents()[0], connect=False)
+            return await orch.toolhub.call(ctx, "library_read", {"doc": title})
+
+        assert "本群的内容在此" in (await read("本群资料", g)).text
+        assert "所有群都能看的规范" in (await read("共享规范", g)).text
+        # The other group's document is not reachable, by title or by document id
+        blocked = await read("别人的资料", g)
+        assert not blocked.ok and "机密内容在此" not in blocked.text
+        by_id = await read(theirs["id"], g)
+        assert not by_id.ok and "机密内容在此" not in by_id.text
+        # …and the group it belongs to still can
+        assert "机密内容在此" in (await read("别人的资料", other)).text
+        assert mine["id"]
+
+    asyncio.run(run())
+
+
 # -------------------------------------------------------------------- library
 def test_library_upload_search_read_scope_cleanup(client):
     g = gid(client)
@@ -309,6 +388,37 @@ def test_export_strips_secrets_by_default(client, tmp_path):
     f2 = tmp_path / "b2.db"
     f2.write_bytes(client.get("/api/data/export", params={"include_keys": True}).content)
     assert "topsecret" in dump(f2)
+
+
+def test_upgrade_gives_old_documents_the_shared_scope(tmp_path):
+    """A database from before the library was per group has no `group_id` column at all.
+
+    Opening it must add the column and leave every existing document visible to every group,
+    rather than tucking them behind a group nobody can reach.
+    """
+    import sqlite3
+
+    from app.store import Store
+
+    d = tmp_path / "old"
+    d.mkdir()
+    db = sqlite3.connect(d / "team-agent.db")
+    db.execute("CREATE TABLE library_docs (id TEXT PRIMARY KEY, title TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', "
+               "kind TEXT NOT NULL DEFAULT 'note', size INTEGER NOT NULL DEFAULT 0, chars INTEGER NOT NULL DEFAULT 0, "
+               "chunks INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL)")
+    db.execute("INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,created_at) "
+               "VALUES('old1','旧资料','a.txt','txt',3,3,1,1,1.0)")
+    db.commit()
+    db.close()
+
+    st = Store(d)
+    docs = st.list_docs()
+    assert len(docs) == 1 and docs[0]["title"] == "旧资料" and docs[0]["group_id"] == ""
+    # Shared means every group can see it, and the overview still lists it once
+    gid_ = st.list_groups()[0]["id"]
+    assert [d_["id"] for d_ in st.list_docs(gid_)] == ["old1"]
+    assert [d_["id"] for d_ in st.list_docs("")] == ["old1"]
+    assert [d_["id"] for d_ in st.list_docs("some-other-group")] == ["old1"]
 
 
 def test_upgrade_from_old_database_backfills_seed_tags_once(tmp_path):

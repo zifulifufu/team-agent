@@ -67,11 +67,13 @@ class McpIn(BaseModel):
 
 class LibraryUrlIn(BaseModel):
     url: str
+    group_id: str = ""
 
 
 class LibraryDirIn(BaseModel):
     path: str
     recursive: bool = True
+    group_id: str = ""
 
 
 class McpImportIn(BaseModel):
@@ -101,6 +103,8 @@ class SkillIn(BaseModel):
 class NoteIn(BaseModel):
     title: str
     content: str
+    # Which group this belongs to; "" = shared, visible to every group
+    group_id: str = ""
 
 
 class DocPatch(BaseModel):
@@ -308,7 +312,8 @@ def build_router(c: Ctx) -> APIRouter:
             "problems": ctx.problems if ctx else [],
             "mcp_deferred": bool(ctx.mcp_deferred) if ctx else False,
             "ext": group["ext"],
-            "docs": len([d for d in store.list_docs() if d["enabled"]]),
+            # This group's own documents plus the shared ones: the number its members can reach
+            "docs": len([d for d in store.list_docs(gid) if d["enabled"]]),
         }
 
     @r.post("/api/groups/{gid}/apply-prompt")
@@ -751,27 +756,38 @@ def build_router(c: Ctx) -> APIRouter:
         return {"ok": True}
 
     # ============================================================ library
+    def _check_group(group_id: str) -> None:
+        """A document may belong to a group that exists, or to no group at all (shared)."""
+        if group_id:
+            _need(store.get_group(group_id), i18n.pick_now("Group chat", "群聊"))
+
     @r.get("/api/library")
-    async def library_list() -> dict:
-        docs = store.list_docs()
+    async def library_list(group_id: str | None = None) -> dict:
+        """group_id omitted = the whole library (the overview page); "" = the shared documents
+        only; a group id = that group's own documents plus the shared ones."""
+        if group_id:
+            _need(store.get_group(group_id), i18n.pick_now("Group chat", "群聊"))
+        docs = store.list_docs(group_id)
         return {"docs": docs, "total_chars": sum(d["chars"] for d in docs), "count": len(docs)}
 
     @r.post("/api/library/upload")
-    async def library_upload(request: Request, filename: str) -> dict:
+    async def library_upload(request: Request, filename: str, group_id: str = "") -> dict:
         """The request body is the raw bytes of the file (no multipart, which saves a dependency)."""
+        _check_group(group_id)
         _need_octet(request)
         data = await request.body()
         if not data:
             raise HTTPException(400, i18n.pick_now("The file is empty", "文件是空的"))
         try:
-            return c.library.add_file(filename, data)
+            return c.library.add_file(filename, data, group_id=group_id)
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
     @r.post("/api/library/note")
     async def library_note(body: NoteIn) -> dict:
+        _check_group(body.group_id)
         try:
-            return c.library.add_text(body.title, body.content)
+            return c.library.add_text(body.title, body.content, group_id=body.group_id)
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
@@ -779,23 +795,31 @@ def build_router(c: Ctx) -> APIRouter:
     async def library_url(body: LibraryUrlIn) -> dict:
         if not store.get_settings()["external_calls_enabled"]:
             raise HTTPException(403, i18n.pick_now("Outbound calls are disabled, so web pages cannot be fetched (you can turn this on under Permissions & control)", "外呼已禁用,不能抓取网页(在「权限与操控」里可以打开)"))
+        _check_group(body.group_id)
         try:
-            return await asyncio.to_thread(c.library.add_url, body.url)
+            return await asyncio.to_thread(c.library.add_url, body.url, body.group_id)
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
     @r.post("/api/library/dir")
     async def library_dir(body: LibraryDirIn) -> dict:
+        _check_group(body.group_id)
         try:
-            return await asyncio.to_thread(c.library.add_dir, body.path, body.recursive)
+            return await asyncio.to_thread(c.library.add_dir, body.path, body.recursive, body.group_id)
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
     @r.get("/api/library/search")
-    async def library_search(q: str, top_k: int = 5) -> list[dict]:
+    async def library_search(q: str, top_k: int = 5, group_id: str | None = None) -> list[dict]:
+        """With a group id, only what that group may search is returned — the same scope its
+        members get, so the preview on the library page cannot show more than they can reach."""
+        scope = None
+        if group_id:
+            group = _need(store.get_group(group_id), i18n.pick_now("Group chat", "群聊"))
+            scope = c.library.scope_ids(group["ext"]["library"], group_id)
         # the first search on a large library rebuilds the BM25 index, so run it in a thread pool
         # to keep the event loop free
-        return await asyncio.to_thread(c.library.search, q, max(1, min(top_k, 20)))
+        return await asyncio.to_thread(c.library.search, q, max(1, min(top_k, 20)), scope)
 
     @r.get("/api/library/{did}")
     async def library_read(did: str, start: int = 0) -> dict:

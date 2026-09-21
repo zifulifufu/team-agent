@@ -231,11 +231,18 @@ class Store(ExtStore):
             ("mcp_servers", "transport", "TEXT NOT NULL DEFAULT ''"),      # stdio | sse | http, empty = auto-detect
             ("mcp_servers", "headers", "TEXT NOT NULL DEFAULT '{}'"),
             ("mcp_servers", "description", "TEXT NOT NULL DEFAULT ''"),
+            # Per-group library: existing documents keep '' and stay visible to every group
+            ("library_docs", "group_id", "TEXT NOT NULL DEFAULT ''"),
         ]
         for table, col, decl in adds:
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
             if col not in cols:
                 self._x(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        # Indexes on a migrated column cannot live in the schema scripts: on an older database
+        # CREATE TABLE IF NOT EXISTS does nothing, so the column only exists after the ALTER
+        # above and the index creation would fail with "no such column" before reaching it.
+        for sql in ("CREATE INDEX IF NOT EXISTS idx_docs_group ON library_docs(group_id)",):
+            self._x(sql)
 
     def _flag(self, key: str) -> bool:
         """One-off markers (for example "the example prompts have already been written"), so
