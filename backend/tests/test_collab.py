@@ -360,20 +360,22 @@ async def test_library_tool_and_refs_and_scope(store, make_router):
 
     fake = FakeLLM(default=script)
     orch, g = setup(store, make_router, fake)
-    orch.library.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。")
-    orch.library.add_text("食堂", "周一红烧肉")
+    kb = orch.library.workspace_kb(g["id"])
+    orch.library.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。", kb_id=kb["id"])
+    orch.library.add_text("食堂", "周一红烧肉", kb_id=kb["id"])
     c = Collector()
     await orch.handle_user_message(g["id"], "@Copywriter 出差住宿标准是多少", c)
     assert c.ends()[0]["content"] == "依据资料:600" and c.ends()[0]["meta"]["tools"][0]["name"] == "library_search"
     assert "[差旅制度" in fake.calls[1][1][-1]["content"]
     # scoped to the canteen menu, so the travel policy cannot be found
-    lib_ids = [d["id"] for d in store.list_docs() if d["title"] == "食堂"]
-    store.update_group(g["id"], {"ext": {"library": {"mode": "selected", "ids": lib_ids}}})
+    # Scope is by knowledge base now: attach the shared one and drop the group's own
+    shared = orch.library.shared_kb()
+    store.update_group(g["id"], {"ext": {"library": {"mode": "selected", "kb_ids": [shared["id"]]}}})
     c2 = Collector()
     await orch.handle_user_message(g["id"], "@Copywriter 出差住宿标准是多少", c2)
     assert c2.ends()[0]["content"] == "依据资料:无"
     # library off: the tool is not offered
-    store.update_group(g["id"], {"ext": {"library": {"mode": "off", "ids": []}}})
+    store.update_group(g["id"], {"ext": {"library": {"mode": "off", "kb_ids": [], "collection_ids": []}}})
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     assert "- library_search(" not in fake.calls[0][1][0]["content"]
@@ -382,7 +384,7 @@ async def test_library_tool_and_refs_and_scope(store, make_router):
 async def test_hash_refs_inline_document_text(store, make_router):
     fake = FakeLLM(default="好")
     orch, g = setup(store, make_router, fake)
-    orch.library.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。")
+    orch.library.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。", kb_id=orch.library.shared_kb()["id"])
     await orch.handle_user_message(g["id"], "@Copywriter 按 #差旅制度 总结一下", Collector())
     s = fake.calls[0][1][0]["content"]
     assert "[Documents the user referenced]" in s and "不超过 600 元" in s

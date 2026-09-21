@@ -56,7 +56,7 @@ async def test_it_asks_before_running(store, make_router):
     out = await call(orch, store, g, {"language": "python", "code": "print(1)"}, approve)
     assert seen == ["run_code"] and out.denied and not out.ok
     assert "did not approve" in out.text
-    runs = store.data_dir / "workspace" / ".runs"
+    runs = store.data_dir / "workspaces" / g["id"] / ".runs"
     assert not runs.exists() or not list(runs.iterdir())   # nothing was written, let alone run
 
 
@@ -91,7 +91,7 @@ async def test_files_written_stay_in_the_workspace(code_env):
     code = "open('note.txt','w').write('kept')\nprint(open('note.txt').read())"
     out = await call(orch, store, g, {"language": "python", "code": code}, _yes)
     assert out.ok and "kept" in out.text
-    assert (store.data_dir / "workspace" / "note.txt").read_text() == "kept"
+    assert (store.data_dir / "workspaces" / g["id"] / "note.txt").read_text() == "kept"
 
 
 # ------------------------------------------------------------------ boundaries
@@ -109,7 +109,7 @@ async def test_absolute_cwd_is_refused_rather_than_reinterpreted(code_env):
     for bad in ("/etc", "/tmp", "~/"):
         out = await call(orch, store, g, {"language": "python", "code": "print(1)", "cwd": bad}, _yes)
         assert not out.ok and "absolute path" in out.text, bad
-    assert not (store.data_dir / "workspace" / "etc").exists()
+    assert not (store.data_dir / "workspaces" / g["id"] / "etc").exists()
 
 
 async def test_subdirectory_is_allowed(code_env):
@@ -153,6 +153,32 @@ async def test_custom_workdir_is_used(tmp_path, store, make_router):
     ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0], connect=False)
     out = await orch.toolhub.call(ctx, "run_code", {"language": "python", "code": "import os\nprint(os.getcwd())"}, _yes)
     assert out.ok and str(tmp_path / "somewhere") in out.text
+
+
+async def test_each_group_gets_its_own_workspace(store, make_router):
+    """One group's files must not be reachable from another group's code."""
+    store.update_settings({"code_enabled": True, "perm_mode": "allow_all"})
+    orch, g = setup(store, make_router, FakeLLM(default="好"))
+    other = store.create_group("Another project")
+
+    async def run(group, code):
+        ctx = await orch.toolhub.context(store.get_group(group["id"]), store.list_agents()[0], connect=False)
+        return await orch.toolhub.call(ctx, "run_code", {"language": "python", "code": code}, _yes)
+
+    assert (await run(g, "open('secret.txt','w').write('mine')")).ok
+    assert (store.data_dir / "workspaces" / g["id"] / "secret.txt").read_text() == "mine"
+    listing = await run(other, "import os\nprint(sorted(os.listdir('.')))")
+    assert "secret.txt" not in listing.text, "another group's workspace is not in reach"
+    assert (store.data_dir / "workspaces" / other["id"]).exists()
+
+
+async def test_a_custom_base_directory_keeps_the_groups_apart(tmp_path, store, make_router):
+    """`code_workdir` is a base: each group still gets its own folder under it."""
+    store.update_settings({"code_enabled": True, "perm_mode": "allow_all", "code_workdir": str(tmp_path / "base")})
+    orch, g = setup(store, make_router, FakeLLM(default="好"))
+    ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0], connect=False)
+    out = await orch.toolhub.call(ctx, "run_code", {"language": "python", "code": "import os\nprint(os.getcwd())"}, _yes)
+    assert out.ok and str(tmp_path / "base" / g["id"]) in out.text
 
 
 # ------------------------------------------------------------------ end to end

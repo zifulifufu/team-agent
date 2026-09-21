@@ -28,19 +28,20 @@ def test_add_dir_filters_dedupes_and_replaces(store, tmp_path):
     (d / ".hidden" / "x.md").write_text("不该导入", encoding="utf-8")
     (d / "link.md").symlink_to(tmp_path / "outside.md")
     (tmp_path / "outside.md").write_text("外面的", encoding="utf-8")
-    r = lib.add_dir(str(d))
+    kb = lib.shared_kb()["id"]
+    r = lib.add_dir(str(d), True, kb)
     assert sorted(x["title"] for x in r["added"]) == ["a", "b"] and r["skipped"] == []
     assert lib.search("住宿标准")[0]["title"] == "b"
-    r = lib.add_dir(str(d))                                            # importing again skips what did not change
+    r = lib.add_dir(str(d), True, kb)                                  # importing again skips what did not change
     assert r["added"] == [] and {s["reason"] for s in r["skipped"]} == {"Already up to date"}
     (d / "a.md").write_text("发布会改到 11 月 2 日,地点不变", encoding="utf-8")
-    r = lib.add_dir(str(d))
+    r = lib.add_dir(str(d), True, kb)
     assert [x["title"] for x in r["added"]] == ["a"] and len(store.list_docs()) == 2      # replaced, not duplicated
     assert "11 月" in lib.search("发布会")[0]["text"]
     with pytest.raises(LibraryError):
-        lib.add_dir("relative/dir")
+        lib.add_dir("relative/dir", True, kb)
     with pytest.raises(LibraryError):
-        lib.add_dir(str(d / "a.md"))
+        lib.add_dir(str(d / "a.md"), True, kb)
 
 
 # ------------------------------------------------------------------------ links
@@ -66,14 +67,15 @@ def test_add_url_html_text_pdf_errors_and_limits(store, monkeypatch):
         return httpx.Response(404)
 
     patch_http(monkeypatch, handler)
-    d = lib.add_url("https://x.example/page")
+    kb = lib.shared_kb()["id"]
+    d = lib.add_url("https://x.example/page", kb)
     assert d["title"] == "产品手册" and d["kind"] == "link" and d["filename"] == "https://x.example/page"
     assert "bad()" not in lib.read(d["id"])["text"] and "按强项分工" in lib.search("强项分工")[0]["text"]
-    assert lib.add_url("https://x.example/notes.txt")["title"] == "notes.txt"
+    assert lib.add_url("https://x.example/notes.txt", kb)["title"] == "notes.txt"
     for url, msg in (("ftp://x/y", "http"), ("https://x.example/img", "not supported"),
                      ("https://x.example/big", "too large"), ("https://x.example/none", "404")):
         with pytest.raises(LibraryError, match=msg):
-            lib.add_url(url)
+            lib.add_url(url, kb)
 
 
 def test_url_api_respects_external_switch(tmp_path, monkeypatch):

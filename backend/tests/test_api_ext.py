@@ -58,8 +58,9 @@ def test_group_ext_merge_and_create_with_ext(client):
     # built-in skill names follow the request language: posted with the Chinese
     # spelling, read back under the language currently in effect
     assert r["ext"]["skills"] == ["Brainstorming rules"] and r["prompt"] == "本群写文案" and r["ext"]["plan"] == "inherit"
-    r = client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "ids": ["a"]}, "plan": "bogus"}}).json()
-    assert r["ext"]["skills"] == ["Brainstorming rules"] and r["ext"]["library"] == {"mode": "selected", "ids": ["a"]}
+    r = client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "kb_ids": ["kb1"], "collection_ids": ["col1"]}, "plan": "bogus"}}).json()
+    # Selection is by knowledge base now, not by document
+    assert r["ext"]["skills"] == ["Brainstorming rules"] and r["ext"]["library"] == {"mode": "selected", "kb_ids": ["kb1"], "collection_ids": ["col1"]}
     assert r["ext"]["plan"] == "inherit"                                        # an invalid value is ignored
     new = client.post("/api/groups", json={"name": "新群", "ext": {"plugins": ["p"]}, "prompt": "hi"}).json()
     assert new["ext"]["plugins"] == ["p"] and new["prompt"] == "hi"
@@ -184,9 +185,8 @@ def test_aggregator_presets_stay_remote(client):
     assert r["ok"] is False and "Outbound calls are disabled" in r["error"]
 
 
-# -------------------------------------------------------------------- library (per group)
-def test_the_library_is_scoped_to_a_group(client):
-    """Each group has its own library; documents with no group are shared with all of them."""
+# ------------------------------------------------------- knowledge bases and collections
+def test_documents_live_in_knowledge_bases(client):
     g = gid(client)
     other = client.post("/api/groups", json={"name": "Another project"}).json()["id"]
     OCTET = {"Content-Type": "application/octet-stream"}
@@ -196,89 +196,129 @@ def test_the_library_is_scoped_to_a_group(client):
     mine = up(g, "本群.txt", "本群的验收标准以现场演示为准".encode())
     theirs = up(other, "别群.txt", "别人的预算口径按含税价算".encode())
     shared = up("", "共享.txt", "单笔超过 500 元必须附发票".encode())
-    assert (mine["group_id"], theirs["group_id"], shared["group_id"]) == (g, other, "")
 
-    # The group's list is its own plus the shared ones, never another group's
-    names = {d["title"] for d in client.get("/api/library", params={"group_id": g}).json()["docs"]}
-    assert names == {"本群", "共享"}
-    # No group_id = the whole library, which is what the overview page shows
+    # Each group's upload landed in its own knowledge base (the shared one for no group)
+    kbs = {k["id"]: k for k in client.get("/api/knowledge-bases").json()}
+    assert kbs[mine["kb_id"]]["group_id"] == g and kbs[theirs["kb_id"]]["group_id"] == other
+    assert kbs[shared["kb_id"]]["group_id"] == "" and kbs[shared["kb_id"]]["docs"] == 1
+    assert kbs[mine["kb_id"]]["name"] == client.get("/api/groups").json()[0]["name"]
+
+    # The group's list is its own knowledge base plus the shared one, never another group's
+    titles = {d["title"] for d in client.get("/api/library", params={"group_id": g}).json()["docs"]}
+    assert titles == {"本群", "共享"}
+    assert {d["title"] for d in client.get("/api/library", params={"kb_id": mine["kb_id"]}).json()["docs"]} == {"本群"}
+    # No filter = the whole library, which is what the overview shows
     assert len(client.get("/api/library").json()["docs"]) == 3
-    # "" = the shared ones only
-    assert {d["title"] for d in client.get("/api/library", params={"group_id": ""}).json()["docs"]} == {"共享"}
 
-    # Searching inside a group cannot reach another group's document
-    assert {h["title"] for h in client.get("/api/library/search", params={"q": "发票", "group_id": g}).json()} == {"共享"}
-    assert client.get("/api/library/search", params={"q": "含税价", "group_id": g}).json() == []
-    assert {h["title"] for h in client.get("/api/library/search", params={"q": "含税价", "group_id": other}).json()} == {"别群"}
+    # Searching inside a group cannot reach another group's knowledge base
+    def hits(q, **params):
+        return {h["title"] for h in client.get("/api/library/search", params={"q": q, **params}).json()}
 
-    # An unknown group is refused rather than silently treated as shared
+    assert hits("发票", group_id=g) == {"共享"}
+    assert hits("含税价", group_id=g) == set()
+    assert hits("含税价", group_id=other) == {"别群"}
+    # Scoped to one knowledge base, a shared document is not visible through the group's own
+    assert hits("发票", kb_id=mine["kb_id"]) == set()
+
+    # An unknown knowledge base or group is refused rather than treated as shared
+    assert client.get("/api/library", params={"kb_id": "nope"}).status_code == 404
     assert client.get("/api/library", params={"group_id": "nope"}).status_code == 404
-    assert client.post("/api/library/note", json={"title": "x", "content": "y", "group_id": "nope"}).status_code == 404
-    assert client.post("/api/library/upload", params={"filename": "x.txt", "group_id": "nope"},
+    assert client.post("/api/library/note", json={"title": "x", "content": "y", "kb_id": "nope"}).status_code == 404
+    assert client.post("/api/library/upload", params={"filename": "x.txt", "kb_id": "nope"},
                        content=b"hi", headers=OCTET).status_code == 404
 
 
-def test_a_note_can_belong_to_a_group(client):
+def test_a_shared_collection_cannot_hand_over_a_private_knowledge_base(client):
+    """A collection is a convenience for the user, not a way around the workspace boundary."""
     g = gid(client)
-    note = client.post("/api/library/note", json={"title": "本群备忘", "content": "周五下午开会", "group_id": g}).json()
-    assert note["group_id"] == g
-    assert [d["title"] for d in client.get("/api/library", params={"group_id": g}).json()["docs"]] == ["本群备忘"]
+    other = client.post("/api/groups", json={"name": "Another project"}).json()["id"]
+    secret = client.post("/api/knowledge-bases", json={"name": "别群的机密库", "group_id": other}).json()
+    public = client.post("/api/knowledge-bases", json={"name": "共用规范"}).json()
+    col = client.post("/api/collections", json={"name": "合集", "kb_ids": [public["id"], secret["id"]]}).json()
+
+    client.post("/api/library/note", json={"title": "机密", "content": "机密内容在此", "kb_id": secret["id"]})
+    client.post("/api/library/note", json={"title": "规范", "content": "共用规范内容", "kb_id": public["id"]})
+
+    # Attaching the collection gives the group the shared member, and only that one
+    client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "collection_ids": [col["id"]]}}})
+    titles = {d["title"] for d in client.get("/api/library", params={"group_id": g}).json()["docs"]}
+    assert titles == {"规范"}
+    assert {h["title"] for h in client.get("/api/library/search", params={"q": "机密", "group_id": g}).json()} == set()
+    # The collection itself still lists both, because it is a library of knowledge bases, not a
+    # view of what any particular group may use
+    assert len(client.get("/api/collections").json()[0]["kb_ids"]) == 2
 
 
-def test_a_member_cannot_read_another_groups_document_by_title(store, make_router):
-    """Through the tool the members actually call.
+def test_a_group_that_picked_documents_is_moved_to_knowledge_bases(tmp_path):
+    """The old `ext.library.ids` listed documents. Opening a database that has one must end up
+    with the knowledge bases holding those documents, and never with a wider scope than the
+    group could already reach."""
+    import sqlite3
+    import json as _json
 
-    `library_read` resolves a document by title, and its guard only refuses when the scope is a
-    concrete list. A `None` there reads as "no restriction" and would hand over any document in
-    the database — including one belonging to a different project's group.
-    """
-    from tests.conftest import FakeLLM
-    from tests.test_collab import setup
+    from app.store import Store
 
-    store.update_settings({"perm_mode": "allow_all"})
-    orch, g = setup(store, make_router, FakeLLM(default="好"))
-    other = store.create_group("Another project")
+    st = Store(tmp_path / "d")
+    g = st.list_groups()[0]
+    kb = st.add_kb("资料库", "", g["id"])
+    st.add_doc("一份", "a.txt", "txt", 3, ["内容"], kb_id=kb["id"])
+    st.add_doc("两份", "b.txt", "txt", 3, ["内容"], kb_id=kb["id"])
+    st._x("UPDATE groups SET ext=? WHERE id=?",
+          (_json.dumps({"library": {"mode": "selected", "ids": [st.list_docs(kb["id"])[0]["id"]]}}), g["id"]))
 
-    async def run():
-        mine = store.add_doc("本群资料", "本群.txt", "txt", 6, ["本群的内容在此"], group_id=g["id"])
-        theirs = store.add_doc("别人的资料", "别群.txt", "txt", 6, ["机密内容在此"], group_id=other["id"])
-        store.add_doc("共享规范", "共享.txt", "txt", 6, ["所有群都能看的规范"])
+    again = Store(tmp_path / "d")
+    lib = again.get_group(g["id"])["ext"]["library"]
+    assert lib["mode"] == "selected" and lib["kb_ids"] == [kb["id"]]
+    assert "ids" not in lib
 
-        async def read(title, group):
-            ctx = await orch.toolhub.context(store.get_group(group["id"]), store.list_agents()[0], connect=False)
-            return await orch.toolhub.call(ctx, "library_read", {"doc": title})
 
-        assert "本群的内容在此" in (await read("本群资料", g)).text
-        assert "所有群都能看的规范" in (await read("共享规范", g)).text
-        # The other group's document is not reachable, by title or by document id
-        blocked = await read("别人的资料", g)
-        assert not blocked.ok and "机密内容在此" not in blocked.text
-        by_id = await read(theirs["id"], g)
-        assert not by_id.ok and "机密内容在此" not in by_id.text
-        # …and the group it belongs to still can
-        assert "机密内容在此" in (await read("别人的资料", other)).text
-        assert mine["id"]
+def test_knowledge_base_and_collection_crud(client):
+    g = gid(client)
+    kb = client.post("/api/knowledge-bases", json={"name": "  手册  ", "description": " d ", "group_id": g}).json()
+    assert kb["name"] == "手册" and kb["description"] == "d" and kb["group_id"] == g
+    assert client.post("/api/knowledge-bases", json={"name": "   "}).status_code == 400
 
-    asyncio.run(run())
+    note = client.post("/api/library/note", json={"title": "一条", "content": "内容", "kb_id": kb["id"]}).json()
+    assert note["kb_id"] == kb["id"]
+    # A document can be moved between knowledge bases
+    shared = client.post("/api/knowledge-bases", json={"name": "共享"}).json()
+    assert client.patch(f"/api/library/{note['id']}", json={"kb_id": shared["id"]}).json()["kb_id"] == shared["id"]
+
+    col = client.post("/api/collections", json={"name": "合集", "kb_ids": [kb["id"], "ghost"]}).json()
+    # An id that does not exist is dropped rather than stored as a dangling reference
+    assert col["id"] and client.get("/api/collections").json()[0]["kb_ids"] == [kb["id"]]
+    client.patch(f"/api/collections/{col['id']}", json={"kb_ids": [shared["id"]]})
+    assert client.get("/api/collections").json()[0]["kb_ids"] == [shared["id"]]
+
+    # Deleting a knowledge base takes its documents with it, and unlinks it from every group
+    client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "kb_ids": [kb["id"]]}}})
+    assert client.delete(f"/api/knowledge-bases/{kb['id']}").json()["deleted_docs"] == 0
+    left = client.get("/api/groups").json()[0]["ext"]["library"]["kb_ids"]
+    assert kb["id"] not in left
+    assert client.delete(f"/api/collections/{col['id']}").status_code == 200
+
+    assert client.get("/api/knowledge-bases", params={"group_id": "nope"}).status_code == 404
+    assert client.post("/api/collections", json={"name": " "}).status_code == 400
 
 
 # -------------------------------------------------------------------- library
 def test_library_upload_search_read_scope_cleanup(client):
     g = gid(client)
     raw = "报销制度:单笔超过 500 元必须附发票。".encode()
-    d = client.post("/api/library/upload", params={"filename": "报销.txt"}, content=raw, headers={"Content-Type": "application/octet-stream"}).json()
+    d = client.post("/api/library/upload", params={"filename": "报销.txt", "group_id": g}, content=raw, headers={"Content-Type": "application/octet-stream"}).json()
     assert d["title"] == "报销" and d["chars"] > 5
-    assert client.post("/api/library/upload", params={"filename": "x.exe"}, content=b"MZ", headers={"Content-Type": "application/octet-stream"}).status_code == 400
-    assert client.post("/api/library/upload", params={"filename": "x.txt"}, content=b"", headers={"Content-Type": "application/octet-stream"}).status_code == 400
-    n = client.post("/api/library/note", json={"title": "备忘", "content": "周五下午开会"}).json()
+    assert client.post("/api/library/upload", params={"filename": "x.exe", "group_id": g}, content=b"MZ", headers={"Content-Type": "application/octet-stream"}).status_code == 400
+    assert client.post("/api/library/upload", params={"filename": "x.txt", "group_id": g}, content=b"", headers={"Content-Type": "application/octet-stream"}).status_code == 400
+    n = client.post("/api/library/note", json={"title": "备忘", "content": "周五下午开会", "group_id": g}).json()
     hits = client.get("/api/library/search", params={"q": "发票"}).json()
     assert hits and hits[0]["doc_id"] == d["id"]
     assert "发票" in client.get(f"/api/library/{d['id']}").json()["text"]
-    client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "ids": [d["id"], n["id"]]}}})
+    assert d["kb_id"] and d["kb_id"] == n["kb_id"], "both landed in the group's own knowledge base"
+    client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "kb_ids": [d["kb_id"]]}}})
     assert client.patch(f"/api/library/{n['id']}", json={"enabled": False}).json()["enabled"] in (False, 0)
     assert client.delete(f"/api/library/{d['id']}").status_code == 200
-    ids = client.get("/api/groups").json()[0]["ext"]["library"]["ids"]
-    assert d["id"] not in ids                                                    # deleting a document clears the group selection too
+    ids = client.get("/api/groups").json()[0]["ext"]["library"]["kb_ids"]
+    assert ids == [d["kb_id"]], "the group keeps pointing at the knowledge base, not at documents"
     assert client.get(f"/api/library/{d['id']}").status_code == 404
     assert client.get("/api/library").json()["count"] == 1
 
@@ -390,11 +430,10 @@ def test_export_strips_secrets_by_default(client, tmp_path):
     assert "topsecret" in dump(f2)
 
 
-def test_upgrade_gives_old_documents_the_shared_scope(tmp_path):
-    """A database from before the library was per group has no `group_id` column at all.
-
-    Opening it must add the column and leave every existing document visible to every group,
-    rather than tucking them behind a group nobody can reach.
+def test_upgrade_moves_old_documents_into_knowledge_bases(tmp_path):
+    """A database from before knowledge bases kept each document in one bucket: a group's
+    library, or the shared one. Opening it must turn each bucket into one knowledge base that
+    keeps exactly that visibility, and drop the column it no longer needs.
     """
     import sqlite3
 
@@ -405,20 +444,48 @@ def test_upgrade_gives_old_documents_the_shared_scope(tmp_path):
     db = sqlite3.connect(d / "team-agent.db")
     db.execute("CREATE TABLE library_docs (id TEXT PRIMARY KEY, title TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', "
                "kind TEXT NOT NULL DEFAULT 'note', size INTEGER NOT NULL DEFAULT 0, chars INTEGER NOT NULL DEFAULT 0, "
-               "chunks INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL)")
-    db.execute("INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,created_at) "
-               "VALUES('old1','旧资料','a.txt','txt',3,3,1,1,1.0)")
+               "chunks INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, "
+               "group_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL)")
+    db.execute("INSERT INTO library_docs(id,title,kind,created_at,group_id) VALUES('shared1','旧共享','txt',1.0,'')")
+    db.execute("INSERT INTO library_docs(id,title,kind,created_at,group_id) VALUES('priv1','旧私有','txt',1.0,'grp1')")
     db.commit()
     db.close()
 
     st = Store(d)
-    docs = st.list_docs()
-    assert len(docs) == 1 and docs[0]["title"] == "旧资料" and docs[0]["group_id"] == ""
-    # Shared means every group can see it, and the overview still lists it once
-    gid_ = st.list_groups()[0]["id"]
-    assert [d_["id"] for d_ in st.list_docs(gid_)] == ["old1"]
-    assert [d_["id"] for d_ in st.list_docs("")] == ["old1"]
-    assert [d_["id"] for d_ in st.list_docs("some-other-group")] == ["old1"]
+    kbs = {k["group_id"]: k for k in st.list_kbs()}
+    assert set(kbs) == {"", "grp1"}
+    assert kbs[""].name if hasattr(kbs[""], "name") else kbs[""]["name"]
+    assert [d_["title"] for d_ in st.list_docs(kbs[""]["id"])] == ["旧共享"]
+    assert [d_["title"] for d_ in st.list_docs(kbs["grp1"]["id"])] == ["旧私有"]
+    # The redundant column is gone
+    assert "group_id" not in {r["name"] for r in st._q("PRAGMA table_info(library_docs)")}
+
+    # Reopening must not migrate a second time
+    again = Store(d)
+    assert len(again.list_kbs()) == 2 and len(again.list_docs()) == 2
+
+
+def test_upgrade_from_the_very_first_library_shape(tmp_path):
+    """Before the library was per group there was no `group_id` column at all: everything was
+    global, so everything belongs in the shared knowledge base."""
+    import sqlite3
+
+    from app.store import Store
+
+    d = tmp_path / "ancient"
+    d.mkdir()
+    db = sqlite3.connect(d / "team-agent.db")
+    db.execute("CREATE TABLE library_docs (id TEXT PRIMARY KEY, title TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', "
+               "kind TEXT NOT NULL DEFAULT 'note', size INTEGER NOT NULL DEFAULT 0, chars INTEGER NOT NULL DEFAULT 0, "
+               "chunks INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL)")
+    db.execute("INSERT INTO library_docs(id,title,kind,created_at) VALUES('a','古早资料','txt',1.0)")
+    db.commit()
+    db.close()
+
+    st = Store(d)
+    kbs = st.list_kbs()
+    assert len(kbs) == 1 and kbs[0]["group_id"] == ""
+    assert [d_["title"] for d_ in st.list_docs(kbs[0]["id"])] == ["古早资料"]
 
 
 def test_upgrade_from_old_database_backfills_seed_tags_once(tmp_path):

@@ -43,12 +43,35 @@ CREATE TABLE IF NOT EXISTS library_docs (
     chars INTEGER NOT NULL DEFAULT 0,
     chunks INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
-    -- Which group chat this document belongs to. '' means shared: visible to every group.
-    -- (Added by _migrate for databases created before the library was per group; the index on
-    -- it is created there too, because on an older database this CREATE TABLE is a no-op and
-    -- the column only appears afterwards.)
+    -- The knowledge base this document sits in. A group's search scope is a set of knowledge
+    -- bases, not a set of documents, so this is the only place ownership is recorded.
+    -- (Added by _migrate for older databases, together with the knowledge base each document
+    -- was moved into — which is also where the retired `group_id` column went.)
+    kb_id TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+-- A named bag of documents. `group_id` is '' for a shared knowledge base (any group may
+-- attach it) or the id of the group workspace that owns it (only that group sees it, and only
+-- through its own workspace — it cannot be attached by anyone else).
+CREATE TABLE IF NOT EXISTS knowledge_bases (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     group_id TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
+);
+-- A flat, reusable list of knowledge bases. Deliberately not nestable: one level keeps both
+-- the picker and the scope query obvious.
+CREATE TABLE IF NOT EXISTS collections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collection_kbs (
+    collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    PRIMARY KEY (collection_id, kb_id)
 );
 CREATE TABLE IF NOT EXISTS library_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,24 +278,109 @@ class ExtStore:
         )
 
     # ------------------------------------------------------------------ library
-    def list_docs(self, gid: str | None = None) -> list[dict]:
-        """Documents, optionally narrowed to one group.
+    def list_docs(self, kb_id: str | None = None, kb_ids: list[str] | None = None) -> list[dict]:
+        """Documents, optionally narrowed to one knowledge base or to a set of them.
 
-        gid=None -> everything (the overview and the statistics); gid="" -> the shared ones
-        only; gid="<id>" -> that group's own documents plus the shared ones, which is exactly
-        what its members may search.
+        No argument -> everything (the overview and the statistics). `kb_ids` is what the group
+        scope resolves to; an empty list means "no knowledge base is in scope", which must stay
+        distinct from None ("no restriction") all the way down.
         """
+        if kb_ids is not None and not kb_ids:
+            return []
         sql = "SELECT * FROM library_docs"
         args: tuple = ()
-        if gid == "":
-            sql += " WHERE group_id=''"
-        elif gid is not None:
-            sql += " WHERE group_id IN (?, '')"
-            args = (gid,)
+        if kb_id is not None:
+            sql += " WHERE kb_id=?"
+            args = (kb_id,)
+        elif kb_ids is not None:
+            sql += " WHERE kb_id IN (%s)" % ",".join("?" * len(kb_ids))
+            args = tuple(kb_ids)
         rows = self._q(sql + " ORDER BY created_at DESC, rowid DESC", args)  # type: ignore[attr-defined]
         for r in rows:
             r["enabled"] = bool(r["enabled"])
         return rows
+
+    def count_by_kb(self) -> dict[str, int]:
+        """{kb_id: documents} for the knowledge base list, in one query."""
+        return {r["kb_id"]: r["n"] for r in self._q(  # type: ignore[attr-defined]
+            "SELECT kb_id, COUNT(*) AS n FROM library_docs GROUP BY kb_id")}
+
+    # ----------------------------------------------------------- knowledge bases
+    def list_kbs(self, group_id: str | None = None) -> list[dict]:
+        """Knowledge bases. `group_id=None` -> every one; `""` -> the shared ones; a group id ->
+        that workspace's own ones plus the shared ones (what the group may attach)."""
+        sql = "SELECT * FROM knowledge_bases"
+        args: tuple = ()
+        if group_id == "":
+            sql += " WHERE group_id=''"
+        elif group_id is not None:
+            sql += " WHERE group_id IN (?, '')"
+            args = (group_id,)
+        return self._q(sql + " ORDER BY created_at, rowid", args)  # type: ignore[attr-defined]
+
+    def get_kb(self, kb_id: str) -> dict | None:
+        return self._one("SELECT * FROM knowledge_bases WHERE id=?", (kb_id,))  # type: ignore[attr-defined]
+
+    def add_kb(self, name: str, description: str = "", group_id: str = "", kid: str | None = None) -> dict:
+        kid = kid or self.new_id()  # type: ignore[attr-defined]
+        self._x(  # type: ignore[attr-defined]
+            "INSERT INTO knowledge_bases(id,name,description,group_id,created_at) VALUES(?,?,?,?,?)",
+            (kid, name, description, group_id, time.time()),
+        )
+        return self.get_kb(kid)  # type: ignore[return-value]
+
+    def update_kb(self, kb_id: str, patch: dict) -> dict | None:
+        for k in ("name", "description", "group_id"):
+            if patch.get(k) is not None:
+                self._x(f"UPDATE knowledge_bases SET {k}=? WHERE id=?", (str(patch[k]), kb_id))  # type: ignore[attr-defined]
+        return self.get_kb(kb_id)
+
+    def delete_kb(self, kb_id: str) -> None:
+        """Deletes the knowledge base and its documents (the chunks follow via ON DELETE CASCADE)."""
+        for d in self.list_docs(kb_id):
+            self.delete_doc(d["id"])
+        self._x("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))  # type: ignore[attr-defined]
+
+    # ---------------------------------------------------------------- collections
+    def list_collections(self) -> list[dict]:
+        return self._q("SELECT * FROM collections ORDER BY created_at, rowid")  # type: ignore[attr-defined]
+
+    def get_collection(self, cid: str) -> dict | None:
+        return self._one("SELECT * FROM collections WHERE id=?", (cid,))  # type: ignore[attr-defined]
+
+    def add_collection(self, name: str, description: str = "", cid: str | None = None) -> dict:
+        cid = cid or self.new_id()  # type: ignore[attr-defined]
+        self._x(  # type: ignore[attr-defined]
+            "INSERT INTO collections(id,name,description,created_at) VALUES(?,?,?,?)",
+            (cid, name, description, time.time()),
+        )
+        return self.get_collection(cid)  # type: ignore[return-value]
+
+    def update_collection(self, cid: str, patch: dict) -> dict | None:
+        for k in ("name", "description"):
+            if patch.get(k) is not None:
+                self._x(f"UPDATE collections SET {k}=? WHERE id=?", (str(patch[k]), cid))  # type: ignore[attr-defined]
+        return self.get_collection(cid)
+
+    def delete_collection(self, cid: str) -> None:
+        self._x("DELETE FROM collections WHERE id=?", (cid,))  # type: ignore[attr-defined]
+
+    def collection_kb_ids(self) -> dict[str, list[str]]:
+        """{collection_id: [kb_id]} for every collection, in one query."""
+        out: dict[str, list[str]] = {}
+        for r in self._q("SELECT collection_id, kb_id FROM collection_kbs ORDER BY rowid"):  # type: ignore[attr-defined]
+            out.setdefault(r["collection_id"], []).append(r["kb_id"])
+        return out
+
+    def set_collection_kbs(self, cid: str, kb_ids: list[str]) -> list[str]:
+        """Replace a collection's members. Ids that no longer exist are dropped rather than
+        stored, so a collection cannot keep a dangling reference alive."""
+        known = {k["id"] for k in self.list_kbs()}
+        want = [x for x in dict.fromkeys(kb_ids) if x in known]
+        self._x("DELETE FROM collection_kbs WHERE collection_id=?", (cid,))  # type: ignore[attr-defined]
+        for kb in want:
+            self._x("INSERT OR IGNORE INTO collection_kbs(collection_id,kb_id) VALUES(?,?)", (cid, kb))  # type: ignore[attr-defined]
+        return want
 
     def get_doc(self, did: str) -> dict | None:
         r = self._one("SELECT * FROM library_docs WHERE id=?", (did,))  # type: ignore[attr-defined]
@@ -281,13 +389,13 @@ class ExtStore:
         return r
 
     def add_doc(self, title: str, filename: str, kind: str, size: int, chunks: list[str],
-                did: str | None = None, group_id: str = "") -> dict:
+                did: str | None = None, kb_id: str = "") -> dict:
         did = did or self.new_id()  # type: ignore[attr-defined]
         with self._lock:  # type: ignore[attr-defined]
             self._db.execute(  # type: ignore[attr-defined]
-                "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,group_id,created_at) "
+                "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,kb_id,created_at) "
                 "VALUES(?,?,?,?,?,?,?,1,?,?)",
-                (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), group_id, time.time()),
+                (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), kb_id, time.time()),
             )
             self._db.executemany(  # type: ignore[attr-defined]
                 "INSERT INTO library_chunks(doc_id,idx,text) VALUES(?,?,?)",
@@ -301,8 +409,8 @@ class ExtStore:
             self._x("UPDATE library_docs SET title=? WHERE id=?", (patch["title"], did))  # type: ignore[attr-defined]
         if patch.get("enabled") is not None:
             self._x("UPDATE library_docs SET enabled=? WHERE id=?", (int(bool(patch["enabled"])), did))  # type: ignore[attr-defined]
-        if patch.get("group_id") is not None:
-            self._x("UPDATE library_docs SET group_id=? WHERE id=?", (str(patch["group_id"]), did))  # type: ignore[attr-defined]
+        if patch.get("kb_id") is not None:
+            self._x("UPDATE library_docs SET kb_id=? WHERE id=?", (str(patch["kb_id"]), did))  # type: ignore[attr-defined]
         return self.get_doc(did)
 
     def delete_doc(self, did: str) -> None:

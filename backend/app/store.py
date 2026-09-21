@@ -122,7 +122,10 @@ DEFAULT_EXT: dict = {
     "skills": [],       # skills enabled for this group (shared by everyone, usually the "group rules" kind)
     "plugins": [],      # plugin ids enabled for this group (plugin file name)
     "mcp": [],          # MCP server ids enabled for this group
-    "library": {"mode": "all", "ids": []},   # all = every enabled document | selected = only ids | off = none
+    # Which knowledge bases this group searches. all = everything it can reach (its workspace's
+    # own + the shared ones) | selected = the kb_ids listed plus the members of the collection_ids
+    # listed | off = none. Selection is by knowledge base, not by document.
+    "library": {"mode": "all", "kb_ids": [], "collection_ids": []},
     "plan": "inherit",  # inherit = follow the global setting | auto | on | off
     "memory": True,     # whether this group reads and writes memory
 }
@@ -139,8 +142,9 @@ def normalize_ext(ext: Any) -> dict:
     if isinstance(lib, dict):
         if lib.get("mode") in ("all", "selected", "off"):
             out["library"]["mode"] = lib["mode"]
-        if isinstance(lib.get("ids"), list):
-            out["library"]["ids"] = [str(x) for x in lib["ids"]]
+        for key in ("kb_ids", "collection_ids"):
+            if isinstance(lib.get(key), list):
+                out["library"][key] = [str(x) for x in dict.fromkeys(lib[key])]
     if ext.get("plan") in ("inherit", "auto", "on", "off"):
         out["plan"] = ext["plan"]
     if isinstance(ext.get("memory"), bool):
@@ -231,8 +235,8 @@ class Store(ExtStore):
             ("mcp_servers", "transport", "TEXT NOT NULL DEFAULT ''"),      # stdio | sse | http, empty = auto-detect
             ("mcp_servers", "headers", "TEXT NOT NULL DEFAULT '{}'"),
             ("mcp_servers", "description", "TEXT NOT NULL DEFAULT ''"),
-            # Per-group library: existing documents keep '' and stay visible to every group
-            ("library_docs", "group_id", "TEXT NOT NULL DEFAULT ''"),
+            # Knowledge bases: documents moved from "a group's library" to "a knowledge base"
+            ("library_docs", "kb_id", "TEXT NOT NULL DEFAULT ''"),
         ]
         for table, col, decl in adds:
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
@@ -241,8 +245,92 @@ class Store(ExtStore):
         # Indexes on a migrated column cannot live in the schema scripts: on an older database
         # CREATE TABLE IF NOT EXISTS does nothing, so the column only exists after the ALTER
         # above and the index creation would fail with "no such column" before reaching it.
-        for sql in ("CREATE INDEX IF NOT EXISTS idx_docs_group ON library_docs(group_id)",):
+        for sql in ("CREATE INDEX IF NOT EXISTS idx_docs_kb ON library_docs(kb_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_kbs_group ON knowledge_bases(group_id)"):
             self._x(sql)
+
+        self._docs_to_knowledge_bases()
+
+    def _docs_to_knowledge_bases(self) -> None:
+        """Move the pre-knowledge-base library into knowledge bases.
+
+        A document used to belong either to one group's library (`group_id = <group>`) or to
+        everyone (`group_id = ''`). Each bucket becomes one knowledge base that keeps exactly
+        the visibility it had: a group's library becomes that workspace's own knowledge base,
+        and the shared bucket becomes a single shared one. No document changes hands, and a
+        database from before the per-group library (no `group_id` column at all) simply ends up
+        with everything in the shared knowledge base — which is what it was.
+
+        Driven by the data rather than by a "have I run?" flag: a crash halfway through would
+        otherwise leave the flag set and the remaining documents unassigned for good. Re-running
+        only picks up what is still unassigned, so it is safe on every open.
+        """
+        cols = {r["name"] for r in self._q("PRAGMA table_info(library_docs)")}
+        if not cols or "kb_id" not in cols:
+            return
+        by_group = "group_id" in cols
+        where = "kb_id='' AND " + ("group_id=?" if by_group else "1=1")
+        names = {g["id"]: g["name"] for g in self.list_groups()}
+        if by_group:
+            leftovers = [r["group_id"] for r in self._q(
+                "SELECT DISTINCT group_id FROM library_docs WHERE kb_id=''")]
+        else:
+            leftovers = [""] if self._one("SELECT 1 AS x FROM library_docs WHERE kb_id='' LIMIT 1") else []
+        for gid in leftovers:
+            existing = self._one("SELECT * FROM knowledge_bases WHERE group_id=?", (gid,))
+            if existing:
+                kb = existing
+            else:
+                # Named after the group when it still exists; a bucket whose group has been
+                # deleted keeps a name the user can recognise and rename, rather than borrowing
+                # the shared one and colliding with it.
+                kb = self.add_kb(
+                    names.get(gid) or ("Shared knowledge base" if not gid else f"Workspace {gid}"),
+                    "Documents every group can search" if not gid else "This group's own documents",
+                    gid,
+                )
+            self._x("UPDATE library_docs SET kb_id=? WHERE " + where,
+                    (kb["id"], gid) if by_group else (kb["id"],))
+        self._library_selection_to_kbs()
+        if by_group:
+            # The column is fully derived from the knowledge base now, so it goes: leaving it
+            # behind would invite someone to read ownership from two places that can disagree.
+            self._x("DROP INDEX IF EXISTS idx_docs_group")
+            try:
+                self._x("ALTER TABLE library_docs DROP COLUMN group_id")
+            except sqlite3.OperationalError as e:      # older SQLite, or a dependency we cannot see
+                print("could not drop library_docs.group_id:", e)
+
+    def _library_selection_to_kbs(self) -> None:
+        """A group that picked individual documents now picks knowledge bases.
+
+        The old `ext.library.ids` listed documents; the new shape lists knowledge bases and
+        collections. Mapping the picked documents to the knowledge bases that hold them can only
+        widen the scope within what that group could already reach — never across a workspace
+        boundary — because a document could only ever be picked from what the group could see.
+        """
+        moved = 0
+        # The stored JSON, not `list_groups()`: `normalize_ext` already drops the retired `ids`
+        # field, so a normalised view would show nothing left to migrate.
+        for row in self._q("SELECT id, ext FROM groups"):
+            try:
+                raw = json.loads(row["ext"] or "{}")
+            except ValueError:
+                continue
+            lib = (raw.get("library") or {}) if isinstance(raw, dict) else {}
+            ids = lib.get("ids") or []
+            if not ids:
+                continue
+            kb_ids = [d["kb_id"] for d in self.list_docs() if d["id"] in set(map(str, ids)) and d["kb_id"]]
+            g = self.get_group(row["id"])
+            if not g:
+                continue
+            ext = dict(g["ext"])
+            ext["library"] = {**ext.get("library", {}), "kb_ids": list(dict.fromkeys(kb_ids))}
+            self.update_group(row["id"], {"ext": ext})
+            moved += 1
+        if moved:
+            print(f"library selection migrated to knowledge bases for {moved} group(s)")
 
     def _flag(self, key: str) -> bool:
         """One-off markers (for example "the example prompts have already been written"), so

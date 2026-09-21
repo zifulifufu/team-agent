@@ -440,13 +440,14 @@ def test_library_read_hides_disabled_and_add_dir_keeps_identity(tmp_path):
     docs.mkdir()
     f = docs / "制度.md"
     f.write_text("差旅报销 7 日内提交。", encoding="utf-8")
-    d1 = lib.add_dir(str(docs))["added"][0]
+    kb = lib.shared_kb()["id"]
+    d1 = lib.add_dir(str(docs), True, kb)["added"][0]
     lib.update(d1["id"], {"title": "我改的标题", "enabled": False})
     f.write_text("差旅报销 10 日内提交。多了几个字", encoding="utf-8")
-    d2 = lib.add_dir(str(docs))["added"][0]
+    d2 = lib.add_dir(str(docs), True, kb)["added"][0]
     assert d2["id"] == d1["id"] and d2["title"] == "我改的标题" and d2["enabled"] is False
     f.write_text("   ", encoding="utf-8")
-    res = lib.add_dir(str(docs))
+    res = lib.add_dir(str(docs), True, kb)
     assert res["skipped"] and st.get_doc(d1["id"])          # the new version is empty: keep the old one
 
 

@@ -67,12 +67,14 @@ class McpIn(BaseModel):
 
 class LibraryUrlIn(BaseModel):
     url: str
+    kb_id: str = ""
     group_id: str = ""
 
 
 class LibraryDirIn(BaseModel):
     path: str
     recursive: bool = True
+    kb_id: str = ""
     group_id: str = ""
 
 
@@ -103,13 +105,39 @@ class SkillIn(BaseModel):
 class NoteIn(BaseModel):
     title: str
     content: str
-    # Which group this belongs to; "" = shared, visible to every group
+    # Either an explicit knowledge base, or a group whose workspace knowledge base receives it
+    kb_id: str = ""
     group_id: str = ""
 
 
 class DocPatch(BaseModel):
     title: str | None = None
     enabled: bool | None = None
+    kb_id: str | None = None          # moves the document to another knowledge base
+
+
+class KBIn(BaseModel):
+    name: str
+    description: str = ""
+    group_id: str = ""                # "" = shared (any group may attach it)
+
+
+class KBPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    group_id: str | None = None
+
+
+class CollectionIn(BaseModel):
+    name: str
+    description: str = ""
+    kb_ids: list[str] = []
+
+
+class CollectionPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    kb_ids: list[str] | None = None
 
 
 class MemoryIn(BaseModel):
@@ -312,8 +340,8 @@ def build_router(c: Ctx) -> APIRouter:
             "problems": ctx.problems if ctx else [],
             "mcp_deferred": bool(ctx.mcp_deferred) if ctx else False,
             "ext": group["ext"],
-            # This group's own documents plus the shared ones: the number its members can reach
-            "docs": len([d for d in store.list_docs(gid) if d["enabled"]]),
+            # Exactly the documents its members can reach through the knowledge bases in scope
+            "docs": len(c.library.scope_ids(store.get_group(gid)["ext"]["library"] if store.get_group(gid) else {}, gid)),
         }
 
     @r.post("/api/groups/{gid}/apply-prompt")
@@ -498,7 +526,8 @@ def build_router(c: Ctx) -> APIRouter:
                 "library_docs": len(store.list_docs()),
                 "groups": [{"id": g["id"], "name": g["name"], "plugins": len(g["ext"]["plugins"]), "mcp": len(g["ext"]["mcp"])}
                            for g in groups if g["ext"]["plugins"] or g["ext"]["mcp"]],
-                "code_default_dir": str(coderun.workspace_path(Path(store.data_dir), cfg)),
+                # The base the per-group workspaces live under; each group gets <base>/<group id>
+                "code_default_dir": str(coderun.base_dir(Path(store.data_dir), cfg)),
             },
         }
 
@@ -756,38 +785,142 @@ def build_router(c: Ctx) -> APIRouter:
         return {"ok": True}
 
     # ============================================================ library
+    # "The group's library" is now "the knowledge bases this group can reach"; a document is
+    # added into one of them. Nothing here takes a raw document id from the client and trusts it.
     def _check_group(group_id: str) -> None:
-        """A document may belong to a group that exists, or to no group at all (shared)."""
         if group_id:
             _need(store.get_group(group_id), i18n.pick_now("Group chat", "群聊"))
 
-    @r.get("/api/library")
-    async def library_list(group_id: str | None = None) -> dict:
-        """group_id omitted = the whole library (the overview page); "" = the shared documents
-        only; a group id = that group's own documents plus the shared ones."""
+    def _check_kb(kb_id: str) -> dict:
+        return _need(store.get_kb(kb_id), i18n.pick_now("Knowledge base", "知识库"))
+
+    @r.get("/api/knowledge-bases")
+    async def kbs_list(group_id: str | None = None) -> list[dict]:
+        """No group_id = every knowledge base (the overview); "" = the shared ones; a group id =
+        that workspace's own plus the shared ones, which is what the group may attach."""
+        _check_group(group_id or "")
+        counts = store.count_by_kb()
+        members = store.collection_kb_ids()
+        in_collections = {kid: cid for cid, kids in members.items() for kid in kids}
+        return [{**k, "docs": counts.get(k["id"], 0), "collection_id": in_collections.get(k["id"], "")}
+                for k in store.list_kbs(group_id)]
+
+    @r.post("/api/knowledge-bases")
+    async def kbs_add(body: KBIn) -> dict:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, i18n.pick_now("A knowledge base needs a name", "知识库需要名称"))
+        _check_group(body.group_id)
+        return store.add_kb(name, body.description.strip(), body.group_id)
+
+    @r.patch("/api/knowledge-bases/{kid}")
+    async def kbs_patch(kid: str, body: KBPatch) -> dict:
+        _check_kb(kid)
+        return store.update_kb(kid, body.model_dump(exclude_unset=True))  # type: ignore[return-value]
+
+    @r.delete("/api/knowledge-bases/{kid}")
+    async def kbs_delete(kid: str) -> dict:
+        _check_kb(kid)
+        doomed = len(store.list_docs(kid))
+        store.delete_kb(kid)                       # removes its documents too
+        # Groups that had it attached should not keep pointing at something that is gone
+        for g in store.list_groups():
+            lib = g["ext"]["library"]
+            if kid in lib["kb_ids"]:
+                store.update_group(g["id"], {"ext": {"library": {**lib, "kb_ids": [x for x in lib["kb_ids"] if x != kid]}}})
+        return {"ok": True, "deleted_docs": doomed}
+
+    @r.get("/api/collections")
+    async def collections_list() -> list[dict]:
+        """Flat lists of knowledge bases. Membership is returned as ids, so the client does not
+        have to join anything."""
+        members = store.collection_kb_ids()
+        counts = store.count_by_kb()
+        kbs = {k["id"]: k for k in store.list_kbs()}
+        out = []
+        for col in store.list_collections():
+            ids = [x for x in members.get(col["id"], []) if x in kbs]
+            out.append({**col, "kb_ids": ids,
+                        "kbs": [{"id": i, "name": kbs[i]["name"], "group_id": kbs[i]["group_id"],
+                                 "docs": counts.get(i, 0)} for i in ids]})
+        return out
+
+    @r.post("/api/collections")
+    async def collections_add(body: CollectionIn) -> dict:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, i18n.pick_now("A collection needs a name", "合集需要名称"))
+        col = store.add_collection(name, body.description.strip())
+        if body.kb_ids:
+            store.set_collection_kbs(col["id"], body.kb_ids)
+        return col
+
+    @r.patch("/api/collections/{cid}")
+    async def collections_patch(cid: str, body: CollectionPatch) -> dict:
+        _need(store.get_collection(cid), i18n.pick_now("Collection", "合集"))
+        col = store.update_collection(cid, body.model_dump(exclude_unset=True))
+        if body.kb_ids is not None:
+            store.set_collection_kbs(cid, body.kb_ids)
+        return col  # type: ignore[return-value]
+
+    @r.delete("/api/collections/{cid}")
+    async def collections_delete(cid: str) -> dict:
+        _need(store.get_collection(cid), i18n.pick_now("Collection", "合集"))
+        store.delete_collection(cid)
+        for g in store.list_groups():
+            lib = g["ext"]["library"]
+            if cid in lib["collection_ids"]:
+                store.update_group(g["id"], {"ext": {"library": {
+                    **lib, "collection_ids": [x for x in lib["collection_ids"] if x != cid]}}})
+        return {"ok": True}
+
+    def _kb_for_new_doc(kb_id: str, group_id: str) -> dict:
+        """Where a newly added document goes.
+
+        An explicit knowledge base wins. Otherwise a group's upload lands in that workspace's own
+        knowledge base (created on first use) and anything else in the shared one — so a document
+        added in a group never ends up somewhere another group can read by accident.
+        """
+        if kb_id:
+            return _check_kb(kb_id)
         if group_id:
-            _need(store.get_group(group_id), i18n.pick_now("Group chat", "群聊"))
-        docs = store.list_docs(group_id)
+            _check_group(group_id)
+            kb = c.library.workspace_kb(group_id)
+            return _need(kb, i18n.pick_now("Knowledge base", "知识库"))
+        return _need(c.library.shared_kb(), i18n.pick_now("Knowledge base", "知识库"))
+
+    @r.get("/api/library")
+    async def library_list(kb_id: str | None = None, group_id: str | None = None) -> dict:
+        if kb_id:
+            _check_kb(kb_id)
+            docs = store.list_docs(kb_id)
+        elif group_id is not None and group_id != "":
+            _check_group(group_id)
+            docs = store.list_docs(kb_ids=[k["id"] for k in c.library.visible_kbs(group_id)])
+        elif group_id == "":
+            docs = store.list_docs(kb_ids=[k["id"] for k in store.list_kbs("")])
+        else:
+            docs = store.list_docs()
         return {"docs": docs, "total_chars": sum(d["chars"] for d in docs), "count": len(docs)}
 
     @r.post("/api/library/upload")
-    async def library_upload(request: Request, filename: str, group_id: str = "") -> dict:
+    async def library_upload(request: Request, filename: str, kb_id: str = "", group_id: str = "") -> dict:
         """The request body is the raw bytes of the file (no multipart, which saves a dependency)."""
-        _check_group(group_id)
+        kb = _kb_for_new_doc(kb_id, group_id)
         _need_octet(request)
         data = await request.body()
         if not data:
             raise HTTPException(400, i18n.pick_now("The file is empty", "文件是空的"))
         try:
-            return c.library.add_file(filename, data, group_id=group_id)
+            return c.library.add_file(filename, data, kb_id=kb["id"])
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
     @r.post("/api/library/note")
     async def library_note(body: NoteIn) -> dict:
-        _check_group(body.group_id)
+        kb = _kb_for_new_doc(body.kb_id, body.group_id)
         try:
-            return c.library.add_text(body.title, body.content, group_id=body.group_id)
+            return c.library.add_text(body.title, body.content, kb_id=kb["id"])
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
@@ -795,28 +928,31 @@ def build_router(c: Ctx) -> APIRouter:
     async def library_url(body: LibraryUrlIn) -> dict:
         if not store.get_settings()["external_calls_enabled"]:
             raise HTTPException(403, i18n.pick_now("Outbound calls are disabled, so web pages cannot be fetched (you can turn this on under Permissions & control)", "外呼已禁用,不能抓取网页(在「权限与操控」里可以打开)"))
-        _check_group(body.group_id)
+        kb = _kb_for_new_doc(body.kb_id, body.group_id)
         try:
-            return await asyncio.to_thread(c.library.add_url, body.url, body.group_id)
+            return await asyncio.to_thread(c.library.add_url, body.url, kb["id"])
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
     @r.post("/api/library/dir")
     async def library_dir(body: LibraryDirIn) -> dict:
-        _check_group(body.group_id)
+        kb = _kb_for_new_doc(body.kb_id, body.group_id)
         try:
-            return await asyncio.to_thread(c.library.add_dir, body.path, body.recursive, body.group_id)
+            return await asyncio.to_thread(c.library.add_dir, body.path, body.recursive, kb["id"])
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
     @r.get("/api/library/search")
-    async def library_search(q: str, top_k: int = 5, group_id: str | None = None) -> list[dict]:
-        """With a group id, only what that group may search is returned — the same scope its
-        members get, so the preview on the library page cannot show more than they can reach."""
-        scope = None
-        if group_id:
+    async def library_search(q: str, top_k: int = 5, group_id: str | None = None, kb_id: str | None = None) -> list[dict]:
+        """With a group id, only what that group may search comes back — the same scope its
+        members get, so a preview cannot show more than they can reach."""
+        if kb_id:
+            scope = [d["id"] for d in store.list_docs(kb_id) if d["enabled"]]
+        elif group_id:
             group = _need(store.get_group(group_id), i18n.pick_now("Group chat", "群聊"))
             scope = c.library.scope_ids(group["ext"]["library"], group_id)
+        else:
+            scope = None
         # the first search on a large library rebuilds the BM25 index, so run it in a thread pool
         # to keep the event loop free
         return await asyncio.to_thread(c.library.search, q, max(1, min(top_k, 20)), scope)
@@ -831,16 +967,14 @@ def build_router(c: Ctx) -> APIRouter:
     @r.patch("/api/library/{did}")
     async def library_patch(did: str, body: DocPatch) -> dict:
         _need(store.get_doc(did), i18n.pick_now("Document", "文档"))
+        if body.kb_id is not None:
+            _check_kb(body.kb_id)
         return c.library.update(did, body.model_dump(exclude_unset=True))  # type: ignore[return-value]
 
     @r.delete("/api/library/{did}")
     async def library_delete(did: str) -> dict:
         _need(store.get_doc(did), i18n.pick_now("Document", "文档"))
         c.library.delete(did)
-        for g in store.list_groups():
-            ids = g["ext"]["library"]["ids"]
-            if did in ids:
-                store.update_group(g["id"], {"ext": {"library": {**g["ext"]["library"], "ids": [x for x in ids if x != did]}}})
         return {"ok": True}
 
     # ============================================================ memory

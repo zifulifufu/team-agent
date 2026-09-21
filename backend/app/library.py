@@ -167,7 +167,12 @@ class Library:
 
     # ------------------------------------------------------------------ write
     def add_text(self, title: str, text: str, filename: str = "", kind: str = "note", size: int | None = None,
-                 did: str | None = None, group_id: str = "") -> dict:
+                 did: str | None = None, kb_id: str = "") -> dict:
+        # Refused rather than quietly stored somewhere: a document with no knowledge base is
+        # invisible to every group, which is impossible to notice from the outside. Callers go
+        # through `workspace_kb` / `shared_kb` (the API's `_kb_for_new_doc`) to pick one.
+        if not kb_id:
+            raise LibraryError(i18n.pick_now("A document needs a knowledge base", "文档必须归属某个知识库"))
         text = text.strip()
         if not text:
             raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))
@@ -175,15 +180,15 @@ class Library:
             raise LibraryError(i18n.pick_now(f"The text is too long (limit {MAX_CHARS} characters); split it before importing", f"文本太长(上限 {MAX_CHARS // 10000} 万字),请拆分后再导入"))
         chunks = chunk_text(text)
         doc = self.store.add_doc(title.strip() or filename or i18n.pick_now("Untitled", "未命名"), filename, kind,
-                                 size if size is not None else len(text.encode()), chunks, did, group_id)
+                                 size if size is not None else len(text.encode()), chunks, did, kb_id)
         self.invalidate()
         return doc
 
-    def add_file(self, filename: str, data: bytes, title: str | None = None, group_id: str = "") -> dict:
+    def add_file(self, filename: str, data: bytes, title: str | None = None, kb_id: str = "") -> dict:
         kind, text = extract_text(filename, data)
-        return self.add_text(title or Path(filename).stem, text, filename, kind, len(data), group_id=group_id)
+        return self.add_text(title or Path(filename).stem, text, filename, kind, len(data), kb_id=kb_id)
 
-    def add_url(self, url: str, group_id: str = "") -> dict:
+    def add_url(self, url: str, kb_id: str = "") -> dict:
         final, ctype, data = fetch_url(url)
         if ctype == "application/pdf" or final.lower().split("?")[0].endswith(".pdf"):
             kind, text = extract_text("x.pdf", data)
@@ -198,10 +203,10 @@ class Library:
             title = Path(urlparse(final).path).name or urlparse(final).netloc
         else:
             raise LibraryError(i18n.pick_now(f"This content type is not supported yet: {ctype or 'unknown'}", f"暂不支持这种内容类型:{ctype or '未知'}"))
-        return self.add_text(title[:120], text, final, "link", len(data), group_id=group_id)
+        return self.add_text(title[:120], text, final, "link", len(data), kb_id=kb_id)
 
-    def add_dir(self, path: str, recursive: bool = True, group_id: str = "") -> dict:
-        """Bulk import the documents in a folder. Re-importing the same folder: unchanged files are
+    def add_dir(self, path: str, recursive: bool = True, kb_id: str = "") -> dict:
+        """Bulk import the documents in a folder into one knowledge base. Re-importing the same folder:
 skipped, files whose size changed are replaced with the new version."""
         root = Path(path.strip()).expanduser()
         if not root.is_absolute() or not root.is_dir():
@@ -209,7 +214,7 @@ skipped, files whose size changed are replaced with the new version."""
         root = root.resolve()
         # Only this group's own documents and the shared ones take part in "already imported":
         # the same file may legitimately live in two groups' libraries.
-        by_name = {d["filename"]: d for d in self.store.list_docs(group_id) if d["filename"]}
+        by_name = {d["filename"]: d for d in self.store.list_docs(kb_id) if d["filename"]}
         added: list[dict] = []
         skipped: list[dict] = []
         seen = 0
@@ -238,11 +243,11 @@ skipped, files whose size changed are replaced with the new version."""
                 if old:   # changed files: replaced in place, keeping document id, title and enabled state, so
 # documents already selected in a group are not lost
                     self.delete(old["id"])
-                    doc = self.add_text(old["title"], text, str(p), kind, size, did=old["id"])
+                    doc = self.add_text(old["title"], text, str(p), kind, size, did=old["id"], kb_id=kb_id)
                     if not old["enabled"]:
                         doc = self.update(doc["id"], {"enabled": False}) or doc
                 else:
-                    doc = self.add_text(p.stem, text, str(p), kind, size, group_id=group_id)
+                    doc = self.add_text(p.stem, text, str(p), kind, size, kb_id=kb_id)
                 added.append(doc)
             except (LibraryError, OSError) as e:
                 skipped.append({"name": rel, "reason": str(e)})
@@ -289,17 +294,69 @@ skipped, files whose size changed are replaced with the new version."""
         return next((d for d in docs if d["id"] == key or d["title"].lower() == key), None) or \
             next((d for d in docs if key and key in d["title"].lower()), None)
 
-    def scope_ids(self, ext_library: dict, gid: str = "") -> list[str] | None:
-        """The document ids a group may search, from its group settings.
+    # ------------------------------------------------------- knowledge bases and scope
+    def own_kbs(self, gid: str) -> list[dict]:
+        """The knowledge bases that belong to a group's workspace."""
+        return [k for k in self.store.list_kbs() if k["group_id"] == gid] if gid else []
 
-        "all" no longer means every document in the database: the library is per group, so it
-        means that group's own documents plus the shared ones (`group_id=''`). Returning an
-        explicit list rather than None matters — None reads as "no restriction" in `read` and
-        `find_by_title` below, which would let a member open another group's document by title.
+    def visible_kbs(self, gid: str) -> list[dict]:
+        """Everything a group may reach: its workspace's knowledge bases plus every shared one.
+        Attaching is a separate, narrower decision — see `scope_kbs`."""
+        return self.store.list_kbs(gid or "")
+
+    def scope_kbs(self, ext_library: dict, gid: str = "") -> list[dict]:
+        """Which knowledge bases a group actually searches.
+
+        * `off`      -- none, whatever is attached
+        * `all`      -- everything it can reach (its workspace's own + the shared ones)
+        * `selected` -- the knowledge bases it listed plus the members of the collections it
+                        listed, filtered through the same visibility rule. A collection is a
+                        convenience for the user, **not** a way around the boundary: one that
+                        happens to contain another workspace's knowledge base does not hand it
+                        over.
         """
         mode = (ext_library or {}).get("mode", "all")
         if mode == "off":
             return []
-        if mode == "selected":
-            return list(ext_library.get("ids", []))
-        return [d["id"] for d in self.store.list_docs(gid) if d["enabled"]]
+        visible = {k["id"]: k for k in self.visible_kbs(gid)}
+        if mode != "selected":
+            return list(visible.values())
+        wanted = [str(x) for x in (ext_library.get("kb_ids") or [])]
+        members = self.store.collection_kb_ids()
+        for cid in ext_library.get("collection_ids") or []:
+            wanted += members.get(str(cid), [])
+        out, seen = [], set()
+        for kid in wanted:
+            if kid in visible and kid not in seen:
+                seen.add(kid)
+                out.append(visible[kid])
+        return out
+
+    def scope_ids(self, ext_library: dict, gid: str = "") -> list[str]:
+        """The document ids a group may search.
+
+        Always an explicit list — never None. `library_read` and `find_by_title` treat None as
+        "no restriction", so returning it here would let a member open any document in the
+        database by title.
+        """
+        kbs = self.scope_kbs(ext_library, gid)
+        if not kbs:
+            return []
+        return [d["id"] for d in self.store.list_docs(kb_ids=[k["id"] for k in kbs]) if d["enabled"]]
+
+    def workspace_kb(self, gid: str, create: bool = True) -> dict | None:
+        """The knowledge base a new document goes into when it is added from a group's library.
+
+        Created on first use and owned by that workspace, so a document added in a group never
+        lands somewhere another group can read.
+        """
+        for kb in self.own_kbs(gid):
+            return kb
+        group = self.store.get_group(gid) if (create and gid) else None
+        return self.store.add_kb(group["name"], "This group's own documents", gid) if group else None
+
+    def shared_kb(self, create: bool = True) -> dict | None:
+        """The knowledge base new material goes into when no group is involved."""
+        for kb in self.store.list_kbs(""):
+            return kb
+        return self.store.add_kb("Shared knowledge base", "Documents every group can search", "") if create else None

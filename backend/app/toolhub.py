@@ -165,9 +165,9 @@ class ToolHub:
                                "risk": spec.get("risk"), **extra}
 
         add("current_time", specs["current_time"], source="builtin")
-        # `list_docs(group["id"])` = this group's own documents + the shared ones, which is what
-        # "the library is not empty" means for this group now
-        if ext["library"]["mode"] != "off" and self.store.list_docs(group["id"]):
+        # "The library is not empty for this group" now means "at least one knowledge base is in
+        # scope and has an enabled document", not "the database has documents".
+        if self.library.scope_ids(ext["library"], group["id"]):
             add("library_search", specs["library_search"], source="builtin")
             add("library_read", specs["library_read"], source="builtin")
         if cfg["memory_enabled"] and ext["memory"]:
@@ -291,7 +291,9 @@ When it is not supplied, calls needing confirmation are always denied."""
             return i18n.pick_now("Saved to this group's memory.", "已记入本群记忆。"), True
         if name == "run_code":
             cfg = self.store.get_settings()
-            workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg)
+            # Each group runs in its own workspace, so one project's files are never in reach of
+            # another's code.
+            workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg, group["id"])
             cwd, why = coderun.resolve_cwd(workspace, str(args.get("cwd") or ""))
             if cwd is None:
                 return why, False

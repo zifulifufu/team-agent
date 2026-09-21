@@ -25,19 +25,32 @@ SUFFIX = {"python": ".py", "shell": ".sh"}
 INTERPRETER = {"python": [sys.executable], "shell": ["/bin/sh", "-c"]}
 
 
-def workspace_path(data_dir: Path, settings: dict) -> Path:
-    """Where runs happen, without touching the filesystem.
+def base_dir(data_dir: Path, settings: dict) -> Path:
+    """The directory the per-group workspaces live under.
 
-    Reading is separated from creating so that a page which only wants to show the path
-    (the Permissions page) does not create a directory as a side effect of being opened.
+    `code_workdir` is a base, not the workspace itself: each group gets its own folder inside it,
+    so one group's code and files never sit next to another's.
     """
     raw = str(settings.get("code_workdir") or "").strip()
-    return Path(raw).expanduser() if raw else Path(data_dir) / "workspace"
+    return Path(raw).expanduser() if raw else Path(data_dir) / "workspaces"
 
 
-def workspace_dir(data_dir: Path, settings: dict) -> Path:
-    """Where runs happen. The model may only ever use this directory as its cwd."""
-    base = workspace_path(data_dir, settings)
+def workspace_path(data_dir: Path, settings: dict, gid: str = "") -> Path:
+    """A group's workspace, without touching the filesystem.
+
+    Reading is separated from creating so a page that only wants to show the path (the
+    Permissions page) does not create a directory as a side effect of being opened. With no
+    group there is nowhere to run, and the base is returned for display only.
+    """
+    base = base_dir(data_dir, settings)
+    return base / gid if gid else base
+
+
+def workspace_dir(data_dir: Path, settings: dict, gid: str = "") -> Path:
+    """A group's workspace. The model may only ever use this directory as its cwd."""
+    base = workspace_path(data_dir, settings, gid)
+    if not gid:
+        raise ValueError("a code run needs a group workspace")
     base.mkdir(parents=True, exist_ok=True)
     return base
 

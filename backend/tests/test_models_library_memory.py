@@ -136,8 +136,9 @@ def test_tokenize_and_chunk():
 
 def test_library_search_ranks_relevant_doc_and_scopes(store):
     lib = Library(store)
-    a = lib.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。\n\n交通:高铁二等座可报销。")
-    b = lib.add_text("食堂菜单", "周一红烧肉,周二清蒸鱼,周三番茄炒蛋。")
+    kb = lib.shared_kb()
+    a = lib.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。\n\n交通:高铁二等座可报销。", kb_id=kb["id"])
+    b = lib.add_text("食堂菜单", "周一红烧肉,周二清蒸鱼,周三番茄炒蛋。", kb_id=kb["id"])
     hits = lib.search("出差住宿标准是多少", 3)
     assert hits and hits[0]["doc_id"] == a["id"]
     assert lib.search("红烧肉", 3)[0]["doc_id"] == b["id"]
@@ -154,62 +155,96 @@ def test_library_file_formats_and_errors(store):
     import docx
 
     lib = Library(store)
-    d = lib.add_file("说明.md", "# 标题\n\n报销流程见下。".encode("utf-8"))
+    d = lib.add_file("说明.md", "# 标题\n\n报销流程见下。".encode("utf-8"), kb_id=lib.shared_kb()["id"])
     assert d["kind"] == "md" and d["chunks"] >= 1
-    d2 = lib.add_file("旧文件.txt", "国标编码测试内容".encode("gb18030"))
+    d2 = lib.add_file("旧文件.txt", "国标编码测试内容".encode("gb18030"), kb_id=lib.shared_kb()["id"])
     assert "国标" in lib.read(d2["id"])["text"]
-    d3 = lib.add_file("页面.html", "<html><script>var x=1</script><body><p>网页正文</p></body></html>".encode())
+    d3 = lib.add_file("页面.html", "<html><script>var x=1</script><body><p>网页正文</p></body></html>".encode(), kb_id=lib.shared_kb()["id"])
     assert "网页正文" in lib.read(d3["id"])["text"] and "var x" not in lib.read(d3["id"])["text"]
     buf = io.BytesIO()
     doc = docx.Document()
     doc.add_paragraph("合同第一条:甲乙双方")
     doc.save(buf)
-    d4 = lib.add_file("合同.docx", buf.getvalue())
+    d4 = lib.add_file("合同.docx", buf.getvalue(), kb_id=lib.shared_kb()["id"])
     assert "甲乙双方" in lib.read(d4["id"])["text"]
     with pytest.raises(LibraryError, match="not supported"):
-        lib.add_file("a.exe", b"MZ")
+        lib.add_file("a.exe", b"MZ", kb_id=lib.shared_kb()["id"])
     with pytest.raises(LibraryError):
-        lib.add_text("空", "   ")
+        lib.add_text("空", "   ", kb_id=lib.shared_kb()["id"])
     with pytest.raises(LibraryError, match="PDF"):
-        lib.add_file("坏.pdf", b"not a pdf")
+        lib.add_file("坏.pdf", b"not a pdf", kb_id=lib.shared_kb()["id"])
 
 
-def test_library_scope_ids_and_find_by_title(store):
-    """`all` is no longer "every document in the database": the library is per group, so it
-    resolves to that group's own documents plus the shared ones. Returning the explicit list
-    (rather than None, which `read` and `find_by_title` read as "no restriction") is what stops
-    a member opening another group's document by title."""
+def test_library_scope_follows_the_knowledge_bases(store):
+    """`all` means every knowledge base the group can reach — its workspace's own plus the shared
+    ones — and `selected` means exactly what it attached.
+
+    The scope is always a concrete list of document ids: `read` and `find_by_title` read None as
+    "no restriction", so returning it would hand over any document in the database.
+    """
     lib = Library(store)
     gid = store.list_groups()[0]["id"]
     other = store.create_group("Another project")["id"]
-    shared = lib.add_text("报价单 2026", "内容内容内容")
-    mine = lib.add_text("本群资料", "本群的内容", group_id=gid)
-    theirs = lib.add_text("别的群资料", "别的群的内容", group_id=other)
+    shared = lib.shared_kb()
+    mine = lib.workspace_kb(gid)
+    theirs = lib.workspace_kb(other)
 
-    assert lib.find_by_title("报价单")["id"] == shared["id"] and lib.find_by_title("不存在") is None
-    assert set(lib.scope_ids({"mode": "all"}, gid)) == {shared["id"], mine["id"]}
-    assert theirs["id"] not in lib.scope_ids({"mode": "all"}, gid)
+    a = lib.add_text("报价单 2026", "内容内容内容", kb_id=shared["id"])
+    b = lib.add_text("本群资料", "本群的内容", kb_id=mine["id"])
+    c = lib.add_text("别的群资料", "别的群的内容", kb_id=theirs["id"])
+
+    assert lib.find_by_title("报价单")["id"] == a["id"] and lib.find_by_title("不存在") is None
+    assert set(lib.scope_ids({"mode": "all"}, gid)) == {a["id"], b["id"]}
+    assert c["id"] not in lib.scope_ids({"mode": "all"}, gid)
     assert lib.scope_ids({"mode": "off"}, gid) == []
-    assert lib.scope_ids({"mode": "selected", "ids": ["x"]}, gid) == ["x"]
-    # With no group at all (`gid` left empty) only the shared documents are visible
-    assert lib.scope_ids({"mode": "all"}, "") == [shared["id"]]
+    # Selected: only what was attached, even if more is reachable
+    assert lib.scope_ids({"mode": "selected", "kb_ids": [shared["id"]]}, gid) == [a["id"]]
+    # Another workspace's knowledge base cannot be attached by id
+    assert lib.scope_ids({"mode": "selected", "kb_ids": [theirs["id"]]}, gid) == []
+    # With no group, only the shared knowledge base is in reach
+    assert lib.scope_ids({"mode": "all"}, "") == [a["id"]]
 
 
-def test_a_group_cannot_search_another_groups_library(store):
+def test_a_collection_cannot_hand_over_another_workspaces_knowledge_base(store):
     lib = Library(store)
     gid = store.list_groups()[0]["id"]
     other = store.create_group("Another project")["id"]
-    lib.add_text("别人的预算口径", "含税价口径按百分之十三算", group_id=other)
-    lib.add_text("共享的报销制度", "单笔超过 500 元必须附发票")
-    lib.add_text("本群的验收标准", "验收以现场演示为准")
+    secret = lib.workspace_kb(other)
+    public = lib.shared_kb()
+    lib.add_text("机密", "机密内容在此", kb_id=secret["id"])
+    lib.add_text("规范", "共用规范内容", kb_id=public["id"])
+    col = store.add_collection("合集")
+    store.set_collection_kbs(col["id"], [secret["id"], public["id"]])
 
-    def found(scope_gid, q):
-        return {h["title"] for h in lib.search(q, 5, lib.scope_ids({"mode": "all"}, scope_gid))}
+    got = lib.scope_ids({"mode": "selected", "collection_ids": [col["id"]]}, gid)
+    assert got == [d["id"] for d in store.list_docs(public["id"])]
+    assert secret["id"] not in lib.scope_kbs({"mode": "selected", "collection_ids": [col["id"]]}, gid)[0]["id"]
+    assert [k["id"] for k in lib.scope_kbs({"mode": "selected", "collection_ids": [col["id"]]}, gid)] == [public["id"]]
 
-    assert found(gid, "发票") == {"共享的报销制度"}          # shared documents stay reachable
-    assert found(gid, "验收") == {"本群的验收标准"}
-    assert found(gid, "含税价") == set()                     # another group's document is not
-    assert found(other, "含税价") == {"别人的预算口径"}
+
+def test_a_document_needs_a_knowledge_base(store):
+    """Refused rather than stored with no owner: such a document is invisible to every group,
+    which nothing on the outside could tell you."""
+    lib = Library(store)
+    with pytest.raises(LibraryError, match="knowledge base"):
+        lib.add_text("孤儿", "没人认领的内容")
+
+
+def test_reimporting_a_folder_keeps_documents_in_their_knowledge_base(store, tmp_path):
+    """The in-place replacement branch used to drop the scope, which quietly promoted a changed
+    file to a knowledge base every group can read."""
+    lib = Library(store)
+    kb = lib.workspace_kb(store.list_groups()[0]["id"])
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "a.txt").write_text("第一版", encoding="utf-8")
+    first = lib.add_dir(str(folder), True, kb["id"])["added"][0]
+    assert first["kb_id"] == kb["id"]
+
+    (folder / "a.txt").write_text("第二版,内容变长了", encoding="utf-8")
+    again = lib.add_dir(str(folder), True, kb["id"])["added"][0]
+    assert again["id"] == first["id"] and again["kb_id"] == kb["id"], "still in the same knowledge base"
+    assert "第二版" in lib.read(again["id"])["text"]
 
 
 # -------------------------------------------------------------------- memory
