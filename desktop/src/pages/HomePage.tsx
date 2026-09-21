@@ -42,14 +42,15 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     }
   };
 
+  // 首页只放常用的几张模板卡片,更全的在「设置 → 模板中心」
+  const homeTemplates = useMemo(() => templates.filter((t) => t.home !== false), [templates]);
   const scene = SCENES.find((s) => s.id === sceneId)!;
   const sceneAgents = useMemo(() => {
     const picked = scene.members.map((n) => agents.find((a) => a.name === n)).filter(Boolean) as typeof agents;
     return picked.length ? picked : agents;
   }, [scene, agents]);
 
-  const targetGroup = target === "new" ? null : groups.find((g) => g.id === target) ?? null;
-  const mentionable = useMemo(() => {
+  const targetGroup = target === "new" ? null : groups.find((g) => g.id === target) ?? null;  const mentionable = useMemo(() => {
     if (targetGroup) return targetGroup.member_ids.map((i) => agents.find((a) => a.id === i)).filter(Boolean) as typeof agents;
     return sceneAgents;
   }, [targetGroup, sceneAgents, agents]);
@@ -123,16 +124,16 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           ))}
         </div>
 
-        {(templates.length > 0 || tplErr) && (
+        {(homeTemplates.length > 0 || tplErr) && (
           <section className="tpl-section" aria-label="群聊模板">
             <div className="tpl-title">
               <LayoutTemplate size={14} aria-hidden /> 群聊模板
               <span className="muted small">一键建好成员、群主、技能和提示词</span>
-              {onSettings && <button className="link small" style={{ marginLeft: "auto" }} onClick={() => onSettings("awesome")}>更多团队:示例库 →</button>}
+              {onSettings && <button className="link small" style={{ marginLeft: "auto" }} onClick={() => onSettings("gallery")}>更多团队:模板中心 →</button>}
             </div>
             {tplErr && <div className="err tpl-err" role="alert">{tplErr}</div>}
             <div className="tpl-grid">
-              {templates.map((t) => (
+              {homeTemplates.map((t) => (
                 <button key={t.id} className="tpl-card" disabled={!!tplBusy} onClick={() => void useTemplate(t)} aria-label={`用模板「${t.name}」新建群聊`}>
                   <div className="tpl-name">
                     {t.name}

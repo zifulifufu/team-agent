@@ -40,6 +40,11 @@ export default function App() {
     else setSettings(t);
   };
   const ToolPage = view.kind === "skills" || view.kind === "plugins" || view.kind === "mcp" ? TOOL_PAGES[view.kind] : null;
+  // 模板中心里建好群聊后直接进去:关掉设置,切到那个群
+  const openGroup = (gid: string) => {
+    setSettings(null);
+    setView({ kind: "chat", gid, autoSend: "" });
+  };
 
   return (
     <div className="shell">
@@ -68,7 +73,7 @@ export default function App() {
         {view.kind === "prompts" && <PromptsPage />}
       </main>
       <Toaster />
-      {settings && <SettingsModal tab={settings} onTab={setSettings} onClose={() => setSettings(null)} />}
+      {settings && <SettingsModal tab={settings} onTab={setSettings} onClose={() => setSettings(null)} onOpenGroup={openGroup} />}
     </div>
   );
 }

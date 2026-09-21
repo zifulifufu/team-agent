@@ -1,5 +1,5 @@
 import { useEffect, type ComponentType } from "react";
-import { ArrowLeft, BarChart3, type LucideIcon, BookOpen, Boxes, Brain, Cpu, Database, Download, GitBranch, HardDrive, Info, MessageSquareText, Palette, Plug, Puzzle, Server, ShieldCheck, SlidersHorizontal, Library, Sparkles, TerminalSquare } from "lucide-react";
+import { ArrowLeft, BarChart3, type LucideIcon, BookOpen, Boxes, Brain, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Palette, Plug, Puzzle, Server, ShieldCheck, SlidersHorizontal, Sparkles, TerminalSquare } from "lucide-react";
 import { useData } from "../data";
 import ProvidersPage from "./ProvidersPage";
 import RoutingPage from "./RoutingPage";
@@ -8,7 +8,7 @@ import SkillsPage from "./SkillsPage";
 import PluginsPage from "./PluginsPage";
 import McpPage from "./McpPage";
 import ExternalPage from "./ExternalPage";
-import AwesomePage from "./AwesomePage";
+import GalleryPage from "./GalleryPage";
 import PromptsPage from "../pages/PromptsPage";
 import LibraryPage from "../pages/LibraryPage";
 import MemoryPage from "../pages/MemoryPage";
@@ -23,12 +23,14 @@ import AboutPage from "./AboutPage";
 
 export type SettingsTab =
   | "providers" | "routing" | "local"
-  | "skills" | "plugins" | "mcp" | "external" | "awesome" | "prompts" | "library" | "memory"
+  | "skills" | "plugins" | "mcp" | "external" | "gallery" | "prompts" | "library" | "memory"
   | "general" | "permissions" | "updates" | "appearance" | "data" | "stats" | "deps" | "about";
 
 /** 设置页里的每个页面都可以选择接收 onTab,用来跳到别的设置标签。 */
 export interface PageProps {
   onTab: (t: SettingsTab) => void;
+  /** 模板中心里建好群聊后直接跳进那个群(其它页面用不到,所以是可选的)。 */
+  onOpenGroup?: (gid: string) => void;
 }
 
 const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: LucideIcon; page: ComponentType<PageProps> }[] }[] = [
@@ -47,7 +49,7 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
       { id: "plugins", label: "插件", icon: Puzzle, page: PluginsPage },
       { id: "mcp", label: "MCP", icon: Plug, page: McpPage },
       { id: "external", label: "外部智能体", icon: TerminalSquare, page: ExternalPage },
-      { id: "awesome", label: "示例库", icon: Library, page: AwesomePage },
+      { id: "gallery", label: "模板中心", icon: LayoutTemplate, page: GalleryPage },
       { id: "prompts", label: "提示词", icon: MessageSquareText, page: PromptsPage },
       { id: "library", label: "资料库", icon: BookOpen, page: LibraryPage },
       { id: "memory", label: "记忆", icon: Brain, page: MemoryPage },
@@ -68,7 +70,7 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
   },
 ];
 
-export default function SettingsModal({ tab, onTab, onClose }: { tab: SettingsTab; onTab: (t: SettingsTab) => void; onClose: () => void }) {
+export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { tab: SettingsTab; onTab: (t: SettingsTab) => void; onClose: () => void; onOpenGroup?: (gid: string) => void }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       // 有弹窗(添加服务商等)打开时,Esc 先关弹窗
@@ -101,7 +103,7 @@ export default function SettingsModal({ tab, onTab, onClose }: { tab: SettingsTa
           ))}
         </nav>
         <div className="settings-content">
-          <Page key={tab} onTab={onTab} />
+          <Page key={tab} onTab={onTab} onOpenGroup={onOpenGroup} />
         </div>
       </div>
     </div>

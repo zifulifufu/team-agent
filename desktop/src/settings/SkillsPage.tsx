@@ -109,7 +109,7 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
         </div>
       </div>
       <p className="sp-desc">
-        技能是一段写给模型看的纯文本说明(怎么写公文、评审会怎么开……),不会执行任何代码。「成员技能」勾给某个成员,「群聊规则」挂在整个群上、全员遵守。{onTab && <> 想要现成的?<button className="link" onClick={() => onTab("awesome")}>看看示例库</button>。</>}
+        技能是一段写给模型看的纯文本说明(怎么写公文、评审会怎么开……),不会执行任何代码。「成员技能」勾给某个成员,「群聊规则」挂在整个群上、全员遵守。{onTab && <> 想要现成的?<button className="link" onClick={() => onTab("gallery")}>去模板中心</button>一键导入。</>}
       </p>
       {checkMsg && <div className={checkMsg.ok ? "ok-text" : "err"} style={{ marginBottom: 10 }}>{checkMsg.text}</div>}
       {loadErr && <div className="ext-errbox"><div className="err">读取技能失败:{loadErr}</div><button className="btn small" onClick={() => void load()}>重试</button></div>}

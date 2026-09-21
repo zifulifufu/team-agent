@@ -1,0 +1,54 @@
+/* 模板中心(设置 → 模板中心)。类名前缀:gl- */
+
+.gl-tabs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 16px 0 6px; }
+.gl-tab { border: 1px solid var(--border); background: var(--card); color: var(--text-2); padding: 5px 12px; border-radius: 999px; font: inherit; font-size: 13px; cursor: pointer; }
+.gl-tab:hover { color: var(--text); }
+.gl-tab.on { border-color: var(--primary); color: var(--text); background: color-mix(in srgb, var(--primary) 8%, var(--card)); }
+.gl-count { display: inline-block; margin-left: 2px; font-size: 11.5px; color: var(--text-3); }
+.gl-tab.on .gl-count { color: var(--ok); }
+
+.gl-search { margin-left: auto; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; background: var(--card); color: var(--text-3); }
+.gl-search input { border: 0; outline: 0; background: transparent; font: inherit; font-size: 13px; width: 150px; color: var(--text); }
+
+.gl-hint { color: var(--text-3); font-size: 12.5px; margin: 0 0 10px; }
+.gl-join { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); margin: 0 0 10px; }
+.gl-join select { font: inherit; font-size: 12.5px; padding: 3px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+
+.gl-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 10px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.gl-item:first-child { border-top: 0; }
+.gl-item.open { align-items: start; background: var(--bg-sub); }
+.gl-head { display: flex; align-items: flex-start; gap: 8px; background: none; border: 0; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; min-width: 0; }
+.gl-chev { margin-top: 3px; color: var(--text-3); transition: transform .15s; flex: none; }
+.gl-chev.open { transform: rotate(90deg); }
+.gl-icon { font-size: 18px; line-height: 22px; flex: none; }
+.gl-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.gl-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.gl-title .tag { font-size: 11px; }
+.gl-sum { font-size: 12.5px; color: var(--text-2); }
+
+.gl-side { display: flex; align-items: center; gap: 8px; }
+.gl-state { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; font-size: 11.5px; color: var(--ok); background: var(--primary-soft); padding: 1px 7px; border-radius: 999px; }
+
+.gl-detail { grid-column: 1 / -1; margin: 8px 0 2px 30px; display: flex; flex-direction: column; gap: 6px; }
+.gl-roles { display: flex; flex-wrap: wrap; gap: 6px; }
+.gl-role { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: var(--text-2); }
+.gl-role.host { border-color: var(--primary); color: var(--text); }
+.gl-role i { font-style: normal; font-size: 11px; color: var(--text-3); }
+.gl-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); }
+.gl-line.ok { color: var(--ok); }
+.gl-line.bad { color: var(--danger); align-items: flex-start; }
+.gl-line.note { color: var(--warn); align-items: flex-start; }
+
+.gl-cmd { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; color: var(--text-2); word-break: break-all; }
+.gl-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.65; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; color: var(--text-2); max-height: 280px; overflow: auto; }
+
+.gl-result { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; border: 1px solid var(--primary); background: var(--primary-soft); border-radius: 10px; padding: 10px 12px; margin: 10px 0 4px; }
+.gl-result-top { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--text); }
+.gl-result-top b { font-size: 13px; }
+
+.gl-msg { border-radius: 10px; padding: 9px 12px; margin: 10px 0; font-size: 13px; }
+.gl-msg.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+
+.gl-custom { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.gl-custom code { font-size: 12px; }
+.gl-errors { display: flex; flex-direction: column; gap: 4px; }

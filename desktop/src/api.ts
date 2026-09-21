@@ -142,28 +142,53 @@ export interface ExternalProbe {
   version: string;
   live: null | { ok: boolean; reply?: string; error?: string; seconds: number; model?: string; cost_usd?: number | null };
 }
-export interface AwesomeApp {
-  id: string;
-  title: string;                   // 中文名(没有中文说明时是英文原名)
-  title_en: string;
-  desc: string;
-  category: string;
-  framework: string;
-  path: string;
-  kind: "team" | "agent";
-  members: { name: string; role: string; tools: string[] }[];
-  lead: string | null;
-  sequential: boolean;
+/** 模板中心(设置 → 模板中心)的条目。kind 决定点「使用」时发生什么。 */
+export type GalleryKind = "team" | "agent" | "skill" | "prompt" | "mcp";
+export interface GalleryMember { name: string; avatar: string; role: string }
+export interface GalleryItem {
+  id: string;                        // team:office / agent:reviewer / skill:xxx 这样带类别前缀
+  kind: GalleryKind;
+  name: string;
+  summary: string;
+  icon: string;                      // emoji
+  tags: string[];
+  source: string;                    // builtin = 程序自带;custom:<文件名> = 你自己放进数据目录的
+  home?: boolean;                    // 团队模板:是否也出现在首页(首页只放常用的几张)
+  installed: boolean;
+  state_note: string;                // 「已在技能库」这类状态说明,没有就是空
+  preview: {
+    members?: GalleryMember[]; host?: string; skills?: string[]; prompt?: string;
+    avatar?: string; role?: string; tags?: string[];
+    description?: string; scope?: string; body?: string;
+    kind?: string; content?: string;
+    command?: string; args?: string[]; env_keys?: string[]; note?: string;
+  };
 }
-export interface AwesomeOverview {
-  source: { name: string; url: string; license: string; author: string };
-  commit: string;
-  generated_at: string;
-  origin: "shipped" | "local" | "empty";
-  teams: AwesomeApp[];
-  agents: AwesomeApp[];
-  skills: { id: string; name: string; title: string; desc: string; needs_runtime: boolean; clipped: boolean; compatibility: string; installed: boolean }[];
-  mcp: { id: string; name: string; command: string; args: string[]; env_keys: string[]; note: string; installed: boolean }[];
+export interface GalleryOverview {
+  catalog_version: string;
+  schema_version: number;
+  categories: { id: GalleryKind; label: string; hint: string }[];
+  counts: Record<string, number>;
+  total: number;
+  items: GalleryItem[];
+  custom: {
+    dir: string;                     // 放自定义模板的目录(只读展示,界面上不用填路径)
+    exists: boolean;
+    loaded: number;
+    files: { name: string; items: number; version: string; author: string }[];
+    errors: { file: string; index?: number; id?: string; reason: string }[];
+  };
+}
+export interface GalleryApplyResult {
+  kind: GalleryKind;
+  id: string;
+  name: string;
+  summary: string;                   // 可以直接显示给用户的一句话
+  group: Group | null;
+  agents: string[];
+  added: string[];                   // 这次真正写入的东西
+  skipped: string[];                 // 因为已存在而没动的
+  notes: string[];                   // 需要用户知道的提醒
 }
 export interface AgentPreset {
   key: string;
@@ -558,6 +583,8 @@ export interface GroupTemplate {
   host: string;
   skills: string[];
   prompt: string;
+  /** false = 只在「设置 → 模板中心」里出现,不放首页(首页保持精简) */
+  home?: boolean;
 }
 type UpdateKind = "app" | "catalog" | "skill" | "plugin" | "model" | "localmodel" | "localcatalog";
 export interface UpdateItem {
@@ -765,14 +792,13 @@ export const api = {
   externalCreate: (b: { engine?: string; name?: string; group_id?: string; cfg: Partial<ExternalCfg> }) => post<Agent>("/api/external/agents", b),
   externalPatch: (id: string, cfg: Partial<ExternalCfg>) => patch<Agent>(`/api/external/agents/${id}`, { cfg }),
   externalTest: (b: { live?: boolean; agent_id?: string; cli_path?: string }) => post<ExternalProbe>("/api/external/test", b),
-  awesome: () => get<AwesomeOverview>("/api/awesome"),
-  awesomeCreateGroup: (id: string, name?: string) => post<{ group: Group; members: string[]; host: string }>(`/api/awesome/apps/${id}/create-group`, { name }),
-  awesomeAddMembers: (id: string, group_id?: string, names?: string[]) => post<{ members: { id: string; name: string }[] }>(`/api/awesome/apps/${id}/members`, { group_id, names }),
-  awesomeAddPrompts: (id: string) => post<{ added: string[]; skipped: string[] }>(`/api/awesome/apps/${id}/prompts`, {}),
-  awesomeInstallSkill: (id: string) => post<{ name: string }>(`/api/awesome/skills/${id}/install`, {}),
-  awesomeAddMcp: (id: string) => post<{ id: string; name: string }>(`/api/awesome/mcp/${id}/add`, {}),
-  awesomeRefresh: (path: string) => post<{ commit: string; teams: number; agents: number; skills: number; mcp: number }>("/api/awesome/refresh", { path }),
-  awesomeReset: () => post<{ ok: boolean }>("/api/awesome/reset", {}),
+  /** 模板中心:目录(程序自带的一手模板 + 数据目录里的自定义模板) */
+  gallery: () => get<GalleryOverview>("/api/gallery"),
+  /** 模板详情:带回完整正文,安装前可以先读一遍 */
+  galleryDetail: (id: string) => get<GalleryItem & { def: Record<string, unknown> }>(`/api/gallery/${encodeURIComponent(id)}`),
+  /** 一键应用:team 建群、agent 建成员(可顺带入群)、skill/prompt 入库、mcp 添加为停用状态 */
+  galleryApply: (id: string, body: { name?: string; group_id?: string; overwrite?: boolean } = {}) =>
+    post<GalleryApplyResult>(`/api/gallery/${encodeURIComponent(id)}/apply`, body),
   addMemberFromModel: (gid: string, model_id: string) => post<Group>(`/api/groups/${gid}/members/from-model`, { model_id }),
   removeMember: (gid: string, aid: string) => del<Group>(`/api/groups/${gid}/members/${aid}`),
   capabilities: (gid: string) => get<Capabilities>(`/api/groups/${gid}/capabilities`),

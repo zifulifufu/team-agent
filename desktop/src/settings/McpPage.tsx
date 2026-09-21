@@ -134,7 +134,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
         </div>
       </div>
       <p className="sp-desc">
-        MCP 服务器是一个本机进程(或远程服务),成员通过它使用外部工具,如读写文件、抓取网页。它和「插件」是两回事。在群聊右侧面板的「扩展」里启用后,第一次被用到时才会连接;也可以在这里手动连接看看能不能用。{onTab && <> <button className="link" onClick={() => onTab("awesome")}>示例库</button>里有一些现成的 MCP 用法。</>}
+        MCP 服务器是一个本机进程(或远程服务),成员通过它使用外部工具,如读写文件、抓取网页。它和「插件」是两回事。在群聊右侧面板的「扩展」里启用后,第一次被用到时才会连接;也可以在这里手动连接看看能不能用。{onTab && <> <button className="link" onClick={() => onTab("gallery")}>模板中心</button>里有一些现成的 MCP 用法(导入后一律是停用状态)。</>}
       </p>
       <Callout tone="warn" title="MCP 服务器会以你的权限运行命令">
         本地命令会在你的电脑上以你的账号权限执行,请只添加信任的。远程服务会收到成员发给它的内容。

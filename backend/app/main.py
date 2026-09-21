@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from .api_ext import Ctx, build_router
 from .api_external import build_external_router
-from .api_awesome import build_awesome_router
+from .api_gallery import build_gallery_router
 from .approvals import Approvals
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
@@ -684,6 +684,6 @@ def create_app(
 
     app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
     app.include_router(build_external_router(store, orch.external))
-    app.include_router(build_awesome_router(store))
+    app.include_router(build_gallery_router(store))
 
     return app

@@ -21,6 +21,7 @@ from .approvals import RISK_LABEL, Approvals, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
 from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug
+from .gallery import MCP_TEMPLATES
 from .memory import MemoryService
 from .obsidian import ObsidianError, ObsidianSync
 from .orchestrator import Orchestrator
@@ -35,21 +36,7 @@ from .updater import CURATED, GitHubError, Updater
 
 MASK = "••••••"
 
-MCP_TEMPLATES = [
-    {"name": "文件系统", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"],
-     "note": "让成员读写指定目录里的文件。最后一个参数换成你允许访问的目录。需要 Node.js。"},
-    {"name": "网页抓取", "command": "uvx", "args": ["mcp-server-fetch"],
-     "note": "抓取网页并转成文本,成员可以读链接内容。需要 uv(uvx)。"},
-    {"name": "知识图谱记忆", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"],
-     "note": "MCP 官方的记忆服务器(与本程序自带的「记忆」是两套东西)。需要 Node.js。"},
-    {"name": "顺序思考", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-     "note": "帮助模型把复杂问题分步思考。需要 Node.js。"},
-    {"name": "浏览器(Playwright)", "command": "npx", "args": ["@playwright/mcp@latest"],
-     "note": "让成员驱动真实的浏览器:打开网页、点击、填写。属于执行类工具,默认每次调用前都会问你。首次使用可能要下载浏览器,具体参数以 Playwright MCP 项目的文档为准。需要 Node.js。"},
-    {"name": "时间与时区", "command": "uvx", "args": ["mcp-server-time"], "note": "查询和换算各地时间。需要 uv(uvx)。"},
-    {"name": "Git", "command": "uvx", "args": ["mcp-server-git", "--repository", "/path/to/repo"],
-     "note": "读取指定 Git 仓库的历史和差异。把最后的路径换成你的仓库。需要 uv(uvx)。"},
-]
+# MCP 用法清单的唯一数据源在 gallery.py(模板中心与「MCP」页共用,避免两处定义漂移)
 
 
 # ------------------------------------------------------------------ schemas
