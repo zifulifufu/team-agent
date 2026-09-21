@@ -1,7 +1,12 @@
 import asyncio
+import os
 from types import SimpleNamespace
 
 import pytest
+
+# 测试默认不碰真实钥匙串:否则每次写 api_key 都会往你的登录钥匙串里塞测试用的假 Key。
+# 需要验证真实钥匙串的用例请设 TEAM_AGENT_KEYCHAIN_TEST=1(见 tests/test_compliance.py)。
+os.environ.setdefault("TEAM_AGENT_NO_KEYCHAIN", "1")
 
 from app.router import ModelRouter
 from app.store import Store

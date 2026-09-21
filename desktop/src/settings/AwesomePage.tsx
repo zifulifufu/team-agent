@@ -115,9 +115,18 @@ export default function AwesomePage(_: PageProps) {
     <div className="sp aw-page">
       <h2 className="sp-title"><Library size={20} aria-hidden /> 示例库</h2>
       <p className="sp-desc">
-        融合开源项目 <a href={ov.source.url} target="_blank" rel="noreferrer">awesome-llm-apps <ExternalLink size={11} aria-hidden /></a>(许可证 {ov.source.license},作者 {ov.source.author}):
-        把里面的多智能体团队、单个角色、Agent 技能和 MCP 用法,变成这里能直接用的群聊、成员、提示词、技能。
+        可选用开源项目 <a href={ov.source.url} target="_blank" rel="noreferrer">awesome-llm-apps <ExternalLink size={11} aria-hidden /></a>(许可证 {ov.source.license},作者 {ov.source.author})里的内容:
+        把它的多智能体团队、单个角色、Agent 技能和 MCP 用法,变成这里能直接用的群聊、成员、提示词、技能。
+        本程序不内置该项目的内容,请自行 clone 后从本地刷新(提取与导入都只发生在这台电脑上)。
       </p>
+      {ov.origin === "empty" && (
+        <div className="aw-msg" role="status">
+          还没有示例数据:本程序不附带这个开源项目的任何内容(避免把第三方内容随程序分发)。
+          要用这一页,请先自己 clone 一份:<code>git clone https://github.com/Shubhamsaboo/awesome-llm-apps.git</code>,
+          再把那个目录的路径填到下方「从本地克隆刷新」并点刷新。提取只读源码、不运行仓库里的任何代码,
+          结果保存在你自己的数据目录里。
+        </div>
+      )}
       {msg && <div className={"aw-msg " + (msg.ok ? "ok" : "bad")} role={msg.ok ? "status" : "alert"}>{msg.text}</div>}
 
       <div className="aw-tabs" role="tablist">

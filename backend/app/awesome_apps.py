@@ -4,8 +4,8 @@
 「群聊模板 / 技能 / MCP 预填表单 / 提示词与成员预设」。
 
   * 只做静态阅读:用 ast 解析 Python 源码、读 README 和 SKILL.md,**从不 import、不运行仓库里的任何代码**;
-  * 提取结果是一份 JSON 快照(随程序附带在 app/data/awesome_apps.json,数据目录里的同名文件可由用户
-    「从本地克隆刷新」覆盖);
+  * 提取结果是一份 JSON 快照,**程序不内置**(第三方内容不随程序分发)。使用者自己 clone 上游后点
+    「从本地克隆刷新」,快照落在自己的数据目录里;数据目录里没有时这一页显示为空,不会报错;
   * 提取到的提示词是原作者的英文文字,按 Apache-2.0 保留来源与署名(每一条都带 source_path 和仓库地址);
   * MCP 只提取「命令 + 参数 + 需要哪些环境变量名」,**从不提取环境变量的值**,参数里像密钥的内容会被替换。
 """
@@ -22,6 +22,8 @@ from typing import Any
 
 from .memory import looks_sensitive
 
+# 「随程序附带快照」的落点。仓库里**不带**任何第三方内容;load() 先看数据目录(local)、再看这里(shipped)。
+# 保留这个回退是为了兼容:如果你将来自行获得了再分发许可,把快照放到这个路径即可生效。
 SHIPPED = Path(__file__).parent / "data" / "awesome_apps.json"
 
 SOURCE = {
@@ -546,7 +548,7 @@ def validate(data: object) -> str | None:
 
 
 def load(data_dir: Path) -> tuple[dict, str]:
-    """(数据, 来源 shipped|local)。数据目录里有用户刷新过的就用它。"""
+    """(数据, 来源 local|shipped|empty)。数据目录里有用户刷新过的就用它;两处都没有则返回空结构。"""
     for p, src in ((Path(data_dir) / "awesome_apps.json", "local"), (SHIPPED, "shipped")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))

@@ -225,7 +225,9 @@ DEFAULT_SETTINGS: dict = {
     "app_repo": "",            # 形如 owner/repo,程序本体的发布仓库
     "catalog_url": "",         # 模型目录 JSON 的地址(可留空,默认取 app_repo 里的 backend/app/data/catalog.json)
     "github_token": "",        # 可选,提高 GitHub API 频率上限
-    "auto_check_updates": True,
+    # 默认关:打开后后端启动 20 秒就会自行联网(GitHub / ollama.com / HuggingFace)。
+    # 企业或涉密环境不该出现未经授权的自动外联,要检查时手动点「检查更新」即可。
+    "auto_check_updates": False,
     "update_interval_hours": 12,
     "auto_update_skills": False,  # 仅文本技能可以自动更新;插件/MCP/程序本体永远需要手动确认
 }

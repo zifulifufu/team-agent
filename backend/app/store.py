@@ -16,6 +16,7 @@ from . import strengths as strength_lib
 from .catalog import Catalog
 from .local_models import LocalCatalog
 from .presets import DEFAULT_SETTINGS, PRESET_BY_ID, SEED_AGENTS, SEED_PROMPTS
+from . import secrets as secrets_store
 from .store_ext import SCHEMA_EXT, ExtStore
 
 SCHEMA = """
@@ -245,17 +246,29 @@ class Store(ExtStore):
             for p in SEED_PROMPTS:
                 self.add_prompt(p["title"], p["content"], p["kind"], p["use_globally"])
 
+        if not self._flag("auto_check_off_by_default"):
+            # 从旧版本升级:「自动检查更新」以前默认是开的,后端启动 20 秒后就会自己联网。
+            # 新版默认改为关,这里把存量里仍开着的也关掉。只做这一次 —— 之后你在设置里手动打开的不会被改回去。
+            self.update_settings({"auto_check_updates": False})
+
+        if not self._flag("keys_to_keychain"):
+            # 从旧版本升级:以前 API Key / GitHub 令牌是明文存在库里的,搬进系统钥匙串(搬不动就留着明文)
+            self._move_keys_to_keychain()
+
     # ----------------------------------------------------------------- settings
     def get_settings(self) -> dict[str, Any]:
         out = dict(DEFAULT_SETTINGS)
         for r in self._q("SELECT key,value FROM settings"):
             out[r["key"]] = json.loads(r["value"])
+        out["github_token"] = self._secret_off(out["github_token"])      # 引用 → 真值
         return out
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         for k, v in patch.items():
             if k not in DEFAULT_SETTINGS:
                 continue
+            if k == "github_token" and isinstance(v, str):
+                v = self._secret_on("github-token", "default", v)        # 令牌进钥匙串,库里只留引用
             self._x(
                 "INSERT INTO settings(key,value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -263,12 +276,63 @@ class Store(ExtStore):
             )
         return self.get_settings()
 
+    # ------------------------------------------------------- 敏感值(API Key 等)
+    def _secret_on(self, scope: str, ident: str, value: str) -> str:
+        """写:能进系统钥匙串就只存引用;进不去就原样存(回退明文,绝不丢 Key)。"""
+        ref = secrets_store.ref_name(scope, ident)
+        if not value:
+            secrets_store.delete(ref)          # 清空 = 顺手把钥匙串里的条目删掉
+            return value
+        if secrets_store.is_ref(value):
+            return value
+        return secrets_store.make_ref(ref) if secrets_store.put(ref, value) else value
+
+    def _secret_off(self, stored: Any) -> str:
+        """读:是引用就去钥匙串取真实值;取不到(换机器/被删)当作没配置,而不是崩。"""
+        if not secrets_store.is_ref(stored):
+            return stored or ""
+        got = secrets_store.get(secrets_store.parse_ref(stored))
+        return got if got is not None else ""
+
+    def secret_backend(self) -> str:
+        """密钥存在哪里:`keychain` = 系统钥匙串,`plaintext` = 回退成明文(非 macOS / 钥匙串不可用)。"""
+        return "keychain" if secrets_store.backend_available() else "plaintext"
+
+    def _move_keys_to_keychain(self) -> int:
+        """把老库里明文存的 API Key / GitHub 令牌搬进钥匙串。**先读回校验,成功才改写**;
+        写不进去(钥匙串被锁等)就原样留着明文,绝不清空。返回搬成功的条数。"""
+        if not secrets_store.backend_available():
+            return 0
+        moved = 0
+        for r in self._q("SELECT id, api_key FROM providers WHERE api_key<>''"):
+            if secrets_store.is_ref(r["api_key"]):
+                continue
+            ref = secrets_store.ref_name("provider", r["id"])
+            if secrets_store.put(ref, r["api_key"]):
+                secrets_store.forget_cache(ref)
+                if secrets_store.get(ref) == r["api_key"]:      # 真的读得回来才改写
+                    self._x("UPDATE providers SET api_key=? WHERE id=?", (secrets_store.make_ref(ref), r["id"]))
+                    moved += 1
+        row = self._one("SELECT value FROM settings WHERE key='github_token'")
+        if row:
+            val = json.loads(row["value"])
+            if isinstance(val, str) and val and not secrets_store.is_ref(val):
+                ref = secrets_store.ref_name("github-token", "default")
+                if secrets_store.put(ref, val):
+                    secrets_store.forget_cache(ref)
+                    if secrets_store.get(ref) == val:
+                        self._x("UPDATE settings SET value=? WHERE key='github_token'",
+                                (json.dumps(secrets_store.make_ref(ref)),))
+                        moved += 1
+        return moved
+
     # ---------------------------------------------------------------- providers
     def list_providers(self) -> list[dict]:
         rows = self._q("SELECT * FROM providers ORDER BY sort, rowid")
         for r in rows:
             r["enabled"] = bool(r["enabled"])
             r["is_local"] = bool(r["is_local"])
+            r["api_key"] = self._secret_off(r["api_key"])      # 引用 → 真实密钥(调用方无需知道存储方式)
         return rows
 
     def get_provider(self, pid: str) -> dict | None:
@@ -276,6 +340,7 @@ class Store(ExtStore):
         if r:
             r["enabled"] = bool(r["enabled"])
             r["is_local"] = bool(r["is_local"])
+            r["api_key"] = self._secret_off(r["api_key"])
         return r
 
     def add_provider(
@@ -288,7 +353,7 @@ class Store(ExtStore):
         n = self._one("SELECT COALESCE(MAX(sort),0)+1 AS n FROM providers")["n"]
         self._x(
             "INSERT INTO providers(id,name,kind,base_url,api_key,enabled,is_local,sort) VALUES(?,?,?,?,?,?,?,?)",
-            (pid, name, kind, base_url, api_key, int(enabled), int(is_local), n),
+            (pid, name, kind, base_url, self._secret_on("provider", pid, api_key), int(enabled), int(is_local), n),
         )
         return self.get_provider(pid)  # type: ignore[return-value]
 
@@ -306,6 +371,8 @@ class Store(ExtStore):
         sets, args = [], []
         for k, v in patch.items():
             if k in allowed and v is not None:
+                if k == "api_key":
+                    v = self._secret_on("provider", pid, v)     # 只把引用写进库,真实密钥进钥匙串
                 sets.append(f"{k}=?")
                 args.append(int(v) if isinstance(v, bool) else v)
         if sets:
@@ -608,6 +675,14 @@ class Store(ExtStore):
                                     (url.split("?", 1)[0], json.dumps(_mask_args(json.loads(args or "[]")), ensure_ascii=False), mid))
                     out.execute("UPDATE settings SET value='\"\"' WHERE key='github_token'")
                     out.commit()
+                else:
+                    # 真密钥在系统钥匙串里,不随 .db 文件走;导出「含密钥」的备份时显式写回去
+                    for p in self.list_providers():
+                        if p["api_key"]:
+                            out.execute("UPDATE providers SET api_key=? WHERE id=?", (p["api_key"], p["id"]))
+                    out.execute("UPDATE settings SET value=? WHERE key='github_token'",
+                                (json.dumps(self.get_settings().get("github_token") or ""),))
+                    out.commit()
                 out.execute("VACUUM")
             finally:
                 out.close()
@@ -670,7 +745,8 @@ class Store(ExtStore):
         self._migrate()
         for p in self.list_providers():
             if not p["api_key"] and old_keys.get(p["id"]):
-                self._x("UPDATE providers SET api_key=? WHERE id=?", (old_keys[p["id"]], p["id"]))
+                # 走 update_provider,让密钥进钥匙串而不是明文回写数据库
+                self.update_provider(p["id"], {"api_key": old_keys[p["id"]]})
         for m in self.list_mcp():
             env, headers = old_mcp.get(m["id"], ({}, {}))
             if not m["env"] and not m["headers"] and (env or headers):
@@ -680,6 +756,7 @@ class Store(ExtStore):
         self.clear_obsidian_map()
         self.clear_health(everything=True)
         self.update_settings({"obsidian_dir": "", "obsidian_auto": False})
+        self._move_keys_to_keychain()      # 备份里若带明文密钥,恢复后一并搬进钥匙串
         self._seed()
         return {"safety_copy": str(safety), "groups": len(self.list_groups()), "agents": len(self.list_agents()),
                 "providers": len(self.list_providers()), "memories": len(self.list_memories(limit=1_000_000)),

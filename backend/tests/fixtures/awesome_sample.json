@@ -1,0 +1,94 @@
+{
+  "source": {
+    "name": "awesome-llm-apps",
+    "url": "https://github.com/Shubhamsaboo/awesome-llm-apps",
+    "license": "Apache-2.0",
+    "author": "(本文件是自造的合成测试数据,不含上游任何内容)"
+  },
+  "commit": "test-fixture",
+  "generated_at": "2026-01-01",
+  "teams": [
+    {
+      "id": "gen-legal-team",
+      "title": "Legal Analysis Team",
+      "path": "advanced_ai_agents/multi_agent_apps/agent_teams/legal_team",
+      "kind": "team",
+      "category": "multi_agent_apps",
+      "framework": "agno",
+      "desc": "A demo legal analysis team.",
+      "lead": {
+        "name": "Legal-Team-Lead",
+        "role": "lead",
+        "description": "Coordinate analysis",
+        "instructions": "Coordinate analysis for the team.",
+        "tools": []
+      },
+      "agents": [
+        {"name": "Legal Researcher", "role": "research", "instructions": "Research legal sources", "tools": ["search"]},
+        {"name": "Contract Analyst", "role": "analyst", "instructions": "Analyze contracts", "tools": []},
+        {"name": "Legal Strategist", "role": "strategy", "instructions": "Design the strategy", "tools": []}
+      ]
+    },
+    {
+      "id": "gen-news-team",
+      "title": "News Pipeline",
+      "path": "advanced_ai_agents/multi_agent_apps/agent_teams/news_pipeline",
+      "kind": "team",
+      "category": "multi_agent_apps",
+      "sequential": true,
+      "desc": "A sequential demo team.",
+      "agents": [
+        {"name": "Fetcher", "role": "collect", "instructions": "Fetch the items"},
+        {"name": "Writer", "role": "write", "instructions": "Write the digest"}
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "id": "gen-invest-agent",
+      "title": "Investment Agent",
+      "path": "starter_ai_agents/ai_investment_agent",
+      "kind": "agent",
+      "desc": "A demo investment agent.",
+      "agents": [
+        {"name": "Investment Analyst", "role": "analyst", "instructions": "Analyze a company", "tools": []}
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "id": "gen-skill-runtime",
+      "name": "Demo Runtime Skill",
+      "description": "A demo skill that needs a runtime.",
+      "needs_runtime": true,
+      "compatibility": "需要 python",
+      "clipped": false,
+      "body": "# Demo Runtime Skill\n\n步骤一:准备数据。\n"
+    },
+    {
+      "id": "gen-skill-pure",
+      "name": "Demo Pure Skill",
+      "description": "A demo pure-text skill.",
+      "needs_runtime": false,
+      "clipped": true,
+      "body": "# Demo Pure Skill\n\n只用文字就够了。\n"
+    }
+  ],
+  "mcp": [
+    {
+      "id": "gen-mcp-fs",
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "demo-filesystem-server", "/tmp"],
+      "env_keys": [],
+      "note": ""
+    },
+    {
+      "id": "gen-mcp-time",
+      "name": "time",
+      "command": "npx",
+      "args": ["-y", "demo-time-server"],
+      "env_keys": ["TZ"]
+    }
+  ]
+}

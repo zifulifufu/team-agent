@@ -1,7 +1,9 @@
 """示例库(融合 awesome-llm-apps):浏览、导入、从本地克隆刷新。
 
-  * 只读静态数据:程序附带一份快照(app/data/awesome_apps.json + 中文说明 awesome_zh.json),
-    用户可以指向自己 clone 的仓库「刷新」——刷新只用 ast 读源码,从不 import、不运行仓库里的任何代码;
+  * 程序**不内置**任何来自该仓库的内容 —— 第三方内容不随程序分发,使用者自己 clone 上游仓库后
+    指给「从本地克隆刷新」;刷新只用 ast 读源码,从不 import、不运行仓库里的任何代码,
+    提取结果落在使用者自己的数据目录里;
+  * 中文名/简介覆盖层(awesome_zh.json)同样由使用者自行放在数据目录里,完全可选;
   * 导入的东西都遵守本程序的老规矩:MCP 服务器导入后一律是「停用」状态(它是会在本机运行的命令,要你自己核对后再启用),
     不会替你填任何密钥;成员/提示词/技能只是文字。
 """
@@ -23,7 +25,7 @@ from .store import Store
 from .templates import ensure_agent
 from .tools import list_skills, safe_skill_name, write_skill
 
-ZH_PATH = Path(__file__).parent / "data" / "awesome_zh.json"
+ZH_NAME = "awesome_zh.json"          # 可选的中文覆盖层,由使用者放在数据目录里(程序不内置)
 PLACEHOLDER_DIR = "/path/to/allowed/dir"
 SKILL_NOTE = "> 说明:这是 awesome-llm-apps 里的技能。它原本配合脚本或命令行使用;群里的成员没有那些程序,这里只能把它当作方法和流程的参考。\n\n"
 
@@ -45,12 +47,27 @@ class RefreshIn(BaseModel):
     path: str
 
 
-def _zh() -> dict:
+_ZH_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _zh(data_dir: Path) -> dict:
+    """可选的中文名/简介覆盖层:放在数据目录里,没有就是空 —— 不影响其它功能。
+    按文件 mtime 缓存,所以使用者随时能把覆盖层丢进数据目录再刷新页面,不必重启程序。"""
+    p = Path(data_dir) / ZH_NAME
     try:
-        d = json.loads(ZH_PATH.read_text(encoding="utf-8"))
+        stamp = p.stat().st_mtime
+    except OSError:
+        return {}
+    hit = _ZH_CACHE.get(str(p))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return d if isinstance(d, dict) else {}
+    d = d if isinstance(d, dict) else {}
+    _ZH_CACHE[str(p)] = (stamp, d)
+    return d
 
 
 def _clip(s: str, n: int) -> str:
@@ -60,7 +77,9 @@ def _clip(s: str, n: int) -> str:
 
 def build_awesome_router(store: Store) -> APIRouter:
     r = APIRouter()
-    zh = _zh()
+    def zh() -> dict:
+        """可选的中文覆盖层,每次用的时候读(按 mtime 缓存)。"""
+        return _zh(store.data_dir)
 
     def data() -> tuple[dict, str]:
         return aa.load(store.data_dir)
@@ -73,7 +92,7 @@ def build_awesome_router(store: Store) -> APIRouter:
         return a, d
 
     def app_texts(a: dict) -> tuple[str, str]:
-        z = (zh.get("apps") or {}).get(a["path"]) or {}
+        z = (zh().get("apps") or {}).get(a["path"]) or {}
         return z.get("title") or a["title"], z.get("desc") or _clip(a.get("desc", ""), 200)
 
     def unique_agent_name(base: str, taken: set[str]) -> str:
@@ -101,7 +120,7 @@ def build_awesome_router(store: Store) -> APIRouter:
         d, origin = data()
         have_skill = {s.name for s in list_skills(store.data_dir / "skills")}
         have_mcp = {m["name"] for m in store.list_mcp()}
-        zs, zm = zh.get("skills") or {}, zh.get("mcp") or {}
+        zs, zm = zh().get("skills") or {}, zh().get("mcp") or {}
 
         def app_row(a: dict) -> dict:
             title, desc = app_texts(a)
@@ -208,7 +227,7 @@ def build_awesome_router(store: Store) -> APIRouter:
         body = (SKILL_NOTE if s.get("needs_runtime") else "") + s["body"]
         if s.get("clipped"):
             body += "\n\n(为控制长度,原技能正文在这里被截短了,完整版见 awesome-llm-apps 仓库。)"
-        desc = (((zh.get("skills") or {}).get(s["name"]) or {}).get("desc")) or _clip(s.get("description", ""), 200)
+        desc = (((zh().get("skills") or {}).get(s["name"]) or {}).get("desc")) or _clip(s.get("description", ""), 200)
         sk = write_skill(store.data_dir / "skills", name, desc, body, "member", version=str(s.get("version") or ""))
         return {"name": sk.name}
 
@@ -222,7 +241,7 @@ def build_awesome_router(store: Store) -> APIRouter:
         if any(x["name"] == m["name"] for x in store.list_mcp()):
             raise HTTPException(409, "已有同名 MCP 服务器")
         args = [PLACEHOLDER_DIR if a == "/tmp" else a for a in m["args"]]
-        note = ((zh.get("mcp") or {}).get(m["name"])) or m.get("note", "")
+        note = ((zh().get("mcp") or {}).get(m["name"])) or m.get("note", "")
         row = store.add_mcp(m["name"], m["command"], args, {k: "" for k in m.get("env_keys", [])}, "", "", {},
                             (note + " 来自 awesome-llm-apps;导入后是停用状态,核对命令、填好密钥后再启用。").strip())
         store.update_mcp(row["id"], {"enabled": False})

@@ -41,7 +41,8 @@ def test_settings_validation_and_token_is_write_only(client):
     s = client.put("/api/settings", json={"github_token": ""}).json()          # 空串 = 主动清除
     assert s["github_token_set"] is False
     d = client.get("/api/settings").json()
-    assert d["auto_update_skills"] is False and d["auto_check_updates"] is True and "{{agent_name}}" in d["system_prompt"]
+    # auto_check_updates 默认关:打开后后端启动 20 秒就会自行联网,企业/涉密环境不该有未授权的自动外联
+    assert d["auto_update_skills"] is False and d["auto_check_updates"] is False and "{{agent_name}}" in d["system_prompt"]
 
 
 # ---------------------------------------------------------------- 群聊扩展

@@ -28,7 +28,7 @@ def test_is_local_url_covers_loopback_and_lan() -> None:
         "127.0.0.1:11434",                   # 没写 scheme
         "::1",                               # 裸 IPv6
         "[::1]:11434",                       # 带方括号的 IPv6
-        "http://192.168.1.212:8898/v1",      # 内网工作站
+        "http://192.168.1.10:8898/v1",       # 内网工作站
         "http://10.0.0.5/v1",
         "http://172.16.5.9/v1",
         "http://169.254.1.1/x",
@@ -45,7 +45,7 @@ def test_is_local_url_covers_loopback_and_lan() -> None:
 def test_client_bypasses_proxy_only_for_local_targets() -> None:
     # 本机 / 局域网:直连,绝不把回环请求发给 Clash 之类的代理
     assert client("http://127.0.0.1:11434")._trust_env is False
-    assert client("http://192.168.1.212:8898/v1")._trust_env is False
+    assert client("http://192.168.1.10:8898/v1")._trust_env is False
     # 真外网:仍然尊重系统代理(公司网络里往往只有走代理才出得去)
     assert client("https://api.deepseek.com")._trust_env is True
     # 探测本机服务的客户端显式强制直连

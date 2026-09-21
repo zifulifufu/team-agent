@@ -454,6 +454,7 @@ def create_app(
             # WAL 模式下还有 -wal 文件,不统计的话界面上的「数据库大小」会偏小
             "db_bytes": sum(f.stat().st_size for f in (db, Path(str(db) + "-wal")) if f.exists()),
             "external_calls_enabled": store.get_settings()["external_calls_enabled"],
+            "key_secret_backend": store.secret_backend(),   # keychain = 密钥在系统钥匙串;plaintext = 回退明文
             "auth": bool(token),
         }
 
