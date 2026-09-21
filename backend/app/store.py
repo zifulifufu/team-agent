@@ -405,7 +405,8 @@ class Store(ExtStore):
         return self.get_provider(pid)  # type: ignore[return-value]
 
     def add_provider_from_preset(self, preset_id: str, api_key: str = "") -> dict:
-        p = PRESET_BY_ID[preset_id]
+        # Shown in the model providers list, so take the name in the request language.
+        p = i18n.localize(PRESET_BY_ID[preset_id])
         prov = self.add_provider(
             p["name"], p["kind"], p["base_url"], api_key, p["is_local"], pid=p["preset"]
         )

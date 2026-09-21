@@ -275,7 +275,7 @@ def create_app(
 
     @app.get("/api/presets")
     async def presets() -> list[dict]:
-        return PRESETS
+        return i18n.localize(PRESETS)
 
     def public_settings() -> dict:
         s = store.get_settings()
