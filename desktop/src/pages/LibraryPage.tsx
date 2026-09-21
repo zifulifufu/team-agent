@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import { useData } from "../data";
 import {
   ChevronLeft, ChevronRight, CircleAlert, CircleCheck, FileCode, FileJson, FileSpreadsheet, FileText, FileType,
-  FolderInput, Link2, LoaderCircle, Pencil, Search, StickyNote, Trash2, Upload, X,
+  FolderInput, Layers, Link2, LoaderCircle, Pencil, Search, StickyNote, Trash2, Upload, X,
 } from "lucide-react";
-import { api, relTime, type LibraryDoc, type LibraryHit } from "../api";
+import { api, relTime, type Collection, type KnowledgeBase, type LibraryDoc, type LibraryHit } from "../api";
+import { CollectionSection, KbSection } from "../components/KnowledgeBases";
 import { Modal, Switch, useConfirm } from "../ui";
 import "../styles/know.css";
 import { tr, useI18n } from "../i18n";
@@ -98,6 +99,12 @@ interface UpItem {
 let upSeq = 1;
 
 // --------------------------------------------------------------------- page
+/** Where new material goes: the knowledge base on screen, else everything the group can reach. */
+export interface LibScope {
+  kb?: string;
+  group?: string;
+}
+
 /**
  * The document library.
  *
@@ -112,6 +119,11 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
   const { reloadGroups, groups } = useData();
   const group = groups.find((g) => g.id === groupId) ?? null;
   const [docs, setDocs] = useState<LibraryDoc[]>([]);
+  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
+  const [cols, setCols] = useState<Collection[]>([]);
+  // Which knowledge base the document list is narrowed to (null = everything in scope)
+  const [kbFilter, setKbFilter] = useState<string | null>(null);
+  const [shelfOpen, setShelfOpen] = useState(true);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState("");
@@ -136,7 +148,7 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
 
   const load = useCallback(async () => {
     try {
-      const r = await api.library(groupId);
+      const r = await api.library(scope);
       setDocs(r.docs);
       setTotal(r.total_chars);
       setLoadErr("");
@@ -145,8 +157,18 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
     } finally {
       setLoading(false);
     }
+  }, [groupId, kbFilter]);
+
+  // Knowledge bases and collections are managed here too; `load` refreshes the documents, this
+  // refreshes the shelves. Together they keep the counts and the list in step.
+  const loadShelf = useCallback(() => {
+    api.kbs(groupId).then(setKbs).catch((e) => setLoadErr((e as Error).message));
+    api.collections().then(setCols).catch(() => undefined);
   }, [groupId]);
+
   useEffect(() => { void load(); }, [load]);
+  useEffect(loadShelf, [loadShelf]);
+  const reloadAll = useCallback(() => { void load(); loadShelf(); }, [load, loadShelf]);
   useEffect(() => () => window.clearTimeout(openTimer.current), []);
 
   // ---- Uploads: one at a time, independent of each other
@@ -159,7 +181,7 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
       const it = items[i];
       patchUp(it.key, { state: "up" });
       try {
-        await api.uploadDoc(files[i], groupId);
+        await api.uploadDoc(files[i], scope);
         patchUp(it.key, { state: "ok" });
         window.setTimeout(() => setUps((l) => l.filter((u) => u.key !== it.key)), 6000);
         await load();
@@ -195,7 +217,7 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
     let alive = true;
     const t = window.setTimeout(async () => {
       try {
-        const r = await api.searchLibrary(key, 8, groupId);
+        const r = await api.searchLibrary(key, 8, scope);
         if (!alive) return;
         setHits(r);
         setSearchErr("");
@@ -250,7 +272,9 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
   };
   const open = (d: { id: string; title: string }, query = "") => setReading({ id: d.id, title: d.title, q: query });
 
-  const empty = !loading && !loadErr && docs.length === 0;
+  const scope: LibScope = { group: groupId, kb: kbFilter ?? undefined };
+  const empty = !loading && !loadErr && docs.length === 0 && kbs.length === 0;
+  const kbById = new Map(kbs.map((k) => [k.id, k]));
   const dropZone = (
     <div className={"kn-drop" + (drag ? " over" : "") + (empty ? " big" : "")}>
       <Upload size={empty ? 26 : 18} strokeWidth={1.6} />
@@ -305,6 +329,32 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
             />
           </div>
         </div>
+
+        <div className="kn-shelf">
+          <button className="kn-shelf-head" aria-expanded={shelfOpen} onClick={() => setShelfOpen((v) => !v)}>
+            <Layers size={15} />
+            <b>{t("Knowledge bases")}</b>
+            <span className="muted small">{t("{n} in reach here", { n: kbs.length })}</span>
+            <span className="grow" />
+            <span className="muted small">{shelfOpen ? t("Hide") : t("Show")}</span>
+          </button>
+          {shelfOpen && (
+            <>
+              <KbSection kbs={kbs} groupId={groupId} active={kbFilter} onOpen={setKbFilter} onChanged={reloadAll} />
+              <div className="kn-shelf-sub">{t("Collections")}</div>
+              <CollectionSection cols={cols} kbs={kbs} onChanged={reloadAll} />
+            </>
+          )}
+        </div>
+
+        {kbFilter && !empty && (
+          <div className="kn-toolbar">
+            <div className="kn-stats">
+              {t("Showing only {name}", { name: kbById.get(kbFilter)?.name ?? "" })}
+              <button className="link" onClick={() => setKbFilter(null)}>{t("Show everything")}</button>
+            </div>
+          </div>
+        )}
 
         {dropZone}
 
@@ -436,11 +486,9 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
                     )}
                     <div className="kn-doc-sub">
                       <span className="tag">{kindLabel(d.kind)}</span>
-                      {!groupId && (
-                        <span className={"tag" + (d.group_id ? "" : " shared")}>
-                          {d.group_id ? (groups.find((g) => g.id === d.group_id)?.name ?? t("Unknown group")) : t("Shared")}
-                        </span>
-                      )}
+                      <span className={"tag" + (kbById.get(d.kb_id)?.group_id ? "" : " shared")} title={t("Knowledge base")}>
+                        {kbById.get(d.kb_id)?.name ?? t("Unknown knowledge base")}
+                      </span>
                       <span className="kn-doc-file">{d.filename ? d.filename : t("Manual note")}</span>
                       {!d.enabled && <span className="tag warn">{t("Disabled — not searched")}</span>}
                     </div>
@@ -459,15 +507,15 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
         )}
       </div>
 
-      {source && <SourceModal kind={source} groupId={groupId} onClose={() => setSource(null)} onDone={() => void load()} />}
-      {noteOpen && <NoteModal groupId={groupId} onClose={() => setNoteOpen(false)} onSaved={() => { setNoteOpen(false); void load(); }} />}
+      {source && <SourceModal kind={source} scope={scope} onClose={() => setSource(null)} onDone={reloadAll} />}
+      {noteOpen && <NoteModal scope={scope} onClose={() => setNoteOpen(false)} onSaved={() => { setNoteOpen(false); reloadAll(); }} />}
       {reading && <Reader doc={reading} onClose={() => setReading(null)} />}
     </div>
   );
 }
 
 // --------------------------------------------------------------- new note
-function NoteModal({ groupId, onClose, onSaved }: { groupId?: string; onClose: () => void; onSaved: () => void }) {
+function NoteModal({ scope, onClose, onSaved }: { scope: LibScope; onClose: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -479,7 +527,7 @@ function NoteModal({ groupId, onClose, onSaved }: { groupId?: string; onClose: (
     setBusy(true);
     setErr("");
     try {
-      await api.addNote(title.trim(), content, groupId);
+      await api.addNote(title.trim(), content, scope);
       onSaved();
     } catch (e) {
       setErr((e as Error).message);
@@ -574,7 +622,7 @@ function Reader({ doc, onClose }: { doc: { id: string; title: string; q: string 
 }
 
 /** Import from a link or a folder: links are fetched over the network (subject to the hosted-calls switch), folders are read locally and a second import only updates what changed. */
-function SourceModal({ kind, groupId, onClose, onDone }: { kind: "url" | "dir"; groupId?: string; onClose: () => void; onDone: () => void }) {
+function SourceModal({ kind, scope, onClose, onDone }: { kind: "url" | "dir"; scope: LibScope; onClose: () => void; onDone: () => void }) {
   const { t } = useI18n();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -588,10 +636,10 @@ function SourceModal({ kind, groupId, onClose, onDone }: { kind: "url" | "dir"; 
     setRes(null);
     try {
       if (kind === "url") {
-        await api.addDocUrl(value.trim(), groupId);
+        await api.addDocUrl(value.trim(), scope);
         setRes({ added: 1, skipped: [] });
       } else {
-        const r = await api.addDocDir(value.trim(), true, groupId);
+        const r = await api.addDocDir(value.trim(), true, scope);
         setRes({ added: r.added.length, skipped: r.skipped });
       }
       onDone();

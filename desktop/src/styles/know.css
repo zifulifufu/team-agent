@@ -185,3 +185,20 @@ textarea.kn-mono[rows="9"] { resize: vertical; overflow: auto; min-height: 0; }
 .kn-title-row .link { font-size: inherit; font-weight: inherit; }
 .kn-title-row span { color: var(--text-2); }
 .kn-doc-sub .tag.shared { color: var(--text-3); border-style: dashed; }
+
+/* Knowledge bases and collections above the document list */
+.kn-shelf { margin: 12px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--card); overflow: hidden; }
+.kn-shelf-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.kn-shelf-head:hover { background: var(--hover); }
+.kn-shelf-sub { padding: 8px 14px; font-size: 12px; color: var(--text-3); background: var(--bg-sub); border-top: 1px solid var(--border); }
+.kn-shelf .kn-docs { border: 0; border-radius: 0; }
+.kn-doc-row.on { background: color-mix(in srgb, var(--primary) 6%, var(--card)); }
+.kn-doc-row .kn-col-owner { font-size: 12px; }
+.kn-col-item { padding: 10px 14px; border-top: 1px solid var(--border); }
+.kn-col-item:first-of-type { border-top: 0; }
+.kn-col-head { display: flex; align-items: center; gap: 8px; }
+.kn-col-members { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.kn-col-edit { padding: 12px 14px; border-top: 1px solid var(--border); background: var(--bg-sub); }
+.kn-col-pick { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; max-height: 220px; overflow: auto; }
+.kn-add-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+.kn-add-row .kn-rename { flex: 1; min-width: 0; }

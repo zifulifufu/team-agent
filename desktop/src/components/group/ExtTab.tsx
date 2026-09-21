@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Info, TriangleAlert } from "lucide-react";
-import { api, type Capabilities, type Group, type GroupExt, type LibraryDoc, type LibraryMode, type McpServer, type McpTemplate, type PlanMode, type PluginInfo, type Skill } from "../../api";
+import { api, type Capabilities, type Collection, type Group, type GroupExt, type KnowledgeBase, type LibraryMode, type McpServer, type McpTemplate, type PlanMode, type PluginInfo, type Skill } from "../../api";
 import { useData } from "../../data";
 import { Switch } from "../../ui";
 import type { SettingsTab } from "../../settings/SettingsModal";
@@ -69,7 +69,8 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
   const [skills, setSkills] = useState<Skill[] | null>(null);
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
   const [mcp, setMcp] = useState<McpServer[] | null>(null);
-  const [docs, setDocs] = useState<LibraryDoc[] | null>(null);
+  const [kbs, setKbs] = useState<KnowledgeBase[] | null>(null);
+  const [cols, setCols] = useState<Collection[]>([]);
   const [loadErr, setLoadErr] = useState<Record<string, string>>({});
   const [templates, setTemplates] = useState<McpTemplate[]>([]);
   // Add things straight from this panel: a new skill, an MCP server, or discovery
@@ -90,7 +91,8 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
     api.plugins().then((v) => { setPlugins(v); ok("plugins"); }).catch(fail("plugins"));
     api.mcp().then((v) => { setMcp(v); ok("mcp"); }).catch(fail("mcp"));
     // Only what this group can actually choose from: its own documents plus the shared ones
-    api.library(group.id).then((v) => { setDocs(v.docs); ok("docs"); }).catch(fail("docs"));
+    api.kbs(group.id).then((v) => { setKbs(v); ok("docs"); }).catch(fail("docs"));
+    api.collections().then(setCols).catch(() => undefined);
     api.mcpTemplates().then(setTemplates).catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -129,8 +131,13 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
     void save({ [key]: on ? [...cur.filter((x) => x !== id), id] : cur.filter((x) => x !== id) });
   };
   const lib = ext.library;
-  const setLib = (mode: LibraryMode, ids = extRef.current.library.ids) => void save({ library: { mode, ids } });
-  const toggleDoc = (id: string, on: boolean) => setLib("selected", on ? [...extRef.current.library.ids.filter((x) => x !== id), id] : extRef.current.library.ids.filter((x) => x !== id));
+  // Selection is by knowledge base (and by collection), never by individual document
+  const setLib = (mode: LibraryMode, patch: Partial<GroupExt["library"]> = {}) =>
+    void save({ library: { mode, kb_ids: lib.kb_ids, collection_ids: lib.collection_ids, ...patch } });
+  const toggleKb = (id: string, on: boolean) =>
+    setLib("selected", { kb_ids: on ? [...lib.kb_ids.filter((x) => x !== id), id] : lib.kb_ids.filter((x) => x !== id) });
+  const toggleCol = (id: string, on: boolean) =>
+    setLib("selected", { collection_ids: on ? [...lib.collection_ids.filter((x) => x !== id), id] : lib.collection_ids.filter((x) => x !== id) });
 
   const groupSkills = (skills ?? []).filter((s) => s.scope === "group");
   const memberSkills = (skills ?? []).filter((s) => s.scope !== "group");
@@ -257,13 +264,13 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
         })}
       </Section>
 
-      <Section title={t("Library")} note={caps ? t("{n} searchable documents in this group's library. Members search them when they need to; the whole library is never stuffed into the prompt.", { n: caps.docs }) : undefined}
+      <Section title={t("Knowledge bases")} note={caps ? t("{n} searchable documents. Members search them when they need to; the whole library is never stuffed into the prompt.", { n: caps.docs }) : undefined}
         right={<button className="link-btn" onClick={onOpenLibrary}>{t("Manage documents")}</button>}>
-        <div className="seg gp-seg" role="group" aria-label={t("Library scope")}>
+        <div className="seg gp-seg" role="group" aria-label={t("Knowledge base scope")}>
           {(
             [
-              ["all", t("All")],
-              ["selected", t("Selected only")],
+              ["all", t("All in reach")],
+              ["selected", t("Chosen ones")],
               ["off", t("Off")],
             ] as [LibraryMode, string][]
           ).map(([v, l]) => (
@@ -275,16 +282,28 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
         {lib.mode === "selected" && (
           <div className="gp-doclist">
             {loadErr.docs && <div className="err gp-err">{loadErr.docs}</div>}
-            {docs === null && !loadErr.docs && <div className="gp-none">{t("Loading…")}</div>}
-            {docs !== null && docs.length === 0 && <div className="gp-none">{t("The library has no documents yet.")}</div>}
-            {(docs ?? []).map((d) => (
-              <Check key={d.id} id={"gp-doc-" + d.id} checked={lib.ids.includes(d.id)} onChange={(v) => toggleDoc(d.id, v)}>
-                <b>{d.title}</b>
-                {!d.enabled && <small>{t("Disabled in the library")}</small>}
-                {d.enabled && <small>{d.kind} · {t("{n} chars", { n: d.chars })}</small>}
+            {kbs === null && !loadErr.docs && <div className="gp-none">{t("Loading…")}</div>}
+            {kbs !== null && kbs.length === 0 && <div className="gp-none">{t("No knowledge base is in reach yet. Create one in the library first.")}</div>}
+            {(kbs ?? []).map((kb) => (
+              <Check key={kb.id} id={"gp-kb-" + kb.id} checked={lib.kb_ids.includes(kb.id)} onChange={(v) => toggleKb(kb.id, v)}>
+                <b>{kb.name}</b>
+                <small>{kb.group_id ? t("This workspace") : t("Shared")} · {t("{n} documents", { n: kb.docs })}</small>
               </Check>
             ))}
-            {docs !== null && docs.length > 0 && lib.ids.length === 0 && <div className="gp-note warn">{t("No documents selected yet, so this group cannot search any material.")}</div>}
+            {cols.length > 0 && (
+              <>
+                <div className="gp-sub">{t("Collections")}</div>
+                {cols.map((col) => (
+                  <Check key={col.id} id={"gp-col-" + col.id} checked={lib.collection_ids.includes(col.id)} onChange={(v) => toggleCol(col.id, v)}>
+                    <b>{col.name}</b>
+                    <small>{t("{n} knowledge bases", { n: col.kb_ids.length })}</small>
+                  </Check>
+                ))}
+              </>
+            )}
+            {kbs !== null && lib.kb_ids.length === 0 && lib.collection_ids.length === 0 && (
+              <div className="gp-note warn">{t("Nothing is chosen yet, so this group cannot search any material.")}</div>
+            )}
           </div>
         )}
       </Section>

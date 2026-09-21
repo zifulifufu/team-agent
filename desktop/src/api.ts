@@ -214,7 +214,8 @@ export interface GroupExt {
   skills: string[];                // Skills attached to this group (both chat-rule and member kinds)
   plugins: string[];               // Enabled plugin IDs
   mcp: string[];                   // Enabled MCP server IDs
-  library: { mode: LibraryMode; ids: string[] };
+  /** Which knowledge bases this group searches; selection is by base, not by document */
+  library: { mode: LibraryMode; kb_ids: string[]; collection_ids: string[] };
   plan: PlanMode;                  // inherit = follow the global setting
   memory: boolean;
 }
@@ -543,8 +544,8 @@ export interface LibraryDoc {
   chars: number;
   chunks: number;
   enabled: boolean;
-  /** Owning group chat; empty = shared, visible to every group */
-  group_id: string;
+  /** The knowledge base this document lives in */
+  kb_id: string;
   created_at: number;
 }
 export interface LibraryHit {
@@ -553,6 +554,24 @@ export interface LibraryHit {
   idx: number;
   text: string;
   score: number;
+}
+/** A named bag of documents. `group_id` empty = shared: any group may attach it. */
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string;
+  group_id: string;
+  docs: number;
+  created_at: number;
+}
+/** A flat, reusable list of knowledge bases. Not nestable on purpose. */
+export interface Collection {
+  id: string;
+  name: string;
+  description: string;
+  kb_ids: string[];
+  kbs: { id: string; name: string; group_id: string; docs: number }[];
+  created_at: number;
 }
 export type MemoryScope = "global" | "group" | "agent";
 export type MemoryKind = "preference" | "fact" | "decision" | "lesson" | "action";
@@ -884,25 +903,41 @@ export const api = {
   delMcp: (id: string) => del(`/api/mcp/${id}`),
   connectMcp: (id: string) => post<McpServer>(`/api/mcp/${id}/connect`),
   disconnectMcp: (id: string) => post<McpServer>(`/api/mcp/${id}/disconnect`),
-  // ---- Library. `group` scopes everything to one group chat's library (its own documents plus
-  // the shared ones); omitted means the whole library, which is what the overview page shows.
-  library: (group?: string) => get<{ docs: LibraryDoc[]; total_chars: number; count: number }>(`/api/library${qs({ group_id: group })}`),
-  addNote: (title: string, content: string, group?: string) => post<LibraryDoc>("/api/library/note", { title, content, group_id: group ?? "" }),
+  // ---- Knowledge bases and collections. `group` narrows to what one group chat can reach: its
+  // workspace's own knowledge bases plus the shared ones.
+  kbs: (group?: string) => get<KnowledgeBase[]>(`/api/knowledge-bases${qs({ group_id: group })}`),
+  addKb: (b: { name: string; description?: string; group_id?: string }) => post<KnowledgeBase>("/api/knowledge-bases", b),
+  patchKb: (id: string, b: { name?: string; description?: string }) => patch<KnowledgeBase>(`/api/knowledge-bases/${id}`, b),
+  /** Removes the knowledge base and every document in it */
+  delKb: (id: string) => del<{ ok: boolean; deleted_docs: number }>(`/api/knowledge-bases/${id}`),
+  collections: () => get<Collection[]>("/api/collections"),
+  addCollection: (b: { name: string; description?: string; kb_ids?: string[] }) => post<Collection>("/api/collections", b),
+  patchCollection: (id: string, b: { name?: string; description?: string; kb_ids?: string[] }) => patch<Collection>(`/api/collections/${id}`, b),
+  delCollection: (id: string) => del<{ ok: boolean }>(`/api/collections/${id}`),
+  // ---- Documents. Narrow to one knowledge base, or to everything a group can reach; no scope
+  // means the whole library, which is what the overview shows.
+  library: (scope: { kb?: string; group?: string } = {}) =>
+    get<{ docs: LibraryDoc[]; total_chars: number; count: number }>(`/api/library${qs({ kb_id: scope.kb, group_id: scope.group })}`),
+  addNote: (title: string, content: string, scope: { kb?: string; group?: string } = {}) =>
+    post<LibraryDoc>("/api/library/note", { title, content, kb_id: scope.kb ?? "", group_id: scope.group ?? "" }),
   /** The request body is the file's raw bytes (txt/md/csv/json/html/pdf/docx) */
-  uploadDoc: (file: File, group?: string) => postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name, group_id: group })}`, file),
+  uploadDoc: (file: File, scope: { kb?: string; group?: string } = {}) =>
+    postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name, kb_id: scope.kb, group_id: scope.group })}`, file),
   // ---- Images attached to a message
   /** Raw bytes, like the library upload. The server decides the type from the bytes, not the name. */
   uploadImage: (gid: string, file: File) => postRaw<Attachment>(`/api/groups/${gid}/attachments${qs({ filename: file.name })}`, file),
   dropImage: (id: string) => del<{ ok: boolean }>(`/api/attachments/${id}`),
   /** The bytes, fetched with the token in a header — see `getBlob` for why an <img src> will not do. */
   imageBytes: (id: string) => getBlob(`/api/attachments/${id}`),
-  addDocUrl: (url: string, group?: string) => post<LibraryDoc>("/api/library/url", { url, group_id: group ?? "" }),
-  addDocDir: (path: string, recursive = true, group?: string) =>
-    post<{ added: LibraryDoc[]; skipped: { name: string; reason: string }[] }>("/api/library/dir", { path, recursive, group_id: group ?? "" }),
-  searchLibrary: (q: string, top_k = 5, group?: string) => get<LibraryHit[]>(`/api/library/search${qs({ q, top_k, group_id: group })}`),
+  addDocUrl: (url: string, scope: { kb?: string; group?: string } = {}) =>
+    post<LibraryDoc>("/api/library/url", { url, kb_id: scope.kb ?? "", group_id: scope.group ?? "" }),
+  addDocDir: (path: string, recursive = true, scope: { kb?: string; group?: string } = {}) =>
+    post<{ added: LibraryDoc[]; skipped: { name: string; reason: string }[] }>("/api/library/dir", { path, recursive, kb_id: scope.kb ?? "", group_id: scope.group ?? "" }),
+  searchLibrary: (q: string, top_k = 5, scope: { kb?: string; group?: string } = {}) =>
+    get<LibraryHit[]>(`/api/library/search${qs({ q, top_k, kb_id: scope.kb, group_id: scope.group })}`),
   readDoc: (id: string, start = 0) =>
     get<{ doc: LibraryDoc; start: number; end: number; total: number; text: string }>(`/api/library/${id}${qs({ start })}`),
-  patchDoc: (id: string, b: { title?: string; enabled?: boolean }) => patch<LibraryDoc>(`/api/library/${id}`, b),
+  patchDoc: (id: string, b: { title?: string; enabled?: boolean; kb_id?: string }) => patch<LibraryDoc>(`/api/library/${id}`, b),
   delDoc: (id: string) => del(`/api/library/${id}`),
   // ---- Memory
   memories: (f: { scope?: MemoryScope; scope_id?: string; kind?: MemoryKind; q?: string } = {}) =>
