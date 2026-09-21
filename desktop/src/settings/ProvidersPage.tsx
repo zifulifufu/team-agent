@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, EyeOff, Plus, Search, Tags, Trash2, X } from "lucide-react";
 import { api, type Model, type Preset, type Provider, type Tag } from "../api";
 import { useData } from "../data";
+import { currentLang, pickLang, useI18n } from "../i18n";
 import { LetterIcon, Modal, Switch, useBusy, useConfirm, useFlash } from "../ui";
 import { ModelPicker, pendingNew } from "../components/ModelPicker";
 import { StrengthChips, StrengthPicker } from "../components/Strengths";
@@ -10,11 +11,18 @@ import "../styles/models.css";
 
 const KIND_LABEL: Record<string, string> = {
   deepseek: "DeepSeek",
-  openai_compatible: "OpenAI 兼容",
+  openai_compatible: "OpenAI-compatible",
   anthropic: "Anthropic",
   gemini: "Gemini",
   ollama: "Ollama",
 };
+// Only the kinds whose wording actually differs need a Chinese entry; the rest are proper
+// nouns. Read through a plain function (`currentLang()`), not a hook, because AddProvider
+// renders it inside a callback.
+const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容" };  // i18n-keep: the Chinese half of the pair table above
+
+const kindLabel = (kind: string): string =>
+  pickLang(KIND_LABEL[kind] ?? kind, KIND_LABEL_ZH[kind], currentLang());
 
 const DEFAULT_BASE: Record<string, string> = {
   deepseek: "https://api.deepseek.com",
@@ -22,7 +30,7 @@ const DEFAULT_BASE: Record<string, string> = {
   gemini: "https://generativelanguage.googleapis.com",
 };
 
-/** 预览实际请求地址(和 Cherry Studio 一样,让用户确认地址填对了)。 */
+/** Preview the real request URL (the way Cherry Studio does, so the user can confirm the address is right). */
 function endpointPreview(kind: string, base: string): string {
   const b = (base || DEFAULT_BASE[kind] || "").replace(/\/+$/, "");
   if (!b) return "";
@@ -33,17 +41,18 @@ function endpointPreview(kind: string, base: string): string {
 }
 
 export default function ProvidersPage() {
+  const { t } = useI18n();
   const { providers, reload } = useData();
   const [sel, setSel] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [newCounts, setNewCounts] = useState<Record<string, number>>({});
-  /** 点了列表里的「N 个新模型」:选中该服务商并直接打开选择对话框(只看新模型) */
+  /** Clicked "N new models" in the list: select that provider and open the picker straight away, showing new models only */
   const [openNew, setOpenNew] = useState<{ pid: string; n: number } | null>(null);
   const cur = providers.find((p) => p.id === sel) ?? providers[0] ?? null;
   const list = useMemo(() => providers.filter((p) => p.name.toLowerCase().includes(q.trim().toLowerCase())), [providers, q]);
 
-  // 「N 个新模型」:纯本地计算(不联网),只查启用的服务商
+  // "N new models": computed locally (no network) and only for enabled providers
   useEffect(() => {
     let alive = true;
     const on = providers.filter((p) => p.enabled);
@@ -58,7 +67,7 @@ export default function ProvidersPage() {
       <div className="prov-list">
         <div className="search-box">
           <Search size={14} />
-          <input placeholder="搜索模型平台…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索模型平台" />
+          <input placeholder={t("Search model platforms…")} value={q} onChange={(e) => setQ(e.target.value)} aria-label={t("Search model platforms")} />
         </div>
         <div className="prov-items">
           {list.map((p) => (
@@ -70,21 +79,21 @@ export default function ProvidersPage() {
                   <span className="li-sub">
                     <span
                       className="tag new mp-new-btn"
-                      title="点击查看新模型"
+                      title={t("Click to see the new models")}
                       onClick={(e) => { e.stopPropagation(); setSel(p.id); setOpenNew({ pid: p.id, n: Date.now() }); }}
                     >
-                      {newCounts[p.id]} 个新模型
+                      {t("{n} new models", { n: newCounts[p.id] })}
                     </span>
                   </span>
                 )}
               </span>
-              {p.is_local && <span className="tag">本地</span>}
+              {p.is_local && <span className="tag">{t("Local")}</span>}
               {p.enabled && <span className="tag on">ON</span>}
             </button>
           ))}
-          {list.length === 0 && <div className="side-empty">没有匹配的服务商</div>}
+          {list.length === 0 && <div className="side-empty">{t("No matching providers")}</div>}
         </div>
-        <button className="btn add-prov" onClick={() => setAdding(true)}><Plus size={15} /> 添加服务商</button>
+        <button className="btn add-prov" onClick={() => setAdding(true)}><Plus size={15} /> {t("Add a provider")}</button>
       </div>
       <div className="prov-detail">
         {cur ? (
@@ -98,7 +107,7 @@ export default function ProvidersPage() {
             onChanged={reload}
             onDeleted={() => { setSel(null); void reload(); }} />
         ) : (
-          <div className="empty big">点左下角「添加服务商」开始</div>
+          <div className="empty big">{t("Start by clicking Add a provider at the bottom left")}</div>
         )}
       </div>
       {adding && <AddProvider onClose={() => setAdding(false)} onAdded={async (id) => { setAdding(false); await reload(); setSel(id); }} />}
@@ -123,6 +132,7 @@ function ProviderDetail({
   onChanged: () => Promise<void>;
   onDeleted: () => void;
 }) {
+  const { t } = useI18n();
   const confirm = useConfirm();
   const { health } = useData();
   const [key, setKey] = useState("");
@@ -161,18 +171,18 @@ function ProviderDetail({
     }
   };
 
-  // 同一个服务商的测试一次只发一个:有的账号每分钟只允许 3 次请求,并发点几下就会被限速
+  // One test per provider at a time: some accounts allow only 3 requests a minute, so a few concurrent clicks get rate-limited
   const [busy, setBusy] = useState(false);
   const test = async (id: string) => {
     if (busy) return;
     setBusy(true);
-    setTests((t) => ({ ...t, [id]: "测试中…" }));
+    setTests((prev) => ({ ...prev, [id]: t("Testing…") }));
     try {
       const r = await api.testModel(id);
-      await onChanged(); // 测试结果会记进指示灯
-      setTests((t) => ({ ...t, [id]: r.ok ? `✓ ${r.reply?.startsWith("(") ? r.reply : `${r.latency_ms}ms`}` : `✗ ${r.error}` }));
+      await onChanged(); // The result is recorded in the indicator light
+      setTests((prev) => ({ ...prev, [id]: r.ok ? `✓ ${r.reply?.startsWith("(") ? r.reply : `${r.latency_ms}ms`}` : `✗ ${r.error}` }));
     } catch (e) {
-      setTests((t) => ({ ...t, [id]: `✗ ${(e as Error).message}` }));
+      setTests((prev) => ({ ...prev, [id]: `✗ ${(e as Error).message}` }));
     } finally {
       setBusy(false);
     }
@@ -180,14 +190,14 @@ function ProviderDetail({
   const checkKey = async () => {
     if (busy) return;
     const m = p.models.find((x) => x.enabled) ?? p.models[0];
-    if (!m) return setCheck("✗ 请先添加一个模型再检测");
+    if (!m) return setCheck(t("✗ Add a model first, then test"));
     setBusy(true);
     try {
-      setCheck("检测中…");
+      setCheck(t("Checking…"));
       if (!(await save())) return setCheck("");
       const r = await api.testModel(m.id);
       await onChanged();
-      setCheck(r.ok ? `✓ 连接正常 · ${m.display_name} · ${r.reply?.startsWith("(") ? r.reply : `${r.latency_ms}ms`}` : `✗ ${r.error}`);
+      setCheck(r.ok ? `${t("✓ Connected")} · ${m.display_name} · ${r.reply?.startsWith("(") ? r.reply : `${r.latency_ms}ms`}` : `✗ ${r.error}`);
     } catch (e) {
       setCheck(`✗ ${(e as Error).message}`);
     } finally {
@@ -204,50 +214,50 @@ function ProviderDetail({
           {p.name}
           {p.enabled && newCount > 0 && (
             <span className="mp-head-tags">
-              <button className="tag new mp-new-btn" title="打开选择模型对话框,只看新模型" onClick={() => setPicker({ onlyNew: true })}>{newCount} 个新模型</button>
+              <button className="tag new mp-new-btn" title={t("Open the model picker, showing new models only")} onClick={() => setPicker({ onlyNew: true })}>{t("{n} new models", { n: newCount })}</button>
             </span>
           )}
         </h2>
         <div className="row">
-          <Switch checked={p.enabled} label={`启用 ${p.name}`} onChange={async (v) => { await api.patchProvider(p.id, { enabled: v }); await onChanged(); }} />
+          <Switch checked={p.enabled} label={t("Enable {name}", { name: p.name })} onChange={async (v) => { await api.patchProvider(p.id, { enabled: v }); await onChanged(); }} />
         </div>
       </div>
 
       {!p.is_local && (
         <div className="field-block">
-          <div className="fb-label">API 密钥 {p.has_key && <span className="tag on">已设置 {p.key_hint}</span>}</div>
+          <div className="fb-label">{t("API key")} {p.has_key && <span className="tag on">{t("set · {hint}", { hint: p.key_hint })}</span>}</div>
           <div className="input-group">
             <input
               type={showKey ? "text" : "password"}
               value={key}
               onChange={(e) => { setKey(e.target.value); setCheck(""); }}
               onBlur={() => void save()}
-              placeholder={p.has_key ? "已保存,输入新的密钥可覆盖" : "sk-…"}
+              placeholder={p.has_key ? t("Saved — type a new key to replace it") : "sk-…"}
               autoComplete="off"
               spellCheck={false}
-              aria-label="API 密钥"
+              aria-label={t("API key")}
             />
-            <button className="icon-btn" aria-label={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((s) => !s)}>{showKey ? <EyeOff size={15} /> : <Eye size={15} />}</button>
-            <button className="btn" disabled={busy} onClick={checkKey}>{busy ? "检测中…" : "检测"}</button>
+            <button className="icon-btn" aria-label={showKey ? t("Hide the key") : t("Show the key")} onClick={() => setShowKey((s) => !s)}>{showKey ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+            <button className="btn" disabled={busy} onClick={checkKey}>{busy ? t("Checking…") : t("Check")}</button>
           </div>
           {check && <div className={"fb-note " + (check.startsWith("✓") ? "ok-text" : check.startsWith("✗") ? "err" : "muted")}>{check}</div>}
-          {!p.has_key && !key && <div className="fb-note muted">密钥仅保存在本机数据目录,只会发送给这个服务商。</div>}
+          {!p.has_key && !key && <div className="fb-note muted">{t("The key is kept in this machine's data directory only, and is sent to this provider alone.")}</div>}
         </div>
       )}
 
       <div className="field-block">
-        <div className="fb-label">API 地址{DEFAULT_BASE[p.kind] ? "(留空使用官方默认)" : ""}</div>
+        <div className="fb-label">{t("API address")}{DEFAULT_BASE[p.kind] ? t(" (leave it blank for the official default)") : ""}</div>
         <div className="input-group">
-          <input value={base} onChange={(e) => setBase(e.target.value)} onBlur={() => void save()} placeholder={DEFAULT_BASE[p.kind] ?? "https://…/v1"} aria-label="API 地址" spellCheck={false} />
+          <input value={base} onChange={(e) => setBase(e.target.value)} onBlur={() => void save()} placeholder={DEFAULT_BASE[p.kind] ?? "https://…/v1"} aria-label={t("API address")} spellCheck={false} />
         </div>
-        {preview && <div className="fb-note muted">预览:{preview}</div>}
-        {saved && <div className="fb-note ok-text">已保存</div>}
+        {preview && <div className="fb-note muted">{t("Preview:")} {preview}</div>}
+        {saved && <div className="fb-note ok-text">{t("Saved")}</div>}
       </div>
 
       <div className="fb-label models-head">
-        <span>模型 <span className="chip">{p.models.length}</span></span>
+        <span>{t("Models")} <span className="chip">{p.models.length}</span></span>
         <span className="row">
-          <button className="btn small primary" onClick={() => setPicker({ onlyNew: false })}><Plus size={14} /> 添加模型</button>
+          <button className="btn small primary" onClick={() => setPicker({ onlyNew: false })}><Plus size={14} /> {t("Add models")}</button>
         </span>
       </div>
       {err && <div className="err" style={{ marginBottom: 8 }}>{err}</div>}
@@ -257,8 +267,8 @@ function ProviderDetail({
             <div className="mr-main">
               <div className="mr-name">
                 <HealthDot h={health[m.id]} label />&nbsp;{m.display_name}
-                {m.strengths_custom && <span className="tag" title="强项已手动修改;可在「强项」里恢复自动">自定义</span>}
-                {m.retired_reason && <span className="tag mp-warn-tag">已停用</span>}
+                {m.strengths_custom && <span className="tag" title={t("Strengths were edited by hand; use Strengths to go back to automatic")}>{t("Custom")}</span>}
+                {m.retired_reason && <span className="tag mp-warn-tag">{t("Disabled")}</span>}
               </div>
               <div className="mr-id">{m.id}</div>
               {m.summary && <div className="mp-summary">{m.summary}</div>}
@@ -268,33 +278,33 @@ function ProviderDetail({
             </div>
             <div className="mr-actions">
               {!tests[m.id]?.startsWith("✗") && <div className={"test-res" + (tests[m.id]?.startsWith("✓") ? " ok-text" : " muted")} title={tests[m.id]}>{tests[m.id]}</div>}
-              <button className="btn small" disabled={busy} onClick={() => test(m.id)}>测试</button>
-              <button className="btn small" title="编辑这个模型的强项标签" aria-label={`编辑 ${m.display_name} 的强项`} onClick={() => setEditStr(m)}><Tags size={13} /> 强项</button>
-              <Switch checked={m.enabled} label={`启用 ${m.display_name}`} onChange={async (v) => { await api.patchModel(m.id, { enabled: v }); await onChanged(); }} />
-              <button className="icon-btn" title="移除模型" aria-label={`移除 ${m.display_name}`} onClick={async () => {
-                if (!(await confirm(`移除模型「${m.display_name}」?如果它已被拉进群当成员,这些成员也会一并移除。`, { okText: "移除" }))) return;
+              <button className="btn small" disabled={busy} onClick={() => test(m.id)}>{t("Test")}</button>
+              <button className="btn small" title={t("Edit this model's strength tags")} aria-label={t("Edit the strengths of {name}", { name: m.display_name })} onClick={() => setEditStr(m)}><Tags size={13} /> {t("Strengths")}</button>
+              <Switch checked={m.enabled} label={t("Enable {name}", { name: m.display_name })} onChange={async (v) => { await api.patchModel(m.id, { enabled: v }); await onChanged(); }} />
+              <button className="icon-btn" title={t("Remove the model")} aria-label={t("Remove {name}", { name: m.display_name })} onClick={async () => {
+                if (!(await confirm(t('Remove the model "{name}"? If it was pulled into a group as a member, that member goes too.', { name: m.display_name }), { okText: t("Remove") }))) return;
                 await api.delModel(m.id);
                 await onChanged();
               }}><X size={15} /></button>
             </div>
           </div>
         ))}
-        {p.models.length === 0 && <div className="empty">还没有模型 —— 点「添加模型」,从该服务商的全部型号里勾选</div>}
+        {p.models.length === 0 && <div className="empty">{t("No models yet — click Add models and tick them from this provider's full list")}</div>}
       </div>
 
       <div className="danger-zone">
         <button
           className="btn ghost small danger-text"
           onClick={async () => {
-            if (await confirm(`删除服务商「${p.name}」及其所有模型?由这些模型拉进群的成员也会一并移除。`, { okText: "删除" })) {
+            if (await confirm(t('Delete the provider "{name}" and all of its models? Members pulled into a group from those models go too.', { name: p.name }), { okText: t("Delete") })) {
               await api.delProvider(p.id);
               onDeleted();
             }
           }}
         >
-          <Trash2 size={14} /> 删除该服务商
+          <Trash2 size={14} /> {t("Delete this provider")}
         </button>
-        {keyOptional && <span className="muted small">本地服务不需要 API 密钥</span>}
+        {keyOptional && <span className="muted small">{t("A local service needs no API key")}</span>}
       </div>
 
       {picker && (
@@ -317,6 +327,7 @@ function ProviderDetail({
 }
 
 function StrengthEditor({ model, onClose, onSaved }: { model: Model; onClose: () => void; onSaved: () => Promise<void> }) {
+  const { t } = useI18n();
   const [val, setVal] = useState<Tag[]>(model.strengths);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -333,29 +344,30 @@ function StrengthEditor({ model, onClose, onSaved }: { model: Model; onClose: ()
   };
   return (
     <Modal
-      title={`强项 · ${model.display_name}`}
+      title={t("Strengths · {name}", { name: model.display_name })}
       onClose={onClose}
       actions={
         <>
           {err && <span className="err mp-foot-note">{err}</span>}
-          <button className="btn" style={err ? undefined : { marginRight: "auto" }} disabled={busy || !model.strengths_custom} title={model.strengths_custom ? "丢弃手动修改,回到自动推断的强项" : "当前已经是自动推断"} onClick={() => run(null)}>恢复自动</button>
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" disabled={busy} onClick={() => run(val)}>保存</button>
+          <button className="btn" style={err ? undefined : { marginRight: "auto" }} disabled={busy || !model.strengths_custom} title={model.strengths_custom ? t("Discard the manual edits and go back to the inferred set") : t("Already the inferred set")} onClick={() => run(null)}>{t("Back to automatic")}</button>
+          <button className="btn" onClick={onClose}>{t("Cancel")}</button>
+          <button className="btn primary" disabled={busy} onClick={() => run(val)}>{t("Save")}</button>
         </>
       }
     >
-      <p className="mp-str-note">强项是根据模型系列和名称推断的标签,不是评测成绩。你可以按自己的使用体会调整;成员没有指定模型时,会按岗位强项从这里挑选。</p>
+      <p className="mp-str-note">{t("A strength is a tag inferred from the model family and name, not a benchmark score. Adjust it to match your own experience; when a member has no model of its own, one is chosen from here by the strengths the role needs.")}</p>
       <StrengthPicker value={val} onChange={setVal} disabled={busy} />
       <div className="mp-str-auto">
-        自动推断:
-        {model.strengths_auto.length ? <StrengthChips tags={model.strengths_auto} max={10} /> : <span>(无)</span>}
-        {model.strengths_custom && <span className="tag">当前为自定义</span>}
+        {t("Inferred:")}
+        {model.strengths_auto.length ? <StrengthChips tags={model.strengths_auto} max={10} /> : <span>{t("(none)")}</span>}
+        {model.strengths_custom && <span className="tag">{t("Custom for now")}</span>}
       </div>
     </Modal>
   );
 }
 
 function AddProvider({ onClose, onAdded }: { onClose: () => void; onAdded: (id: string) => void }) {
+  const { t } = useI18n();
   const [presets, setPresets] = useState<Preset[]>([]);
   const [custom, setCustom] = useState({ name: "", base_url: "", kind: "openai_compatible", is_local: false });
   const [err, setErr] = useState("");
@@ -372,24 +384,24 @@ function AddProvider({ onClose, onAdded }: { onClose: () => void; onAdded: (id: 
   });
 
   return (
-    <Modal title="添加服务商" onClose={onClose} wide>
+    <Modal title={t("Add a provider")} onClose={onClose} wide>
       <div className="preset-grid">
         {presets.map((p) => (
           <button key={p.preset} className="preset" disabled={have.has(p.preset) || adding} onClick={() => void addPreset(p.preset)}>
             <LetterIcon name={p.name} size={30} />
             <span className="preset-text">
               <b>{p.name}</b>
-              <span className="muted small">{have.has(p.preset) ? "已添加" : p.hint || KIND_LABEL[p.kind]}</span>
+              <span className="muted small">{have.has(p.preset) ? t("Added") : p.hint || kindLabel(p.kind)}</span>
             </span>
           </button>
         ))}
       </div>
-      <h4 className="sec-sm">自定义(任意 OpenAI 兼容接口)</h4>
+      <h4 className="sec-sm">{t("Custom (any OpenAI-compatible endpoint)")}</h4>
       <div className="custom-row">
-        <input placeholder="名称" value={custom.name} onChange={(e) => setCustom({ ...custom, name: e.target.value })} aria-label="名称" />
-        <input placeholder="API 地址,如 http://127.0.0.1:8000/v1" value={custom.base_url} onChange={(e) => setCustom({ ...custom, base_url: e.target.value })} aria-label="API 地址" />
-        <label className="check-inline"><input type="checkbox" checked={custom.is_local} onChange={(e) => setCustom({ ...custom, is_local: e.target.checked })} />本地</label>
-        <button className="btn primary" disabled={!custom.name || !custom.base_url || adding} onClick={() => void addCustom()}>添加</button>
+        <input placeholder={t("Name")} value={custom.name} onChange={(e) => setCustom({ ...custom, name: e.target.value })} aria-label={t("Name")} />
+        <input placeholder={t("API address, e.g. http://127.0.0.1:8000/v1")} value={custom.base_url} onChange={(e) => setCustom({ ...custom, base_url: e.target.value })} aria-label={t("API address")} />
+        <label className="check-inline"><input type="checkbox" checked={custom.is_local} onChange={(e) => setCustom({ ...custom, is_local: e.target.checked })} />{t("Local")}</label>
+        <button className="btn primary" disabled={!custom.name || !custom.base_url || adding} onClick={() => void addCustom()}>{t("Add")}</button>
       </div>
       {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
     </Modal>
