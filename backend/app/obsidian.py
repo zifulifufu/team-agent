@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import hashlib
 import json
 import os
@@ -25,7 +27,15 @@ from .memory import looks_sensitive
 from .store import Store
 
 SYNC_KINDS = ("preference", "fact", "decision", "lesson")   # 「过往做法」是程序自己记的流水账,不同步
-KIND_LABEL = {"preference": "偏好", "fact": "事实", "decision": "决定", "lesson": "教训"}
+# File-name prefixes and note headings. Kept as pairs (rather than calling pick_now here)
+# because a module-level call would be evaluated once at import and freeze the language.
+KIND_LABEL = {"preference": ("Preference", "偏好"), "fact": ("Fact", "事实"),
+              "decision": ("Decision", "决定"), "lesson": ("Lesson", "教训")}
+
+
+def kind_label(kind: str) -> str:
+    pair = KIND_LABEL.get(kind)
+    return i18n.pick_now(*pair) if pair else kind
 OUR_KEYS = ("ta_id", "scope", "scope_id", "scope_name", "kind", "pinned", "source", "updated")
 MAX_FILES, MAX_BYTES, MAX_DEPTH, MAX_CONTENT = 5000, 256 * 1024, 4, 500   # 500 字:和「记忆」页手动添加的上限一致
 MASS_DELETE_MIN = 5
@@ -97,7 +107,7 @@ _BAD = re.compile(r'[\\/:*?"<>|#^\[\]\r\n\t]')
 
 
 def _safe(s: str, n: int = 40) -> str:
-    return _BAD.sub("", s).strip().strip(".").lstrip("_. ")[:n] or "未命名"   # 开头不能是 _ 或 .,否则同步会当成隐藏文件夹跳过
+    return _BAD.sub("", s).strip().strip(".").lstrip("_. ")[:n] or i18n.pick_now("Untitled", "未命名")   # 开头不能是 _ 或 .,否则同步会当成隐藏文件夹跳过
 
 
 @dataclass
@@ -147,12 +157,12 @@ class ObsidianSync:
     def validate_dir(raw: str, data_dir: Path) -> Path:
         p = Path(raw.strip()).expanduser()
         if not p.is_absolute():
-            raise ObsidianError("请填写完整的文件夹路径")
+            raise ObsidianError(i18n.pick_now("Enter the full folder path", "请填写完整的文件夹路径"))
         p = p.resolve()
         if p == Path(p.anchor) or p == Path.home().resolve() or p.is_relative_to(data_dir.resolve()) or data_dir.resolve().is_relative_to(p):
-            raise ObsidianError("请选择库里的一个专用文件夹,不要选磁盘根目录、用户主目录,或本程序的数据目录")
+            raise ObsidianError(i18n.pick_now("Choose a dedicated folder inside your vault — not the filesystem root, your home directory, or this app's data directory", "请选择库里的一个专用文件夹,不要选磁盘根目录、用户主目录,或本程序的数据目录"))
         if p.exists() and not p.is_dir():
-            raise ObsidianError("这个路径是文件,不是文件夹")
+            raise ObsidianError(i18n.pick_now("That path is a file, not a folder", "这个路径是文件,不是文件夹"))
         return p
 
     @staticmethod
@@ -218,21 +228,21 @@ class ObsidianSync:
         out: list[NoteFile] = []
         for p in self._iter_md(base):
             if len(out) >= MAX_FILES:
-                rep.warnings.append(f"文件太多,只处理前 {MAX_FILES} 个")
+                rep.warnings.append(i18n.pick_now(f"Too many files; only the first {MAX_FILES} were processed", f"文件太多,只处理前 {MAX_FILES} 个"))
                 break
             try:
                 p.relative_to(root).as_posix().encode("utf-8")
             except (UnicodeEncodeError, ValueError):
-                rep.warnings.append(f"跳过文件名无法识别的文件:{p.name.encode('utf-8', 'replace').decode()}")
+                rep.warnings.append(i18n.pick_now(f"Skipped a file whose name could not be decoded: {p.name.encode('utf-8', 'replace').decode()}", f"跳过文件名无法识别的文件:{p.name.encode('utf-8', 'replace').decode()}"))
                 continue
             try:
                 st = p.stat()
                 if st.st_size > MAX_BYTES:
-                    rep.warnings.append(f"跳过过大的文件:{p.name}")
+                    rep.warnings.append(i18n.pick_now(f"Skipped an oversized file: {p.name}", f"跳过过大的文件:{p.name}"))
                     continue
                 raw = p.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
-                rep.warnings.append(f"读不了(不是 UTF-8 文本?):{p.name}")
+                rep.warnings.append(i18n.pick_now(f"Could not read it (not UTF-8 text?): {p.name}", f"读不了(不是 UTF-8 文本?):{p.name}"))
                 continue
             ours, other, body = parse_note(raw)
             out.append(NoteFile(p, str(p.relative_to(root)), st.st_mtime, ours, other, body, raw))
@@ -244,7 +254,7 @@ class ObsidianSync:
         root = base.resolve()
         rp = p.resolve() if p.exists() else p.parent.resolve() / p.name
         if not rp.is_relative_to(root):
-            raise ObsidianError(f"路径越界:{p}")
+            raise ObsidianError(i18n.pick_now(f"Path outside the chosen folder: {p}", f"路径越界:{p}"))
         return rp
 
     def _write(self, base: Path, p: Path, text: str) -> None:
@@ -267,12 +277,12 @@ class ObsidianSync:
         return ({g["id"]: g["name"] for g in self.store.list_groups()}, {a["id"]: a["name"] for a in self.store.list_agents()})
 
     def _scope_name(self, m: dict, gn: dict, an: dict) -> str:
-        return {"global": "全局", "group": gn.get(m["scope_id"], ""), "agent": an.get(m["scope_id"], "")}[m["scope"]]
+        return {"global": i18n.pick_now("Global", "全局"), "group": gn.get(m["scope_id"], ""), "agent": an.get(m["scope_id"], "")}[m["scope"]]
 
     def _new_path(self, base: Path, m: dict, gn: dict, an: dict) -> Path:
-        folder = {"global": "全局", "group": f"群聊/{_safe(gn.get(m['scope_id'], '未知群'))}",
-                  "agent": f"成员/{_safe(an.get(m['scope_id'], '未知成员'))}"}[m["scope"]]
-        name = f"{KIND_LABEL.get(m['kind'], m['kind'])}-{_safe(m['content'], 24)}-{m['id'][:6]}.md"
+        folder = {"global": i18n.pick_now("Global", "全局"), "group": i18n.pick_now(f"Groups/{_safe(gn.get(m['scope_id'], 'unknown group'))}", f"群聊/{_safe(gn.get(m['scope_id'], '未知群'))}"),
+                  "agent": i18n.pick_now(f"Members/{_safe(an.get(m['scope_id'], 'unknown member'))}", f"成员/{_safe(an.get(m['scope_id'], '未知成员'))}")}[m["scope"]]
+        name = f"{kind_label(m['kind'])}-{_safe(m['content'], 24)}-{m['id'][:6]}.md"
         return base.resolve() / folder / name
 
     def _resolve_scope(self, ours: dict, m: dict | None, gn: dict, an: dict, rep: Report, label: str) -> tuple[str, str]:
@@ -290,15 +300,15 @@ class ObsidianSync:
             return scope, hit
         if m and m["scope"] == scope:
             return scope, m["scope_id"]
-        rep.warnings.append(f"「{label}」里写的{'群聊' if scope == 'group' else '成员'}找不到,已改为全局记忆")
+        rep.warnings.append(i18n.pick_now(f"The {'group' if scope == 'group' else 'member'} named in \"{label}\" was not found, so this became a global memory", f"「{label}」里写的{'群聊' if scope == 'group' else '成员'}找不到,已改为全局记忆"))
         return "global", ""
 
     def write_export(self, name: str, text: str) -> Path:
         """把聊天记录等导出物写进库里的 `_聊天记录/`(下划线开头,不参与记忆同步)。"""
         base = self.base()
         if not base or not base.is_dir():
-            raise ObsidianError("还没有设置 Obsidian 文件夹,或文件夹现在不可用")
-        p = base.resolve() / "_聊天记录" / f"{_safe(name, 60)}.md"
+            raise ObsidianError(i18n.pick_now("No Obsidian folder is set, or the folder is not available right now", "还没有设置 Obsidian 文件夹,或文件夹现在不可用"))
+        p = base.resolve() / i18n.pick_now("_chat-log", "_聊天记录") / f"{_safe(name, 60)}.md"
         self._write(base, p, text)
         return p
 
@@ -313,9 +323,9 @@ class ObsidianSync:
         except ObsidianError as e:
             rep.ok, rep.error = False, str(e)
         except OSError as e:
-            rep.ok, rep.error = False, f"读写文件夹出错:{e}"
+            rep.ok, rep.error = False, i18n.pick_now(f"Error reading or writing the folder: {e}", f"读写文件夹出错:{e}")
         except Exception as e:  # noqa: BLE001 — 任何意外都要变成一条可读的报告,不能让接口 500、让自动同步停掉
-            rep.ok, rep.error = False, f"同步出错:{type(e).__name__}: {e}"
+            rep.ok, rep.error = False, i18n.pick_now(f"Sync failed: {type(e).__name__}: {e}", f"同步出错:{type(e).__name__}: {e}")
         finally:
             self._lock.release()
         self.store.set_meta("obsidian_last", json.dumps(rep.to_dict(), ensure_ascii=False))
@@ -324,9 +334,9 @@ class ObsidianSync:
     def _sync(self, rep: Report, force: bool) -> None:
         base = self.base()
         if not base:
-            raise ObsidianError("还没有选择 Obsidian 文件夹")
+            raise ObsidianError(i18n.pick_now("No Obsidian folder has been chosen yet", "还没有选择 Obsidian 文件夹"))
         if not base.is_dir():
-            raise ObsidianError(f"文件夹不存在或暂时不可用:{base}(如果是外接盘,请先挂载;没有做任何改动)")
+            raise ObsidianError(i18n.pick_now(f"The folder does not exist, or is not available right now: {base} (if it is an external drive, mount it first; nothing was changed)", f"文件夹不存在或暂时不可用:{base}(如果是外接盘,请先挂载;没有做任何改动)"))
         st = self.store
         gn, an = self._names()
         mems = {m["id"]: m for m in st.list_memories(limit=1_000_000) if m["kind"] in SYNC_KINDS}
@@ -348,7 +358,7 @@ class ObsidianSync:
             tid = str(nf.ours.get("ta_id") or "")
             if tid and tid in maps and tid not in mems:
                 # 程序里已经删掉了这条:文件挪进 _已删除,不真删
-                self._stash(base, "_已删除", nf.path.name, nf.raw)
+                self._stash(base, i18n.pick_now("_deleted", "_已删除"), nf.path.name, nf.raw)
                 nf.path.unlink()
                 st.del_obsidian_map(tid)
                 rep.removed_files += 1
@@ -358,12 +368,12 @@ class ObsidianSync:
                 self._import(base, nf, gn, an, rep, seen)
                 continue
             if mid in seen:
-                rep.warnings.append(f"两个文件对应同一条记忆,忽略后一个:{nf.rel}")
+                rep.warnings.append(i18n.pick_now(f"Two files map to the same memory; ignoring the second: {nf.rel}", f"两个文件对应同一条记忆,忽略后一个:{nf.rel}"))
                 continue
             seen.add(mid)
             m = mems[mid]
             if nf.too_long:
-                rep.warnings.append(f"「{nf.rel}」超过 {MAX_CONTENT} 字,不适合当记忆,这一条没有同步(文件没有动)")
+                rep.warnings.append(i18n.pick_now(f"\"{nf.rel}\" is longer than {MAX_CONTENT} characters, so it does not work as a memory and was not synced (the file was left alone)", f"「{nf.rel}」超过 {MAX_CONTENT} 字,不适合当记忆,这一条没有同步(文件没有动)"))
                 continue
             scope, sid = self._resolve_scope(nf.ours, m, gn, an, rep, nf.rel)
             kind = nf.ours.get("kind") if nf.ours.get("kind") in SYNC_KINDS else m["kind"]
@@ -382,10 +392,10 @@ class ObsidianSync:
             if f_changed and d_changed:
                 rep.conflicts += 1
                 if nf.mtime >= m["updated_at"]:
-                    self._stash(base, "_冲突备份", nf.path.name, render_note(m, self._scope_name(m, gn, an)))
+                    self._stash(base, i18n.pick_now("_conflict-backup", "_冲突备份"), nf.path.name, render_note(m, self._scope_name(m, gn, an)))
                     f_changed, d_changed = True, False
                 else:
-                    self._stash(base, "_冲突备份", nf.path.name, nf.raw)
+                    self._stash(base, i18n.pick_now("_conflict-backup", "_冲突备份"), nf.path.name, nf.raw)
                     f_changed, d_changed = False, True
             if f_changed:
                 st.update_memory(mid, {"content": content, "kind": kind, "pinned": pinned, "scope": scope, "scope_id": sid})
@@ -412,12 +422,12 @@ class ObsidianSync:
             or (len(gone) >= 2 and len(gone) >= live)         # 全部都不见了(空文件夹 / 没挂载)
             or not files                                      # 文件夹里一篇笔记都没有了
         ):
-            rep.warnings.append(f"有 {len(gone)} 个对应的文件不见了(几乎是全部),很可能是文件夹被移走、清空或没挂载,为安全起见没有删除任何记忆。确认无误可点「强制同步」。")
+            rep.warnings.append(i18n.pick_now(f"{len(gone)} of the matching files are missing (almost all of them); the folder was probably moved, emptied or unmounted. Nothing was deleted, for safety. Once you have checked, click Force sync.", f"有 {len(gone)} 个对应的文件不见了(几乎是全部),很可能是文件夹被移走、清空或没挂载,为安全起见没有删除任何记忆。确认无误可点「强制同步」。"))
             gone = []
         for mid in gone:
             m = mems[mid]
             try:   # 删记忆之前把内容留一份在 _已删除,在 Obsidian 里误删/误移走也找得回来
-                self._stash(base, "_已删除", Path(maps[mid]["rel_path"]).name, render_note(m, self._scope_name(m, gn, an)))
+                self._stash(base, i18n.pick_now("_deleted", "_已删除"), Path(maps[mid]["rel_path"]).name, render_note(m, self._scope_name(m, gn, an)))
             except (ObsidianError, OSError):
                 pass
             st.delete_memory(mid)
@@ -435,17 +445,17 @@ class ObsidianSync:
             return
         st = self.store
         if nf.too_long:   # 长文章不是「一句话记忆」:不截断、不改写,原样留着
-            rep.warnings.append(f"「{nf.rel}」超过 {MAX_CONTENT} 字,不适合当记忆,已跳过(文件没有动)。想当记忆用,请写成一两句话")
+            rep.warnings.append(i18n.pick_now(f"\"{nf.rel}\" is longer than {MAX_CONTENT} characters, so it does not work as a memory and was skipped (the file was left alone). Write it as a sentence or two to use it as one.", f"「{nf.rel}」超过 {MAX_CONTENT} 字,不适合当记忆,已跳过(文件没有动)。想当记忆用,请写成一两句话"))
             return
         if looks_sensitive(nf.body):
-            rep.warnings.append(f"「{nf.rel}」看起来含密钥/密码/长数字串,出于安全没有导入(文件没有动)")
+            rep.warnings.append(i18n.pick_now(f"\"{nf.rel}\" looks like it contains a key, a password or a long digit string, so it was not imported (the file was left alone)", f"「{nf.rel}」看起来含密钥/密码/长数字串,出于安全没有导入(文件没有动)"))
             return
         scope, sid = self._resolve_scope(nf.ours, None, gn, an, rep, nf.rel)
         kind = nf.ours.get("kind") if nf.ours.get("kind") in SYNC_KINDS else "fact"
         content = nf.body
         m = st.add_memory(content, scope, sid, kind, "obsidian", bool(nf.ours.get("pinned") is True))
         if m["id"] in seen or m["id"] in st.obsidian_map():
-            rep.warnings.append(f"「{nf.rel}」和已有的一条记忆内容相同,没有重复导入")
+            rep.warnings.append(i18n.pick_now(f"\"{nf.rel}\" has the same content as an existing memory, so it was not imported again", f"「{nf.rel}」和已有的一条记忆内容相同,没有重复导入"))
             return
         seen.add(m["id"])
         rep.imported += 1

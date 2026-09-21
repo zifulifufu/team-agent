@@ -106,7 +106,7 @@ async def test_check_app_same_version_none_and_unconfigured(up, gh, store):
     gh.release = {"tag_name": "v0.3.0"}
     assert (await up.check_app())["available"] is False
     gh.release = None
-    assert "还没有发布" in (await up.check_app())["note"]
+    assert "no releases yet" in (await up.check_app())["note"]
     store.update_settings({"app_repo": ""})
     assert (await up.check_app())["configured"] is False
 
@@ -131,7 +131,7 @@ async def test_catalog_check_then_apply(up, gh, store):
 
 async def test_catalog_invalid_or_older_is_rejected(up, gh, store):
     gh.put("me/team-agent", "backend/app/data/catalog.json", '{"version": "2099", "providers": 3}')
-    with pytest.raises(GitHubError, match="格式不对"):
+    with pytest.raises(GitHubError, match="wrong shape"):
         await up.check_catalog(apply=True)
     gh.put("me/team-agent", "backend/app/data/catalog.json", "not json")
     with pytest.raises(GitHubError, match="JSON"):
@@ -242,7 +242,7 @@ async def test_offline_mode_makes_no_requests(up, gh, store):
 
 async def test_rate_limit_and_http_errors_are_readable(up, gh):
     gh.rate_limited = True
-    with pytest.raises(GitHubError, match="频率超限"):
+    with pytest.raises(GitHubError, match="rate limit"):
         await up.check_app()
     gh.rate_limited, gh.status_override = False, 500
     with pytest.raises(GitHubError, match="500"):

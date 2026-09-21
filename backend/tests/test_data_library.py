@@ -137,6 +137,6 @@ def test_export_chat_markdown_and_obsidian(tmp_path):
     vault.mkdir(parents=True)
     c.put("/api/obsidian", json={"dir": str(vault)})
     p = c.post(f"/api/groups/{g['id']}/export-obsidian").json()["path"]
-    assert "_聊天记录" in p and open(p, encoding="utf-8").read().startswith("# ")
+    assert "_chat-log" in p and open(p, encoding="utf-8").read().startswith("# ")
     r = c.post("/api/obsidian/sync").json()
     assert r["imported"] == 0 and store.list_memories() == []                          # 导出的聊天不会被当成记忆导入

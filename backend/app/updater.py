@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import asyncio
 import base64
 import hashlib
@@ -49,29 +51,40 @@ SEARCH_TOPICS = {
 }
 # 推荐来源:名字取自已知的官方/知名仓库,内容以 GitHub 上的实际情况为准(界面里会提示先看一眼)
 CURATED = [
-    {"kind": "skill", "repo": "anthropics/skills", "desc": "Anthropic 官方的 Agent Skills 示例集合(SKILL.md 格式)"},
-    {"kind": "mcp", "repo": "modelcontextprotocol/servers", "desc": "MCP 官方参考服务器集合"},
+    {"kind": "skill", "repo": "anthropics/skills",
+     "desc": ("Anthropic's official collection of Agent Skills examples (SKILL.md format)",
+              "Anthropic 官方的 Agent Skills 示例集合(SKILL.md 格式)")},
+    {"kind": "mcp", "repo": "modelcontextprotocol/servers",
+     "desc": ("The official collection of reference MCP servers", "MCP 官方参考服务器集合")},
 ]
 
 
+def curated() -> list[dict]:
+    """The curated source list, described in the request language."""
+    return [{**c, "desc": i18n.pick_now(*c["desc"])} for c in CURATED]
+
+
 class GitHubError(Exception):
-    def __init__(self, msg: str, status: int = 502):
+    def __init__(self, msg: str, status: int = 502, kind: str = ""):
         super().__init__(msg)
         self.status = status  # 502 = GitHub/网络问题;400 = 参数不对;409 = 冲突
+        # A stable reason code. Callers must branch on this rather than on the message
+        # text: the message is shown to the user and therefore follows the UI language.
+        self.kind = kind      # "" | "not_found" | "rate_limit" | "offline"
 
 
 def valid_repo(repo: str) -> str:
     repo = (repo or "").strip().removeprefix("https://github.com/").strip("/")
     repo = re.sub(r"\.git$", "", repo)
     if not REPO_RE.match(repo) or any(part.strip(".") == "" for part in repo.split("/")):
-        raise GitHubError("仓库格式应为 owner/repo", 400)
+        raise GitHubError(i18n.pick_now("The repository must be in owner/repo form", "仓库格式应为 owner/repo"), 400)
     return repo
 
 
 def valid_path(path: str) -> str:
     path = (path or "").strip().lstrip("/")
     if not path or ".." in path.split("/") or len(path) > 300:
-        raise GitHubError("文件路径不合法", 400)
+        raise GitHubError(i18n.pick_now("That file path is not valid", "文件路径不合法"), 400)
     return path
 
 
@@ -91,7 +104,7 @@ class Updater:
     # ---------------------------------------------------------------- http
     def _allowed(self) -> None:
         if not self.store.get_settings()["external_calls_enabled"]:
-            raise GitHubError("外呼已禁用(离线模式),不会连接 GitHub", 403)
+            raise GitHubError(i18n.pick_now("Outbound calls are disabled (offline mode), so GitHub will not be contacted", "外呼已禁用(离线模式),不会连接 GitHub"), 403, "offline")
 
     def _client(self) -> httpx.AsyncClient:
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "team-agent-updater",
@@ -107,13 +120,13 @@ class Updater:
             async with self._client() as c:
                 r = await c.get(path, params=params)
         except httpx.HTTPError as e:
-            raise GitHubError(f"无法连接 GitHub:{type(e).__name__}") from None
+            raise GitHubError(i18n.pick_now(f"Cannot reach GitHub: {type(e).__name__}", f"无法连接 GitHub:{type(e).__name__}")) from None
         if r.status_code == 404:
-            raise GitHubError("GitHub 上找不到这个仓库或文件")
+            raise GitHubError(i18n.pick_now("GitHub has no such repository or file", "GitHub 上找不到这个仓库或文件"), 404, "not_found")
         if r.status_code in (403, 429) and r.headers.get("x-ratelimit-remaining") == "0":
-            raise GitHubError("GitHub 接口频率超限,请稍后再试,或在设置里填写 GitHub Token")
+            raise GitHubError(i18n.pick_now("GitHub's API rate limit was hit. Try again later, or fill in a GitHub token in Settings.", "GitHub 接口频率超限,请稍后再试,或在设置里填写 GitHub Token"), 403, "rate_limit")
         if r.status_code >= 400:
-            raise GitHubError(f"GitHub 返回 {r.status_code}")
+            raise GitHubError(i18n.pick_now(f"GitHub returned {r.status_code}", f"GitHub 返回 {r.status_code}"))
         return r.json()
 
     async def file(self, repo: str, path: str, ref: str = "") -> dict:
@@ -121,19 +134,19 @@ class Updater:
         repo, path = valid_repo(repo), valid_path(path)
         data = await self._get(f"/repos/{repo}/contents/{quote(path)}", {"ref": ref} if ref else None)
         if isinstance(data, list) or data.get("type") != "file":
-            raise GitHubError("这不是一个文件")
+            raise GitHubError(i18n.pick_now("That is not a file", "这不是一个文件"))
         if int(data.get("size", 0)) > MAX_TEXT:
-            raise GitHubError("文件太大(上限 512 KB),不会下载")
+            raise GitHubError(i18n.pick_now("The file is too big (512 KB limit), so it will not be downloaded", "文件太大(上限 512 KB),不会下载"))
         try:
             content = base64.b64decode(data.get("content", "")).decode("utf-8")
         except (ValueError, UnicodeDecodeError):
-            raise GitHubError("文件不是 UTF-8 文本") from None
+            raise GitHubError(i18n.pick_now("The file is not UTF-8 text", "文件不是 UTF-8 文本")) from None
         return {"content": content, "sha": data.get("sha", ""), "size": len(content.encode())}
 
     # ------------------------------------------------------------ search
     async def search(self, kind: str, query: str = "") -> list[dict]:
         if kind not in SEARCH_TOPICS:
-            raise GitHubError("kind 只能是 skill / plugin / mcp", 400)
+            raise GitHubError(i18n.pick_now("kind must be one of skill / plugin / mcp", "kind 只能是 skill / plugin / mcp"), 400)
         seen: dict[str, dict] = {}
         for topic in SEARCH_TOPICS[kind]:
             q = f"{query.strip()} topic:{topic}".strip()
@@ -186,12 +199,12 @@ class Updater:
         parsed = parse_skill_text(f["content"], parts[-2] if len(parts) > 1 else valid_repo(repo).split("/")[1])
         name = safe_skill_name(parsed.name)
         if not name:
-            raise GitHubError("技能没有可用的名称")
+            raise GitHubError(i18n.pick_now("The skill has no usable name", "技能没有可用的名称"))
         sdir = self.store.data_dir / "skills"
         exists = (sdir / name / "SKILL.md").exists()
         src = self.store.get_source("skill", name)
         if exists and not overwrite and not (src and src["repo"] == valid_repo(repo)):
-            raise GitHubError(f"已有同名技能「{name}」,勾选「覆盖」才会替换", 409)
+            raise GitHubError(i18n.pick_now(f"A skill named \"{name}\" already exists; tick Overwrite to replace it", f"已有同名技能「{name}」,勾选「覆盖」才会替换"), 409)
         skill = write_skill(sdir, name, parsed.description, parsed.body, parsed.scope, parsed.version)
         self.store.set_source("skill", name, valid_repo(repo), valid_path(path), ref, f["sha"])
         self.store.resolve_updates("skill", name)
@@ -202,14 +215,14 @@ class Updater:
         """安装插件文件。sha256 必须等于用户预览时看到的内容的哈希,否则拒绝(防止预览后内容被换)。"""
         f = await self.file(repo, path, ref)
         if not path.endswith(".py"):
-            raise GitHubError("插件必须是 .py 文件", 400)
+            raise GitHubError(i18n.pick_now("A plugin has to be a .py file", "插件必须是 .py 文件"), 400)
         if sha256_hex(f["content"]) != sha256:
-            raise GitHubError("文件内容与你预览的不一致(可能已被修改),请重新预览后再安装", 409)
+            raise GitHubError(i18n.pick_now("The file content no longer matches what you previewed (it may have changed); preview it again before installing", "文件内容与你预览的不一致(可能已被修改),请重新预览后再安装"), 409)
         stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(path).stem)
         dest = self.store.data_dir / "plugins" / f"{stem}.py"
         src = self.store.get_source("plugin", stem)
         if dest.exists() and not overwrite and not (src and src["repo"] == valid_repo(repo)):
-            raise GitHubError(f"已有同名插件「{stem}」,勾选「覆盖」才会替换", 409)
+            raise GitHubError(i18n.pick_now(f"A plugin named \"{stem}\" already exists; tick Overwrite to replace it", f"已有同名插件「{stem}」,勾选「覆盖」才会替换"), 409)
         dest.write_text(f["content"], encoding="utf-8")
         self.store.set_source("plugin", stem, valid_repo(repo), valid_path(path), ref, f["sha"])
         self.store.resolve_updates("plugin", stem)
@@ -223,9 +236,9 @@ class Updater:
         try:
             rel = await self._get(f"/repos/{repo}/releases/latest")
         except GitHubError as e:
-            if "找不到" in str(e):
+            if e.kind == "not_found":
                 return {"configured": True, "current": self.app_version, "latest": None, "available": False,
-                        "note": "这个仓库还没有发布(Releases)"}
+                        "note": i18n.pick_now("This repository has no releases yet", "这个仓库还没有发布(Releases)")}
             raise
         latest = str(rel.get("tag_name", ""))
         avail = parse_version(latest) > parse_version(self.app_version)
@@ -235,7 +248,7 @@ class Updater:
                 "assets": [{"name": a["name"], "size": a.get("size", 0), "url": a.get("browser_download_url", "")}
                            for a in rel.get("assets", [])][:10]}
         if avail:
-            self.store.upsert_update("app", latest, f"程序有新版本 {latest}(当前 {self.app_version})", info)
+            self.store.upsert_update("app", latest, i18n.pick_now(f"A new version of the app is available: {latest} (you are on {self.app_version})", f"程序有新版本 {latest}(当前 {self.app_version})"), info)
         return info
 
     async def fetch_catalog(self) -> dict | None:
@@ -243,23 +256,23 @@ class Updater:
         if cfg["catalog_url"]:
             url = cfg["catalog_url"].strip()
             if not url.startswith("https://"):
-                raise GitHubError("模型目录地址必须是 https")
+                raise GitHubError(i18n.pick_now("The model catalog URL must be https", "模型目录地址必须是 https"))
             self._allowed()
             try:
                 async with httpx.AsyncClient(timeout=20, transport=self._transport, follow_redirects=True) as c:
                     r = await c.get(url)
                     r.raise_for_status()
                     if len(r.content) > 2 * MAX_TEXT:
-                        raise GitHubError("模型目录文件太大")
+                        raise GitHubError(i18n.pick_now("The model catalog file is too big", "模型目录文件太大"))
                     return r.json()
             except (httpx.HTTPError, ValueError) as e:
-                raise GitHubError(f"下载模型目录失败:{type(e).__name__}") from None
+                raise GitHubError(i18n.pick_now(f"Could not download the model catalog: {type(e).__name__}", f"下载模型目录失败:{type(e).__name__}")) from None
         if cfg["app_repo"]:
             f = await self.file(cfg["app_repo"], CATALOG_PATH)
             try:
                 return json.loads(f["content"])
             except ValueError:
-                raise GitHubError("模型目录不是合法 JSON") from None
+                raise GitHubError(i18n.pick_now("The model catalog is not valid JSON", "模型目录不是合法 JSON")) from None
         return None
 
     async def check_catalog(self, apply: bool = False) -> dict:
@@ -269,7 +282,7 @@ class Updater:
             return {"configured": False, "current": cur.version}
         err = catalog_lib.validate(data)
         if err:
-            raise GitHubError(f"模型目录格式不对:{err}")
+            raise GitHubError(i18n.pick_now(f"The model catalog has the wrong shape: {err}", f"模型目录格式不对:{err}"))
         newer = is_newer(data["version"], cur.version)
         added = 0
         if newer:
@@ -282,7 +295,7 @@ class Updater:
             info["applied"] = True
             self.store.resolve_updates("catalog", "catalog")
         elif newer:
-            self.store.upsert_update("catalog", "catalog", f"模型目录有新版本 {data['version']}(新增 {added} 个型号)", info)
+            self.store.upsert_update("catalog", "catalog", i18n.pick_now(f"A new model catalog is available: {data['version']} ({added} new models)", f"模型目录有新版本 {data['version']}(新增 {added} 个型号)"), info)
         return info
 
     async def check_sources(self, kind: str, auto_apply: bool = False) -> list[dict]:
@@ -300,8 +313,8 @@ class Updater:
                 await self.install_skill(src["repo"], src["path"], src["ref"])
                 item["applied"] = True
             elif changed:
-                label = "技能" if kind == "skill" else "插件"
-                self.store.upsert_update(kind, src["name"], f"{label}《{src['name']}》在 GitHub 上有更新",
+                label = i18n.pick_now("Skill", "技能") if kind == "skill" else i18n.pick_now("Plugin", "插件")
+                self.store.upsert_update(kind, src["name"], i18n.pick_now(f"{label} “{src['name']}” has an update on GitHub", f"{label}《{src['name']}》在 GitHub 上有更新"),
                                          {"name": src["name"], "repo": src["repo"], "path": src["path"], "ref": src["ref"],
                                           "sha": f["sha"], "current_sha": src["sha"]})
             out.append(item)
@@ -325,7 +338,7 @@ class Updater:
             if p["is_local"]:  # 本地服务的清单是「已安装」,对它谈「新/下线」没有意义
                 continue
             if new:
-                self.store.upsert_update("model", p["id"], f"{p['name']} 有 {len(new)} 个新模型",
+                self.store.upsert_update("model", p["id"], i18n.pick_now(f"{p['name']} has {len(new)} new models", f"{p['name']} 有 {len(new)} 个新模型"),
                                          {"provider_id": p["id"], "ids": new[:50]})
             out.append({"provider_id": p["id"], "name": p["name"], "new": len(new), "gone": gone})
         return out
@@ -341,12 +354,12 @@ class Updater:
             async with httpx.AsyncClient(timeout=20, transport=self._transport, follow_redirects=True, headers=headers) as c:
                 return await c.get(url, params=params)
         except httpx.HTTPError as e:
-            raise GitHubError(f"无法连接 {url.split('/')[2]}:{type(e).__name__}") from None
+            raise GitHubError(i18n.pick_now(f"Cannot reach {url.split('/')[2]}: {type(e).__name__}", f"无法连接 {url.split('/')[2]}:{type(e).__name__}")) from None
 
     async def probe_ollama(self, tag: str) -> dict:
         """向 Ollama 注册表确认某个型号真的存在,并读出下载大小(各层大小之和)。不下载任何权重。"""
         if not lm.valid_tag(tag):
-            raise GitHubError("型号标签不合法(例如 qwen3.8:27b)", 400)
+            raise GitHubError(i18n.pick_now("That model tag is not valid (for example qwen3.8:27b)", "型号标签不合法(例如 qwen3.8:27b)"), 400)
         name, _, ver = tag.partition(":")
         ns, _, model = name.rpartition("/")
         path = f"{ns or 'library'}/{model}/manifests/{ver or 'latest'}"
@@ -354,7 +367,7 @@ class Updater:
         if r.status_code in (404, 400):
             return {"tag": tag, "exists": False, "size_gb": None}
         if r.status_code >= 400:
-            raise GitHubError(f"Ollama 注册表返回 {r.status_code}")
+            raise GitHubError(i18n.pick_now(f"The Ollama registry returned {r.status_code}", f"Ollama 注册表返回 {r.status_code}"))
         try:
             size = lm.manifest_size_gb(r.json())
         except ValueError:
@@ -364,7 +377,7 @@ class Updater:
     async def _ollama_new(self, known: set[str], out: list[dict], errors: list[str]) -> None:
         r = await self._fetch(OLLAMA_LIBRARY)
         if r.status_code >= 400:
-            raise GitHubError(f"ollama.com 返回 {r.status_code}")
+            raise GitHubError(i18n.pick_now(f"ollama.com returned {r.status_code}", f"ollama.com 返回 {r.status_code}"))
         names = [n for n in lm.parse_library_names(r.text)[:40] if n not in known and not lm.NON_CHAT_RE.search(n)]
         if not names:
             return
@@ -375,12 +388,12 @@ class Updater:
                 try:
                     pr = await self.probe_ollama(f"{n}:latest")
                 except GitHubError as e:
-                    errors.append(f"探测 {n}: {e}")
+                    errors.append(i18n.pick_now(f"Probing {n}: {e}", f"探测 {n}: {e}"))
                     return None
             if not pr["exists"] or not pr["size_gb"]:
                 return None  # 只有云端版(没有可下载的本地权重)
             return {"source": "ollama", "name": n, "tag": f"{n}:latest", "size_gb": pr["size_gb"],
-                    "desc": "Ollama 模型库里的新模型", "url": f"https://ollama.com/library/{n}"}
+                    "desc": i18n.pick_now("New models in the Ollama library", "Ollama 模型库里的新模型"), "url": f"https://ollama.com/library/{n}"}
 
         for c in await asyncio.gather(*(one(n) for n in names)):
             if c and len([x for x in out if x["source"] == "ollama"]) < MAX_NEW_PER_SOURCE:
@@ -399,12 +412,12 @@ class Updater:
                 try:
                     pr = await self.probe_ollama(f"{g}:latest")
                 except GitHubError as e:
-                    errors.append(f"探测 {g}: {e}")
+                    errors.append(i18n.pick_now(f"Probing {g}: {e}", f"探测 {g}: {e}"))
                     return None
             if not pr["exists"] or not pr["size_gb"]:
                 return None
             return {"source": "successor", "name": g, "tag": f"{g}:latest", "size_gb": pr["size_gb"], "replaces": base,
-                    "desc": f"{base} 的新一代", "url": f"https://ollama.com/library/{g}"}
+                    "desc": i18n.pick_now(f"A new generation of {base}", f"{base} 的新一代"), "url": f"https://ollama.com/library/{g}"}
 
         for c in await asyncio.gather(*(one(g, b) for g, b in guesses.items())):
             if c:
@@ -430,7 +443,7 @@ class Updater:
                     continue
                 lic = next((t.split(":", 1)[1] for t in it.get("tags", []) if str(t).startswith("license:")), "")
                 found.append({"source": "hf", "name": mid, "tag": None, "size_gb": None, "license": lic,
-                              "desc": f"Hugging Face 上新发布({str(it.get('createdAt', ''))[:10]})", "url": f"https://huggingface.co/{mid}"})
+                              "desc": i18n.pick_now(f"New on Hugging Face ({str(it.get('createdAt', ''))[:10]})", f"Hugging Face 上新发布({str(it.get('createdAt', ''))[:10]})"), "url": f"https://huggingface.co/{mid}"})
                 n += 1
         out.extend(found[:MAX_NEW_PER_SOURCE])
 
@@ -441,10 +454,10 @@ class Updater:
             try:
                 data = await self._get(f"/orgs/{org}/repos", {"sort": "created", "direction": "desc", "per_page": 5})
             except GitHubError as e:
-                if "找不到" in str(e):
+                if e.kind == "not_found":
                     continue          # 关注名单里的组织名在 GitHub 上不存在(改名了):静默跳过,不算故障
                 errors.append(f"GitHub {org}: {e}")
-                if "频率" in str(e):
+                if e.kind == "rate_limit":
                     break
                 continue
             for it in [x for x in data if isinstance(x, dict)][:5]:
@@ -462,7 +475,7 @@ class Updater:
                                   "desc": (it.get("description") or "")[:200], "url": it.get("html_url", ""),
                                   "stars": it.get("stargazers_count", 0)})
         except GitHubError as e:
-            errors.append(f"GitHub 搜索: {e}")
+            errors.append(i18n.pick_now(f"GitHub search: {e}", f"GitHub 搜索: {e}"))
         out.extend(found[: MAX_NEW_PER_SOURCE * 2])
 
     async def _ollama_version_note(self) -> dict | None:
@@ -502,17 +515,17 @@ class Updater:
         for c in cands:
             uniq.setdefault(c["name"], c)
         for c in uniq.values():
-            label = {"ollama": "Ollama 新模型", "successor": "新一代", "hf": "Hugging Face 新模型", "github": "GitHub 新仓库"}[c["source"]]
-            size = f"(约 {c['size_gb']} GB)" if c.get("size_gb") else ""
+            label = {"ollama": i18n.pick_now("New Ollama models", "Ollama 新模型"), "successor": i18n.pick_now("New generation", "新一代"), "hf": i18n.pick_now("New Hugging Face models", "Hugging Face 新模型"), "github": i18n.pick_now("New GitHub repositories", "GitHub 新仓库")}[c["source"]]
+            size = i18n.pick_now(f"(about {c['size_gb']} GB)", f"(约 {c['size_gb']} GB)") if c.get("size_gb") else ""
             self.store.upsert_update("localmodel", c["name"], f"{label}:{c['name']}{size}", c)
         ollama = None
         try:
             ollama = await self._ollama_version_note()
             if ollama and not ollama.get("ok"):
-                self.store.upsert_update("localmodel", "ollama-release", f"Ollama 有新版本 {ollama['latest']}(本机 {ollama['local']})",
+                self.store.upsert_update("localmodel", "ollama-release", i18n.pick_now(f"A new Ollama version is available: {ollama['latest']} (you have {ollama['local']})", f"Ollama 有新版本 {ollama['latest']}(本机 {ollama['local']})"),
                                          {"source": "ollama-release", "name": "ollama-release", **ollama})
         except GitHubError as e:
-            errors.append(f"Ollama 版本: {e}")
+            errors.append(i18n.pick_now(f"Ollama version: {e}", f"Ollama 版本: {e}"))
         return {"found": len(uniq), "candidates": list(uniq.values()), "errors": errors, "ollama": ollama, "catalog": cat.version}
 
     async def check_local_catalog(self, apply: bool = False) -> dict:
@@ -525,10 +538,10 @@ class Updater:
         try:
             data = json.loads(f["content"])
         except ValueError:
-            raise GitHubError("本地模型目录不是合法 JSON") from None
+            raise GitHubError(i18n.pick_now("The local model catalog is not valid JSON", "本地模型目录不是合法 JSON")) from None
         err = lm.validate(data)
         if err:
-            raise GitHubError(f"本地模型目录格式不对:{err}")
+            raise GitHubError(i18n.pick_now(f"The local model catalog has the wrong shape: {err}", f"本地模型目录格式不对:{err}"))
         newer = is_newer(data["version"], cur.version)
         info = {"configured": True, "current": cur.version, "latest": str(data["version"]), "available": newer, "applied": False}
         if newer and apply:
@@ -536,7 +549,7 @@ class Updater:
             info["applied"] = True
             self.store.resolve_updates("localcatalog", "localcatalog")
         elif newer:
-            self.store.upsert_update("localcatalog", "localcatalog", f"本地模型目录有新版本 {data['version']}", info)
+            self.store.upsert_update("localcatalog", "localcatalog", i18n.pick_now(f"A new local model catalog is available: {data['version']}", f"本地模型目录有新版本 {data['version']}"), info)
         return info
 
     async def check_all(self, auto_apply: bool = True) -> dict:

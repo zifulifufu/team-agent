@@ -252,7 +252,7 @@ async def test_ollama_version_note_only_when_behind(up, web, store):
 
 async def test_discovery_offline_makes_no_requests(up, web, store):
     store.update_settings({"external_calls_enabled": False})
-    with pytest.raises(Exception, match="外呼已禁用"):
+    with pytest.raises(Exception, match="Outbound calls are disabled"):
         await up.check_local_models()
     assert web.calls == []
 
@@ -261,7 +261,7 @@ async def test_probe_and_local_catalog_update(up, web, store):
     assert (await up.probe_ollama("qwen3.9")) == {"tag": "qwen3.9", "exists": True, "size_gb": 21.0}      # 不写版本 = latest
     assert (await up.probe_ollama("qwen3.9:latest")) == {"tag": "qwen3.9:latest", "exists": True, "size_gb": 21.0}
     assert (await up.probe_ollama("nope:1b"))["exists"] is False
-    with pytest.raises(Exception, match="不合法"):
+    with pytest.raises(Exception, match="not valid"):
         await up.probe_ollama("bad tag;")
     # 目录更新:app_repo 里的 local_models.json 版本更大 → 校验后覆盖
     store.update_settings({"app_repo": "me/team-agent"})
@@ -278,7 +278,7 @@ async def test_probe_and_local_catalog_update(up, web, store):
     bad["version"] = "2100-01-01"
     bad["families"][0]["models"][0]["tag"] = "x;y"
     web.catalog_file = bad
-    with pytest.raises(Exception, match="格式不对"):
+    with pytest.raises(Exception, match="wrong shape"):
         await up.check_local_catalog(apply=True)
     assert store.local_catalog.version == "2099-12-31"
 

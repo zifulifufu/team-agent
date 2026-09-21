@@ -42,7 +42,7 @@ from .tools import (
     skill_names,
     write_skill,
 )
-from .updater import CURATED, GitHubError, Updater
+from .updater import GitHubError, Updater, curated
 
 MASK = "••••••"
 
@@ -874,7 +874,7 @@ def build_router(c: Ctx) -> APIRouter:
             "last_check": last,
             "checking": c.updater.checking,
             "configured": bool(cfg["app_repo"]),
-            "curated": CURATED,
+            "curated": curated(),
             "catalog": {"version": store.catalog.version, "source": store.catalog.source},
             "sources": store.list_sources(),
         }

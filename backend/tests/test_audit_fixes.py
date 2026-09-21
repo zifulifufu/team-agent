@@ -43,7 +43,7 @@ def test_long_note_is_never_truncated_or_rewritten(env):
     long_text = "很长的一篇笔记。" * 200
     (vault / "长文章.md").write_text(long_text, encoding="utf-8")
     r = ob.sync()
-    assert r["imported"] == 0 and any("超过" in w for w in r["warnings"])
+    assert r["imported"] == 0 and any("longer than" in w for w in r["warnings"])
     assert (vault / "长文章.md").read_text(encoding="utf-8") == long_text      # 文件原封不动
     assert st.list_memories() == []
 
@@ -57,7 +57,7 @@ def test_existing_memory_whose_note_grew_past_limit_is_left_alone(env):
     big = "---\n" + ours_head + "---\n" + "扩写" * 400 + "\n"
     f.write_text(big, encoding="utf-8")
     r = ob.sync()
-    assert any("超过" in w for w in r["warnings"]) and r["pulled"] == 0
+    assert any("longer than" in w for w in r["warnings"]) and r["pulled"] == 0
     assert f.read_text(encoding="utf-8") == big
     assert st.list_memories()[0]["content"] == "短记忆"
 
@@ -66,7 +66,7 @@ def test_sensitive_note_is_not_imported(env):
     st, ob, vault = env
     (vault / "key.md").write_text("我的密钥是 sk-abcdefghijklmnop1234567890", encoding="utf-8")
     r = ob.sync()
-    assert r["imported"] == 0 and any("密钥" in w for w in r["warnings"]) and st.list_memories() == []
+    assert r["imported"] == 0 and any("looks like it contains a key" in w for w in r["warnings"]) and st.list_memories() == []
 
 
 def test_empty_folder_does_not_wipe_a_small_memory_set(env):
@@ -77,9 +77,9 @@ def test_empty_folder_does_not_wipe_a_small_memory_set(env):
     for f in vault.rglob("*.md"):
         f.unlink()
     r = ob.sync()
-    assert r["deleted_memories"] == 0 and len(st.list_memories()) == 3 and any("强制" in w for w in r["warnings"])
+    assert r["deleted_memories"] == 0 and len(st.list_memories()) == 3 and any("Force sync" in w for w in r["warnings"])
     r = ob.sync(force=True)                                   # 确认后才真删,并且内容留了一份在 _已删除
-    assert r["deleted_memories"] == 3 and len(list((vault / "_已删除").glob("*.md"))) == 3
+    assert r["deleted_memories"] == 3 and len(list((vault / "_deleted").glob("*.md"))) == 3
 
 
 def test_single_note_delete_in_obsidian_deletes_memory_with_backup_copy(env):
@@ -90,7 +90,7 @@ def test_single_note_delete_in_obsidian_deletes_memory_with_backup_copy(env):
     next(f for f in vault.rglob("*.md") if "要删的" in f.read_text(encoding="utf-8")).unlink()
     r = ob.sync()
     assert r["deleted_memories"] == 1 and [m["content"] for m in st.list_memories()] == ["留下的"]
-    assert any("要删的" in f.read_text(encoding="utf-8") for f in (vault / "_已删除").glob("*.md"))
+    assert any("要删的" in f.read_text(encoding="utf-8") for f in (vault / "_deleted").glob("*.md"))
 
 
 def test_group_named_with_underscore_still_round_trips(env):
@@ -108,19 +108,19 @@ def test_symlinked_folder_does_not_abort_whole_sync(env, tmp_path):
     st, ob, vault = env
     outside = tmp_path / "outside"
     outside.mkdir()
-    (vault / "全局").symlink_to(outside, target_is_directory=True)
+    (vault / "Global").symlink_to(outside, target_is_directory=True)
     st.add_memory("会被拒写的", "global", "", "fact")
     g = st.create_group("普通群", member_ids=[st.list_agents()[0]["id"]])
     st.add_memory("正常的", "group", g["id"], "fact")
     r = ob.sync()
-    assert r["ok"] and r["written"] == 1 and any("越界" in w for w in r["warnings"]) and not list(outside.iterdir())
+    assert r["ok"] and r["written"] == 1 and any("outside the chosen folder" in w for w in r["warnings"]) and not list(outside.iterdir())
 
 
 def test_unexpected_error_becomes_a_report_not_an_exception(env, monkeypatch):
     st, ob, vault = env
     monkeypatch.setattr(ob, "_sync", lambda rep, force: (_ for _ in ()).throw(UnicodeEncodeError("utf-8", "x", 0, 1, "bad")))
     r = ob.sync()
-    assert r["ok"] is False and "同步出错" in r["error"]
+    assert r["ok"] is False and "Sync failed" in r["error"]
 
 
 def test_concurrent_syncs_do_not_duplicate(env):

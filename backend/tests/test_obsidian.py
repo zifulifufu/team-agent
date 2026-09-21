@@ -43,9 +43,9 @@ def test_export_layout_and_skips_action_kind(env):
     files = md(vault)
     assert len(files) == 3
     rels = {str(f.relative_to(vault)).split("/")[0] for f in files}
-    assert rels == {"全局", "群聊", "成员"}
-    assert (vault / "群聊" / g["name"]).is_dir() and (vault / "成员" / a["name"]).is_dir()
-    text = next(f for f in files if "全局" in str(f)).read_text(encoding="utf-8")
+    assert rels == {"Global", "Groups", "Members"}
+    assert (vault / "Groups" / g["name"]).is_dir() and (vault / "Members" / a["name"]).is_dir()
+    text = next(f for f in files if "Global" in str(f)).read_text(encoding="utf-8")
     ours, other, body = parse_note(text)
     assert ours["scope"] == "global" and ours["kind"] == "preference" and ours["pinned"] is True and body == "发布类内容统一写 Team Agent"
     r2 = ob.sync()                                       # 幂等
@@ -60,7 +60,7 @@ def test_edit_in_obsidian_is_read_back_including_scope_and_pin(env):
     f = md(vault)[0]
     f.write_text(f.read_text(encoding="utf-8").replace("旧内容", "新内容,在 Obsidian 里改的")
                  .replace("kind: fact", "kind: decision").replace("pinned: false", "pinned: true")
-                 .replace("scope: global", "scope: group").replace('scope_id: ""', "scope_id: \"\"").replace('scope_name: "全局"', f'scope_name: "{g["name"]}"'),
+                 .replace("scope: global", "scope: group").replace('scope_id: ""', "scope_id: \"\"").replace('scope_name: "Global"', f'scope_name: "{g["name"]}"'),
                  encoding="utf-8")
     r = ob.sync()
     assert r["pulled"] == 1
@@ -99,7 +99,7 @@ def test_duplicate_of_existing_memory_is_not_double_imported(env):
     ob.sync()
     (vault / "另一个.md").write_text("同一句话", encoding="utf-8")
     r = ob.sync()
-    assert r["imported"] == 0 and any("相同" in w for w in r["warnings"])
+    assert r["imported"] == 0 and any("same content" in w for w in r["warnings"])
     assert len(st.list_memories()) == 1
 
 
@@ -123,7 +123,7 @@ def test_delete_in_app_moves_file_to_trash_folder(env):
     st.delete_memory(m["id"])
     r = ob.sync()
     assert r["removed_files"] == 1 and md(vault) == []
-    assert len(list((vault / "_已删除").glob("*.md"))) == 1          # 没有真删,可以找回
+    assert len(list((vault / "_deleted").glob("*.md"))) == 1          # 没有真删,可以找回
 
 
 def test_delete_in_obsidian_deletes_memory_but_mass_delete_is_refused(env):
@@ -136,7 +136,7 @@ def test_delete_in_obsidian_deletes_memory_but_mass_delete_is_refused(env):
     for f in md(vault)[:7]:                                         # 一次少了一大半:多半是文件夹被移走
         f.unlink()
     r = ob.sync()
-    assert r["deleted_memories"] == 0 and len(st.list_memories()) == 9 and any("没有删除任何记忆" in w for w in r["warnings"])
+    assert r["deleted_memories"] == 0 and len(st.list_memories()) == 9 and any("Nothing was deleted" in w for w in r["warnings"])
     r = ob.sync(force=True)
     assert r["deleted_memories"] == 7 and len(st.list_memories()) == 2
     assert len(ids) == 10
@@ -150,7 +150,7 @@ def test_missing_folder_changes_nothing(env):
 
     shutil.rmtree(vault)                                             # 文件夹整个没了(比如外接盘没挂载)
     r = ob.sync()
-    assert not r["ok"] and "不存在" in r["error"] and len(st.list_memories()) == 1
+    assert not r["ok"] and "does not exist" in r["error"] and len(st.list_memories()) == 1
 
 
 def test_unreadable_file_does_not_delete_its_memory(env):
@@ -159,7 +159,7 @@ def test_unreadable_file_does_not_delete_its_memory(env):
     ob.sync()
     md(vault)[0].write_bytes(b"\xff\xfe\x00bad")
     r = ob.sync()
-    assert st.get_memory(m["id"]) and r["deleted_memories"] == 0 and any("读不了" in w for w in r["warnings"])
+    assert st.get_memory(m["id"]) and r["deleted_memories"] == 0 and any("Could not read it" in w for w in r["warnings"])
 
 
 def test_conflict_newer_side_wins_and_loser_is_backed_up(env):
@@ -172,7 +172,7 @@ def test_conflict_newer_side_wins_and_loser_is_backed_up(env):
     os.utime(f, (time.time() + 100, time.time() + 100))              # 文件更新
     r = ob.sync()
     assert r["conflicts"] == 1 and st.get_memory(m["id"])["content"] == "Obsidian 版本"
-    backup = list((vault / "_冲突备份").glob("*.md"))
+    backup = list((vault / "_conflict-backup").glob("*.md"))
     assert len(backup) == 1 and "程序版本" in backup[0].read_text(encoding="utf-8")
     # 反过来:程序更新
     st.update_memory(m["id"], {"content": "程序又改了"})
@@ -188,7 +188,7 @@ def test_unknown_scope_falls_back_to_global_with_warning(env):
     st, ob, vault = env
     (vault / "x.md").write_text('---\nscope: group\nscope_name: "不存在的群"\n---\n某条记忆', encoding="utf-8")
     r = ob.sync()
-    assert r["imported"] == 1 and any("找不到" in w for w in r["warnings"])
+    assert r["imported"] == 1 and any("was not found" in w for w in r["warnings"])
     assert st.list_memories()[0]["scope"] == "global"
 
 
