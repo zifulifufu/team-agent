@@ -2,16 +2,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Copy, Download, RefreshCw, Search, Server, Trash2 } from "lucide-react";
 import { api, pullLocalModel, type LocalCandidate, type LocalCatalog, type LocalFamily, type LocalFit, type LocalModelRow, type UpdateItem } from "../api";
 import { useData } from "../data";
-import { tr, useI18n } from "../i18n";
+import { useI18n } from "../i18n";
 import { useConfirm } from "../ui";
 import { StrengthChips } from "../components/Strengths";
 import { Callout, ExtLink, isHttps, Spin } from "../components/ExtBits";
 import type { PageProps } from "./SettingsModal";
 import "../styles/local.css";
 
-const ACCEL: Record<string, string> = { metal: tr("Apple silicon (Metal acceleration)"), cuda: tr("NVIDIA (CUDA acceleration)"), none: tr("No GPU acceleration (CPU only)"), unknown: tr("Acceleration type unknown") };
-const FIT_LABEL: Record<LocalFit, string> = { ok: tr("Plenty of memory"), tight: tr("Memory is tight"), no: tr("Not enough memory"), unknown: "" };
-const SRC_LABEL: Record<string, string> = { ollama: tr("New Ollama model"), successor: tr("New generation"), hf: "Hugging Face", github: "GitHub", "ollama-release": tr("Ollama itself") };
+// English keys, translated where they are rendered: tr() in a module-level table is evaluated once,
+// while the module loads, so it would freeze this page's language at import time.
+const ACCEL: Record<string, string> = { metal: "Apple silicon (Metal acceleration)", cuda: "NVIDIA (CUDA acceleration)", none: "No GPU acceleration (CPU only)", unknown: "Acceleration type unknown" };
+const FIT_LABEL: Record<LocalFit, string> = { ok: "Plenty of memory", tight: "Memory is tight", no: "Not enough memory", unknown: "" };
+const SRC_LABEL: Record<string, string> = { ollama: "New Ollama model", successor: "New generation", hf: "Hugging Face", github: "GitHub", "ollama-release": "Ollama itself" };
 
 const gb = (n: number) => (n >= 100 ? Math.round(n) : Math.round(n * 10) / 10) + " GB";
 const asCand = (u: UpdateItem): LocalCandidate => u.detail as unknown as LocalCandidate;
@@ -145,7 +147,7 @@ export default function LocalPage({ onTab }: PageProps) {
               {cat?.running ? t("Models are downloaded and run by Ollama") : t("Install and start Ollama, then click refresh on the right")}
               {hw && (
                 <span className="lp-hw">
-                  {t("This machine: {ram} memory · {disk} free disk · {accel}", { ram: hw.ram_gb != null ? `${hw.ram_gb} GB` : t("unknown"), disk: hw.disk_free_gb != null ? `${hw.disk_free_gb} GB` : t("unknown"), accel: ACCEL[hw.accel] })}
+                  {t("This machine: {ram} memory · {disk} free disk · {accel}", { ram: hw.ram_gb != null ? `${hw.ram_gb} GB` : t("unknown"), disk: hw.disk_free_gb != null ? `${hw.disk_free_gb} GB` : t("unknown"), accel: ACCEL[hw.accel] ? t(ACCEL[hw.accel]) : "" })}
                   {hw.translated && t(" · The backend Python is the Intel build (translated by Rosetta); rebuilding .venv with an arm64 Python is recommended")}
                 </span>
               )}
@@ -295,7 +297,7 @@ function ModelRow({ m, installed, isFallback, busy, progress, canFallback, onPul
         <code className="lp-tag">{m.tag}</code>
         <span className="lp-size">{m.size_gb ? gb(m.size_gb) : t("Size unknown")}</span>
         {m.ctx && <span className="muted small">{t("Context {n}", { n: String(m.ctx) })}</span>}
-        {FIT_LABEL[m.fit] && <span className={"tag lp-fit " + m.fit}>{FIT_LABEL[m.fit]}</span>}
+        {FIT_LABEL[m.fit] && <span className={"tag lp-fit " + m.fit}>{t(FIT_LABEL[m.fit])}</span>}
         {!m.disk_ok && <span className="tag lp-fit no">{t("Not enough disk")}</span>}
         {m.slow && !bad && <span className="tag lp-fit tight" title={t("Without GPU acceleration, larger models generate very slowly")}>{t("Will be slow")}</span>}
         {m.note && <span className="muted small lp-note-txt">{m.note}</span>}
@@ -401,7 +403,7 @@ function SelfHost({ fam, hasProvider, onTab, onAdded }: {
               <code className="lp-tag">{m.id}</code>
               <span className="muted small">{m.params}</span>
               {m.size_gb > 0 && <span className="lp-size">{t("About {size} at 4-bit quantization", { size: gb(m.size_gb) })}</span>}
-              {m.size_gb > 0 && FIT_LABEL[m.fit] && <span className={"tag lp-fit " + m.fit}>{FIT_LABEL[m.fit]}</span>}
+              {m.size_gb > 0 && FIT_LABEL[m.fit] && <span className={"tag lp-fit " + m.fit}>{t(FIT_LABEL[m.fit])}</span>}
               <span className="muted small lp-note-txt">{m.note}</span>
             </div>
           </div>

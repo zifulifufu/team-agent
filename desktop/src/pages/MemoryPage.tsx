@@ -8,24 +8,26 @@ import ObsidianCard from "../components/ObsidianCard";
 import "../styles/know.css";
 
 const MAX = 500;
+// English keys, translated where they are shown: tr() in a module-level table is evaluated once, while
+// the module loads, and would freeze this page in whatever language was current at import time.
 const KINDS: { id: MemoryKind; label: string; hint: string }[] = [
-  { id: "preference", label: tr("Preference"), hint: tr("Your habits, tone, and formatting requirements") },
-  { id: "fact", label: tr("Fact"), hint: tr("Objective details such as projects, people, and terms") },
-  { id: "decision", label: tr("Decision"), hint: tr("Choices that have already been settled") },
-  { id: "lesson", label: tr("Lesson"), hint: tr("Pitfalls you hit, and approaches that worked or did not") },
-  { id: "action", label: tr("Action"), hint: tr("Steps for handling multi-step tasks") },
+  { id: "preference", label: "Preference", hint: "Your habits, tone, and formatting requirements" },
+  { id: "fact", label: "Fact", hint: "Objective details such as projects, people, and terms" },
+  { id: "decision", label: "Decision", hint: "Choices that have already been settled" },
+  { id: "lesson", label: "Lesson", hint: "Pitfalls you hit, and approaches that worked or did not" },
+  { id: "action", label: "Action", hint: "Steps for handling multi-step tasks" },
 ];
 const KIND_LABEL = Object.fromEntries(KINDS.map((k) => [k.id, k.label])) as Record<string, string>;
-const SOURCE_LABEL: Record<string, string> = { manual: tr("Added manually"), auto: tr("Auto-extracted"), action: tr("Action log"), obsidian: tr("From Obsidian") };
+const SOURCE_LABEL: Record<string, string> = { manual: "Added manually", auto: "Auto-extracted", action: "Action log", obsidian: "From Obsidian" };
 /** Action logs: the backend stores multi-step task procedures as kind=action with source=auto (not source=action), so accept both shapes here. */
 const isActionLog = (m: Memory) => m.source === "action" || (m.kind === "action" && m.source !== "manual");
-const sourceLabel = (m: Memory) => (isActionLog(m) ? SOURCE_LABEL.action : SOURCE_LABEL[m.source] ?? m.source);
+const sourceLabel = (m: Memory) => tr(isActionLog(m) ? SOURCE_LABEL.action : (SOURCE_LABEL[m.source] ?? m.source));
 type ScopeTab = "all" | MemoryScope;
 const SCOPE_TABS: { id: ScopeTab; label: string }[] = [
-  { id: "all", label: tr("All") },
-  { id: "global", label: tr("Global") },
-  { id: "group", label: tr("Group") },
-  { id: "agent", label: tr("Member") },
+  { id: "all", label: "All" },
+  { id: "global", label: "Global" },
+  { id: "group", label: "Group" },
+  { id: "agent", label: "Member" },
 ];
 const LIST_LIMIT = 500; // The backend returns at most this many per call
 
@@ -198,7 +200,7 @@ export default function MemoryPage() {
           <div className="seg" role="tablist" aria-label={t("Memory scope")}>
             {SCOPE_TABS.map((s) => (
               <button key={s.id} role="tab" aria-selected={tab === s.id} className={tab === s.id ? "on" : ""} onClick={() => { setTab(s.id); setScopeId(""); }}>
-                {s.label}
+                {t(s.label)}
               </button>
             ))}
           </div>
@@ -210,7 +212,7 @@ export default function MemoryPage() {
           )}
           <select className="kn-select" value={kind} onChange={(e) => setKind(e.target.value as "" | MemoryKind)} aria-label={t("Filter by type")}>
             <option value="">{t("All types")}</option>
-            {KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+            {KINDS.map((k) => <option key={k.id} value={k.id}>{t(k.label)}</option>)}
           </select>
           <span className="grow" />
           <label className="search-box kn-search-sm">
@@ -254,7 +256,7 @@ export default function MemoryPage() {
                 ) : (
                   <article key={m.id} className={"kn-mem" + (m.pinned ? " pinned" : "")}>
                     <div className="kn-mem-top">
-                      <span className={"tag kn-kind " + m.kind} title={KINDS.find((k) => k.id === m.kind)?.hint}>{KIND_LABEL[m.kind] ?? m.kind}</span>
+                      <span className={"tag kn-kind " + m.kind} title={t(KINDS.find((k) => k.id === m.kind)?.hint ?? "")}>{t(KIND_LABEL[m.kind] ?? m.kind)}</span>
                       <span className="kn-mem-scope">{scopeText(m)}</span>
                       <span className="grow" />
                       <button
@@ -350,7 +352,7 @@ function EditCard({ m, onCancel, onSaved }: { m: Memory; onCancel: () => void; o
       />
       <div className="kn-edit-bar">
         <select className="kn-select" value={kind} onChange={(e) => setKind(e.target.value as MemoryKind)} aria-label={t("Type")}>
-          {KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+          {KINDS.map((k) => <option key={k.id} value={k.id}>{t(k.label)}</option>)}
         </select>
         <span className={"small " + (over ? "err" : "muted")}>{text.length} / {MAX}</span>
         {err && <span className="err small">{err}</span>}
@@ -431,12 +433,12 @@ function AddModal({ initial, onClose, onSaved }: { initial: { tab: ScopeTab; sco
         <span>{t("Type")}</span>
         <div className="kn-kinds" role="radiogroup" aria-label={t("Memory type")}>
           {KINDS.map((k) => (
-            <button key={k.id} role="radio" aria-checked={kind === k.id} className={"kn-kind-pick" + (kind === k.id ? " on" : "")} onClick={() => setKind(k.id)} title={k.hint}>
+            <button key={k.id} role="radio" aria-checked={kind === k.id} className={"kn-kind-pick" + (kind === k.id ? " on" : "")} onClick={() => setKind(k.id)} title={t(k.hint)}>
               {k.label}
             </button>
           ))}
         </div>
-        <span className="muted small">{KINDS.find((k) => k.id === kind)?.hint}</span>
+        <span className="muted small">{t(KINDS.find((k) => k.id === kind)?.hint ?? "")}</span>
       </div>
       <label className="check-inline" style={{ marginBottom: 6 }}>
         <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />

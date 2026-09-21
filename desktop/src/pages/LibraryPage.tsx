@@ -11,7 +11,7 @@ import "../styles/know.css";
 import { tr, useI18n } from "../i18n";
 
 const ACCEPT = ".txt,.md,.markdown,.csv,.json,.html,.htm,.pdf,.docx";
-const FORMATS = ["txt", "md", "csv", "json", "html", tr("pdf (needs a text layer)"), "docx"];
+const FORMATS = ["txt", "md", "csv", "json", "html", "pdf (needs a text layer)", "docx"];   // translated where it is shown
 
 // ------------------------------------------------------------------ helpers
 function fmtChars(n: number): string {
@@ -280,7 +280,7 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
       <Upload size={empty ? 26 : 18} strokeWidth={1.6} />
       <div className="kn-drop-text">
         <b>{drag ? t("Release to start uploading") : empty ? t("Drop files here, or use Upload file") : t("Drag files here to upload")}</b>
-        <span>{t("Supports {formats}; select several at once and they upload one by one.", { formats: FORMATS.join(" / ") })}</span>
+        <span>{t("Supports {formats}; select several at once and they upload one by one.", { formats: FORMATS.map((f) => t(f)).join(" / ") })}</span>
       </div>
       {!drag && (
         <button className="btn small" onClick={() => fileInput.current?.click()}>{t("Choose files")}</button>

@@ -2,27 +2,30 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, type PermMode, type Permissions, type PlanMode, type Settings } from "../api";
 import { useData } from "../data";
-import { tr, useI18n } from "../i18n";
+import { useI18n } from "../i18n";
 import { Switch } from "../ui";
 import { NumInput, Row, useSettingsSaver } from "./rows";
 import type { PageProps } from "./SettingsModal";
 import "../styles/perms.css";
 
+// Everything below holds the English keys and is translated where it is rendered. Wrapping the values
+// in tr() here would evaluate them once, while the module loads — freezing the page in whatever
+// language was current at import time, and ignoring every later language switch.
 const MODES: { id: PermMode; title: string; desc: string; danger?: boolean }[] = [
-  { id: "ask_risky", title: tr("Ask me only for actions that do something (recommended)"), desc: tr("Plugins and MCP tools that do not declare themselves read-only ask you before every call. Searching the library/memory, checking the time, and read-only MCP tools run directly.") },
-  { id: "ask_all", title: tr("Ask me every time"), desc: tr("Members confirm before calling any tool other than the clock. Safest, but it interrupts often.") },
-  { id: "allow_all", title: tr("Allow everything automatically"), desc: tr("Members can call any tool enabled in this group, including plugins that execute code. Only choose this if you fully trust the plugins and MCP servers you installed."), danger: true },
+  { id: "ask_risky", title: "Ask me only for actions that do something (recommended)", desc: "Plugins and MCP tools that do not declare themselves read-only ask you before every call. Searching the library/memory, checking the time, and read-only MCP tools run directly." },
+  { id: "ask_all", title: "Ask me every time", desc: "Members confirm before calling any tool other than the clock. Safest, but it interrupts often." },
+  { id: "allow_all", title: "Allow everything automatically", desc: "Members can call any tool enabled in this group, including plugins that execute code. Only choose this if you fully trust the plugins and MCP servers you installed.", danger: true },
 ];
-const POLICY_TEXT = { allow: tr("Runs directly"), ask: tr("Asks me first"), deny: tr("Blocked") } as const;
+const POLICY_TEXT = { allow: "Runs directly", ask: "Asks me first", deny: "Blocked" } as const;
 const PLAN_MODES: { id: Exclude<PlanMode, "inherit">; label: string }[] = [
-  { id: "auto", label: tr("Auto") },
-  { id: "on", label: tr("Always split") },
-  { id: "off", label: tr("Never split") },
+  { id: "auto", label: "Auto" },
+  { id: "on", label: "Always split" },
+  { id: "off", label: "Never split" },
 ];
 const PLAN_HINT: Record<Exclude<PlanMode, "inherit">, string> = {
-  auto: tr("For complex tasks the host drafts a split plan first; simple questions are answered directly."),
-  on: tr("Every message gets a split plan from the host before the members act."),
-  off: tr("No splitting — replies follow @mentions and the default rules."),
+  auto: "For complex tasks the host drafts a split plan first; simple questions are answered directly.",
+  on: "Every message gets a split plan from the host before the members act.",
+  off: "No splitting — replies follow @mentions and the default rules.",
 };
 
 type Override = "default" | "allow" | "deny";
@@ -88,8 +91,8 @@ export default function PermissionsPage({ onTab }: PageProps) {
           <label key={m.id} className={"pm-mode" + (settings.perm_mode === m.id ? " on" : "") + (m.danger ? " danger" : "")}>
             <input type="radio" name="perm_mode" checked={settings.perm_mode === m.id} onChange={() => void set({ perm_mode: m.id })} />
             <span>
-              <span className="pm-title">{m.title}{m.danger && <ShieldAlert size={13} aria-hidden />}</span>
-              <span className="pm-desc">{m.desc}</span>
+              <span className="pm-title">{t(m.title)}{m.danger && <ShieldAlert size={13} aria-hidden />}</span>
+              <span className="pm-desc">{t(m.desc)}</span>
             </span>
           </label>
         ))}
@@ -113,7 +116,7 @@ export default function PermissionsPage({ onTab }: PageProps) {
               <div key={tool.name} className="pm-tool">
                 <span className="pm-tname" title={tool.name}>{tool.name}</span>
                 <span className={"pm-risk " + tool.risk}>{tool.risk_label}</span>
-                <span className={"pm-now " + tool.policy}>{POLICY_TEXT[tool.policy]}</span>
+                <span className={"pm-now " + tool.policy}>{t(POLICY_TEXT[tool.policy])}</span>
                 <select value={ov} disabled={saving} aria-label={t("How {name} is handled", { name: tool.name })} onChange={(e) => void setOverride(tool.name, e.target.value as Override)}>
                   <option value="default">{t("Follow the mode above")}</option>
                   <option value="allow">{t("Always allow")}</option>
@@ -221,9 +224,9 @@ export default function PermissionsPage({ onTab }: PageProps) {
 
       <div className="sec">{t("Automation")}</div>
       <div className="card flush">
-        <Row title={t("Split mode")} desc={PLAN_HINT[settings.plan_mode] ?? ""}>
+        <Row title={t("Split mode")} desc={PLAN_HINT[settings.plan_mode] ? t(PLAN_HINT[settings.plan_mode]) : ""}>
           <select className="ext-plan-select" value={settings.plan_mode} aria-label={t("Split mode")} onChange={(e) => void set({ plan_mode: e.target.value as Settings["plan_mode"] })}>
-            {PLAN_MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            {PLAN_MODES.map((m) => <option key={m.id} value={m.id}>{t(m.label)}</option>)}
           </select>
         </Row>
         <Row title={t("Max split tasks")} desc={t("How many tasks the host may split one job into at most.")}>

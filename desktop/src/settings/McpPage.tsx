@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { ChevronRight, ExternalLink, FileJson, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type McpServer, type McpTemplate } from "../api";
 import { useData } from "../data";
-import { tr, useI18n } from "../i18n";
+import { useI18n } from "../i18n";
 import { Modal, Switch, useConfirm } from "../ui";
 import { Callout, GithubMark, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
@@ -10,8 +10,10 @@ import McpImportModal from "../components/McpImport";
 import "../styles/ext.css";
 
 const MASK = "••••••";
-const STATUS_TEXT: Record<string, string> = { ready: tr("Connected"), connecting: tr("Connecting…"), error: tr("Connection failed"), idle: tr("Not connected") };
-const TRANSPORT_TEXT: Record<string, string> = { stdio: tr("Local command · stdio"), http: tr("Remote · http"), sse: tr("Remote · sse") };
+// English keys, translated where they are rendered — a module-level tr() would be evaluated once, at
+// import time, and freeze this page in whatever language happened to be current then.
+const STATUS_TEXT: Record<string, string> = { ready: "Connected", connecting: "Connecting…", error: "Connection failed", idle: "Not connected" };
+const TRANSPORT_TEXT: Record<string, string> = { stdio: "Local command · stdio", http: "Remote · http", sse: "Remote · sse" };
 export const hasPlaceholder = (s: string) => /\/path\/to\//.test(s);
 
 /** Highlight the /path/to/… placeholders inside a string. */
@@ -36,11 +38,11 @@ export const EMPTY_INIT: FormInit = { name: "", description: "", remote: false, 
 
 type Dialog = { server: McpServer | null; init: FormInit } | null;
 
-const MARKETS = [
-  { name: tr("Official reference servers"), url: "https://github.com/modelcontextprotocol/servers", note: tr("The official MCP repository, with reference implementations for filesystem, web fetching, Git, memory, and more.") },
-  { name: tr("Official MCP registry"), url: "https://registry.modelcontextprotocol.io", note: tr("The officially maintained server registry.") },
-  { name: "mcp.so", url: "https://mcp.so", note: tr("A community-collected directory of MCP servers.") },
-  { name: "Smithery", url: "https://smithery.ai", note: tr("A third-party marketplace for MCP servers.") },
+const MARKETS = [   // English keys; translated where they are rendered (see STATUS_TEXT above)
+  { name: "Official reference servers", url: "https://github.com/modelcontextprotocol/servers", note: "The official MCP repository, with reference implementations for filesystem, web fetching, Git, memory, and more." },
+  { name: "Official MCP registry", url: "https://registry.modelcontextprotocol.io", note: "The officially maintained server registry." },
+  { name: "mcp.so", url: "https://mcp.so", note: "A community-collected directory of MCP servers." },
+  { name: "Smithery", url: "https://smithery.ai", note: "A third-party marketplace for MCP servers." },
 ];
 
 import type { SettingsTab } from "./SettingsModal";
@@ -164,12 +166,12 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
                     onClick={() => setOpen((o) => { const n = new Set(o); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })}>
                     <span className={isOpen ? "ext-rot" : ""} style={{ display: "inline-flex", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .12s" }}><ChevronRight size={14} /></span>
                   </button>
-                  <span className={"ext-dot " + st} title={STATUS_TEXT[st]} role="img" aria-label={STATUS_TEXT[st]} />
+                  <span className={"ext-dot " + st} title={t(STATUS_TEXT[st])} role="img" aria-label={t(STATUS_TEXT[st])} />
                   <div className="mr-main" style={{ opacity: s.enabled ? 1 : 0.55 }}>
                     <div className="mr-name">
                       {s.name}
-                      <span className="tag">{TRANSPORT_TEXT[eff] ?? eff}</span>
-                      <span className={"ext-status-text " + st}>{STATUS_TEXT[st]}</span>
+                      <span className="tag">{TRANSPORT_TEXT[eff] ? t(TRANSPORT_TEXT[eff]) : eff}</span>
+                      <span className={"ext-status-text " + st}>{t(STATUS_TEXT[st])}</span>
                       {!s.enabled && <span className="tag warn">{t("Disabled")}</span>}
                     </div>
                     <div className="mr-id" title={eff === "stdio" ? [s.command, ...s.args].join(" ") : s.url}>
@@ -241,8 +243,8 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
       <div className="ext-tpl-grid">
         {MARKETS.map((m) => (
           <a key={m.url} className="ext-tpl" href={m.url} target="_blank" rel="noreferrer">
-            <b>{m.name} <ExternalLink size={12} aria-hidden /></b>
-            <span className="ext-tpl-note">{m.note}</span>
+            <b>{t(m.name)} <ExternalLink size={12} aria-hidden /></b>
+            <span className="ext-tpl-note">{t(m.note)}</span>
           </a>
         ))}
       </div>

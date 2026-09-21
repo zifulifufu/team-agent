@@ -2,21 +2,22 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { BookOpen, Boxes, Download, HardDrive, Package, Plug, Puzzle, RefreshCw, Sparkles, type LucideIcon } from "lucide-react";
 import { api, relTime, type Settings, type UpdateItem, type UpdatesInfo } from "../api";
 import { useData } from "../data";
-import { tr, useI18n } from "../i18n";
+import { useI18n } from "../i18n";
 import { Switch, useConfirm } from "../ui";
 import { agoIso, Callout, fmtBytes, isHttps, SourceBadge, Spin } from "../components/ExtBits";
 import PluginInstallModal from "../components/PluginInstall";
 import type { PageProps } from "./SettingsModal";
 import "../styles/ext.css";
 
+// English labels, translated where they are shown (a module-level tr() would be frozen at import).
 const KIND_META: Record<UpdateItem["kind"], { icon: LucideIcon; label: string }> = {
-  app: { icon: Package, label: tr("App") },
-  catalog: { icon: BookOpen, label: tr("Model catalog") },
-  skill: { icon: Sparkles, label: tr("Skill") },
-  plugin: { icon: Puzzle, label: tr("Plugin") },
-  model: { icon: Boxes, label: tr("New model") },
-  localmodel: { icon: HardDrive, label: tr("Local model") },
-  localcatalog: { icon: BookOpen, label: tr("Local model catalog") },
+  app: { icon: Package, label: "App" },
+  catalog: { icon: BookOpen, label: "Model catalog" },
+  skill: { icon: Sparkles, label: "Skill" },
+  plugin: { icon: Puzzle, label: "Plugin" },
+  model: { icon: Boxes, label: "New model" },
+  localmodel: { icon: HardDrive, label: "Local model" },
+  localcatalog: { icon: BookOpen, label: "Local model catalog" },
 };
 
 const s = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -299,7 +300,7 @@ function UpdateRow({ item, onTab, onDone }: { item: UpdateItem; onTab: PageProps
     <div className="ext-upd">
       <div className="ext-upd-ico"><meta.icon size={17} /></div>
       <div className="ext-upd-main">
-        <div className="ext-upd-title">{item.title}<span className="tag">{meta.label}</span></div>
+        <div className="ext-upd-title">{item.title}<span className="tag">{t(meta.label)}</span></div>
         <div className="ext-upd-body">{body}</div>
         {err && <div className="ext-errline">{err}</div>}
         <div className="ext-upd-actions">
