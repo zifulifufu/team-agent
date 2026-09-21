@@ -1,4 +1,7 @@
-"""群主分工、强项协作、工具调用循环、资料库/记忆注入、MCP —— 用可脚本化的假模型端到端验证编排器。"""
+"""Host delegation, strengths-based collaboration, the tool-call loop, library and
+memory injection, MCP - end-to-end checks of the orchestrator against a scriptable
+fake model.
+"""
 
 import asyncio
 import json
@@ -24,7 +27,9 @@ from tests.conftest import (
 
 
 def role(messages):
-    """System prompt 里的成员名(中英两种内置提示词都认)。"""
+    """The member name embedded in the system prompt (recognised in both the Chinese
+    and the English built-in phrasing).
+"""
     m = re.match(r'(?:你是「(.+?)」|You are "(.+?)")', messages[0]["content"][:90])
     return (m.group(1) or m.group(2)) if m else ""
 
@@ -78,7 +83,7 @@ def plan_script(plan=PLAN):
     return script
 
 
-# ------------------------------------------------------------------ 分工
+# --------------------------------------------------------------- delegation
 async def test_host_plans_by_strengths_and_chains_outputs(store, make_router):
     fake = FakeLLM(default=plan_script())
     orch, g = setup(store, make_router, fake)
@@ -88,33 +93,35 @@ async def test_host_plans_by_strengths_and_chains_outputs(store, make_router):
     assert [m["sender_name"] for m in c.ends()] == ["Aide", "Copywriter", "Proofreader", "Aide"]
 
     plan_intro, draft, review, final = c.ends()
-    assert plan_intro["content"] == "思路:先写后审。"                      # <plan> 不出现在聊天记录里
+    assert plan_intro["content"] == "思路:先写后审。"                      # <plan> never reaches the transcript
     streamed = c.streamed(plan_intro["id"])
     assert "<plan>" not in streamed and "goal" not in streamed and streamed.startswith("思路")
     assert draft["meta"]["task_id"] == "t1" and review["meta"]["task_id"] == "t2" and final["meta"]["task_id"] == "final"
 
-    # 任务板消息:全部完成,并指向各成员的消息
+    # the task-board message: everything done, pointing at each member message
     board = [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"]
     assert len(board) == 1
     tasks = board[0]["meta"]["tasks"]
     assert board[0]["meta"]["status"] == "done" and [t["status"] for t in tasks] == ["done", "done"]
     assert tasks[0]["message_id"] == draft["id"] and tasks[1]["needs"] == ["t1"]
-    assert sum(1 for e in c.events if e["type"] == "plan") >= 5          # 每次状态变化都推送
+    assert sum(1 for e in c.events if e["type"] == "plan") >= 5          # pushed on every state change
 
     calls = {(role(m), "整合" if has(last_user(m), INTEGRATE) else "任务" if has(last_user(m), TASK_HEAD) else "其它"): m
              for _, m in fake.calls}
-    # 校对拿到上游成果、统一约定、声明要求,以及带强项的分工表
+    # the proofreader receives the upstream result, the shared conventions, the
+    # declaration requirement and the task table with strengths
     p = last_user(calls[("Proofreader", "任务")])
     assert "初稿正文ABC" in p and "各位同事" in p and has(p, ASSIGNMENT) and has(p, UPSTREAM)
     sysmsg = calls[("Proofreader", "任务")][0]["content"]
     assert "strengths:" in sysmsg and "(host)" in sysmsg and "model:" in sysmsg
-    # 文案的历史里不重复出现自己/他人的分工成果(成果只通过任务提示传递)
+    # the copywriter history repeats neither its own nor anyone else output
+    # (results travel only through the task prompt)
     assert "审校意见XYZ" not in json.dumps(calls[("Copywriter", "任务")], ensure_ascii=False)
-    # 群主整合时看到两位成员的成果
+    # the host sees both members output when integrating
     integ = last_user(calls[("Aide", "整合")])
     assert "初稿正文ABC" in integ and "审校意见XYZ" in integ
 
-    # 行为记入记忆:谁做了什么
+    # the run is recorded as a memory: who did what
     acts = store.list_memories("group", g["id"], "action")
     assert acts and "Copywriter" in acts[0]["content"] and "Proofreader" in acts[0]["content"]
 
@@ -130,7 +137,7 @@ async def test_planning_instruction_lists_members_strengths_and_past_actions(sto
     assert has(u, PLAN_MODE) and "Decide first" in u and "How similar tasks were handled before" in u and "Copywriter(deepseek-flash)" in u
     assert "[Members and their parts]" in msgs[0]["content"] and "Aide(Coordinator) (host)" in msgs[0]["content"]
     assert msgs[0]["content"].count("(host)") == 1
-    assert [m["sender_name"] for m in c.ends()] == ["Aide"]                # 群主判断不需要分工 → 直接回答
+    assert [m["sender_name"] for m in c.ends()] == ["Aide"]                # the host decides no delegation is needed and answers directly
 
 
 async def test_invalid_plan_falls_back_with_notice(store, make_router):
@@ -149,17 +156,17 @@ async def test_plan_modes_off_explicit_mention_and_on(store, make_router):
     fake = FakeLLM(default=plan_script())
     orch, g = setup(store, make_router, fake, plan_mode="off")
     await orch.handle_user_message(g["id"], "写通知", Collector())
-    assert not has(last_user(fake.calls[0][1]), PLAN_MODE)               # 全局关闭
+    assert not has(last_user(fake.calls[0][1]), PLAN_MODE)               # turned off globally
     store.update_settings({"plan_mode": "auto"})
     fake.calls.clear()
-    await orch.handle_user_message(g["id"], "@Copywriter 写通知", Collector())    # 点名 → 不分工
+    await orch.handle_user_message(g["id"], "@Copywriter 写通知", Collector())    # naming someone skips delegation
     assert all(not has(last_user(m), PLAN_MODE) for _, m in fake.calls)
     fake.calls.clear()
-    store.update_group(g["id"], {"ext": {"plan": "off"}})                  # 群内覆盖全局
+    store.update_group(g["id"], {"ext": {"plan": "off"}})                  # group setting overrides global
     await orch.handle_user_message(g["id"], "写通知", Collector())
     assert not has(last_user(fake.calls[0][1]), PLAN_MODE)
     store.update_group(g["id"], {"ext": {"plan": "on"}})
-    fake2 = FakeLLM(default="我直接答了")                                   # 「总是分工」但群主没给计划
+    fake2 = FakeLLM(default="我直接答了")                                   # "always delegate", yet the host sends no plan
     orch2 = Orchestrator(store, make_router(fake2))
     await orch2.handle_user_message(g["id"], "写通知", Collector())
     assert "You must split the work" in last_user(fake2.calls[0][1])
@@ -182,7 +189,7 @@ async def test_failed_task_does_not_block_others_and_is_reported(store, make_rou
     tasks = next(m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan")["meta"]
     assert [t["status"] for t in tasks["tasks"]] == ["failed", "done"] and tasks["status"] == "done"
     review_prompt = next(last_user(m) for _, m in fake.calls if role(m) == "Proofreader")
-    assert "produced nothing" in review_prompt                              # 下游被告知上游缺失
+    assert "produced nothing" in review_prompt                              # the downstream worker is told the upstream one failed
     integ = next(last_user(m) for _, m in fake.calls if has(last_user(m), INTEGRATE))
     assert "did not finish" in integ
 
@@ -217,7 +224,7 @@ async def test_cancel_marks_plan_stopped(store, make_router):
     assert not any(m["sender_name"] == "Copywriter" for m in store.list_messages(g["id"]))
 
 
-# ------------------------------------------------------------------ 工具循环
+# --------------------------------------------------------------- the tool loop
 def write_plugin(store, orch):
     (store.data_dir / "plugins" / "demo.py").write_text(
         'PLUGIN = {"name": "演示", "description": "演示插件"}\n'
@@ -256,8 +263,8 @@ async def test_tool_loop_runs_plugin_and_hides_call_markup(store, make_router):
     second = fake.calls[1][1]
     assert second[-2]["role"] == "assistant" and "<tool_call>" in second[-2]["content"]
     assert '<tool_result name="shout" ok="true">\nHELLO' in second[-1]["content"]
-    assert "shout(text: string)" in fake.calls[0][1][0]["content"]         # 工具清单进了系统提示词
-    # 用了工具的一次协作会被记成「过往做法」
+    assert "shout(text: string)" in fake.calls[0][1][0]["content"]         # the tool list reaches the system prompt
+    # a turn that used a tool is remembered as a previous approach
     assert any("shout" in m["content"] for m in store.list_memories("group", g["id"], "action"))
 
 
@@ -281,7 +288,7 @@ async def test_tool_errors_unknown_and_disabled_are_reported_to_model(store, mak
     assert 'name="boom" ok="false"' in text and "ZeroDivisionError" in text
     assert 'name="nope" ok="false"' in text and "There is no tool called nope" in text
     assert 'name="shout" ok="true"' in text
-    assert len(c.ends()[0]["meta"]["tools"]) == 3                           # 单次最多 3 个调用,第 4 个(坏格式)被丢弃
+    assert len(c.ends()[0]["meta"]["tools"]) == 3                           # at most 3 calls per round, the malformed 4th is dropped
 
 
 async def test_plugin_not_enabled_in_group_is_unavailable(store, make_router):
@@ -290,7 +297,7 @@ async def test_plugin_not_enabled_in_group_is_unavailable(store, make_router):
     write_plugin(store, orch)
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     assert "shout(" not in fake.calls[0][1][0]["content"]
-    assert "current_time" in fake.calls[0][1][0]["content"]                 # 内置工具始终可用
+    assert "current_time" in fake.calls[0][1][0]["content"]                 # built-in tools are always available
 
 
 async def test_tool_rounds_are_capped_and_can_be_disabled(store, make_router):
@@ -298,7 +305,7 @@ async def test_tool_rounds_are_capped_and_can_be_disabled(store, make_router):
     orch, g = setup(store, make_router, fake, tool_rounds=2)
     c = Collector()
     await orch.handle_user_message(g["id"], "@Copywriter 一直查", c)
-    assert len(fake.calls) == 3 and c.ends()                                 # 1 次 + 2 轮工具后强制收尾
+    assert len(fake.calls) == 3 and c.ends()                                 # 1 call + 2 tool rounds, then it is forced to wrap up
     fake.calls.clear()
     store.update_settings({"tool_rounds": 0})
     await orch.handle_user_message(g["id"], "@Copywriter 再来", Collector())
@@ -330,7 +337,8 @@ async def test_midstream_reset_restores_earlier_visible_text(store, make_router)
     await orch.handle_user_message(g["id"], "@Copywriter 看下时间", c)
     msg = c.ends()[0]
     mid = msg["id"]
-    # 前端按事件顺序还原:reset 清空后要把第一轮已经展示过的文字补回去
+    # replaying events in order, the frontend must restore the text already shown
+    # in the first round after a reset clears it
     shown = ""
     for e in c.events:
         if e.get("message_id") != mid:
@@ -343,7 +351,7 @@ async def test_midstream_reset_restores_earlier_visible_text(store, make_router)
     assert msg["fallback_from"] and msg["model_id"].startswith("ollama/")
 
 
-# ---------------------------------------------------------------- 资料库/记忆
+# --------------------------------------------------------- library / memory
 async def test_library_tool_and_refs_and_scope(store, make_router):
     def script(messages):
         if "<tool_result" in last_user(messages):
@@ -358,13 +366,13 @@ async def test_library_tool_and_refs_and_scope(store, make_router):
     await orch.handle_user_message(g["id"], "@Copywriter 出差住宿标准是多少", c)
     assert c.ends()[0]["content"] == "依据资料:600" and c.ends()[0]["meta"]["tools"][0]["name"] == "library_search"
     assert "[差旅制度" in fake.calls[1][1][-1]["content"]
-    # 限定只用「食堂」→ 搜不到差旅制度
+    # scoped to the canteen menu, so the travel policy cannot be found
     lib_ids = [d["id"] for d in store.list_docs() if d["title"] == "食堂"]
     store.update_group(g["id"], {"ext": {"library": {"mode": "selected", "ids": lib_ids}}})
     c2 = Collector()
     await orch.handle_user_message(g["id"], "@Copywriter 出差住宿标准是多少", c2)
     assert c2.ends()[0]["content"] == "依据资料:无"
-    # 关闭资料库 → 工具不出现
+    # library off: the tool is not offered
     store.update_group(g["id"], {"ext": {"library": {"mode": "off", "ids": []}}})
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
@@ -394,7 +402,7 @@ async def test_memory_injected_scoped_and_toggleable_and_saved_by_tool(store, ma
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     s = fake.calls[0][1][0]["content"]
     assert has(s, MEMORY_HEAD) and "永远用中文回复" in s and "别的群的事" not in s
-    store.update_group(g["id"], {"ext": {"memory": False}})                  # 本群关闭记忆
+    store.update_group(g["id"], {"ext": {"memory": False}})                  # memory disabled for this group
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     assert not has(fake.calls[0][1][0]["content"], MEMORY_HEAD) and "memory_save" not in fake.calls[0][1][0]["content"]
@@ -402,7 +410,7 @@ async def test_memory_injected_scoped_and_toggleable_and_saved_by_tool(store, ma
     await orch.handle_user_message(g["id"], "@Copywriter 记住:主持人是小王", Collector())
     assert any("小王" in m["content"] and m["source"] == "auto" for m in store.list_memories("group", g["id"]))
     store.update_group(g["id"], {"ext": {"memory": True}})
-    # 含密钥的内容拒绝保存
+    # content holding a secret is refused
     fake3 = FakeLLM(default=lambda m: call("memory_save", content="密码是 abc") if "<tool_result" not in last_user(m) else "ok")
     orch3 = Orchestrator(store, make_router(fake3))
     c = Collector()
@@ -439,11 +447,11 @@ async def test_global_prompt_group_prompt_and_group_skills_reach_system_prompt(s
     assert s.startswith("你是「Copywriter」。今天 20") and "群名 Product launch group" in s
     assert "[Additional requirements]" in s and "回答不超过 100 字" in s and "这句不该出现" not in s
     assert "[Group prompt]\n本群项目:Product launch group;成员 Aide, Copywriter, Storyboard, Proofreader" in s
-    assert "[Group rule: Brainstorming rules]" in s and "[Skill: Office writing conventions]" in s   # 群技能 + 成员自己的技能
+    assert "[Group rule: Brainstorming rules]" in s and "[Skill: Office writing conventions]" in s   # group skills + the member own skills
     assert "{{" not in s
 
 
-# ------------------------------------------------------------------- MCP
+# ---------------------------------------------------------------------- MCP
 async def test_mcp_tools_are_called_through_real_stdio_server(store, make_router):
     def script(messages):
         if "<tool_result" in last_user(messages):
@@ -474,7 +482,7 @@ async def test_unreachable_mcp_server_is_reported_once_and_does_not_block(store,
         c = Collector()
         await orch.handle_user_message(g["id"], "@所有人 报到", c)
         notes = [m["content"] for m in store.list_messages(g["id"]) if m["sender_type"] == "system"]
-        assert sum('MCP "broken" is not connected' in n for n in notes) == 1          # 同一次协作里只提醒一次
+        assert sum('MCP "broken" is not connected' in n for n in notes) == 1          # warned only once per round
         assert len(c.ends()) == 4
     finally:
         await orch.mcp.shutdown()

@@ -1,4 +1,6 @@
-"""不 mock litellm:DeepSeek / Ollama 都指向本机假服务,验证真实的 LiteLLM 调用与回退链。"""
+"""No litellm mocking here: DeepSeek and Ollama both point at fake servers on
+localhost, so the real LiteLLM call and the fallback chain get exercised.
+"""
 import pytest
 
 from app.router import ModelRouter
@@ -33,7 +35,7 @@ async def test_bad_key_401_falls_back_to_local_ollama(store):
 
 async def test_unreachable_cloud_falls_back_to_local(store):
     with FakeServer(ollama_like("来自本地")) as local:
-        point(store, f"http://127.0.0.1:{free_port()}", local.url)  # 没有任何服务在监听
+        point(store, f"http://127.0.0.1:{free_port()}", local.url)  # nothing is listening on that port
         r = await ModelRouter(store).complete(MSG)
         assert r.text == "来自本地" and r.model_id == "ollama/qwen2.5:7b"
 
@@ -77,7 +79,10 @@ async def test_no_local_server_and_no_cloud_reports_all_failed(store):
 
 
 async def test_429_is_retried_once_not_hammered_then_falls_back(store):
-    """每分钟只允许 3 次请求的账号:SDK 默认会静默连发 3 次,这里必须只有「首次 + 我们的一次重试」共 2 次。"""
+    """Account limited to 3 requests per minute: the SDK would silently retry three
+    times by default; here we must see exactly 2 calls - the first attempt plus one
+    retry of our own.
+    """
     with FakeServer(openai_like(status=429)) as cloud, FakeServer(ollama_like("来自本地")) as local:
         point(store, cloud.url, local.url)
         r = await ModelRouter(store).complete(MSG)

@@ -1,4 +1,6 @@
-"""获取模型列表 / 使用统计 / 系统信息 / 数据导出。服务商用本机真实 HTTP 假服务模拟。"""
+"""Fetching model lists / usage stats / system info / data export. Providers are
+simulated with real HTTP fake servers on localhost.
+"""
 import sqlite3
 import time
 
@@ -43,7 +45,7 @@ def test_fetch_models_openai_compatible_marks_added(client):
         r = client.post(f"/api/providers/{pid}/fetch-models")
         assert r.status_code == 200
         assert r.json()["models"] == [{"id": "deepseek-flash", "added": True},
-                                      {"id": "deepseek-v4-pro", "added": False}]  # 去重 + 排序
+                                      {"id": "deepseek-v4-pro", "added": False}]  # deduped + sorted
         assert srv.server.config.app.state.seen == ["Bearer sk-secret-123456"]
 
 
@@ -66,7 +68,7 @@ def test_fetch_models_unreachable_and_missing_config(client):
     assert r.status_code == 502 and "Could not connect" in r.json()["detail"]
     r = client.post(f"/api/providers/{by['nobase']}/fetch-models")
     assert r.status_code == 502 and "API address" in r.json()["detail"]
-    r = client.post("/api/providers/deepseek/fetch-models")  # 没填 Key(且环境变量未设置)
+    r = client.post("/api/providers/deepseek/fetch-models")  # no key set (and no env var either)
     assert r.status_code == 502 and "API key" in r.json()["detail"]
 
 
@@ -82,7 +84,7 @@ def test_fetch_models_ollama_and_local_still_allowed_offline(client):
         client.put("/api/settings", json={"external_calls_enabled": False})
         r = client.post("/api/providers/ollama/fetch-models")
         assert [m["id"] for m in r.json()["models"]] == ["llama3.2:3b", "qwen2.5:7b"]
-        assert r.json()["models"][1]["added"] is True  # 种子数据里已有 qwen2.5:7b
+        assert r.json()["models"][1]["added"] is True  # qwen2.5:7b already ships in the seed data
 
 
 def test_fetch_models_blocked_for_cloud_when_external_calls_disabled(client):
@@ -92,7 +94,7 @@ def test_fetch_models_blocked_for_cloud_when_external_calls_disabled(client):
         client.put("/api/settings", json={"external_calls_enabled": False})
         r = client.post(f"/api/providers/{pid}/fetch-models")
         assert r.status_code == 403
-        assert srv.server.config.app.state.seen == []  # 根本没有发出请求
+        assert srv.server.config.app.state.seen == []  # no request went out at all
 
 
 def test_fetch_models_anthropic_and_gemini_protocols(client):
@@ -119,10 +121,10 @@ def test_fetch_models_anthropic_and_gemini_protocols(client):
         assert [m["id"] for m in client.post(f"/api/providers/{by['cl']}/fetch-models").json()["models"]] == [
             "claude-haiku-x", "claude-sonnet-x"]
         assert [m["id"] for m in client.post(f"/api/providers/{by['ge']}/fetch-models").json()["models"]] == [
-            "gemini-x-flash"]  # 过滤掉 embedding,并去掉 models/ 前缀
+            "gemini-x-flash"]  # embedding models filtered out and the models/ prefix stripped
         h = app.state.headers
         assert h["anthropic"] == ("ak-1", "2023-06-01")
-        assert h["gemini"][0] == "gk-2" and "key" not in h["gemini"][1]  # Key 只走请求头,不进 URL
+        assert h["gemini"][0] == "gk-2" and "key" not in h["gemini"][1]  # key travels in a header, never in the URL
 
 
 def test_batch_add_models_dedupes(client):
@@ -145,7 +147,7 @@ def test_stats_counts_days_models_fallbacks(client):
     _agent_msg(st, gid, "deepseek/deepseek-flash", ts=now, latency=200)
     _agent_msg(st, gid, "deepseek/deepseek-flash", ts=now, latency=400)
     _agent_msg(st, gid, "ollama/qwen2.5:7b", ts=now - 86400, fallback_from="deepseek/deepseek-flash", latency=900)
-    _agent_msg(st, gid, "deepseek/deepseek-flash", ts=now - 40 * 86400)  # 超出统计窗口
+    _agent_msg(st, gid, "deepseek/deepseek-flash", ts=now - 40 * 86400)  # outside the stats window
     s = client.get("/api/stats?days=7").json()
     assert s["days"] == 7 and len(s["by_day"]) == 7
     assert s["total_requests"] == 3 and s["fallbacks"] == 1 and s["local_calls"] == 1
@@ -187,19 +189,21 @@ def test_export_strips_keys_by_default(client, tmp_path):
     key, agents = dump("/api/data/export")
     assert key == "" and agents == 4
     assert dump("/api/data/export?include_keys=true")[0] == "sk-very-secret-1234"
-    # 导出不能影响线上数据库里的密钥
+    # exporting must not disturb the keys in the live database
     assert client.get("/api/providers").json()[0]["has_key"] is True
 
 
 def test_clear_all_messages(client):
     gid = client.get("/api/groups").json()[0]["id"]
-    assert len(client.get(f"/api/groups/{gid}/messages").json()) >= 1  # 欢迎消息
+    assert len(client.get(f"/api/groups/{gid}/messages").json()) >= 1  # the welcome message
     assert client.delete("/api/data/messages").json()["deleted"] >= 1
     assert client.get(f"/api/groups/{gid}/messages").json() == []
 
 
 def test_export_filename_is_readable_by_browser_frontend(client):
-    """跨域时前端只能读到被 expose 的响应头;否则下载的备份永远叫默认名。"""
+    """Cross-origin, the frontend can only read exposed response headers; otherwise
+    every downloaded backup ends up with the default filename.
+"""
     r = client.get("/api/data/export", headers={"Origin": "http://localhost:5173"})
     assert "content-disposition" in r.headers["access-control-expose-headers"].lower()
     assert "team-agent-backup-" in r.headers["content-disposition"]

@@ -67,7 +67,8 @@ def test_catalog_file_is_english_first_with_chinese_alongside() -> None:
     rows = [m for p in data["providers"].values() for m in p["models"]]
     assert len(rows) >= 100
     assert all(m.get("summary") for m in rows), "每个条目都要有英文简介"
-    # 中文只能出现在 _zh 字段里;原文本来就是英文的条目自然没有 _zh
+    # Chinese may only live in a _zh field; entries whose source text is already
+    # English have no _zh counterpart
     assert not any(HAN.search(m["summary"]) for m in rows)
     bilingual = [m for m in rows if m.get("summary_zh")]
     assert len(bilingual) >= len(rows) - 2, "绝大多数条目应有中文版本"
@@ -83,7 +84,7 @@ def test_local_models_file_is_english_first_with_chinese_alongside() -> None:
     assert _chinese_offender(data) is None, "local_models.json 的基础字段必须只有英文"
     for fam in data["families"]:
         assert fam["desc"] and fam["desc_zh"], fam["id"]
-        assert set(fam["strengths"]) <= set(strengths.TAG_IDS), fam["id"]     # 用 ASCII id,不是中文名
+        assert set(fam["strengths"]) <= set(strengths.TAG_IDS), fam["id"]     # ASCII ids, not Chinese names
         for m in fam["models"]:
             if m.get("note"):
                 assert not HAN.search(m["note"]) and m["note_zh"], m["tag"]
@@ -111,9 +112,9 @@ def test_local_catalog_defaults_to_english_and_serves_chinese_on_request(client:
     assert HAN.search(by_query["families"][0]["desc"])
 
     by_header = client.get("/api/local/catalog", headers={"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}).json()
-    assert HAN.search(by_header["note"])                                       # 带权重的头也能识别
+    assert HAN.search(by_header["note"])                                       # q-weighted headers are understood too
     assert client.get("/api/local/catalog", headers={"Accept-Language": "fr-FR"}).json()["note"] == default["note"]
-    # 同一份数据,两种语言下结构完全一致
+    # the same data, structured identically in both languages
     assert [f["id"] for f in by_query["families"]] == [f["id"] for f in default["families"]]
     assert [m["tag"] for m in by_query["families"][0]["models"]] == [m["tag"] for m in default["families"][0]["models"]]
 
@@ -127,7 +128,7 @@ def test_model_lists_and_catalog_rows_follow_the_language(client: TestClient) ->
     assert any(HAN.search(m.get("summary") or "") for m in zh)
     assert not _zh_keys(en)
 
-    # 选择模型对话框里的目录行同样跟随语言
+    # catalog rows in the model picker follow the language as well
     opts_en = client.get("/api/providers/deepseek/model-options").json()
     opts_zh = client.get("/api/providers/deepseek/model-options?lang=zh").json()
     first_en = next(v for v in opts_en["models"] if v["summary"])
@@ -136,7 +137,9 @@ def test_model_lists_and_catalog_rows_follow_the_language(client: TestClient) ->
 
 
 def test_retired_reason_is_localized(client: TestClient) -> None:
-    """下线的模型理由也要跟着语言走(这里直接问目录,因为没添加过的型号不会出现在选项里)。"""
+    """Retirement reasons follow the language too. This asks the catalog directly,
+    because a model that was never added does not show up in the options.
+"""
     from app import i18n
 
     cat = client.app.state.store.catalog
@@ -151,7 +154,7 @@ def test_retired_reason_is_localized(client: TestClient) -> None:
 
 def test_strength_tag_ids_stay_ascii_and_labels_are_localized(client: TestClient) -> None:
     en = client.get("/api/strengths").json()["tags"]
-    zh = client.get("/api/strengths").json()  # 同一份 id,标签随语言变
+    zh = client.get("/api/strengths").json()  # same ids, labels follow the language
     assert [t["id"] for t in en] == [t["id"] for t in zh["tags"]]
     assert all(re.fullmatch(r"[a-z-]+", t["id"]) for t in en)
     assert {t["label"] for t in en} >= {"Coding", "Writing", "Local"}
@@ -161,21 +164,23 @@ def test_strength_tag_ids_stay_ascii_and_labels_are_localized(client: TestClient
 
 # ------------------------------------------------------------------- migration
 def test_legacy_chinese_tags_in_existing_database_are_normalized(tmp_path: Path) -> None:
-    """老库里标签 id 是中文,升级后要自动换成 ASCII id(值不变,不丢用户数据)。"""
+    """Old databases store Chinese tag ids; upgrading swaps them for ASCII ids
+    automatically, keeping the values and losing no user data.
+"""
     data = tmp_path / "data"
     store = Store(data)
     aid = store.list_agents()[0]["id"]
     mid = store.list_models()[0]["id"]
-    # 模拟旧版写入的中文标签
+    # imitate the Chinese tags an older version wrote
     store._x("UPDATE agents SET tags=? WHERE id=?", (json.dumps(["写作", "代码"], ensure_ascii=False), aid))
     store._x("UPDATE models SET strengths=? WHERE id=?", (json.dumps(["中文"], ensure_ascii=False), mid))
-    store._x("DELETE FROM meta WHERE key='tags_to_ascii_ids'")      # 回到「升级前」的状态
+    store._x("DELETE FROM meta WHERE key='tags_to_ascii_ids'")      # back to the pre-upgrade state
 
     store2 = Store(data)
     tags = next(a for a in store2.list_agents() if a["id"] == aid)["tags"]
     assert tags == ["writing", "coding"]
     assert next(m for m in store2.list_models() if m["id"] == mid)["strengths"] == ["chinese"]
-    # 未知标签按既定口径丢弃,不会写坏数据
+    # unknown tags are dropped by the existing rule instead of corrupting the row
     assert strengths.clean_tags(["写作", "谁啊"]) == ["writing"]
 
 
@@ -184,7 +189,7 @@ def test_unknown_or_missing_language_falls_back_to_english() -> None:
 
     assert i18n.resolve(None, None) == "en"
     assert i18n.resolve("zh-TW", None) == "zh"
-    assert i18n.resolve("en-GB", "zh") == "en"          # 显式 lang 优先于请求头
+    assert i18n.resolve("en-GB", "zh") == "en"          # an explicit lang beats the request header
     assert i18n.resolve("klingon", "zh-CN") == "zh"
     assert i18n.resolve(None, "de-DE,fr;q=0.9") == "en"
 
@@ -199,7 +204,9 @@ def test_localize_keeps_lists_and_never_leaks_zh_keys() -> None:
 
 
 def test_language_middleware_does_not_change_stored_data(tmp_path: Path) -> None:
-    """请求语言只影响「怎么显示」,不该改到库里的值。"""
+    """The request language only shapes how things are displayed; it must never
+    change the values in the database.
+"""
     data = tmp_path / "data"
     store = Store(data)
     before = store.get_settings()["route_chain"]

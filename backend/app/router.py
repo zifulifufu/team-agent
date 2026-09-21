@@ -1,13 +1,17 @@
-"""模型路由层。
+"""Model routing layer.
 
-规则(按顺序):
-  1. 候选链 = [agent 指定模型] + 设置里的 route_chain(默认: DeepSeek -> 本地 Ollama),去重。
-  2. 「外呼被禁用」时,所有非本地服务商直接跳过。
-  3. 未配置 API Key / 已停用 / 熔断中的模型跳过。
-  4. 逐个尝试,任何异常(鉴权、网络、超时、限流、空回复)都回退到下一个。
-  5. 链里没有本地模型时,自动把一个已启用的本地模型追加到末尾作为兜底。
+Rules (in order):
+  1. Candidate chain = [the model the agent names] + route_chain from settings
+     (default: DeepSeek -> local Ollama), deduplicated.
+  2. When outbound calls are disabled, every non-local provider is skipped outright.
+  3. Models with no API key, that are disabled, or that are tripped are skipped.
+  4. Try them one by one; any error (auth, network, timeout, rate limit, empty reply)
+     falls back to the next one.
+  5. When the chain contains no local model, an enabled local model is appended at the
+     end as a last resort.
 
-底层调用统一走 LiteLLM,所以增删服务商/模型只是改数据库,不需要改代码。
+All underlying calls go through LiteLLM, so adding or removing a provider or model is a
+database change and needs no code change.
 """
 
 from __future__ import annotations
@@ -69,7 +73,7 @@ class RouteResult:
 
 
 def litellm_params(provider: dict, model: dict) -> dict[str, Any]:
-    """把「服务商 + 模型」映射成 LiteLLM 的调用参数。"""
+    """Map "provider + model" onto LiteLLM call parameters."""
     kind, name = provider["kind"], model["model_name"]
     params: dict[str, Any] = {}
     if kind == "deepseek":
@@ -91,14 +95,17 @@ def litellm_params(provider: dict, model: dict) -> dict[str, Any]:
         params["model"] = f"openai/{name}"
         params["api_base"] = provider["base_url"]
     if kind != "ollama":
-        # 关掉 SDK 自带的静默重试:它遇到 429 会连发好几次,对「每分钟只允许 3 次」的账号是火上浇油。
-        # 限速由路由层统一处理(等服务商说的秒数后重试一次,不行就回退)。
+        # turn off the SDK's own silent retries: on a 429 it fires off several more requests,
+# which only makes things worse for an account allowed just 3 per minute
+        # rate limiting is handled centrally by the routing layer (wait as many seconds as the
+# provider says, retry once, then fall back if that fails)
         params["max_retries"] = 0
     key = provider["api_key"]
     if key:
         params["api_key"] = key
     elif kind == "openai_compatible":
-        params["api_key"] = "sk-none"  # 本地 OpenAI 兼容服务通常不校验 key,但 SDK 要求非空
+        params["api_key"] = "sk-none"  # local OpenAI-compatible services usually do not verify the key, but the SDK requires
+# a non-empty one
     return params
 
 
@@ -110,7 +117,7 @@ def has_credentials(provider: dict) -> bool:
 
 
 async def _default_completion(**kwargs: Any) -> Any:
-    import litellm  # 延迟导入:litellm 导入较慢
+    import litellm  # imported lazily: litellm is slow to import
 
     litellm.drop_params = True
     return await litellm.acompletion(**kwargs)
@@ -120,11 +127,11 @@ class ModelRouter:
     def __init__(self, store: Store, completion_fn: Callable[..., Awaitable[Any]] | None = None):
         self.store = store
         self._fn = completion_fn or _default_completion
-        self._circuit: dict[str, tuple[int, float]] = {}  # model_id -> (连续失败数, 熔断截止时间)
+        self._circuit: dict[str, tuple[int, float]] = {}  # model_id -> (consecutive failure count, trip deadline)
 
     # ------------------------------------------------------------------ chain
     def usable_models(self) -> list[dict]:
-        """现在真的能调用的模型(已启用、有密钥、外呼开关允许)。"""
+        """Models that can really be called right now (enabled, have a key, allowed by the outbound switch)."""
         cfg = self.store.get_settings()
         external_ok = bool(cfg["external_calls_enabled"])
         providers = {p["id"]: p for p in self.store.list_providers()}
@@ -136,9 +143,11 @@ class ModelRouter:
         return out
 
     def rank_by_tags(self, tags: list[str], limit: int = 5) -> list[dict]:
-        """按强项给可用模型排序。同分时:云端优先于本地(本地留作兜底),再按设置里优先级链的顺序。
-        除非明确要「本地」强项,或者根本没有可用的云端模型,否则不会把本地小模型排在云端前面。
-        标签会先规范化:旧版用中文标签名传来的值("代码")要照样认(见 strengths.ALIASES)。"""
+        """Rank the usable models by strengths. On a tie: cloud beats local (local is kept as a
+        fallback), then the order of the priority chain in settings. A local small model is
+        never ranked above a cloud model unless "local" was explicitly requested or no cloud
+        model is usable at all. Tags are normalized first: values that older versions sent as
+        Chinese tag names ("代码") must still be recognized (see strengths.ALIASES)."""
         tags = strength_lib.clean_tags(tags)
         if not tags:
             return []
@@ -156,8 +165,9 @@ class ModelRouter:
         return [r[4] for r in ranked[:limit]]
 
     def build_chain(self, preferred: str | None = None, tags: list[str] | None = None) -> tuple[list[dict], list[Attempt]]:
-        """返回 (可尝试的候选模型, 被跳过的记录)。
-        preferred 是成员手动指定的模型;没指定但有 tags(岗位需要的强项)时,按强项挑 2 个最合适的排在前面。"""
+        """Returns (candidate models to try, records of what was skipped).
+        preferred is the model the member picked by hand; when it is missing but tags exist
+        (the strengths the role needs), the two best-fitting models are put first."""
         cfg = self.store.get_settings()
         external_ok = bool(cfg["external_calls_enabled"])
         models = {m["id"]: m for m in self.store.list_models()}
@@ -193,7 +203,8 @@ class ModelRouter:
             consider(mid)
 
         if not any(c["_provider"]["is_local"] for c in candidates):
-            # 兜底:Ollama(小模型、最可靠)排在自建的大模型服务前面;都不可用才轮到后者
+            # last resort: Ollama (small model, most reliable) ranks ahead of a self-hosted large
+# model service; the latter is only reached when neither is usable
             locals_ = [
                 m for m in models.values()
                 if providers[m["provider_id"]]["is_local"] and providers[m["provider_id"]]["enabled"]
@@ -205,7 +216,8 @@ class ModelRouter:
         return candidates, skipped
 
     def resolve(self, preferred: str | None = None, tags: list[str] | None = None) -> dict | None:
-        """这个成员现在实际会用哪个模型(不发请求),给界面和分工表展示用。"""
+        """Which model this member would actually use right now (without sending a request); used by
+the UI and the delegation roster."""
         cands, _ = self.build_chain(preferred, tags)
         return cands[0] if cands else None
 
@@ -213,7 +225,8 @@ class ModelRouter:
     def _is_open(self, mid: str) -> bool:
         _, until = self._circuit.get(mid, (0, 0.0))
         if until and until <= time.time():
-            self._circuit.pop(mid, None)      # 冷却结束:失败计数一起清零,重新攒够阈值才会再次熔断
+            self._circuit.pop(mid, None)      # cooldown over: the failure counter is reset as well, so a fresh run of failures is
+# needed before it trips again
             return False
         return until > time.time()
 
@@ -228,10 +241,11 @@ class ModelRouter:
         self._circuit[mid] = (n, until)
 
     def _note_health(self, mid: str, status: str, detail: str, latency_ms: int, source: str) -> None:
-        """每次真实调用顺带记下结果,指示灯不用额外花 token 就能保持新鲜。"""
+        """Every real call records its result in passing, so the indicator stays fresh without
+spending extra tokens."""
         try:
             self.store.set_health(mid, status, detail, latency_ms, source)
-        except Exception:  # noqa: BLE001 — 记录失败不能影响聊天
+        except Exception:  # noqa: BLE001 — failing to record must not affect the chat
             pass
 
     def circuit_open(self, mid: str) -> bool:
@@ -269,7 +283,8 @@ class ModelRouter:
         text = "".join(parts).strip()
         if not text:
             if thinking:
-                # 思考型模型(Kimi K2.x、DeepSeek-R1 等)把 token 都花在思考上、没来得及写正文
+                # reasoning models (Kimi K2.x, DeepSeek-R1, ...) spent every token on thinking and never
+# got around to writing the answer
                 raise ReasoningOnlyError(i18n.pick_now("The model produced only its reasoning and no answer (it may have been cut off by max_tokens)", "模型只输出了思考过程,没有正文(可能被 max_tokens 截断)"))
             raise RuntimeError(i18n.pick_now("The model returned nothing", "模型返回了空内容"))
         return text
@@ -287,7 +302,7 @@ class ModelRouter:
             p = self.store.get_provider(m["provider_id"]) if m else None
             if not m or not p:
                 raise AllRoutesFailed([Attempt(only, "failed", i18n.pick_now("Model not found", "模型不存在"))])
-            if not p["is_local"] and not cfg["external_calls_enabled"]:   # 手动检测也不能绕过「禁止外呼」
+            if not p["is_local"] and not cfg["external_calls_enabled"]:   # a manual check cannot bypass "outbound calls disabled" either
                 raise AllRoutesFailed([Attempt(only, "skipped", i18n.pick_now("Outbound calls are disabled (Allow outbound calls is off in Settings), so no request was sent", "外呼已禁用(设置里的「允许外呼」是关的),没有发出请求"))])
             if not has_credentials(p):
                 raise AllRoutesFailed([Attempt(only, "skipped", i18n.pick_now("no API key configured", "未配置 API Key"))])
@@ -324,17 +339,19 @@ class ModelRouter:
                     wait = retry_after(e)
                     if wait is None or emitted:
                         raise
-                    # 服务商说「N 秒后再试」(每分钟请求数太低的账号常见):等一下再试一次,再不行才回退
+                    # the provider says "try again in N seconds" (common on accounts with a very low
+# requests-per-minute limit): wait and retry once, and only fall back if that still fails
                     await asyncio.sleep(wait)
                     text = await self._stream_one(
                         litellm_params(cand["_provider"], cand), messages, timeout, _relay, extra
                     )
-            except Exception as e:  # noqa: BLE001 — 任何失败都应触发回退
-                if not (source == "chat" and is_request_problem(e)):   # 请求本身的问题(上下文太长等)不算模型故障,不该熔断
+            except Exception as e:  # noqa: BLE001 — any failure should trigger a fallback
+                if not (source == "chat" and is_request_problem(e)):   # a problem with the request itself (context too long, etc.) is not a model failure and
+# must not trip the breaker
                     self._record(mid, False)
                 detail = _short(e)
                 attempts.append(Attempt(mid, "failed", detail, int((time.time() - t0) * 1000)))
-                if isinstance(e, ReasoningOnlyError):  # 连得通,只是思考型模型没写出正文
+                if isinstance(e, ReasoningOnlyError):  # reachable, just a reasoning model that produced no answer text
                     self._note_health(mid, "ok", i18n.pick_now("Connected (a reasoning model; within the quota it returned only its reasoning)", "连接正常(思考型模型,额度内只返回了思考过程)"), attempts[-1].latency_ms, source)
                 elif source != "chat" or not is_request_problem(e):
                     self._note_health(mid, classify_failure(e), detail, attempts[-1].latency_ms, source)
@@ -357,7 +374,8 @@ class ModelRouter:
         except AllRoutesFailed as e:
             last = e.attempts[-1] if e.attempts else None
             if last and last.detail.startswith("ReasoningOnlyError"):
-                # 连接、密钥、模型 ID 都没问题;只是思考型模型在测试用的小额度里没写出正文
+                # connection, key and model id are all fine; only the reasoning model produced no answer
+# text within the small quota used for the test
                 return {"ok": True, "latency_ms": last.latency_ms, "reply": i18n.pick_now("(reasoning model: it returned only its reasoning; the connection is fine)", "(思考型模型:只返回了思考过程,连接正常)")}
             return {"ok": False, "error": last.detail if last else i18n.pick_now("unknown error", "未知错误")}
 
@@ -367,7 +385,8 @@ class ReasoningOnlyError(RuntimeError):
 
 
 RATE_RE = re.compile(r"rate.?limit|too many requests|max rpm|\b429\b", re.I)
-# 服务商建议的等待时间:"retry after 20s"、"in 20ms"、"try again in 2.5 seconds"、"请 3 秒后重试"、"3秒后"
+# the wait suggested by the provider: "retry after 20s", "in 20ms",
+# "try again in 2.5 seconds", "请 3 秒后重试", "3秒后"
 AFTER_RES = [
     re.compile(r"(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?)\b", re.I),
     re.compile(r"(\d+(?:\.\d+)?)\s*(毫秒|秒)\s*(?:钟)?\s*(?:后|之后|内)"),  # i18n-keep: parses Chinese retry-after phrasing from upstream providers
@@ -377,18 +396,21 @@ MAX_RETRY_WAIT = 5.0
 
 
 def classify_failure(e: BaseException) -> str:
-    """limited = 限速/额度(等一会儿就好);bad = 连不上、密钥不对、模型 ID 不对等需要人处理的问题。"""
+    """limited = rate limit / quota (fine after a short wait); bad = problems a human has to
+fix, such as unreachable, wrong key or wrong model ID."""
     return "limited" if RATE_RE.search(f"{type(e).__name__} {e}") else "bad"
 
 
 def is_request_problem(e: BaseException) -> bool:
-    """这条请求本身有问题(上下文超长、内容被拒等),不代表模型连不通,聊天时不据此把指示灯标红。"""
+    """The request itself is at fault (context too long, content rejected, etc.); it does not mean
+the model is unreachable, so the indicator is not turned red because of it during a chat."""
     n = type(e).__name__
     return any(k in n for k in ("BadRequest", "ContextWindow", "ContentPolicy", "UnprocessableEntity"))
 
 
 def retry_after(e: BaseException) -> float | None:
-    """限速类错误且服务商建议的等待时间不长(≤5 秒)时,返回该等多久;否则不重试。"""
+    """For a rate-limit error where the provider suggests only a short wait (<= 5s), return how
+long to wait; otherwise do not retry."""
     text = f"{type(e).__name__} {e}"
     if not RATE_RE.search(text):
         return None
@@ -420,7 +442,8 @@ _HINTS = [
 
 
 def redact(text: str) -> str:
-    """错误信息里常带有服务商回显的密钥片段、组织 ID,展示或存库前先抹掉。"""
+    """Error messages often echo key fragments or organization IDs; scrub them before showing
+or storing them."""
     for rx, rep in _SECRET_RES:
         text = rx.sub(rep, text)
     return text

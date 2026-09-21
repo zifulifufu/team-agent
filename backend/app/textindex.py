@@ -1,7 +1,9 @@
-"""轻量全文检索:中英文分词 + BM25。资料库和记忆库共用,不依赖外部服务。
+"""Lightweight full-text search: Chinese/English tokenization + BM25. Shared by the
+document library and the memory store, with no external service dependency.
 
-中文没有空格,按「相邻两字」切成二元组(北京大学 -> 北京/京大/大学),
-英文和数字按单词切。这是最朴素但对中文检索足够好用的做法。
+Chinese has no spaces, so it is cut into bigrams of adjacent characters
+(北京大学 -> 北京/京大/大学); English and digits are cut into words. This is the
+crudest approach, but good enough for Chinese retrieval.
 """
 
 from __future__ import annotations
@@ -30,7 +32,8 @@ def tokenize(text: str) -> list[str]:
 
 
 def chunk_text(text: str, size: int = 600, overlap: int = 80) -> list[str]:
-    """按段落合并成约 size 字的块;超长段落按句号等标点再切,相邻块保留少量重叠。"""
+    """Merge paragraphs into chunks of about `size` characters; overly long paragraphs are
+split further on sentence-ending punctuation, and neighbouring chunks keep a small overlap."""
     text = text.replace("\r\n", "\n").strip()
     if not text:
         return []
@@ -47,7 +50,7 @@ def chunk_text(text: str, size: int = 600, overlap: int = 80) -> list[str]:
             if len(buf) + len(sent) > size and buf:
                 pieces.append(buf)
                 buf = ""
-            while len(sent) > size:  # 没有标点的超长句子硬切
+            while len(sent) > size:  # hard-split overlong sentences that have no punctuation
                 pieces.append(sent[:size])
                 sent = sent[size:]
             buf += sent
@@ -68,7 +71,8 @@ def chunk_text(text: str, size: int = 600, overlap: int = 80) -> list[str]:
 
 
 def join_chunks(chunks: list[str], overlap: int = 80) -> str:
-    """把 chunk_text 切出来的块还原成连续文本:去掉相邻块之间为检索而保留的重叠部分。"""
+    """Restore the chunks produced by chunk_text into continuous text: drops the overlap kept
+between neighbouring chunks for retrieval."""
     out = ""
     prev = ""
     for c in chunks:

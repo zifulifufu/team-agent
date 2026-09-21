@@ -1,12 +1,17 @@
-"""群主分工:把一个任务按成员的强项拆开、排好先后、让成果一环扣一环地接起来。
+"""Group owner delegation: split a task along member strengths, order it, and chain the
+results into one another.
 
-流程(orchestrator 里驱动,本模块只负责「计划」这份数据和几段提示词):
-  1. 群主收到任务,看着「成员与强项」分工表,输出 <plan>{…}</plan>:总目标、全组统一约定、若干任务
-     (每个任务:谁来做、做什么、依赖哪些任务、发挥什么强项、建议用什么工具、交付什么)。
-  2. 程序校验计划(负责人必须是群成员、依赖必须存在、不能有环),并按依赖排出执行顺序。
-  3. 依次执行:每个成员收到自己的任务 + 统一约定 + 上游成员的完整成果 + 全组分工表,
-     发言第一行要先声明「我负责什么、发挥什么强项、用什么工具、承接谁」。
-  4. 全部完成后群主整合成最终答复。
+Flow (driven inside the orchestrator; this module only owns the "plan" data and a few prompts):
+  1. The owner receives the task, looks at the "members and strengths" roster, and emits
+     <plan>{...}</plan>: the overall goal, group-wide conventions, and several tasks
+     (each task: who does it, what it is, which tasks it depends on, which strength to
+     use, which tools to prefer, what to deliver).
+  2. The program validates the plan (the assignee must be a group member, dependencies
+     must exist, no cycles) and orders execution by dependency.
+  3. Execution in order: each member receives its own task + the conventions + the full
+     output of upstream members + the group roster, and the first line of its reply must
+     state "what I own, which strength I use, which tools I use, who I take over from".
+  4. Once everything is done the owner merges it into the final answer.
 """
 
 from __future__ import annotations
@@ -63,12 +68,13 @@ class PlanError(Exception):
     pass
 
 
-# ---------------------------------------------------------------------- 解析
+# --------------------------------------------------------------------- parsing
 _PLAN_TAG = re.compile(r"<plan>(.*?)(?:</plan>|\Z)", re.S)
 
 
 def extract_plan_json(text: str) -> dict | None:
-    """从群主的回复里取出计划 JSON:优先 <plan> 标签,其次 ```json 代码块。没有返回 None,格式坏了抛 PlanError。"""
+    """Extract the plan JSON from the owner's reply: prefer the <plan> tag, then a ```json
+code block. Returns None when absent; raises PlanError when malformed."""
     m = _PLAN_TAG.search(text)
     raw = m.group(1) if m else None
     if raw is None:
@@ -95,21 +101,23 @@ def _match_member(name: str, members: list[dict]) -> dict | None:
     for m in members:
         if m["name"] == n:
             return m
-    for m in members:  # 宽松:「文案」写成「文案写手」之类
+    for m in members:  # lenient: a role such as "copywriting" may be written as "copywriting specialist"
         if n and (n in m["name"] or m["name"] in n):
             return m
     return None
 
 
 def _as_list(v: Any) -> list:
-    """模型偶尔把列表写成单个值(needs: 1 / tools: "x"):统一成列表,别让类型问题变成崩溃。"""
+    """Models sometimes write a list as a single value (needs: 1 / tools: "x"): normalize it
+to a list so a type quirk cannot turn into a crash."""
     if v is None or v == "":
         return []
     return v if isinstance(v, list) else [v]
 
 
 def build_plan(obj: dict, members: list[dict], max_tasks: int = 8, known_tools: set[str] | None = None) -> Plan:
-    """校验并整理计划,任务按依赖顺序排好。不合法抛 PlanError(带具体原因)。"""
+    """Validate and tidy the plan, ordering tasks by dependency. Raises PlanError with a
+specific reason when it is invalid."""
     if not isinstance(obj.get("tasks"), list):
         raise PlanError(i18n.pick_now("tasks is not a list", "tasks 不是列表"))
     raw_tasks = obj["tasks"][:max_tasks]
@@ -151,7 +159,8 @@ def build_plan(obj: dict, members: list[dict], max_tasks: int = 8, known_tools: 
 
 
 def _toposort(tasks: list[PlanTask]) -> list[PlanTask]:
-    """稳定拓扑排序:没有依赖冲突时保持模型给出的顺序。有环抛 PlanError。"""
+    """Stable topological sort: keeps the order given by the model when there is no dependency
+conflict. Raises PlanError on a cycle."""
     done: list[PlanTask] = []
     done_ids: set[str] = set()
     remaining = list(tasks)
@@ -165,7 +174,7 @@ def _toposort(tasks: list[PlanTask]) -> list[PlanTask]:
     return done
 
 
-# ---------------------------------------------------------------------- 提示词
+# --------------------------------------------------------------------- prompts
 def planning_instruction(max_tasks: int, mode: str, past_actions: str = "") -> str:
     force = (i18n.pick_now("You must split the work this time: output the plan straight away.", "这次必须分工:请直接输出计划。") if mode == "on"
              else i18n.pick_now("Decide first: if you can answer this well on your own (small talk, a simple question, a single step), answer directly and do not output <plan>.", "先判断:如果这件事你一个人就能答好(闲聊、简单问答、单一步骤),就直接回答,不要输出 <plan>。"))
@@ -297,7 +306,7 @@ def integration_prompt(plan: Plan, outputs: dict[str, str], budget: int = 14000)
 
 
 def summarize(plan: Plan) -> str:
-    """任务板消息的正文(纯文本,给不渲染卡片的地方用)。"""
+    """Body of the task board message (plain text, for places that do not render cards)."""
     lines = [i18n.pick_now(f"Plan: {plan.goal}", f"分工:{plan.goal}") if plan.goal else i18n.pick_now("Plan", "分工")]
     for t in plan.tasks:
         lines.append(f"{t.id} {t.owner}:{t.title} [{t.status}]")

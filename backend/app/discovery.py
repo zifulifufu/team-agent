@@ -1,7 +1,9 @@
-"""「获取模型列表」:向服务商查询它当前提供哪些模型(类似 Cherry Studio 的 Manage / 获取模型列表)。
+""""Fetch model list": ask the provider which models it currently offers (similar to
+Cherry Studio's Manage / fetch model list).
 
-新模型 ID 天天在变,预设里写死没有意义 —— 直接问服务商。
-各家协议不同,这里按 kind 分别适配;返回统一的模型 ID 列表。
+New model IDs change daily, so hardcoding them in presets is pointless — just ask
+the provider. Protocols differ per vendor, so this adapts per kind; the result is
+a unified list of model IDs.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ OLLAMA_BASE = "http://127.0.0.1:11434"
 
 
 class DiscoveryError(Exception):
-    """可直接展示给用户的错误信息(不会包含 API Key)。"""
+    """Error message that can be shown to the user directly (never contains the API key)."""
 
 
 def _key(provider: dict) -> str:
@@ -58,7 +60,7 @@ async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.A
     elif kind == "gemini":
         url = (base or GEMINI_BASE) + "/v1beta/models"
         params = {"pageSize": 1000}
-        headers = {"x-goog-api-key": key}  # 放请求头而不是 URL,避免 Key 出现在错误信息里
+        headers = {"x-goog-api-key": key}  # put it in a header rather than the URL, so the key cannot leak into error messages
     elif kind == "deepseek":
         url = (base or DEEPSEEK_BASE) + "/models"
         headers = {"Authorization": f"Bearer {key}"}
@@ -73,7 +75,7 @@ async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.A
         raise DiscoveryError(i18n.pick_now("Fill in the API key first", "请先填写 API Key"))
 
     own = client is None
-    # 本机 / 局域网地址直连,云端地址仍走系统代理
+    # local/LAN addresses connect directly, cloud addresses still use the system proxy
     c = client or net.client(url, timeout=timeout)
     try:
         r = await c.get(url, headers=headers, params=params)
@@ -97,7 +99,7 @@ async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.A
         ids = []
         for m in data.get("models", []):
             if "generateContent" not in (m.get("supportedGenerationMethods") or []):
-                continue  # 过滤掉 embedding 等不能聊天的模型
+                continue  # skip embedding and other models that cannot chat
             ids.append(str(m.get("name", "")).removeprefix("models/"))
         ids = [i for i in ids if i]
     else:

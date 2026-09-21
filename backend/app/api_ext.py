@@ -1,4 +1,5 @@
-"""第四阶段新增的接口:模型挑选与强项、群聊扩展、插件 / MCP / 技能、资料库、记忆、提示词、更新。"""
+"""Endpoints added in phase four: model selection and strengths, group chat extensions,
+plugins / MCP / skills, the library, memory, prompting, and updates."""
 
 from __future__ import annotations
 
@@ -46,7 +47,8 @@ from .updater import GitHubError, Updater, curated
 
 MASK = "••••••"
 
-# MCP 用法清单的唯一数据源在 gallery.py(模板中心与「MCP」页共用,避免两处定义漂移)
+# the single source of truth for the MCP usage list lives in gallery.py (shared by the template
+# center and the "MCP" page, so the two definitions cannot drift apart)
 
 
 # ------------------------------------------------------------------ schemas
@@ -73,7 +75,7 @@ class LibraryDirIn(BaseModel):
 
 class McpImportIn(BaseModel):
     text: str
-    names: list[str] | None = None   # 只导入这几个;不填 = 全部
+    names: list[str] | None = None   # import only these; empty = all
 
 
 class McpPatch(BaseModel):
@@ -176,7 +178,7 @@ class RepoFileIn(BaseModel):
 
 class ApprovalIn(BaseModel):
     decision: str            # allow | deny
-    remember: bool = False   # 仅对 allow 有效:以后这个工具不再问
+    remember: bool = False   # only applies to allow: never ask again for this tool
 
 
 @dataclass
@@ -202,7 +204,8 @@ def _need(x: Any, what: str) -> Any:
 
 
 def _need_octet(request: Request) -> None:
-    """原始字节上传只认 application/octet-stream:这样别的网页想跨站塞一个 text/plain 表单进来,浏览器会先做预检并被拒绝。"""
+    """Raw byte uploads only accept application/octet-stream: if another site tries to push a
+    cross-origin text/plain form in, the browser preflights it first and the request is rejected."""
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/octet-stream":
         raise HTTPException(415, i18n.pick_now("The request must be application/octet-stream", "请求需要是 application/octet-stream"))
 
@@ -220,7 +223,7 @@ def build_router(c: Ctx) -> APIRouter:
     store = c.store
 
     def gh(fn):  # type: ignore[no-untyped-def]
-        """把 GitHubError 变成合适的 HTTP 错误。"""
+        """Turn a GitHubError into the matching HTTP error."""
         @functools.wraps(fn)
         async def wrapper(*a, **kw):  # type: ignore[no-untyped-def]
             try:
@@ -251,7 +254,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.post("/api/providers/{pid}/model-options/refresh")
     async def model_options_refresh(pid: str) -> dict:
-        """向服务商查询实时清单(同时把新出现的型号标成「新」)。外呼禁用时只允许本地服务商。"""
+        """Query the provider for its live model list, marking newly appeared models as "new".
+        When outbound calls are disabled, only local providers are allowed."""
         p = _need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         if not p["is_local"] and not store.get_settings()["external_calls_enabled"]:
             raise HTTPException(403, i18n.pick_now("Outbound calls are disabled, so the cloud provider's model list cannot be fetched", "外呼已禁用,无法向云端服务商查询模型列表"))
@@ -275,7 +279,8 @@ def build_router(c: Ctx) -> APIRouter:
     # ============================================================ groups
     @r.get("/api/groups/{gid}/capabilities")
     async def capabilities(gid: str) -> dict:
-        """成员分工表:每个成员现在实际用哪个模型、有哪些强项;以及本群可用的工具。"""
+        """Division of labour: which model each member is actually using right now, which strengths
+        they have, and the tools available to this group."""
         group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         members = store.group_members(gid)
         host = next((m for m in members if m["id"] == group.get("host_agent_id")), members[0] if members else None)
@@ -293,7 +298,7 @@ def build_router(c: Ctx) -> APIRouter:
                 "model": ({"id": model["id"], "display_name": model["display_name"], "strengths": model["strengths"],
                            "is_local": model["is_local"]} if model else None),
                 "manual_model": bool(m["model_id"]), "strengths": e["strengths"], "origin": m.get("origin", ""), "engine": m.get("engine", ""),
-                "model_problem": problem,  # 指定的模型现在用不了(没填 Key / 已停用 / 熔断…)时的原因,此时实际会回退到别的模型
+                "model_problem": problem,  # why the requested model cannot be used right now (no key set / disabled / circuit broken...); requests fall back to another model
             })
         ctx = await c.toolhub.context(group, host, connect=False) if host else None
         return {
@@ -327,7 +332,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.post("/api/groups/{gid}/members/from-model")
     async def member_from_model(gid: str, body: ModelMemberIn) -> dict:
-        """把「我添加的模型」直接拉进群当成员(没有对应的成员就自动创建一个,名字、强项取自模型)。"""
+        """Add a model from "my models" straight into the group as a member (a matching member is
+        created automatically, with its name and strengths taken from the model)."""
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         model = _need(store.get_model(body.model_id), i18n.pick_now("Model", "模型"))
         if not model["enabled"] or not model["provider_enabled"]:
@@ -344,10 +350,11 @@ def build_router(c: Ctx) -> APIRouter:
     async def template_create(tid: str, body: TemplateIn) -> dict:
         return _need(create_group_from_template(store, tid, body.name), i18n.pick_now("Template", "模板"))
 
-    # ============================================================ 数据 / 导出
+    # ============================================================ Data / export
     @r.post("/api/data/restore")
     async def data_restore(request: Request) -> dict:
-        """请求体就是备份文件(.db)的原始字节。会替换当前全部数据,并先自动留一份当前数据的副本。"""
+        """The request body is the raw bytes of the backup file (.db). It replaces all current
+        data, after automatically keeping a copy of the current data first."""
         _need_octet(request)
         data = await request.body()
         if not data:
@@ -364,7 +371,7 @@ def build_router(c: Ctx) -> APIRouter:
             os.unlink(tmp)
         c.library.invalidate()
         c.router.reset_circuit()
-        await c.mcp.shutdown()   # 恢复后 MCP 配置可能变了,旧连接不再对应
+        await c.mcp.shutdown()   # after a restore the MCP config may have changed, so the old connections no longer match
         return res
 
     def chat_markdown(gid: str) -> tuple[dict, str]:
@@ -422,7 +429,7 @@ def build_router(c: Ctx) -> APIRouter:
             else:
                 patch["obsidian_dir"] = ""
             if patch["obsidian_dir"] != store.get_settings()["obsidian_dir"]:
-                store.clear_obsidian_map()       # 换了文件夹:旧的对应关系作废
+                store.clear_obsidian_map()       # the folder changed: the old mapping is no longer valid
                 store.set_meta("obsidian_last", "")
         if body.auto is not None:
             patch["obsidian_auto"] = body.auto
@@ -433,7 +440,7 @@ def build_router(c: Ctx) -> APIRouter:
     async def obsidian_sync(force: bool = False) -> dict:
         return await asyncio.to_thread(c.obsidian.sync, force)
 
-    # ============================================================ 权限与操控
+    # ============================================================ Permissions and control
     @r.get("/api/approvals")
     async def approvals_pending(group_id: str | None = None) -> list[dict]:
         return c.approvals.list(group_id)
@@ -448,7 +455,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/permissions")
     async def permissions() -> dict:
-        """「权限与操控」页要展示的事实:模式、名单、当前有哪些工具及其风险等级、这个应用能碰到什么。"""
+        """The facts shown on the "Permissions and control" page: the mode, the allow list, which
+        tools exist right now and their risk levels, and what this app can reach."""
         cfg = store.get_settings()
         tools: list[dict] = []
 
@@ -563,7 +571,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.post("/api/mcp/import/parse")
     async def mcp_import_parse(body: McpImportIn) -> dict:
-        """解析别处导出的 MCP 配置 JSON。只解析,不保存、不运行;界面让你逐个确认后才会添加。"""
+        """Parse an MCP config JSON exported elsewhere. Parsing only: nothing is saved and nothing
+        is started; the UI asks you to confirm each server before it is added."""
         try:
             servers, warnings = parse_mcp_json(body.text)
         except ValueError as e:
@@ -571,7 +580,7 @@ def build_router(c: Ctx) -> APIRouter:
         have = {m["name"] for m in store.list_mcp()}
         return {"servers": [{**s, "exists": s["name"] in have,
                              "env": _mask(s["env"]), "headers": _mask(s["headers"])} for s in servers],
-                "warnings": warnings}       # 带密钥的字段只显示掩码;真正导入时由后端重新解析原文,密钥不经过界面
+                "warnings": warnings}       # fields holding keys are shown masked; on import the backend re-parses the original, so keys never reach the UI
 
     @r.post("/api/mcp/import")
     async def mcp_import(body: McpImportIn) -> dict:
@@ -587,7 +596,7 @@ def build_router(c: Ctx) -> APIRouter:
             if s["name"] in have:
                 skipped.append(s["name"])
                 continue
-            check_mcp_cfg(s["name"], s["command"], s["url"], s["transport"])   # 先全部检查完再保存:不会导入一半就报错
+            check_mcp_cfg(s["name"], s["command"], s["url"], s["transport"])   # validate everything before saving anything: an import never fails halfway through
             todo.append(s)
             have.add(s["name"])
         for s in todo:
@@ -616,7 +625,7 @@ def build_router(c: Ctx) -> APIRouter:
     async def mcp_del(mid: str) -> dict:
         await c.mcp.disconnect(mid)
         store.delete_mcp(mid)
-        for g in store.list_groups():  # 群里的勾选也一并清掉
+        for g in store.list_groups():  # also clear the selection inside the groups
             if mid in g["ext"]["mcp"]:
                 store.update_group(g["id"], {"ext": {"mcp": [x for x in g["ext"]["mcp"] if x != mid]}})
         return {"ok": True}
@@ -674,7 +683,7 @@ def build_router(c: Ctx) -> APIRouter:
         if not safe_skill_name(body.name) or not body.body.strip():
             raise HTTPException(400, i18n.pick_now("Both a skill name and its content are required", "请填写技能名称和内容"))
         new = write_skill(store.data_dir / "skills", body.name, body.description, body.body, body.scope, old_name=name)
-        if new.name != name:  # 改名:成员和群里的勾选跟着改
+        if new.name != name:  # renamed: follow the change on members and on the group selections
             for a in store.list_agents():
                 if name in a["skills"]:
                     store.update_agent(a["id"], {"skills": [new.name if x == name else x for x in a["skills"]]})
@@ -707,7 +716,7 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.post("/api/library/upload")
     async def library_upload(request: Request, filename: str) -> dict:
-        """请求体就是文件原始字节(不用 multipart,少一个依赖)。"""
+        """The request body is the raw bytes of the file (no multipart, which saves a dependency)."""
         _need_octet(request)
         data = await request.body()
         if not data:
@@ -742,7 +751,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/library/search")
     async def library_search(q: str, top_k: int = 5) -> list[dict]:
-        # 大库首次检索要重建 BM25 索引,放线程池,避免阻塞事件循环
+        # the first search on a large library rebuilds the BM25 index, so run it in a thread pool
+        # to keep the event loop free
         return await asyncio.to_thread(c.library.search, q, max(1, min(top_k, 20)))
 
     @r.get("/api/library/{did}")
@@ -854,7 +864,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/groups/{gid}/system-prompt-preview")
     async def system_prompt_preview(gid: str, agent_id: str = "") -> dict:
-        """看看某个成员在本群里实际收到的完整系统提示词(不含工具与记忆的实时部分)。"""
+        """Show the full system prompt a member actually receives in this group (without the live
+        tool and memory parts)."""
         group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         members = store.group_members(gid)
         agent = store.get_agent(agent_id) if agent_id else (members[0] if members else None)
@@ -942,11 +953,12 @@ def build_router(c: Ctx) -> APIRouter:
     async def updates_catalog_apply() -> dict:
         return await c.updater.check_catalog(apply=True)
 
-    # ------------------------------------------------ 本地模型:发现 / 加入推荐
+    # ------------------------------------------------ Local models: discovery / add to recommended
     @r.post("/api/local/check")
     @gh
     async def local_check() -> dict:
-        """现在就去找新的开源大模型(不等定时检查)。结果同时写入「更新与发现」的提醒。"""
+        """Look for new open-source models right now (without waiting for the scheduled check).
+        The result is also written into the "Updates and discovery" reminders."""
         cat_info = None
         try:
             cat_info = await c.updater.check_local_catalog(apply=True)
@@ -968,7 +980,9 @@ def build_router(c: Ctx) -> APIRouter:
     @r.post("/api/local/catalog/add")
     @gh
     async def local_catalog_add(body: LocalTagIn) -> dict:
-        """把一个 Ollama 型号加入推荐列表。先向 Ollama 注册表确认它存在并读出大小,不存在就拒绝;不会下载权重。"""
+        """Add an Ollama model to the recommended list. It first asks the Ollama registry to
+        confirm the model exists and reads its size; unknown models are rejected. No weights are
+        downloaded."""
         tag = body.tag.strip()
         pr = await c.updater.probe_ollama(tag)
         if not pr["exists"]:

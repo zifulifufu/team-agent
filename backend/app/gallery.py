@@ -1,21 +1,29 @@
-"""模板中心:程序自带的一手模板目录 + 一键应用。
+"""Template gallery: a first-party template catalog bundled with the program, plus one-click apply.
 
-为什么改成这样(与之前的「示例库」相比):
-  * 以前要先 clone 第三方仓库、再把本机路径填进来做静态提取 —— 对人来说太绕,对涉密机器也不合适。
-    现在模板随程序分发,**打开即可用**:不 clone、不填路径、不联网;
-  * 内容全部是本程序自己的原创文本,不含任何第三方项目的文件或数据,所以随程序分发
-    不产生第三方许可义务(见 LICENSE 与 THIRD_PARTY_NOTICES.md);
-  * **单一数据源**:团队模板、成员岗位、技能、提示词、MCP 各自只有一个内置定义
-    (presets.TEMPLATES / presets.AGENT_PRESETS / tools.EXAMPLE_SKILLS /
-     presets.SEED_PROMPTS / gallery.MCP_TEMPLATES)。本模块只做归一化与应用,不再复制一份内容,
-    避免「两处定义慢慢漂移」这种最难查的问题;
-  * **扩展口**:数据目录下的 `templates/*.json` 可以放团队自备模板,按 schema 校验后合并进目录
-    (见 `_load_custom`)。校验不通过的条目会被丢弃并在界面上写明原因,不静默忽略;
-  * **安全边界**:自定义模板只允许纯文本类(team / agent / skill / prompt),**不接受 mcp** ——
-    那等于让一个 JSON 文件决定本机要执行什么命令。MCP 只能从内置清单里加,且一律以停用状态导入。
+Why it is built this way (compared with the earlier "example library"):
+  * it used to require cloning a third-party repository and filling in a local path for static
+    extraction — too roundabout for people, and unsuitable on confidential machines. Templates
+    now ship with the program and **work as soon as you open it**: no cloning, no path to fill
+    in, no network;
+  * the content is entirely this program's own original text and contains no files or data from
+    any third-party project, so shipping it with the program creates no third-party license
+    obligations (see LICENSE and THIRD_PARTY_NOTICES.md);
+  * **single source of truth**: team templates, member roles, skills, prompts and MCP each have
+    exactly one built-in definition (presets.TEMPLATES / presets.AGENT_PRESETS /
+    tools.EXAMPLE_SKILLS / presets.SEED_PROMPTS / gallery.MCP_TEMPLATES). This module only
+    normalizes and applies them and never copies the content, which avoids the notoriously
+    hard-to-debug "two definitions slowly drifting apart";
+  * **extension point**: `templates/*.json` in the data directory can hold a team's own
+    templates, merged into the catalog after schema validation (see `_load_custom`). Entries
+    that fail validation are dropped with the reason stated in the UI, never ignored silently;
+  * **security boundary**: custom templates may only be of the plain-text kinds
+    (team / agent / skill / prompt); **mcp is not accepted** — that would let a JSON file decide
+    which commands this machine runs. MCP can only be added from the built-in list, and is
+    always imported in a disabled state.
 
-本模块不联网、不读数据目录以外的路径、不执行任何代码;应用模板只会往本机数据库和
-skills 目录里写文本(以及添加一个默认停用的 MCP 条目)。
+This module does not go online, reads no path outside the data directory, and executes no
+code; applying a template only writes text into the local database and the skills directory
+(plus one MCP entry that is disabled by default).
 """
 
 from __future__ import annotations
@@ -51,15 +59,16 @@ from .tools import (
     write_skill,
 )
 
-CATALOG_VERSION = "2.0.0"      # 目录内容版本(语义化):模板有增改时升这个号
-SCHEMA_VERSION = 1            # 自定义模板文件格式版本
-CUSTOM_DIRNAME = "templates"  # 数据目录下放自定义模板的子目录
+CATALOG_VERSION = "2.0.0"      # semantic version of the catalog contents: bump it when templates are added or changed
+SCHEMA_VERSION = 1            # file format version of custom templates
+CUSTOM_DIRNAME = "templates"  # subdirectory of the data directory holding custom templates
 CUSTOM_MAX_BYTES = 512 * 1024
 CUSTOM_MAX_ITEMS = 200
 PLACEHOLDER_DIR = "/path/to/allowed/dir"
 
-# MCP 用法清单(唯一数据源;api_ext 的 /api/mcp/templates 也从这里取)。
-# 这些只是「预填表单」:命令与参数都要你自己核对,导入后一律停用。
+# the MCP usage list (single source of truth; api_ext's /api/mcp/templates reads it too).
+# These are only "prefilled forms": you have to check the command and arguments yourself,
+# and everything is imported in a disabled state.
 MCP_TEMPLATES: list[dict] = [
     # Pre-filled forms, not a one-click install: the command and arguments are yours to
     # check, and anything imported this way starts disabled. English is the canonical
@@ -149,7 +158,7 @@ def mcp_names(name: str | None) -> list[str]:
 
 
 KINDS: tuple[str, ...] = tuple(c["id"] for c in CATEGORIES)
-CUSTOM_KINDS: tuple[str, ...] = ("team", "agent", "skill", "prompt")   # 自定义模板不允许 mcp
+CUSTOM_KINDS: tuple[str, ...] = ("team", "agent", "skill", "prompt")   # custom templates may not use mcp
 
 _TEAM_ICONS: dict[str, str] = {
     "office": "🏢", "video": "🎬", "writing": "✍️", "brainstorm": "💡", "review": "🧐",
@@ -161,7 +170,8 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class GalleryError(Exception):
-    """模板不存在、参数不对、或目标（群）不存在 —— 由 API 层转成 400。"""
+    """The template does not exist, the arguments are wrong, or the target (group) does not exist
+— the API layer turns this into a 400."""
 
 
 # --------------------------------------------------------------------- helpers
@@ -171,17 +181,17 @@ def _clip(s: str, n: int) -> str:
 
 
 def _ver(s: Any) -> tuple[int, ...]:
-    """版本号取数字比较:1.10.0 > 1.9.0(字符串比较会判反)。"""
+    """Version numbers are compared numerically: 1.10.0 > 1.9.0 (a string comparison gets it backwards)."""
     parts = re.findall(r"\d+", str(s or ""))
     return tuple(int(x) for x in parts[:4]) or (0,)
 
 
 def _member_defs() -> dict[str, dict]:
-    """按名字索引成员定义(内置种子成员 + 岗位预设)。"""
+    """Index member definitions by name (built-in seed members + role presets)."""
     return {**{a["name"]: a for a in SEED_AGENTS}, **{a["name"]: a for a in AGENT_PRESETS}}
 
 
-# --------------------------------------------------------------------- 内置条目
+# --------------------------------------------------------------------- built-in entries
 def _skill_display(name: str, lang: str | None = None) -> str:
     """A built-in skill name as shown in `lang` (either spelling resolves)."""
     return display_skill_name(name, lang or i18n.current())
@@ -312,7 +322,7 @@ def _builtin_rows() -> list[dict]:
     return [*_team_rows(), *_agent_rows(), *_skill_rows(), *_prompt_rows(), *_mcp_rows()]
 
 
-# --------------------------------------------------------------------- 自定义模板
+# --------------------------------------------------------------------- custom templates
 @dataclass
 class Custom:
     dir: str
@@ -337,7 +347,8 @@ def _signature(files: list[Path]) -> tuple:
 
 
 def _require(kind: str, raw: dict) -> str | None:
-    """按类别校验自定义模板的必填字段;返回错误原因(通过则 None)。"""
+    """Validate the required fields of a custom template by kind; returns the reason it failed
+(None when it passes)."""
     if kind == "team":
         names = raw.get("members")
         if not isinstance(names, list) or not names or len(names) > 12:
@@ -376,14 +387,15 @@ def _require(kind: str, raw: dict) -> str | None:
             return i18n.pick_now("prompt needs a non-empty content", "prompt 需要非空的 content")
         if len(content) > 4000:
             return i18n.pick_now("prompt content is over 4000 characters", "prompt 的 content 超过 4000 字")
-        # 注意:条目的 kind 已经用来表示「这是提示词」了,提示词自己的类型叫 prompt_kind
+        # note: the entry's kind already means "this is a prompt", so the prompt's own type is
+# called prompt_kind
         if raw.get("prompt_kind", "general") not in ("general", "group"):
             return i18n.pick_now("prompt_kind must be general or group", "prompt 的 prompt_kind 只能是 general(通用) 或 group(群提示词)")
     return None
 
 
 def _custom_row(raw: Any, seen: set[str]) -> tuple[dict | None, str]:
-    """校验并归一化一条自定义模板。返回 (条目, 错误原因)。"""
+    """Validate and normalize one custom template. Returns (entry, failure reason)."""
     if not isinstance(raw, dict):
         return None, i18n.pick_now("an entry must be an object", "条目必须是对象")
     rid = raw.get("id")
@@ -419,7 +431,8 @@ def _custom_row(raw: Any, seen: set[str]) -> tuple[dict | None, str]:
 
 
 def _custom_preview(kind: str, raw: dict) -> dict:
-    """列表里只带「摘要级」内容,正文放详情接口 —— 目录再大也不会把响应撑爆。"""
+    """The listing carries only "summary level" content, with the body served by the detail
+endpoint — however large the catalog grows, the response cannot blow up."""
     if kind == "team":
         return {"members": [{"name": n, "avatar": "🤖", "role": ""} for n in raw.get("members", [])],
                 "host": raw.get("host", ""), "skills": list(raw.get("skills", [])),
@@ -435,7 +448,7 @@ def _custom_preview(kind: str, raw: dict) -> dict:
 
 
 def _custom_def(kind: str, raw: dict, name: str) -> dict:
-    """安装时用的完整定义;只保留各类别真正需要的字段。"""
+    """The full definition used when installing; only the fields each kind really needs are kept."""
     if kind == "team":
         return {"name": name, "members": list(raw.get("members", [])), "host": raw.get("host", ""),
                 "skills": list(raw.get("skills", [])), "prompt": str(raw.get("prompt", ""))}
@@ -491,7 +504,8 @@ def _parse_custom(d: Path, files: list[Path]) -> Custom:
 
 
 def _load_custom(store: Store) -> Custom:
-    """读取数据目录里的自定义模板。按文件 mtime+大小缓存,改完文件无需重启。"""
+    """Read the custom templates in the data directory. Cached by file mtime + size, so editing a
+file needs no restart."""
     d = Path(store.data_dir) / CUSTOM_DIRNAME
     if not d.is_dir():
         return Custom(dir=str(d), exists=False)
@@ -506,7 +520,7 @@ def _load_custom(store: Store) -> Custom:
     return res
 
 
-# --------------------------------------------------------------------- 目录
+# --------------------------------------------------------------------- catalog
 def _all_items(store: Store) -> list[dict]:
     rows = _builtin_rows() + _load_custom(store).items
     order = {k: i for i, k in enumerate(KINDS)}
@@ -515,7 +529,8 @@ def _all_items(store: Store) -> list[dict]:
 
 
 def _states(store: Store) -> dict:
-    """一次性把各表的现状取出来,用于标注「已装/未装」。"""
+    """Read the current state of every table in one go, used to mark entries as
+"installed / not installed"."""
     return {
         "groups": [g["name"] for g in store.list_groups()],
         "agents": {n for a in store.list_agents() for n in (builtin_names(builtin_for(a["name"])) or [a["name"]])},
@@ -573,7 +588,8 @@ def _slim(item: dict, st: dict) -> dict:
 
 
 def _localized(items: list[dict]) -> list[dict]:
-    """内置条目按请求语言返回(英文基础字段 / 中文 `<字段>_zh`)。"""
+    """Built-in entries are returned in the requested language (English base field / Chinese
+`<field>_zh`)."""
     lang = i18n.current()
     return [i18n.localize(it, lang) for it in items]
 
@@ -605,7 +621,7 @@ def find(store: Store, item_id: str) -> dict | None:
     return item | {"installed": installed, "state_note": note}
 
 
-# --------------------------------------------------------------------- 应用
+# --------------------------------------------------------------------- apply
 def _unique_group_name(store: Store, base: str) -> str:
     fallback = i18n.pick_now("New group", "新群聊")
     base = _clip(base or fallback, 60) or fallback
@@ -636,7 +652,8 @@ def _prompt_label(title: str, lang: str) -> str:
 
 
 def _defs_index(store: Store) -> dict[str, dict]:
-    """按名字索引可用的技能与成员定义(内置 + 自定义),中英两种写法都能查到。"""
+    """Index the available skill and member definitions by name (built-in + custom); both the
+Chinese and the English spelling can be looked up."""
     skills: dict[str, dict] = {}
     for key, ex in EXAMPLE_SKILLS.items():
         entry = {**ex, "name": ex["name"], "key": key}
@@ -654,7 +671,8 @@ def _defs_index(store: Store) -> dict[str, dict]:
 
 
 def _ensure_member(store: Store, name: str, idx: dict) -> dict | None:
-    """复用同名成员;没有就按岗位预设/自定义角色创建。"""
+    """Reuse a member with the same name; if there is none, create it from the role preset or the
+custom role."""
     for a in store.list_agents():
         if _same_member(a["name"], name):
             return a

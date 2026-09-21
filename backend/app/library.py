@@ -1,7 +1,10 @@
-"""资料库:把文档切块建索引,群聊里的成员需要时通过 library_search 工具检索。
+"""Document library: chunks documents and indexes them so members in a group chat can
+search them through the library_search tool.
 
-只保存提取出来的文本(原文件不保留)。检索是本机的 BM25(中文按二元组分词),不调用任何云端接口。
-支持 txt / md / csv / json / html / pdf(有文字层的)/ docx;扫描版 PDF 需要 OCR,暂不支持。
+Only the extracted text is kept (the original file is not). Retrieval is local BM25
+(Chinese is tokenized into bigrams) and calls no cloud endpoint. Supports txt / md /
+csv / json / html / pdf (with a text layer) / docx; scanned PDFs need OCR and are not
+supported yet.
 """
 
 from __future__ import annotations
@@ -62,7 +65,7 @@ def _decode(data: bytes) -> str:
 
 
 def extract_text(filename: str, data: bytes) -> tuple[str, str]:
-    """返回 (类型, 文本)。"""
+    """Returns (kind, text)."""
     ext = Path(filename).suffix.lower()
     if len(data) > MAX_BYTES:
         raise LibraryError(i18n.pick_now(f"File is too large (limit {MAX_BYTES // 1024 // 1024} MB)", f"文件太大(上限 {MAX_BYTES // 1024 // 1024} MB)"))
@@ -115,7 +118,8 @@ MAX_URL_BYTES = 5 * 1024 * 1024
 
 
 def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str, bytes]:
-    """下载一个网页/文档 → (最终地址, content-type, 内容)。只允许 http(s),最多 3 次跳转,最大 5MB。"""
+    """Download a web page or document -> (final url, content-type, content). Only http(s) is
+allowed, at most 3 redirects, 5MB maximum."""
     u = urlparse(url.strip())
     if u.scheme not in ("http", "https") or not u.netloc:
         raise LibraryError(i18n.pick_now("A link has to start with http:// or https://", "链接需要以 http:// 或 https:// 开头"))
@@ -142,8 +146,10 @@ class Library:
         self._bm: BM25 | None = None
         self._chunks: list[dict] = []
         self._dirty = True
-        # 检索会被放到线程池里跑(见 toolhub / api_ext),所以重建索引要加锁:
-        # 否则两个线程同时看到 _dirty=True 会各建一份,读到的 _chunks 与 _bm 可能不是同一份。
+        # Retrieval runs in a thread pool (see toolhub / api_ext), so rebuilding the index must
+# hold a lock:
+        # otherwise two threads both see _dirty=True and each builds one, and a reader may get a
+# _chunks and a _bm that are not from the same build.
         self._index_lock = threading.Lock()
 
     def invalidate(self) -> None:
@@ -153,7 +159,7 @@ class Library:
         if not self._dirty and self._bm is not None:
             return
         with self._index_lock:
-            if not self._dirty and self._bm is not None:   # 等锁期间别的线程已经建好了
+            if not self._dirty and self._bm is not None:   # another thread already built it while we waited for the lock
                 return
             chunks = self.store.all_chunks()
             bm = BM25([tokenize(c["title"] + " " + c["text"]) for c in chunks])
@@ -195,7 +201,8 @@ class Library:
         return self.add_text(title[:120], text, final, "link", len(data))
 
     def add_dir(self, path: str, recursive: bool = True) -> dict:
-        """把文件夹里的文档批量导入。再次导入同一个文件夹:没变的跳过,大小变了的替换成新版。"""
+        """Bulk import the documents in a folder. Re-importing the same folder: unchanged files are
+skipped, files whose size changed are replaced with the new version."""
         root = Path(path.strip()).expanduser()
         if not root.is_absolute() or not root.is_dir():
             raise LibraryError(i18n.pick_now("Give the full path of a folder that exists", "请填写一个存在的文件夹的完整路径"))
@@ -225,8 +232,9 @@ class Library:
                     raise LibraryError(i18n.pick_now(f"File is too large (limit {MAX_BYTES // 1024 // 1024} MB)", f"文件太大(上限 {MAX_BYTES // 1024 // 1024} MB)"))
                 kind, text = extract_text(p.name, p.read_bytes())
                 if not text.strip():
-                    raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))   # 先检查再动旧版本:新版是空的就保留旧版
-                if old:   # 变了的文件:原地换成新内容,文档 ID、标题、启用状态都保持,群里已选的文档不会掉
+                    raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))   # check before touching the old version: if the new one is empty, keep the old
+                if old:   # changed files: replaced in place, keeping document id, title and enabled state, so
+# documents already selected in a group are not lost
                     self.delete(old["id"])
                     doc = self.add_text(old["title"], text, str(p), kind, size, did=old["id"])
                     if not old["enabled"]:
@@ -280,7 +288,8 @@ class Library:
             next((d for d in docs if key and key in d["title"].lower()), None)
 
     def scope_ids(self, ext_library: dict) -> list[str] | None:
-        """群设置 → 可检索的文档 ID。None=不限制(全部已启用);[]=一份也不能用。"""
+        """Group settings -> searchable document ids. None = no restriction (all enabled ones);
+[] = none may be used."""
         mode = (ext_library or {}).get("mode", "all")
         if mode == "off":
             return []

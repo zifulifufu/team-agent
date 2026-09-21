@@ -1,12 +1,19 @@
-"""记忆 ⇄ Obsidian:把记忆双向同步到你 Obsidian 库里的一个文件夹。
+"""Memory <-> Obsidian: two-way sync of memories into one folder of your Obsidian vault.
 
-- 每条记忆是一个 .md 文件,开头的 frontmatter 记着它属于谁(ta_id / scope / kind / pinned),正文就是记忆内容。
-- 你在 Obsidian 里改文字、改属性、新建笔记(没有 frontmatter 的笔记会被当作新记忆导入)、删除文件,
-  下次同步都会反映到程序里;在程序里的改动也会写回文件。本地数据库始终是完整的一份,同步只是镜像。
-- 两边都改了同一条:以较新的一方为准,被覆盖的那一版存到 `_冲突备份/`。
-- 程序里删除的记忆,对应文件移到 `_已删除/`(不会真删你的文件);Obsidian 里删除的文件,对应记忆会被删除,
-  但如果一次要删掉一大半(多半是文件夹被移走/盘没挂载),会拒绝执行并提示。
-- 只读写你选定的文件夹;以 `_` 或 `.` 开头的子文件夹(如 .obsidian、_冲突备份)不参与同步;不跟随符号链接。
+- Each memory is a .md file; the frontmatter at the top records who it belongs to
+  (ta_id / scope / kind / pinned) and the body is the memory text.
+- Text and property edits, new notes (notes without frontmatter are imported as new
+  memories) and deleted files in Obsidian are all reflected into the app on the next sync,
+  and changes made in the app are written back to the files. The local database always
+  holds the complete copy; syncing is only a mirror.
+- When both sides changed the same entry the newer one wins, and the overwritten version
+  is stored under `_冲突备份/`.
+- A memory deleted in the app has its file moved to `_已删除/` (your file is never really
+  deleted); a file deleted in Obsidian deletes the matching memory, but if one sync would
+  delete more than half of them (usually the folder was moved away or the disk is not
+  mounted) it refuses and reports it.
+- Only the folder you picked is read and written; subfolders starting with `_` or `.`
+  (such as .obsidian or _冲突备份) are not synced; symlinks are not followed.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ from pathlib import Path
 from .memory import looks_sensitive
 from .store import Store
 
-SYNC_KINDS = ("preference", "fact", "decision", "lesson")   # 「过往做法」是程序自己记的流水账,不同步
+SYNC_KINDS = ("preference", "fact", "decision", "lesson")   # the activity log is the program's own running record and is not synced
 # File-name prefixes and note headings. Kept as pairs (rather than calling pick_now here)
 # because a module-level call would be evaluated once at import and freeze the language.
 KIND_LABEL = {"preference": ("Preference", "偏好"), "fact": ("Fact", "事实"),
@@ -37,7 +44,7 @@ def kind_label(kind: str) -> str:
     pair = KIND_LABEL.get(kind)
     return i18n.pick_now(*pair) if pair else kind
 OUR_KEYS = ("ta_id", "scope", "scope_id", "scope_name", "kind", "pinned", "source", "updated")
-MAX_FILES, MAX_BYTES, MAX_DEPTH, MAX_CONTENT = 5000, 256 * 1024, 4, 500   # 500 字:和「记忆」页手动添加的上限一致
+MAX_FILES, MAX_BYTES, MAX_DEPTH, MAX_CONTENT = 5000, 256 * 1024, 4, 500   # 500 characters: same limit as manual entries on the Memory page
 MASS_DELETE_MIN = 5
 
 
@@ -45,7 +52,7 @@ class ObsidianError(Exception):
     pass
 
 
-# ------------------------------------------------------------------ 解析 / 生成
+# ------------------------------------------------------------------ parse / render
 def _val(raw: str):
     raw = raw.strip()
     if raw.startswith('"'):
@@ -59,7 +66,7 @@ def _val(raw: str):
 
 
 def parse_note(text: str) -> tuple[dict, list[str], str]:
-    """→ (我们认得的属性, frontmatter 里的其它行(原样保留), 正文)。"""
+    """-> (the properties we recognize, the other lines of the frontmatter (kept as-is), the body)."""
     text = text.lstrip("﻿")
     if not text.startswith("---"):
         return {}, [], text.strip()
@@ -107,18 +114,18 @@ _BAD = re.compile(r'[\\/:*?"<>|#^\[\]\r\n\t]')
 
 
 def _safe(s: str, n: int = 40) -> str:
-    return _BAD.sub("", s).strip().strip(".").lstrip("_. ")[:n] or i18n.pick_now("Untitled", "未命名")   # 开头不能是 _ 或 .,否则同步会当成隐藏文件夹跳过
+    return _BAD.sub("", s).strip().strip(".").lstrip("_. ")[:n] or i18n.pick_now("Untitled", "未命名")   # must not start with _ or ., otherwise sync treats it as a hidden folder and skips it
 
 
 @dataclass
 class Report:
     ok: bool = True
     at: float = 0.0
-    written: int = 0        # 程序 → Obsidian:新建/更新的文件数
-    pulled: int = 0         # Obsidian → 程序:更新的记忆数
-    imported: int = 0       # Obsidian → 程序:新导入的记忆数
+    written: int = 0        # app -> Obsidian: number of files created or updated
+    pulled: int = 0         # Obsidian -> app: number of memories updated
+    imported: int = 0       # Obsidian -> app: number of memories newly imported
     deleted_memories: int = 0
-    removed_files: int = 0  # 移到 _已删除 的文件数
+    removed_files: int = 0  # number of files moved to _已删除
     conflicts: int = 0
     files: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -149,9 +156,10 @@ class NoteFile:
 class ObsidianSync:
     def __init__(self, store: Store):
         self.store = store
-        self._lock = threading.Lock()   # 自动同步和手动同步不能同时跑,否则同一批新笔记会被导入两次
+        self._lock = threading.Lock()   # auto sync and manual sync must not run at the same time, otherwise the same batch of
+# new notes is imported twice
 
-    # ----------------------------------------------------------------- 配置
+    # ----------------------------------------------------------------- config
     def base(self) -> Path | None:
         d = (self.store.get_settings().get("obsidian_dir") or "").strip()
         return Path(d).expanduser() if d else None
@@ -174,7 +182,7 @@ class ObsidianSync:
 
     @staticmethod
     def detect_vaults() -> list[dict]:
-        """读 Obsidian 自己的配置文件,列出本机已有的库(只读)。"""
+        """Read Obsidian's own config file and list the vaults that exist on this machine (read-only)."""
         home = Path.home()
         cands = [home / "Library/Application Support/obsidian/obsidian.json",
                  home / ".config/obsidian/obsidian.json",
@@ -207,7 +215,7 @@ class ObsidianSync:
             "mapped": len(self.store.obsidian_map()), "last": json.loads(last) if last else None,
         }
 
-    # ----------------------------------------------------------------- 扫描
+    # ----------------------------------------------------------------- scan
     def _iter_md(self, base: Path):
         root = base.resolve()
         stack = [(root, 0)]
@@ -252,7 +260,7 @@ class ObsidianSync:
         rep.files = len(out)
         return out
 
-    # ----------------------------------------------------------------- 写文件
+    # ----------------------------------------------------------------- write files
     def _inside(self, base: Path, p: Path) -> Path:
         root = base.resolve()
         rp = p.resolve() if p.exists() else p.parent.resolve() / p.name
@@ -289,7 +297,8 @@ class ObsidianSync:
         return base.resolve() / folder / name
 
     def _resolve_scope(self, ours: dict, m: dict | None, gn: dict, an: dict, rep: Report, label: str) -> tuple[str, str]:
-        """文件里写的归属 → (scope, scope_id);对不上就退回记忆原来的(新导入的退回全局)。"""
+        """Ownership written in the file -> (scope, scope_id); falls back to the memory's current
+one when it does not match (newly imported ones fall back to global)."""
         scope = ours.get("scope") if ours.get("scope") in ("global", "group", "agent") else (m["scope"] if m else "global")
         if scope == "global":
             return "global", ""
@@ -307,7 +316,8 @@ class ObsidianSync:
         return "global", ""
 
     def write_export(self, name: str, text: str) -> Path:
-        """把聊天记录等导出物写进库里的 `_聊天记录/`(下划线开头,不参与记忆同步)。"""
+        """Write exports such as chat logs into `_聊天记录/` in the vault (leading underscore, so
+it takes no part in memory sync)."""
         base = self.base()
         if not base or not base.is_dir():
             raise ObsidianError(i18n.pick_now("No Obsidian folder is set, or the folder is not available right now", "还没有设置 Obsidian 文件夹,或文件夹现在不可用"))
@@ -315,7 +325,7 @@ class ObsidianSync:
         self._write(base, p, text)
         return p
 
-    # ----------------------------------------------------------------- 同步
+    # ----------------------------------------------------------------- sync
     def sync(self, force: bool = False) -> dict:
         rep = Report(at=time.time())
         if not self._lock.acquire(blocking=False):
@@ -327,7 +337,8 @@ class ObsidianSync:
             rep.ok, rep.error = False, str(e)
         except OSError as e:
             rep.ok, rep.error = False, i18n.pick_now(f"Error reading or writing the folder: {e}", f"读写文件夹出错:{e}")
-        except Exception as e:  # noqa: BLE001 — 任何意外都要变成一条可读的报告,不能让接口 500、让自动同步停掉
+        except Exception as e:  # noqa: BLE001 — any surprise must become a readable report; it must not make the
+# endpoint return 500 or stop the automatic sync
             rep.ok, rep.error = False, i18n.pick_now(f"Sync failed: {type(e).__name__}: {e}", f"同步出错:{type(e).__name__}: {e}")
         finally:
             self._lock.release()
@@ -351,7 +362,8 @@ class ObsidianSync:
         def push(m: dict, path: Path, other: list[str] | None = None) -> None:
             try:
                 self._write(base, path, render_note(m, self._scope_name(m, gn, an), other))
-            except ObsidianError as e:   # 比如库里某个文件夹是指向别处的符号链接:只跳过这一条,不影响其它
+            except ObsidianError as e:   # e.g. a folder in the vault that is a symlink to somewhere else: skip only this one,
+# do not affect the rest
                 rep.warnings.append(str(e))
                 return
             st.set_obsidian_map(m["id"], str(path.resolve().relative_to(base.resolve())), _mem_hash(m))
@@ -360,7 +372,7 @@ class ObsidianSync:
         for nf in files:
             tid = str(nf.ours.get("ta_id") or "")
             if tid and tid in maps and tid not in mems:
-                # 程序里已经删掉了这条:文件挪进 _已删除,不真删
+                # already deleted in the app: move the file into _已删除, never really delete it
                 self._stash(base, i18n.pick_now("_deleted", "_已删除"), nf.path.name, nf.raw)
                 nf.path.unlink()
                 st.del_obsidian_map(tid)
@@ -385,7 +397,7 @@ class ObsidianSync:
             f_hash, d_hash = state_hash(scope, sid, kind, pinned, content), _mem_hash(m)
             base_hash = (maps.get(mid) or {}).get("hash")
             if maps.get(mid) and maps[mid]["rel_path"] != nf.rel:
-                st.set_obsidian_map(mid, nf.rel, base_hash or d_hash)   # 文件在 Obsidian 里被移动/改名
+                st.set_obsidian_map(mid, nf.rel, base_hash or d_hash)   # file was moved or renamed in Obsidian
             if f_hash == d_hash:
                 st.set_obsidian_map(mid, nf.rel, d_hash)
                 if not nf.ours.get("ta_id"):
@@ -411,8 +423,9 @@ class ObsidianSync:
             else:
                 push(m, nf.path, nf.other)
 
-        # Obsidian 里被删掉/移走的文件
-        # (文件读不了、太深、被截断等情况下,原路径上文件还在,就不能算「被删了」)
+        # files deleted or moved away in Obsidian
+        # (if the file cannot be read, is nested too deep, was truncated, etc., the file is
+# still at its original path, so it does not count as "deleted")
         root = base.resolve()
         gone = [mid for mid in maps if mid not in seen and mid in mems
                 and not any(f.ours.get("ta_id") == mid for f in files) and not (root / maps[mid]["rel_path"]).exists()]
@@ -421,34 +434,36 @@ class ObsidianSync:
             st.del_obsidian_map(mid)
         live = sum(1 for mid in maps if mid in mems)
         if gone and not force and (
-            len(gone) > max(MASS_DELETE_MIN, live // 2)      # 一次删掉一大半
-            or (len(gone) >= 2 and len(gone) >= live)         # 全部都不见了(空文件夹 / 没挂载)
-            or not files                                      # 文件夹里一篇笔记都没有了
+            len(gone) > max(MASS_DELETE_MIN, live // 2)      # more than half would be deleted at once
+            or (len(gone) >= 2 and len(gone) >= live)         # everything is gone (empty folder / not mounted)
+            or not files                                      # the folder has no notes left at all
         ):
             rep.mass_missing = True
             rep.warnings.append(i18n.pick_now(f"{len(gone)} of the matching files are missing (almost all of them); the folder was probably moved, emptied or unmounted. Nothing was deleted, for safety. Once you have checked, click Force sync.", f"有 {len(gone)} 个对应的文件不见了(几乎是全部),很可能是文件夹被移走、清空或没挂载,为安全起见没有删除任何记忆。确认无误可点「强制同步」。"))
             gone = []
         for mid in gone:
             m = mems[mid]
-            try:   # 删记忆之前把内容留一份在 _已删除,在 Obsidian 里误删/误移走也找得回来
+            try:   # keep a copy of the content in _已删除 before deleting the memory, so an accidental
+# delete or move in Obsidian can still be recovered
                 self._stash(base, i18n.pick_now("_deleted", "_已删除"), Path(maps[mid]["rel_path"]).name, render_note(m, self._scope_name(m, gn, an)))
             except (ObsidianError, OSError):
                 pass
             st.delete_memory(mid)
             st.del_obsidian_map(mid)
             rep.deleted_memories += 1
-        # 程序里新增的记忆 → 新文件
+        # memories added in the app -> new files
         for mid, m in mems.items():
             if mid in seen or mid in maps:
                 continue
             push(m, self._new_path(base, m, gn, an))
 
     def _import(self, base: Path, nf: NoteFile, gn: dict, an: dict, rep: Report, seen: set[str]) -> None:
-        """Obsidian 里新建的笔记(或从别处拷来的带 ta_id 的文件) → 新记忆。"""
+        """Notes created in Obsidian (or files copied in from elsewhere that carry a ta_id)
+-> new memories."""
         if not nf.body:
             return
         st = self.store
-        if nf.too_long:   # 长文章不是「一句话记忆」:不截断、不改写,原样留着
+        if nf.too_long:   # a long article is not a "one-line memory": do not truncate or rewrite it, keep it as-is
             rep.warnings.append(i18n.pick_now(f"\"{nf.rel}\" is longer than {MAX_CONTENT} characters, so it does not work as a memory and was skipped (the file was left alone). Write it as a sentence or two to use it as one.", f"「{nf.rel}」超过 {MAX_CONTENT} 字,不适合当记忆,已跳过(文件没有动)。想当记忆用,请写成一两句话"))
             return
         if looks_sensitive(nf.body):

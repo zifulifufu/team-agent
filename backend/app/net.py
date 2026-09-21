@@ -1,17 +1,22 @@
-"""按目标地址选择 HTTP 客户端。
+"""Pick an HTTP client based on the destination address.
 
-为什么需要:httpx 默认 trust_env=True,会读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY。
-用户开着 Clash 这类代理时,连 127.0.0.1 上的 Ollama、本机自建 OpenAI 兼容服务也会被塞进代理,
-表现成「Ollama 没有在运行」或 502 Bad Gateway —— 其实服务是好的(实测:同一台机器上
-/api/local/status 返回 502 Bad Gateway,加 --noproxy 后一切正常)。
+Why this exists: httpx defaults to trust_env=True, which reads HTTP_PROXY /
+HTTPS_PROXY / ALL_PROXY. With a proxy such as Clash running, even 127.0.0.1
+(Ollama, a self-hosted OpenAI-compatible service) gets funneled through the proxy
+and surfaces as "Ollama is not running" or 502 Bad Gateway — even though the
+service is fine (observed: /api/local/status returned 502 Bad Gateway on the
+same machine, everything worked once --noproxy was added).
 
-规则:目标是回环/局域网地址(本机服务、内网工作站、LAN 上的 Ollama)时一律直连;
-真正的外网(GitHub、云端模型服务)仍然尊重系统代理,因为公司网络里往往只有走代理才出得去。
+Rule: loopback/LAN destinations (local services, intranet workstations, Ollama on
+the LAN) always connect directly; real external hosts (GitHub, cloud model
+providers) still honor the system proxy, since corporate networks often require it.
 
-与 main.ensure_loopback_no_proxy() 的分工:那个函数往 NO_PROXY 里塞回环地址,作用是兜住
-litellm / mcp 这些第三方库自己建的客户端(我们没法逐个改);这里则管本程序自己的客户端,
-并且能覆盖 192.168.x / 10.x 这类**局域网**地址——内网工作站、LAN 上的 Ollama 同样不该走代理。
-两者不冲突,一起用。
+Division of labor with main.ensure_loopback_no_proxy(): that function injects
+loopback addresses into NO_PROXY to catch clients created by third-party libraries
+such as litellm / mcp (which we cannot patch one by one); this module governs our
+own clients and additionally covers **LAN** ranges like 192.168.x / 10.x —
+intranet workstations and LAN Ollama should not go through a proxy either.
+The two do not conflict; they are meant to be used together.
 """
 
 from __future__ import annotations
@@ -23,20 +28,22 @@ import httpx
 
 
 def _host_of(url: str) -> str:
-    """从各种写法里取出主机名:完整 URL、host:port、裸 IPv6(::1)、[::1]:port 都要认。"""
+    """Extract the hostname from any notation: full URL, host:port, bare IPv6 (::1),
+    and [::1]:port are all recognized."""
     s = url.strip()
     if "://" in s:
         return (urlparse(s).hostname or "").lower()
     if s.startswith("["):                       # [::1]:11434
         end = s.find("]")
         return s[1:end].lower() if end > 0 else ""
-    if s.count(":") >= 2:                       # 裸 IPv6(host:port 只有一个冒号)
+    if s.count(":") >= 2:                       # bare IPv6 (host:port has only one colon)
         return s.split("/")[0].lower()
     return s.split("/")[0].split(":")[0].lower()
 
 
 def is_local_url(url: str) -> bool:
-    """回环或私有网段(localhost / 127.x / ::1 / 10.x / 172.16-31.x / 192.168.x / 169.254.x)都算「本机或局域网」。"""
+    """Loopback or private ranges (localhost / 127.x / ::1 / 10.x / 172.16-31.x /
+    192.168.x / 169.254.x) all count as "this machine or the LAN"."""
     host = _host_of(url)
     if not host:
         return False
@@ -50,8 +57,9 @@ def is_local_url(url: str) -> bool:
 
 
 def client(url: str = "", **kwargs: object) -> httpx.AsyncClient:
-    """建一个异步客户端。传 url 时会自动判断要不要绕过系统代理。
-    想强制直连(例如只用来探测本机服务的那个客户端)可显式传 trust_env=False。"""
+    """Build an async client. Passing url decides automatically whether to bypass the
+    system proxy. Pass trust_env=False explicitly to force a direct connection
+    (for example the client used only to probe local services)."""
     kwargs.setdefault("timeout", 15.0)
     if is_local_url(url) and "trust_env" not in kwargs:
         kwargs["trust_env"] = False

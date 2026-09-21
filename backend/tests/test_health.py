@@ -1,4 +1,6 @@
-"""模型连通指示灯:状态判定、聊天/检测顺带记录、本地探测、清理。"""
+"""The model connectivity light: state resolution, recording during chat/check,
+local probing, and cleanup.
+"""
 
 from __future__ import annotations
 
@@ -24,8 +26,8 @@ def test_states_off_and_unknown(tmp_path):
     h = health(c)
     ds = next(m for m in store.list_models() if m["provider_id"] == "deepseek")
     ol = next(m for m in store.list_models() if m["provider_id"] == "ollama")
-    assert h[ds["id"]]["state"] == "off" and "API Key" in h[ds["id"]]["detail"]  # 没填 key
-    assert h[ol["id"]]["state"] == "unknown"                                        # 本地能用但没检测过
+    assert h[ds["id"]]["state"] == "off" and "API Key" in h[ds["id"]]["detail"]  # no key yet
+    assert h[ol["id"]]["state"] == "unknown"                                        # usable locally, never checked
     store.update_provider("deepseek", {"api_key": "sk-abcdef123456"})
     assert health(c)[ds["id"]]["state"] == "unknown"
     store.update_settings({"external_calls_enabled": False})
@@ -49,7 +51,7 @@ def test_check_records_ok_and_bad_and_limited(tmp_path):
     h = r.json()["health"]
     assert h["deepseek/deepseek-v4-pro"]["state"] == "ok"
     assert h["deepseek/reasoner-x"]["state"] == "bad"
-    assert "sk-secret123456" not in h["deepseek/reasoner-x"]["detail"]  # 密钥被抹掉
+    assert "sk-secret123456" not in h["deepseek/reasoner-x"]["detail"]  # the key is scrubbed
     assert h["deepseek/slow-one"]["state"] == "limited"
 
 
@@ -69,7 +71,7 @@ def test_chat_records_health_but_request_problem_does_not_turn_red(tmp_path):
         asyncio.run(router.complete([{"role": "user", "content": "x"}], only=ol["id"]))
     except Exception:
         pass
-    assert ol["id"] not in store.all_health()          # 聊天时的「请求有问题」不标红
+    assert ol["id"] not in store.all_health()          # a bad request during chat must not turn it red
     fake.script["ollama_chat/"] = "好"
     asyncio.run(router.complete([{"role": "user", "content": "x"}], only=ol["id"]))
     assert store.all_health()[ol["id"]]["status"] == "ok"
@@ -88,7 +90,8 @@ def test_reasoning_only_counts_as_connected(tmp_path):
     c, store, _ = make(tmp_path, Fake())
     ol = next(m for m in store.list_models() if m["provider_id"] == "ollama")
     r = c.post("/api/models-health/check", json={"model_ids": [ol["id"]], "cloud": True}).json()
-    # 本地模型检测只做探测,这里 Ollama 没运行 → bad;用云端模型验证思考型
+    # local checks only probe, and Ollama is not running here, hence bad; use a
+    # cloud model to verify the reasoning-only case
     store.update_provider("deepseek", {"api_key": "sk-abcdef123456"})
     r = c.post("/api/models-health/check", json={"model_ids": ["deepseek/deepseek-v4-pro"]}).json()
     assert r["health"]["deepseek/deepseek-v4-pro"]["state"] == "ok"
@@ -128,7 +131,7 @@ def test_changing_key_or_deleting_clears_stale_health(tmp_path):
     c.post("/api/models-health/check", json={"model_ids": ["deepseek/deepseek-v4-pro"]})
     assert "deepseek/deepseek-v4-pro" in store.all_health()
     store.update_provider("deepseek", {"api_key": "sk-new-123456"})
-    assert "deepseek/deepseek-v4-pro" not in store.all_health()   # 旧结果对新密钥没意义
+    assert "deepseek/deepseek-v4-pro" not in store.all_health()   # a stale result says nothing about a new key
     c.post("/api/models-health/check", json={"model_ids": ["deepseek/deepseek-v4-pro"]})
     store.delete_model("deepseek/deepseek-v4-pro")
     assert "deepseek/deepseek-v4-pro" not in store.all_health()

@@ -1,4 +1,6 @@
-"""全链路审查后的回归测试:每个用例对应一个审查中发现并修复过的问题。"""
+"""Regressions written after an end-to-end audit: each case maps to one problem the
+audit found and we fixed.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ def client(tmp_path, fake=None, name="data"):
     return TestClient(app, base_url="http://127.0.0.1"), app
 
 
-# ============================================================ Obsidian
+# ======================================================= Obsidian
 @pytest.fixture
 def env(tmp_path):
     st = Store(tmp_path / "data")
@@ -45,7 +47,7 @@ def test_long_note_is_never_truncated_or_rewritten(env):
     (vault / "长文章.md").write_text(long_text, encoding="utf-8")
     r = ob.sync()
     assert r["imported"] == 0 and any("longer than" in w for w in r["warnings"])
-    assert (vault / "长文章.md").read_text(encoding="utf-8") == long_text      # 文件原封不动
+    assert (vault / "长文章.md").read_text(encoding="utf-8") == long_text      # the file is left untouched
     assert st.list_memories() == []
 
 
@@ -79,7 +81,7 @@ def test_empty_folder_does_not_wipe_a_small_memory_set(env):
         f.unlink()
     r = ob.sync()
     assert r["deleted_memories"] == 0 and len(st.list_memories()) == 3 and any("Force sync" in w for w in r["warnings"])
-    r = ob.sync(force=True)                                   # 确认后才真删,并且内容留了一份在 _已删除
+    r = ob.sync(force=True)                                   # only a forced sync really deletes, keeping copies
     assert r["deleted_memories"] == 3 and len(list((vault / "_deleted").glob("*.md"))) == 3
 
 
@@ -100,7 +102,7 @@ def test_group_named_with_underscore_still_round_trips(env):
     st.add_memory("下划线群的记忆", "group", g["id"], "fact")
     ob.sync()
     f = next(vault.rglob("*.md"))
-    assert not any(part.startswith("_") for part in f.relative_to(vault).parts)       # 不会落进被跳过的文件夹
+    assert not any(part.startswith("_") for part in f.relative_to(vault).parts)       # must not land in a skipped folder
     f.write_text(f.read_text(encoding="utf-8").replace("下划线群的记忆", "改过的记忆"), encoding="utf-8")
     assert ob.sync()["pulled"] == 1 and st.list_memories()[0]["content"] == "改过的记忆"
 
@@ -136,7 +138,7 @@ def test_concurrent_syncs_do_not_duplicate(env):
     assert sum(1 for r in results if r["ok"]) >= 1
 
 
-# ============================================================ 备份恢复
+# ==================================================== backup and restore
 def test_bad_backups_are_rejected_without_touching_live_data(tmp_path):
     a, app_a = client(tmp_path, name="a")
     a.post("/api/memories", json={"content": "本机的记忆", "kind": "fact"})
@@ -148,13 +150,13 @@ def test_bad_backups_are_rejected_without_touching_live_data(tmp_path):
     con.commit()
     con.close()
     assert a.post("/api/data/restore", content=p.read_bytes(), headers=OCT).status_code == 400
-    con = sqlite3.connect(p)                                   # 缺表
+    con = sqlite3.connect(p)                                   # a table is missing
     con.execute("DROP TABLE messages")
     con.commit()
     con.close()
     assert a.post("/api/data/restore", content=p.read_bytes(), headers=OCT).status_code == 400
-    assert a.get("/api/settings").status_code == 200 and a.get("/api/memories").json()["count"] == 1   # 本机数据完好
-    assert not list((tmp_path / "a" / "backups").glob(".restore-*"))                                       # 临时文件已清理
+    assert a.get("/api/settings").status_code == 200 and a.get("/api/memories").json()["count"] == 1   # local data intact
+    assert not list((tmp_path / "a" / "backups").glob(".restore-*"))                                       # temp files cleaned up
 
 
 def test_restore_requires_octet_stream(tmp_path):
@@ -204,7 +206,7 @@ def test_deleting_provider_removes_its_model_members(tmp_path):
     assert len(st.list_agents()) == before - 1 and all(a["origin"] != "model" or a["model_id"] for a in st.list_agents())
 
 
-# ============================================================ 设置校验
+# ==================================================== settings validation
 @pytest.mark.parametrize("bad", [
     {"request_timeout": "abc"}, {"request_timeout": None}, {"route_chain": None}, {"route_chain": [1, 2]},
     {"external_calls_enabled": "false"}, {"circuit_threshold": "x"}, {"circuit_cooldown": 0}, {"system_prompt": 5},
@@ -220,7 +222,7 @@ def test_settings_accept_valid_and_github_token_null(tmp_path):
     assert c.put("/api/settings", json={"request_timeout": 30, "route_chain": ["ollama/qwen2.5:7b"], "external_calls_enabled": False, "github_token": None}).status_code == 200
 
 
-# ============================================================ 外呼开关
+# ============================================= the outbound-calls switch
 async def test_manual_test_respects_offline_switch(tmp_path):
     fake = FakeLLM(default="OK")
     c, app = client(tmp_path, fake)
@@ -239,17 +241,21 @@ async def test_remote_mcp_is_not_used_when_offline(store, make_router):
     store.update_group(g["id"], {"ext": {"mcp": [m["id"]]}})
     ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
     assert not any(t["source"] == "mcp" for t in ctx.tools.values()) and any("remote service" in p for p in ctx.problems)
-    # 这条是「被外呼开关拦下」,不是「还没连过」,界面不该多显示那句说明
+    # this one was blocked by the outbound switch, not left unconnected, so the UI
+    # must not add that explanation
     assert ctx.mcp_deferred is False
 
 
 async def test_never_connected_mcp_sets_a_flag_not_a_phrase(store, make_router):
-    """界面要区分「MCP 只是还没第一次连上」和真的连不上。文案跟着请求语言走,所以给标志。"""
+    """The UI has to tell apart "this MCP has not connected for the first time yet"
+    from a genuine failure. The wording follows the request language, hence a flag.
+"""
     orch, g = setup(store, make_router, FakeLLM(default="好"))
     m = store.add_mcp("本地工具", command="definitely-not-a-real-binary")
     store.update_group(g["id"], {"ext": {"mcp": [m["id"]]}})
     group = store.get_group(g["id"])
-    # connect=False 就是能力页的取法:只看已有状态,不真的去连
+    # connect=False is how the capabilities page reads it: current state only, no
+    # connection attempt
     ctx = await orch.toolhub.context(group, store.list_agents()[0], connect=False)
     assert ctx.mcp_deferred is True and any("not connected" in p for p in ctx.problems)
     # In Chinese the problem text changes but the flag does not — that is the whole point of it
@@ -259,12 +265,13 @@ async def test_never_connected_mcp_sets_a_flag_not_a_phrase(store, make_router):
     finally:
         i18n.set_current("en")
     assert ctx_zh.mcp_deferred is True and any("未连接" in p for p in ctx_zh.problems)
-    # 真的去连、真的失败:这次是错误,不是「还没连过」,标志不该亮
+    # actually connecting and actually failing: this is an error, not "not yet
+    # connected", so the flag stays off
     ctx_tried = await orch.toolhub.context(group, store.list_agents()[0])
     assert ctx_tried.mcp_deferred is False and any("FileNotFoundError" in p for p in ctx_tried.problems)
 
 
-# ============================================================ 编排
+# ======================================================= orchestration
 async def test_exception_before_model_call_still_closes_the_bubble(store, make_router):
     orch, g = setup(store, make_router, FakeLLM(default="好"))
 
@@ -347,7 +354,7 @@ async def test_request_problems_do_not_trip_the_circuit(store, make_router):
     assert not r.circuit_open("deepseek/deepseek-v4-flash")
 
 
-# ============================================================ 工具与权限
+# ================================================== tools and permissions
 async def test_plugin_cannot_shadow_builtin_tool(store, make_router, tmp_path):
     orch, g = setup(store, make_router, FakeLLM(default="好"), perm_mode="ask_all")
     (store.data_dir / "plugins").mkdir(exist_ok=True)
@@ -366,7 +373,7 @@ async def test_deny_added_while_waiting_wins(store, make_router):
     ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
 
     async def approve(spec, args):
-        store.update_settings({"perm_deny": [spec["name"]]})     # 等确认的时候用户又把它禁了
+        store.update_settings({"perm_deny": [spec["name"]]})     # the user forbids it while we are waiting
         return True
 
     out = await orch.toolhub.call(ctx, "shout", {"text": "hi"}, approve)
@@ -392,7 +399,7 @@ async def test_sync_plugin_does_not_block_event_loop(store, make_router):
     t = asyncio.create_task(ticker())
     assert await orch.registry.call("slow", {}) == "done"
     await t
-    assert max(b - a for a, b in zip(ticks, ticks[1:])) < 0.25       # 事件循环一直在转
+    assert max(b - a for a, b in zip(ticks, ticks[1:])) < 0.25       # the event loop keeps turning
 
 
 async def test_dead_mcp_connection_is_marked_and_reconnectable(store, make_router):
@@ -417,7 +424,7 @@ async def test_dead_mcp_connection_is_marked_and_reconnectable(store, make_route
     assert mgr.state("x").status == "error"
 
 
-# ============================================================ 资料库
+# ======================================================== library
 def test_join_chunks_removes_search_overlap():
     text = "\n\n".join(f"第{i}段。" + "内容" * 100 for i in range(30))
     joined = join_chunks(chunk_text(text))
@@ -440,10 +447,10 @@ def test_library_read_hides_disabled_and_add_dir_keeps_identity(tmp_path):
     assert d2["id"] == d1["id"] and d2["title"] == "我改的标题" and d2["enabled"] is False
     f.write_text("   ", encoding="utf-8")
     res = lib.add_dir(str(docs))
-    assert res["skipped"] and st.get_doc(d1["id"])          # 新版是空的:保留旧版
+    assert res["skipped"] and st.get_doc(d1["id"])          # the new version is empty: keep the old one
 
 
-# ============================================================ 接口校验
+# ================================================== endpoint validation
 def test_agent_and_group_api_validation(tmp_path):
     c, app = client(tmp_path)
     ags = c.get("/api/agents").json()
@@ -451,7 +458,7 @@ def test_agent_and_group_api_validation(tmp_path):
     assert c.post("/api/agents", json={"name": "含 空格"}).status_code == 400
     assert c.patch(f"/api/agents/{ags[0]['id']}", json={"name": ags[1]["name"]}).status_code == 409
     assert c.patch(f"/api/agents/{ags[0]['id']}", json={"name": "@x"}).status_code == 400
-    assert c.patch(f"/api/agents/{ags[0]['id']}", json={"name": ags[0]["name"]}).status_code == 200   # 改成自己原来的名字不算重名
+    assert c.patch(f"/api/agents/{ags[0]['id']}", json={"name": ags[0]["name"]}).status_code == 200   # renaming to the name it already has is not a clash
     n = len(c.get("/api/groups").json())
     assert c.post("/api/groups", json={"name": "半成品", "member_ids": ["不存在"]}).status_code == 400
     assert len(c.get("/api/groups").json()) == n

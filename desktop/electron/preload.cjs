@@ -1,4 +1,5 @@
-// 把主进程生成的一次性 token 和后端地址交给渲染进程(仅用于访问本机 Python 后端)。
+// Hand the one-shot token and the backend address from the main process to the renderer.
+// They are only used to reach the local Python backend.
 const { contextBridge, ipcRenderer } = require("electron");
 
 const argOf = (name) => {
@@ -6,13 +7,14 @@ const argOf = (name) => {
   return a ? a.slice(name.length + 3) : "";
 };
 
-// 令牌只交给应用自己的页面(打包后的 file:// 页面,或开发时的 localhost:5173),
-// 万一窗口被导航到别的网页,那个网页拿不到令牌。
+// The token is exposed only to the app's own pages (the packaged file:// page, or
+// localhost:5173 in development). If the window is ever navigated elsewhere, that page
+// cannot read it.
 const isAppPage = location.protocol === "file:" || location.origin === "http://localhost:5173";
 
 contextBridge.exposeInMainWorld("teamAgent", {
   token: isAppPage ? argOf("team-agent-token") : "",
   api: isAppPage ? argOf("team-agent-api") : "",
-  // 弹出系统的「选择文件夹」对话框,返回路径;取消返回 null
+  // Opens the system folder picker and returns the path; null when it is cancelled
   pickFolder: isAppPage ? () => ipcRenderer.invoke("team-agent:pick-folder") : () => Promise.resolve(null),
 });

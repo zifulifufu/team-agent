@@ -1,11 +1,15 @@
-"""记忆:把既往的偏好、决定、教训和「谁做过什么」存下来,下次发言时按相关性取回。
+"""Memory: keeps past preferences, decisions, lessons and "who did what" so the most
+relevant ones can be retrieved before the next reply.
 
-三个来源:
-  1. 手动:你在「记忆」页添加(或让成员调用 memory_save 工具记下)。
-  2. 自动提炼:一轮协作结束后,用一个便宜的模型从对话里提炼 0~3 条长期有用的偏好/决定/教训(可关闭)。
-  3. 行为流水:每轮协作结束后程序自己记一条「任务 → 谁做了什么、用了什么工具、有没有回退」,不调用模型。
-取回时按 BM25 相关性 + 置顶 + 新近度排序,只把最相关的几条放进提示词。
-记忆只存在本机数据库里;自动提炼会过滤掉像密钥、长数字串这样的内容。
+Three sources:
+  1. Manual: you add them on the "Memory" page (or have a member call the memory_save tool).
+  2. Auto-extraction: after a collaboration round a cheap model distills 0-3 long-lived
+     preferences/decisions/lessons from the conversation (can be disabled).
+  3. Activity log: after each round the program itself records "task -> who did what,
+     which tools were used, whether it fell back", without calling a model.
+Retrieval ranks by BM25 relevance + pinned + recency, and only the few most relevant
+entries go into the prompt. Memory lives only in the local database; auto-extraction
+filters out things like keys and long digit strings.
 """
 
 from __future__ import annotations
@@ -70,7 +74,8 @@ class MemoryService:
                 scored.append((s * boost, m))
             scored.sort(key=lambda x: -x[0])
             picked += [m for _, m in scored[: k - len(picked)]]
-        # 没有关键词命中时,偏好类记忆仍然值得带上(它们通常与具体话题无关)
+        # with no keyword hit, preference memories are still worth including
+# (they are usually independent of the specific topic)
         if len(picked) < k:
             extra = [m for m in rest if m["kind"] == "preference" and m not in picked]
             extra.sort(key=lambda m: -m["updated_at"])
@@ -92,7 +97,7 @@ class MemoryService:
 
     # ---------------------------------------------------------------- record
     def record_action(self, group: dict, task_text: str, steps: list[dict], elapsed_s: float) -> dict | None:
-        """steps: [{"agent":名字,"model":模型 id,"tools":[工具名],"fallback":bool,"ok":bool}]"""
+        """steps: [{"agent": name, "model": model id, "tools": [tool names], "fallback": bool, "ok": bool}]"""
         if not steps:
             return None
         parts = []
@@ -123,7 +128,8 @@ class MemoryService:
         return self.store.add_memory(content, scope, scope_id, kind, source)
 
     async def extract(self, group: dict, user_text: str, final_text: str) -> list[dict]:
-        """用便宜的模型提炼长期有用的记忆。失败一律静默(记忆是加分项,不能影响主流程)。"""
+        """Distill long-lived memories using a cheap model. Every failure is silent (memory is a
+bonus and must not affect the main flow)."""
         cfg = self.store.get_settings()
         if not (cfg["memory_enabled"] and cfg["memory_auto_extract"]):
             return []
@@ -179,7 +185,7 @@ class MemoryService:
                 continue
             toks = set(tokenize(content))
             if any(toks and len(toks & set(e)) / len(toks | set(e)) > 0.7 for e in existing if e):
-                continue  # 和已有记忆几乎重复
+                continue  # almost a duplicate of an existing memory
             scope = "group" if it.get("scope") == "group" else "global"
             kind = it.get("kind") if it.get("kind") in ("preference", "fact", "decision", "lesson") else "fact"
             saved.append(self.store.add_memory(content, scope, group["id"] if scope == "group" else "", kind, "auto"))

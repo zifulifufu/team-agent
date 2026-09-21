@@ -20,7 +20,7 @@ def test_parse_tool_call_lenient_fences_alias_and_string_args():
 
 
 def test_parse_tool_call_unterminated_and_invalid():
-    _, calls = parse_tool_calls('<tool_call>{"name": "a", "arguments": {}}')  # 模型忘了写结束标签
+    _, calls = parse_tool_calls('<tool_call>{"name": "a", "arguments": {}}')  # model forgot the closing tag
     assert calls[0].name == "a"
     _, bad = parse_tool_calls("<tool_call>这不是 JSON</tool_call>")
     assert bad[0].error and not bad[0].name
@@ -86,9 +86,9 @@ def test_build_plan_orders_by_dependency_and_remaps_ids():
         {"id": "a", "owner": "@Proofreader", "title": "审", "instruction": "审校", "needs": ["b"]},
         {"id": "b", "owner": "Copywriter", "title": "写", "instruction": "起草", "strengths": ["写作"], "tools": ["library_search", "nope"]},
     ]), MEMBERS, 8, {"library_search"})
-    assert [t.id for t in plan.tasks] == ["b", "a"]            # 依赖在前
+    assert [t.id for t in plan.tasks] == ["b", "a"]            # the dependency comes first
     assert plan.tasks[1].needs == ["b"] and plan.tasks[1].owner_id == "3"
-    assert plan.tasks[0].tools == ["library_search"]           # 不存在的工具被忽略
+    assert plan.tasks[0].tools == ["library_search"]           # unknown tools are dropped
     assert plan.conventions.startswith("称呼")
 
 
@@ -118,8 +118,8 @@ def test_task_prompt_carries_conventions_upstream_and_declaration():
         {"id": "t2", "owner": "Proofreader", "title": "审校", "instruction": "审校初稿", "needs": ["t1"], "strengths": ["中文"]}]), MEMBERS)
     p = planner.task_prompt(plan, plan.tasks[1], {"t1": "这是文案的初稿"}, 2)
     assert "各位同事" in p and "这是文案的初稿" in p and has(p, ASSIGNMENT) and has(p, UPSTREAM) and "中文" in p
-    # 上游没有产出时,要明确告诉下游
+    # when upstream produced nothing, tell the downstream step explicitly
     p2 = planner.task_prompt(plan, plan.tasks[1], {}, 2)
     assert "produced nothing" in p2
     integ = planner.integration_prompt(plan, {"t1": "稿"})
-    assert has(integ, INTEGRATE) and "did not finish" in integ   # t2 还是 pending → 视为未完成
+    assert has(integ, INTEGRATE) and "did not finish" in integ   # t2 is still pending, i.e. unfinished

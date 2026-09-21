@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-# 测试默认不碰真实钥匙串:否则每次写 api_key 都会往你的登录钥匙串里塞测试用的假 Key。
-# 需要验证真实钥匙串的用例请设 TEAM_AGENT_KEYCHAIN_TEST=1(见 tests/test_compliance.py)。
+# Tests stay away from the real keychain by default: otherwise every api_key write
+# would drop a fake test key into your login keychain. Tests that really need the
+# real keychain set TEAM_AGENT_KEYCHAIN_TEST=1 (see tests/test_compliance.py).
 os.environ.setdefault("TEAM_AGENT_NO_KEYCHAIN", "1")
 
 from app.router import ModelRouter
@@ -15,7 +16,7 @@ from app.store import Store
 @pytest.fixture
 def store(tmp_path):
     st = Store(tmp_path / "data")
-    st.update_settings({"memory_auto_extract": False, "perm_mode": "allow_all"})  # 自动提炼会多发一次模型请求,需要的测试自己打开
+    st.update_settings({"memory_auto_extract": False, "perm_mode": "allow_all"})  # automatic extraction costs an extra model call; tests that need it turn it on
     return st
 
 
@@ -42,9 +43,13 @@ def chunk(text: str):
 
 
 class FakeLLM:
-    """可脚本化的 completion_fn。script: {litellm model 字符串前缀: 行为}
-    行为: 字符串 -> 正常流式返回; Exception 实例 -> 抛出; ("partial_then_fail", 文本) -> 先吐一段再失败;
-          callable(messages) -> 返回字符串。"""
+    """Scriptable completion_fn.
+
+    script maps {litellm model string prefix: behaviour}, where a behaviour is:
+    a string -> streamed back as-is; an Exception instance -> raised;
+    ("partial_then_fail", text) -> emits one chunk then fails;
+    callable(messages) -> returns a string.
+    """
 
     def __init__(self, script=None, default="ok"):
         self.script = script or {}

@@ -1,13 +1,14 @@
-"""模型连通指示灯。
+"""Per-model connectivity indicator.
 
-每个模型一个状态:
-  ok       绿   最近一次调用/检测成功
-  limited  黄   被限速或额度不足(等一会儿就好)
-  bad      红   连不上、密钥无效、模型 ID 不对、本地服务没启动或模型没下载
-  unknown  空心  可以用,但还没检测过(云端模型不会自动检测,避免悄悄花你的额度)
-  off      灰   现在根本不会被调用:已停用 / 没填 Key / 外呼开关关着
+One status per model:
+  ok       green    last call/check succeeded
+  limited  yellow   rate limited or out of quota (fine after a short wait)
+  bad      red      unreachable, invalid key, wrong model ID, local service not started or model not downloaded
+  unknown  hollow   usable, but never checked (cloud models are not checked automatically, to avoid quietly spending your quota)
+  off      gray     will not be called at all right now: disabled / no key / outbound switch off
 
-结果来源:手动「检测」(发一条极短的请求)、每次真实聊天顺带记录、本地服务探测(不花 token)。
+Where results come from: a manual "check" (sends one very short request), every real
+chat (recorded in passing), and local service probing (costs no tokens).
 """
 
 from __future__ import annotations
@@ -24,11 +25,12 @@ from .router import ModelRouter, has_credentials
 from .store import Store
 
 CHECK_CONCURRENCY = 3
-STALE_SECONDS = 24 * 3600  # 超过一天的结果仍显示,但标注「较旧」
+STALE_SECONDS = 24 * 3600  # results older than a day are still shown, but flagged as "older"
 
 
 def static_state(model: dict, provider: dict, external_ok: bool) -> tuple[str, str] | None:
-    """不发请求就能判断「现在不会被调用」的情况;返回 (off, 原因),否则 None。"""
+    """Cases where "will not be called right now" can be decided without sending a request;
+returns (off, reason), otherwise None."""
     if not model["enabled"] or not provider["enabled"]:
         return "off", "已停用"
     if not provider["is_local"] and not external_ok:
@@ -76,7 +78,9 @@ class HealthBoard:
 
     # ------------------------------------------------------------ local probe
     async def probe_local(self) -> int:
-        """探测本地服务:Ollama 看 /api/tags(在不在跑、模型下没下载),其他自建服务看 /models 能不能连上。不消耗 token。"""
+        """Probe a local service: Ollama is checked via /api/tags (is it running, is the model
+downloaded), other self-hosted services via whether /models can be reached.
+Consumes no tokens."""
         providers = {p["id"]: p for p in self.store.list_providers()}
         by_provider: dict[str, list[dict]] = {}
         for m in self.store.list_models():
@@ -84,7 +88,8 @@ class HealthBoard:
             if p["is_local"] and p["enabled"] and m["enabled"]:
                 by_provider.setdefault(p["id"], []).append(m)
         n = 0
-        # 只探测本机/局域网服务,显式绕开系统代理(否则开着 Clash 时会把 127.0.0.1 的请求也发给代理)
+        # probe only local/LAN services, explicitly bypassing the system proxy (otherwise a
+# running Clash would send 127.0.0.1 requests to the proxy too)
         async with httpx.AsyncClient(timeout=2.5, trust_env=False) as c:
             for pid, models in by_provider.items():
                 p = providers[pid]
@@ -117,7 +122,8 @@ class HealthBoard:
 
     # ------------------------------------------------------------ real check
     async def check(self, model_ids: list[str] | None = None, *, cloud: bool = True) -> dict[str, Any]:
-        """检测指定模型(默认全部现在会被调用的)。本地模型只做探测;云端模型发一条极短的请求(花几个 token)。"""
+        """Check the given models (by default every model that would be called right now).
+Local models are only probed; cloud models get one very short request (a few tokens)."""
         cfg = self.store.get_settings()
         ext_ok = bool(cfg["external_calls_enabled"])
         providers = {p["id"]: p for p in self.store.list_providers()}
@@ -132,7 +138,7 @@ class HealthBoard:
 
             async def one(m: dict) -> None:
                 async with sem:
-                    await self.router.test_model(m["id"])  # 结果由 router 记入健康表
+                    await self.router.test_model(m["id"])  # results are recorded into the health table by the router
 
             await asyncio.gather(*(one(m) for m in cloud_targets))
         return {"checked": len(cloud_targets) if cloud else 0, "health": self.view()}

@@ -1,12 +1,15 @@
-"""文本协议的工具调用。
+"""Tool calls over a text protocol.
 
-不依赖各家 API 的 function calling(国内外模型、本地小模型的支持程度差异很大),
-而是在提示词里约定一种格式,任何会遵循格式的模型都能用:
+Rather than depending on each vendor's function calling (support varies wildly across
+Chinese and international models and across small local models), the prompt fixes one
+format that any model able to follow a format can use:
 
-    <tool_call>{"name": "library_search", "arguments": {"query": "报价"}}</tool_call>
+    <tool_call>{"name": "library_search", "arguments": {"query": "quote"}}</tool_call>
 
-程序解析出调用 → 执行 → 把结果以 <tool_result> 交回模型 → 继续生成,直到模型不再调用或轮数用完。
-流式输出时,<tool_call> 和 <plan> 这类「给程序看的」标签会被过滤掉,不会出现在聊天气泡里。
+The program parses the call -> runs it -> hands the result back to the model as
+<tool_result> -> generation continues, until the model stops calling or the rounds run out.
+While streaming, tags meant "for the program" such as <tool_call> and <plan> are filtered
+out and never show up in the chat bubble.
 """
 
 from __future__ import annotations
@@ -25,11 +28,11 @@ HIDDEN_TAGS = ("tool_call", "plan")
 class ToolCall:
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
-    error: str = ""      # 解析失败时的原因(模型会收到它并有机会改正)
+    error: str = ""      # reason for a parse failure (the model receives it and gets a chance to correct itself)
     raw: str = ""
 
 
-# ----------------------------------------------------------------- 提示词
+# ----------------------------------------------------------------- prompts
 def _param_line(name: str, spec: dict, required: bool) -> str:
     typ = spec.get("type", "any")
     if isinstance(typ, list):
@@ -73,7 +76,7 @@ def tools_prompt(tools: list[dict], max_calls: int = 3, limit: int = 40) -> str:
     )
 
 
-# ----------------------------------------------------------------- 解析
+# ----------------------------------------------------------------- parsing
 _BLOCK = re.compile(r"<(tool_call)>(.*?)(?:</\1>|\Z)", re.S)
 
 
@@ -84,7 +87,7 @@ def _loads_lenient(text: str) -> Any:
         return json.loads(t)
     except ValueError:
         pass
-    m = re.search(r"\{.*\}", t, re.S)  # 前后夹杂了说明文字时,取最外层的大括号
+    m = re.search(r"\{.*\}", t, re.S)  # with explanatory text mixed in around it, take the outermost braces
     if m:
         try:
             return json.loads(m.group(0))
@@ -94,7 +97,7 @@ def _loads_lenient(text: str) -> Any:
 
 
 def parse_tool_calls(text: str, max_calls: int = 3) -> tuple[str, list[ToolCall]]:
-    """返回 (去掉工具调用块后的可见文本, 调用列表)。"""
+    """Returns (the visible text with tool call blocks removed, the list of calls)."""
     calls: list[ToolCall] = []
     for m in _BLOCK.finditer(text):
         raw = m.group(2)
@@ -119,15 +122,16 @@ def format_result(name: str, ok: bool, text: str, limit: int = 6000) -> str:
 
 
 def strip_hidden(text: str) -> str:
-    """去掉 <plan> 与 <tool_call> 块(含没写完的)。"""
+    """Remove <plan> and <tool_call> blocks (including unfinished ones)."""
     return re.sub(r"<(tool_call|plan)>.*?(?:</\1>|\Z)", "", text, flags=re.S).strip()
 
 
-# ----------------------------------------------------------------- 流式过滤
+# ----------------------------------------------------------------- streaming filter
 class TagFilter:
-    """流式地隐藏 <tool_call>…</tool_call> / <plan>…</plan>。
+    """Hide <tool_call>...</tool_call> / <plan>...</plan> while streaming.
 
-    标签可能被切在两个 chunk 之间,所以「可能是标签开头」的尾巴会先扣住,下一段来了再判断。"""
+    A tag can be split across two chunks, so a tail that "could be the start of a tag" is
+    held back and judged once the next chunk arrives."""
 
     def __init__(self, tags: tuple[str, ...] = HIDDEN_TAGS):
         self.tags = tags
@@ -145,7 +149,7 @@ class TagFilter:
                     self.buf = self.buf[i + len(close):]
                     self.inside = None
                     continue
-                self.buf = self.buf[-(len(close) - 1):]  # 只留可能是半个结束标签的尾巴
+                self.buf = self.buf[-(len(close) - 1):]  # keep only a tail that could be half of a closing tag
                 break
             hits = [(self.buf.find(f"<{t}>"), t) for t in self.tags]
             hits = [(i, t) for i, t in hits if i >= 0]
@@ -155,7 +159,7 @@ class TagFilter:
                 self.buf = self.buf[i + len(t) + 2:]
                 self.inside = t
                 continue
-            keep = 0  # 尾部若是某个开始标签的前缀就扣住
+            keep = 0  # hold back a tail that is a prefix of some opening tag
             for t in self.tags:
                 op = f"<{t}>"
                 for k in range(min(len(op) - 1, len(self.buf)), 0, -1):

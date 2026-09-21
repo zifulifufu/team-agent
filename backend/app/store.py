@@ -1,4 +1,4 @@
-"""SQLite 持久化层:服务商、模型、设置、agent、群聊、消息。"""
+"""SQLite persistence layer: providers, models, settings, agents, group chats, messages."""
 
 from __future__ import annotations
 
@@ -108,12 +108,12 @@ def slugify(text: str) -> str:
 
 
 DEFAULT_EXT: dict = {
-    "skills": [],       # 本群启用的技能(全员共用,常放「群聊规则」类技能)
-    "plugins": [],      # 本群启用的插件 ID(插件文件名)
-    "mcp": [],          # 本群启用的 MCP 服务器 ID
-    "library": {"mode": "all", "ids": []},   # all=全部已启用文档 | selected=只用 ids | off=不用
-    "plan": "inherit",  # inherit=跟随全局设置 | auto | on | off
-    "memory": True,     # 本群是否读写记忆
+    "skills": [],       # skills enabled for this group (shared by everyone, usually the "group rules" kind)
+    "plugins": [],      # plugin ids enabled for this group (plugin file name)
+    "mcp": [],          # MCP server ids enabled for this group
+    "library": {"mode": "all", "ids": []},   # all = every enabled document | selected = only ids | off = none
+    "plan": "inherit",  # inherit = follow the global setting | auto | on | off
+    "memory": True,     # whether this group reads and writes memory
 }
 
 
@@ -145,7 +145,8 @@ _SECRET_FLAG = re.compile(r"(key|token|secret|passw|auth|bearer)", re.I)
 
 
 def _mask_args(args: list) -> list:
-    """备份不带密钥时,启动参数里像密钥的值也抹掉(--api-key XXX / --token=XXX)。"""
+    """When the backup carries no keys, values in the launch arguments that look like keys are
+masked as well (--api-key XXX / --token=XXX)."""
     out, hide_next = [], False
     for a in args:
         a = str(a)
@@ -172,12 +173,16 @@ class Store(ExtStore):
         self._db = sqlite3.connect(self.data_dir / "team-agent.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
-        # 一次群里协作要写好几条消息,默认的 delete journal + synchronous=FULL 会让每次提交都 fsync。
-        # 换成 WAL + NORMAL 后写入只在检查点落盘:实测 add_message 0.27ms→0.03ms、set_health 0.20ms→0.01ms,
-        # 读不受影响;WAL 只保证「不会损坏」,极端断电最多丢最后几条已提交记录(桌面应用的常规取舍)。
+        # one group collaboration writes several messages, and the default delete journal +
+# synchronous=FULL fsyncs on every commit.
+        # with WAL + NORMAL, writes only reach disk at checkpoints: measured add_message
+# 0.27ms -> 0.03ms and set_health 0.20ms -> 0.01ms,
+        # reads are unaffected; WAL only guarantees "no corruption", and a hard power loss can lose
+# the last few committed records (the usual trade-off for a desktop app).
         self._db.execute("PRAGMA journal_mode = WAL")
         self._db.execute("PRAGMA synchronous = NORMAL")
-        # 备份/恢复会另开连接读同一个库,留出重试窗口,避免偶发 "database is locked"。
+        # backup/restore opens another connection to the same database, so leave a retry window to
+# avoid the occasional "database is locked".
         self._db.execute("PRAGMA busy_timeout = 5000")
         self._db.executescript(SCHEMA)
         self._db.executescript(SCHEMA_EXT)
@@ -203,16 +208,16 @@ class Store(ExtStore):
             self._db.commit()
 
     def _migrate(self) -> None:
-        """给老数据库补列(CREATE TABLE IF NOT EXISTS 不会改已有的表)。"""
+        """Add columns to older databases (CREATE TABLE IF NOT EXISTS never alters an existing table)."""
         adds = [
-            ("models", "strengths", "TEXT"),                                 # NULL = 自动推断,否则是用户改过的 JSON 列表
+            ("models", "strengths", "TEXT"),                                 # NULL = inferred automatically, otherwise the JSON list the user edited
             ("agents", "tags", "TEXT NOT NULL DEFAULT '[]'"),
-            ("agents", "origin", "TEXT NOT NULL DEFAULT ''"),                 # 'model' = 由「模型」直接拉进群自动创建的成员
-            ("agents", "engine", "TEXT NOT NULL DEFAULT ''"),                 # 非空 = 外部智能体成员(如 workbuddy),不走模型路由
-            ("agents", "engine_cfg", "TEXT NOT NULL DEFAULT '{}'"),           # 外部智能体的设置(权限级别、工作目录……)
+            ("agents", "origin", "TEXT NOT NULL DEFAULT ''"),                 # 'model' = a member created automatically by pulling a model straight into a group
+            ("agents", "engine", "TEXT NOT NULL DEFAULT ''"),                 # non-empty = external agent member (e.g. workbuddy), which skips model routing
+            ("agents", "engine_cfg", "TEXT NOT NULL DEFAULT '{}'"),           # settings of the external agent (permission level, working directory, ...)
             ("groups", "ext", "TEXT NOT NULL DEFAULT '{}'"),
             ("groups", "prompt", "TEXT NOT NULL DEFAULT ''"),
-            ("mcp_servers", "transport", "TEXT NOT NULL DEFAULT ''"),      # stdio | sse | http,空=自动判断
+            ("mcp_servers", "transport", "TEXT NOT NULL DEFAULT ''"),      # stdio | sse | http, empty = auto-detect
             ("mcp_servers", "headers", "TEXT NOT NULL DEFAULT '{}'"),
             ("mcp_servers", "description", "TEXT NOT NULL DEFAULT ''"),
         ]
@@ -222,7 +227,8 @@ class Store(ExtStore):
                 self._x(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     def _flag(self, key: str) -> bool:
-        """一次性标记(比如「已经写入过示例提示词」),避免用户删掉后又被重新种回来。"""
+        """One-off markers (for example "the example prompts have already been written"), so
+something the user deleted is not seeded again."""
         if self._one("SELECT 1 FROM meta WHERE key=?", (key,)):
             return True
         self._x("INSERT INTO meta(key,value) VALUES(?, '1')", (key,))
@@ -260,7 +266,8 @@ class Store(ExtStore):
             )
 
         if not self._flag("backfill_seed_tags"):
-            # 从旧版本升级:内置的四个成员原来没有岗位强项,补上一次(只补空的,用户改过的不动)
+            # upgrade from an older version: the four built-in members had no role strengths; fill them
+# in once (only the empty ones, never ones the user changed)
             for a in self.list_agents():
                 seed = builtin_for(a["name"])
                 if seed and not a["tags"] and seed.get("tags"):
@@ -271,12 +278,15 @@ class Store(ExtStore):
                 self.add_prompt(p["title"], p["content"], p["kind"], p["use_globally"])
 
         if not self._flag("auto_check_off_by_default"):
-            # 从旧版本升级:「自动检查更新」以前默认是开的,后端启动 20 秒后就会自己联网。
-            # 新版默认改为关,这里把存量里仍开着的也关掉。只做这一次 —— 之后你在设置里手动打开的不会被改回去。
+            # upgrade from an older version: "check for updates automatically" used to default to on,
+# and the backend went online by itself 20 seconds after start.
+            # the new default is off, so existing installs that still have it on are switched off here.
+# This happens exactly once — anything you turn on later in settings is not reverted.
             self.update_settings({"auto_check_updates": False})
 
         if not self._flag("keys_to_keychain"):
-            # 从旧版本升级:以前 API Key / GitHub 令牌是明文存在库里的,搬进系统钥匙串(搬不动就留着明文)
+            # upgrade from an older version: API keys and GitHub tokens used to be stored in plaintext in
+# the database; move them into the system keychain (leave them in plaintext if they cannot move)
             self._move_keys_to_keychain()
 
         if not self._flag("tags_to_ascii_ids"):
@@ -290,7 +300,7 @@ class Store(ExtStore):
         out = dict(DEFAULT_SETTINGS)
         for r in self._q("SELECT key,value FROM settings"):
             out[r["key"]] = json.loads(r["value"])
-        out["github_token"] = self._secret_off(out["github_token"])      # 引用 → 真值
+        out["github_token"] = self._secret_off(out["github_token"])      # reference -> real value
         return out
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
@@ -298,7 +308,7 @@ class Store(ExtStore):
             if k not in DEFAULT_SETTINGS:
                 continue
             if k == "github_token" and isinstance(v, str):
-                v = self._secret_on("github-token", "default", v)        # 令牌进钥匙串,库里只留引用
+                v = self._secret_on("github-token", "default", v)        # the token goes into the keychain, only the reference stays in the database
             self._x(
                 "INSERT INTO settings(key,value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -306,33 +316,38 @@ class Store(ExtStore):
             )
         return self.get_settings()
 
-    # ------------------------------------------------------- 敏感值(API Key 等)
+    # ------------------------------------------------------- sensitive values (API keys etc.)
     def _secret_on(self, scope: str, ident: str, value: str) -> str:
-        """写:能进系统钥匙串就只存引用;进不去就原样存(回退明文,绝不丢 Key)。"""
+        """Write: store only a reference when the system keychain is available; store it as-is
+otherwise (fall back to plaintext, never lose the key)."""
         ref = secrets_store.ref_name(scope, ident)
         if not value:
-            secrets_store.delete(ref)          # 清空 = 顺手把钥匙串里的条目删掉
+            secrets_store.delete(ref)          # clearing also removes the keychain entry while we are at it
             return value
         if secrets_store.is_ref(value):
             return value
         return secrets_store.make_ref(ref) if secrets_store.put(ref, value) else value
 
     def _secret_off(self, stored: Any) -> str:
-        """读:是引用就去钥匙串取真实值;取不到(换机器/被删)当作没配置,而不是崩。"""
+        """Read: for a reference, fetch the real value from the keychain; when it cannot be read
+(different machine / deleted) treat it as unconfigured rather than crashing."""
         if not secrets_store.is_ref(stored):
             return stored or ""
         got = secrets_store.get(secrets_store.parse_ref(stored))
         return got if got is not None else ""
 
     def secret_backend(self) -> str:
-        """密钥存在哪里:`keychain` = 系统钥匙串,`plaintext` = 回退成明文(非 macOS / 钥匙串不可用)。"""
+        """Where keys are stored: `keychain` = the system keychain, `plaintext` = fell back to
+plaintext (non-macOS / keychain unavailable)."""
         return "keychain" if secrets_store.backend_available() else "plaintext"
 
     def _normalize_stored_tags(self) -> int:
-        """把存量里以中文标签名当 id 的强项标签换成 ASCII id(见 strengths.ALIASES)。
+        """Replace stored strength tags whose id is a Chinese tag name with the ASCII id
+        (see strengths.ALIASES).
 
-        只改 id,不改语义:老值 "代码" → 新值 "coding",界面上该显示什么由语言决定。
-        未知标签会被丢掉(和用户提交标签时的口径一致)。返回改动的行数。
+        Only the id changes, never the meaning: old value "代码" -> new value "coding"; what the
+        UI shows is decided by the language. Unknown tags are dropped (the same rule as when a
+        user submits tags). Returns the number of rows changed.
         """
         changed = 0
         for r in self._q("SELECT id, strengths FROM models WHERE strengths IS NOT NULL AND strengths<>''"):
@@ -356,8 +371,10 @@ class Store(ExtStore):
         return changed
 
     def _move_keys_to_keychain(self) -> int:
-        """把老库里明文存的 API Key / GitHub 令牌搬进钥匙串。**先读回校验,成功才改写**;
-        写不进去(钥匙串被锁等)就原样留着明文,绝不清空。返回搬成功的条数。"""
+        """Move the API keys / GitHub tokens that an older database stored in plaintext into the
+        keychain. **The value is read back and verified before anything is rewritten**; if it
+        cannot be written (keychain locked, etc.) the plaintext is left as-is and never cleared.
+        Returns how many entries were moved."""
         if not secrets_store.backend_available():
             return 0
         moved = 0
@@ -367,7 +384,7 @@ class Store(ExtStore):
             ref = secrets_store.ref_name("provider", r["id"])
             if secrets_store.put(ref, r["api_key"]):
                 secrets_store.forget_cache(ref)
-                if secrets_store.get(ref) == r["api_key"]:      # 真的读得回来才改写
+                if secrets_store.get(ref) == r["api_key"]:      # only rewrite when the value can really be read back
                     self._x("UPDATE providers SET api_key=? WHERE id=?", (secrets_store.make_ref(ref), r["id"]))
                     moved += 1
         row = self._one("SELECT value FROM settings WHERE key='github_token'")
@@ -389,7 +406,7 @@ class Store(ExtStore):
         for r in rows:
             r["enabled"] = bool(r["enabled"])
             r["is_local"] = bool(r["is_local"])
-            r["api_key"] = self._secret_off(r["api_key"])      # 引用 → 真实密钥(调用方无需知道存储方式)
+            r["api_key"] = self._secret_off(r["api_key"])      # reference -> real key (callers need not know how it is stored)
         return rows
 
     def get_provider(self, pid: str) -> dict | None:
@@ -430,7 +447,7 @@ class Store(ExtStore):
         for k, v in patch.items():
             if k in allowed and v is not None:
                 if k == "api_key":
-                    v = self._secret_on("provider", pid, v)     # 只把引用写进库,真实密钥进钥匙串
+                    v = self._secret_on("provider", pid, v)     # only the reference is written to the database, the real key goes to the keychain
                 sets.append(f"{k}=?")
                 args.append(int(v) if isinstance(v, bool) else v)
         if sets:
@@ -444,7 +461,8 @@ class Store(ExtStore):
         self._x("DELETE FROM model_live WHERE provider_id=?", (pid,))
         self.clear_health(provider_id=pid)
         for a in self._q("SELECT id FROM agents WHERE origin='model' AND model_id LIKE ?", (f"{pid}/%",)):
-            self.delete_agent(a["id"])   # 「模型成员」跟着模型走:服务商删了,它们也没意义(和删单个模型一致)
+            self.delete_agent(a["id"])   # "model members" follow their model: once the provider is deleted they are meaningless too
+# (same as deleting a single model)
         self._x("UPDATE agents SET model_id=NULL WHERE model_id LIKE ?", (f"{pid}/%",))
         self._x("DELETE FROM providers WHERE id=?", (pid,))
 
@@ -487,7 +505,7 @@ class Store(ExtStore):
             self._x("UPDATE models SET enabled=? WHERE id=?", (int(bool(patch["enabled"])), model_id))
         if patch.get("display_name"):
             self._x("UPDATE models SET display_name=? WHERE id=?", (patch["display_name"], model_id))
-        if "strengths" in patch:  # None = 恢复自动推断
+        if "strengths" in patch:  # None = go back to inferring automatically
             tags = strength_lib.clean_tags(patch["strengths"]) if patch["strengths"] is not None else None
             self._x("UPDATE models SET strengths=? WHERE id=?",
                     (json.dumps(tags, ensure_ascii=False) if tags is not None else None, model_id))
@@ -495,7 +513,7 @@ class Store(ExtStore):
 
     def delete_model(self, model_id: str) -> None:
         for a in self._q("SELECT id FROM agents WHERE origin='model' AND model_id=?", (model_id,)):
-            self.delete_agent(a["id"])  # 「模型成员」就是这个模型本身,模型没了它也没意义
+            self.delete_agent(a["id"])  # a "model member" is the model itself, so it is meaningless once the model is gone
         self._x("UPDATE agents SET model_id=NULL WHERE model_id=?", (model_id,))
         self.clear_health(model_id=model_id)
         self._x("DELETE FROM models WHERE id=?", (model_id,))
@@ -536,7 +554,8 @@ class Store(ExtStore):
     MODEL_AVATARS = ("🐋", "🌙", "🔮", "🧠", "⚡", "🌟", "🦉", "🐼", "🦊", "🐙", "🌿", "🪐")
 
     def ensure_model_agent(self, model_id: str) -> dict | None:
-        """把「我添加的模型」变成可拉进群的成员:已有就复用,没有就创建(名字、强项都取自模型本身)。"""
+        """Turn "a model I added" into a member that can be pulled into a group: reuse it when it
+already exists, otherwise create it (name and strengths are both taken from the model)."""
         m = self.get_model(model_id)
         if not m:
             return None
@@ -685,8 +704,10 @@ class Store(ExtStore):
         return r
 
     def list_messages(self, gid: str, limit: int = 200) -> list[dict]:
-        # 外层不能直接写 ORDER BY rowid:新版 SQLite(≥3.51)里子查询的 rowid 对外层不可见,会报 no such column: rowid。
-        # 所以在子查询里把它取成 _rid,外层按 _rid 排,取完再去掉。
+        # the outer query cannot ORDER BY rowid directly: in newer SQLite (>= 3.51) the rowid of a
+# subquery is not visible to the outer query and it reports "no such column: rowid".
+        # so it is selected as _rid inside the subquery, the outer query sorts by _rid, and _rid is
+# dropped afterwards.
         rows = self._q(
             "SELECT * FROM (SELECT *, rowid AS _rid FROM messages WHERE group_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?) "
             "ORDER BY created_at, _rid",
@@ -708,7 +729,7 @@ class Store(ExtStore):
         return n
 
     def agent_message_rows(self, since: float = 0) -> list[dict]:
-        """统计用:所有 agent 发言的模型、回退、耗时信息。"""
+        """For statistics: the model, fallback and elapsed-time info of every agent message."""
         rows = self._q(
             "SELECT model_id, fallback_from, meta, created_at FROM messages "
             "WHERE sender_type='agent' AND created_at>=? ORDER BY created_at",
@@ -719,7 +740,8 @@ class Store(ExtStore):
         return rows
 
     def backup_to(self, dest: Path | str, include_keys: bool = False) -> None:
-        """用 SQLite 在线备份 API 生成一致的快照;默认清除其中的 API Key。"""
+        """Use SQLite's online backup API to produce a consistent snapshot; API keys are stripped
+by default."""
         dest = Path(dest)
         with self._lock:
             out = sqlite3.connect(dest)
@@ -727,14 +749,15 @@ class Store(ExtStore):
                 self._db.backup(out)
                 if not include_keys:
                     out.execute("UPDATE providers SET api_key=''")
-                    out.execute("UPDATE mcp_servers SET env='{}', headers='{}'")  # env/headers 里常放各种密钥
+                    out.execute("UPDATE mcp_servers SET env='{}', headers='{}'")  # env/headers often carry all kinds of secrets
                     for mid, url, args in out.execute("SELECT id, url, args FROM mcp_servers").fetchall():
                         out.execute("UPDATE mcp_servers SET url=?, args=? WHERE id=?",
                                     (url.split("?", 1)[0], json.dumps(_mask_args(json.loads(args or "[]")), ensure_ascii=False), mid))
                     out.execute("UPDATE settings SET value='\"\"' WHERE key='github_token'")
                     out.commit()
                 else:
-                    # 真密钥在系统钥匙串里,不随 .db 文件走;导出「含密钥」的备份时显式写回去
+                    # the real keys live in the system keychain and do not travel with the .db file; they are
+# written back explicitly when exporting a "with keys" backup
                     for p in self.list_providers():
                         if p["api_key"]:
                             out.execute("UPDATE providers SET api_key=? WHERE id=?", (p["api_key"], p["id"]))
@@ -748,8 +771,9 @@ class Store(ExtStore):
     RESTORE_TABLES = {"providers", "models", "agents", "groups", "messages", "settings"}
 
     def _check_backup(self, work: Path) -> None:
-        """在临时副本上把备份「按当前版本的样子补齐并检查一遍」,任何一步不通过都抛 ValueError——
-        这样一个坏文件在碰到真实数据库之前就被挡下了。"""
+        """On a temporary copy, bring the backup "up to the shape of the current version and check it
+        through"; any step that fails raises ValueError — that way a bad file is rejected before
+        it ever touches the real database."""
         try:
             con = sqlite3.connect(work)
             try:
@@ -775,9 +799,11 @@ class Store(ExtStore):
                 f"这不是可用的 Team Agent 备份:{e}")) from None
 
     def restore_from(self, src: Path | str) -> dict:
-        """用备份文件替换当前全部数据。先自动留一份当前数据的副本(backups/pre-restore-*.db)。
-        备份是「不含密钥」的版本时,当前已有的 API Key / MCP 密钥 / GitHub 令牌会保留下来,不会被清空。
-        备份里记的 Obsidian 文件夹和同步对应关系不带过来(那台电脑上的路径在这里未必存在,盲目同步会误删记忆)。"""
+        """Replace all current data with a backup file. A copy of the current data is kept first
+        (backups/pre-restore-*.db). When the backup is the "without keys" flavour, the existing
+        API keys / MCP secrets / GitHub token are preserved and not cleared. The Obsidian folder
+        and sync mappings recorded in the backup are not carried over (paths from that machine
+        may not exist here, and syncing blindly could delete memories)."""
         import shutil
 
         bdir = self.data_dir / "backups"
@@ -801,13 +827,15 @@ class Store(ExtStore):
                     con.close()
                 self._db.execute("PRAGMA foreign_keys = ON")
         finally:
-            # 主库现在是 WAL;临时副本仍用 delete journal,但把 -wal/-shm 一并清掉以防将来改动漏文件
+            # the main database is WAL now; the temporary copy still uses the delete journal, but
+# -wal/-shm are cleaned up too so a future change cannot miss a file
             for f in (work, *[Path(str(work) + s) for s in ("-journal", "-wal", "-shm")]):
                 f.unlink(missing_ok=True)
         self._migrate()
         for p in self.list_providers():
             if not p["api_key"] and old_keys.get(p["id"]):
-                # 走 update_provider,让密钥进钥匙串而不是明文回写数据库
+                # go through update_provider so the key goes to the keychain instead of being written back
+# to the database in plaintext
                 self.update_provider(p["id"], {"api_key": old_keys[p["id"]]})
         for m in self.list_mcp():
             env, headers = old_mcp.get(m["id"], ({}, {}))
@@ -818,7 +846,7 @@ class Store(ExtStore):
         self.clear_obsidian_map()
         self.clear_health(everything=True)
         self.update_settings({"obsidian_dir": "", "obsidian_auto": False})
-        self._move_keys_to_keychain()      # 备份里若带明文密钥,恢复后一并搬进钥匙串
+        self._move_keys_to_keychain()      # if the backup carries plaintext keys, move them into the keychain as well after the restore
         self._seed()
         return {"safety_copy": str(safety), "groups": len(self.list_groups()), "agents": len(self.list_agents()),
                 "providers": len(self.list_providers()), "memories": len(self.list_memories(limit=1_000_000)),

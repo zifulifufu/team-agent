@@ -1,5 +1,10 @@
-"""外部智能体成员(WorkBuddy 经 CodeBuddy 命令行引擎接入群聊):配置校验、命令行参数、流式解析、子进程管理、编排与接口。
-真实的 codebuddy 不在测试里运行——用 tests/codebuddy_fake.py 按文档里的 stream-json 格式模拟。"""
+"""External agent members (WorkBuddy joining the group chat through the CodeBuddy CLI
+engine): config validation, CLI arguments, stream parsing, subprocess handling,
+orchestration and endpoints.
+
+The real codebuddy is never started in these tests - tests/codebuddy_fake.py emits the
+stream-json shape from the documentation instead.
+"""
 
 from __future__ import annotations
 
@@ -36,7 +41,7 @@ def make_agent(store, **cfg):
                               engine_cfg=clean_cfg(cfg))
 
 
-# ---------------------------------------------------------------- 配置校验
+# ---------------------------------------------------------- config validation
 def test_clean_cfg_defaults_and_validation(tmp_path):
     c = clean_cfg({})
     assert c["level"] == "read" and c["web"] is False and c["handoff"] is True and c["risk_ack"] is False
@@ -45,7 +50,8 @@ def test_clean_cfg_defaults_and_validation(tmp_path):
     with pytest.raises(ValueError, match="risk has to be acknowledged"):
         clean_cfg({"level": "full"})
     assert clean_cfg({"level": "full", "risk_ack": True, "cwd": str(tmp_path)})["risk_ack"] is True
-    # 从 full 改回别的级别,确认标记清掉;再改回 full 又要重新确认
+    # dropping back from full to another level clears the acknowledgement; going back
+    # to full requires confirming again
     back = clean_cfg({"level": "read"}, clean_cfg({"level": "full", "risk_ack": True}))
     assert back["risk_ack"] is False
     with pytest.raises(ValueError):
@@ -66,10 +72,10 @@ def test_edit_and_full_refuse_root_or_home_as_workdir():
         clean_cfg({"level": "edit", "cwd": str(Path.home())})
     with pytest.raises(ValueError):
         clean_cfg({"level": "edit", "cwd": "/"})
-    assert clean_cfg({"level": "read", "cwd": str(Path.home())})["cwd"]      # 只读级别允许
+    assert clean_cfg({"level": "read", "cwd": str(Path.home())})["cwd"]      # allowed at the read-only level
 
 
-# ---------------------------------------------------------------- 命令行参数 = 权限
+# ----------------------------------------------- CLI arguments are the permissions
 def opt(args, name):
     return args[args.index(name) + 1]
 
@@ -102,7 +108,7 @@ def test_model_and_dirs_args(tmp_path):
     assert opt(a, "--model") == "glm-5" and opt(a, "--max-turns") == "7" and opt(a, "--add-dir") == str(tmp_path.resolve())
 
 
-# ---------------------------------------------------------------- 环境变量白名单
+# ------------------------------------------------- environment variable allowlist
 def test_env_is_whitelisted(monkeypatch):
     monkeypatch.setenv("TEAM_AGENT_TOKEN", "secret-token")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-secret")
@@ -112,8 +118,8 @@ def test_env_is_whitelisted(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
     env = build_env(clean_cfg({}))
     assert "TEAM_AGENT_TOKEN" not in env and "DEEPSEEK_API_KEY" not in env and "OPENAI_API_KEY" not in env
-    assert env["CODEBUDDY_API_KEY"] == "user-set-key"           # 用户自己给引擎设的登录凭据可以透传
-    assert "CODEBUDDY_COMPUTER_USE_ENABLED" not in env          # 桌面操控绝不透传
+    assert env["CODEBUDDY_API_KEY"] == "user-set-key"           # credentials the user configured for the engine are passed through
+    assert "CODEBUDDY_COMPUTER_USE_ENABLED" not in env          # desktop control is never passed through
     assert env["HTTPS_PROXY"] == "http://127.0.0.1:7890"
     assert env["CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
 
@@ -128,7 +134,7 @@ def test_find_launcher_uses_custom_then_none(monkeypatch, tmp_path):
     assert lc and lc.argv == [sys.executable, FAKE] and lc.via == "custom"
 
 
-# ---------------------------------------------------------------- 流式解析
+# -------------------------------------------------------------- stream parsing
 async def feed_all(lines, deltas=None, tools=None):
     async def d(t):
         (deltas if deltas is not None else []).append(t)
@@ -194,7 +200,7 @@ def test_explain_failure_adds_login_hint():
     assert "exit code 2" in external.explain_failure(2, "segfault", "")
 
 
-# ---------------------------------------------------------------- 运行(假命令行)
+# -------------------------------------------------- running it (against the fake CLI)
 def run(store, agent, prompt="hi", system="SYS", **kw):
     runner = ExternalRunner(store.data_dir)
     return asyncio.run(runner.run(agent, system=system, prompt=prompt, **kw))
@@ -229,7 +235,7 @@ def test_run_errors_are_explained(store, fake_env, monkeypatch):
         with pytest.raises(ExternalError, match=needle):
             run(store, a)
     monkeypatch.setenv("CODEBUDDY_FAKE_MODE", "raw")
-    assert "纯文本" in run(store, a).text        # 引擎没按 stream-json 输出时,退回它的文字输出
+    assert "纯文本" in run(store, a).text        # when the engine does not emit stream-json, fall back to its text output
 
 
 def test_run_timeout_kills_process(store, fake_env, monkeypatch):
@@ -277,7 +283,7 @@ def test_probe_reports_version_and_live(store, fake_env):
     assert "--max-turns" in json.loads(fake_env.read_text())["argv"]
 
 
-# ---------------------------------------------------------------- 群聊里的外部智能体
+# ------------------------------------- external agents inside the group chat
 def enable(store, **extra):
     store.update_settings({"external_agents_enabled": True, **extra})
 
@@ -301,15 +307,16 @@ def test_external_turn_replies_in_group_and_hands_off(store, make_router, fake_e
     assert wb["meta"]["engine"] == "workbuddy" and wb["meta"]["level"] == "read"
     assert wb["meta"]["tools"][0]["name"] == "Read" and wb["meta"]["tools"][0]["status"] == "ok"
     assert wb["meta"]["denied"] == ["Bash"] and wb["meta"]["external"]["cost_usd"] == 0.01
-    # 它 @ 了「文案」,被点名的成员接着发言(用的是模型)
+    # it @-ed the copywriter, and the member it named speaks next (off a real model)
     assert [m["sender_name"] for m in ends][-1] == "Copywriter" and fake.calls
     log = json.loads(fake_env.read_text())
     assert "帮我读一下文件" in log["stdin"] and "[Chat transcript]" in log["stdin"]
     sysprompt = opt(log["argv"], "--append-system-prompt")
-    # 「须知」是外部智能体自己的提示词(仍为中文);分工表里的模型一栏按界面语言走
+    # the notes block is the external agent own prompt; the model column of the roster is
+    # what follows the interface language
     assert "[Notes for external agents]" in sysprompt and "Read-only" in sysprompt
     assert "external agent (WorkBuddy)" in sysprompt
-    assert "<tool_call>" not in log["stdin"]                     # 不把本程序的文本工具协议塞给它
+    assert "<tool_call>" not in log["stdin"]                     # our own text tool protocol is not pushed into it
     deltas = "".join(e["text"] for e in col.events if e["type"] == "delta" and e["message_id"] == wb["id"])
     assert "先看看" not in deltas and "读完了" in deltas or "我先看看文件" in deltas
 
@@ -331,7 +338,7 @@ def test_external_disabled_or_offline_is_skipped_with_notice(store, make_router,
     assert not col.ends() and any(e["type"] == "message_discard" for e in col.events)
     sys_msgs = [e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system"]
     assert any("master switch" in t for t in sys_msgs)
-    assert not fake_env.exists()                                  # 命令行根本没被启动
+    assert not fake_env.exists()                                  # the CLI was never launched
     enable(store, external_calls_enabled=False)
     col = Collector()
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
@@ -353,7 +360,7 @@ def test_external_failure_shows_system_notice_and_no_bubble(store, make_router, 
 def test_tampered_settings_are_rejected_at_run_time(store, make_router, fake_env):
     enable(store)
     orch, g, a = group_with_external(store, make_router, FakeLLM(default="x"))
-    store.update_agent(a["id"], {"engine_cfg": {**a["engine_cfg"], "level": "full", "risk_ack": False}})   # 手改库:完全权限却没确认
+    store.update_agent(a["id"], {"engine_cfg": {**a["engine_cfg"], "level": "full", "risk_ack": False}})   # tampering with the database: full permissions, never acknowledged
     col = Collector()
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
     assert not col.ends() and not fake_env.exists()
@@ -364,12 +371,12 @@ def test_external_agent_is_never_the_host_and_plan_still_works(store, make_route
     enable(store)
     fake = FakeLLM(default="群主直接回答")
     orch, g, a = group_with_external(store, make_router, fake)
-    store.update_group(g["id"], {"host_agent_id": a["id"]})       # 绕过接口硬塞:编排里也要改选模型成员当群主
+    store.update_group(g["id"], {"host_agent_id": a["id"]})       # forced past the API: orchestration must still pick a model member as host
     members = store.group_members(g["id"])
     host = orch._pick_host(store.get_group(g["id"]), members)
     assert not host.get("engine")
     col = Collector()
-    asyncio.run(orch.handle_user_message(g["id"], "大家好", col))    # 没 @ 任何人 → 群主(模型成员)回答,不是外部智能体
+    asyncio.run(orch.handle_user_message(g["id"], "大家好", col))    # nobody is @-ed: the host, a model member, answers, not the external agent
     assert all(m["sender_name"] != "WorkBuddy" for m in col.ends()) and not fake_env.exists()
 
 
@@ -377,13 +384,14 @@ def test_roster_and_variables_do_not_route_external_member(store, make_router, f
     orch, g, a = group_with_external(store, make_router, FakeLLM(default="x"))
     members = store.group_members(g["id"])
     text = orch.prompts.roster_text(members)
-    # 成员的岗位来自数据(这里是测试自己建的「外部智能体」),模型一栏才是本地化的
+    # a member role comes straight from the data (here one this test created itself);
+    # only the model column is localized
     assert "WorkBuddy(外部智能体)" in text and "model: external agent (WorkBuddy)" in text
     vals = orch.prompts.values(store.get_group(g["id"]), a, members)
     assert vals["model_name"] == "WorkBuddy"
 
 
-# ---------------------------------------------------------------- 接口
+# ---------------------------------------------------------------- endpoints
 @pytest.fixture
 def client(tmp_path, fake_env):
     app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="你好"))
@@ -407,7 +415,7 @@ def test_api_create_patch_and_group_rules(client, tmp_path):
     assert a["engine"] == "workbuddy" and a["name"] == "WorkBuddy" and a["model_id"] is None
     assert a["engine_cfg"]["level"] == "edit" and set(a["tags"]) == {"tool-use", "coding"}
     assert a["id"] in client.get("/api/groups").json()[0]["member_ids"]
-    b = client.post("/api/external/agents", json={}).json()          # 自动避重名
+    b = client.post("/api/external/agents", json={}).json()          # avoids the name clash on its own
     assert b["name"] == "WorkBuddy2" and b["engine_cfg"]["level"] == "read"
     assert client.post("/api/external/agents", json={"name": "WorkBuddy"}).status_code == 409
     assert client.post("/api/external/agents", json={"name": "a b"}).status_code == 400
@@ -417,7 +425,7 @@ def test_api_create_patch_and_group_rules(client, tmp_path):
     assert ok.status_code == 200 and ok.json()["engine_cfg"]["level"] == "full"
     assert client.patch(f"/api/external/agents/{b['id']}", json={"cfg": {"timeout": 1}}).status_code == 400
     assert client.patch("/api/external/agents/nope", json={"cfg": {}}).status_code == 404
-    # 外部智能体不能当群主,也不能指定模型
+    # an external agent can be neither host nor pinned to a model
     assert client.patch(f"/api/groups/{g['id']}", json={"host_agent_id": a["id"]}).status_code == 400
     assert client.post("/api/groups", json={"name": "x", "member_ids": [a["id"]], "host_agent_id": a["id"]}).status_code == 400
     assert client.patch(f"/api/agents/{a['id']}", json={"model_id": "deepseek/deepseek-flash"}).status_code == 400
@@ -433,7 +441,7 @@ def test_api_test_endpoint_and_offline_rule(client):
     assert r["live"]["ok"] is True
     client.put("/api/settings", json={"external_calls_enabled": False})
     assert client.post("/api/external/test", json={"live": True}).status_code == 403
-    assert client.post("/api/external/test", json={}).status_code == 200      # 只读版本号不联网
+    assert client.post("/api/external/test", json={}).status_code == 200      # reading the version number makes no request
     assert client.post("/api/external/test", json={"agent_id": "nope"}).status_code == 404
 
 
@@ -447,8 +455,11 @@ def test_stats_label_for_external_model(store, make_router, fake_env):
 
 
 def test_parser_on_real_codebuddy_2_137_1_capture():
-    """真机(WorkBuddy 5.5.6 自带的 codebuddy 2.137.1)上抓下来的 stream-json:先有 thinking 的增量、再有 text 的增量,
-    然后是两条完整的 assistant 消息(先 thinking、后 text)和 result。文字只能输出一次,思考内容不能进群。"""
+    """stream-json captured on a real machine (codebuddy 2.137.1 bundled with WorkBuddy
+    5.5.6): thinking deltas first, then text deltas, then two complete assistant messages
+    (thinking first, then text) and a result. Text must be emitted once and thinking must
+    never reach the group.
+    """
     lines = (Path(__file__).parent / "fixtures" / "codebuddy_2.137.1_stream.jsonl").read_text().splitlines()
     deltas: list[str] = []
     p = asyncio.run(feed_all(lines, deltas))
@@ -458,8 +469,11 @@ def test_parser_on_real_codebuddy_2_137_1_capture():
 
 
 def test_parser_marks_permission_denied_tool_results_even_without_is_error():
-    """真机实测:被只读级别挡下的 Bash/Write,tool_result 只是一段 "Error: Permission to use X has been denied…" 文字,
-    没有 is_error,result 里的 permission_denials 也是空的。要靠文字识别出来,群里才会显示「被拒绝」而不是「成功」。"""
+    """Seen on a real machine: Bash/Write blocked at the read-only level come back as a
+    plain "Error: Permission to use X has been denied..." tool_result, with no is_error and
+    an empty permission_denials in the result. Recognising it from the text is what makes
+    the group show "denied" instead of "ok".
+    """
     msg = "Error: Permission to use Bash has been denied because this tool requires approval but permission prompts are not available"
     lines = [
         json.dumps({"type": "assistant", "message": {"content": [

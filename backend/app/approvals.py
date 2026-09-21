@@ -1,8 +1,11 @@
-"""工具调用审批:成员想用一个会「执行」的工具(插件、有副作用的 MCP)时,先在聊天里问你。
+"""Tool call approval: when a member wants to use a tool that "executes" (a plugin, an
+MCP tool with side effects), you are asked in the chat first.
 
-流程:orchestrator 遇到需要确认的调用 → Approvals.ask() 通过 WebSocket 推一条 approval 事件 →
-界面弹出审批条 → 你点「允许一次 / 总是允许 / 拒绝」→ POST /api/approvals/{id} → ask() 返回。
-超时(默认 120 秒)、你点了停止、或者没人在线,都按「拒绝」处理:宁可少做,不能替你放行。
+Flow: the orchestrator hits a call that needs confirmation -> Approvals.ask() pushes
+an approval event over WebSocket -> the UI shows an approval bar -> you click
+"allow once / always allow / deny" -> POST /api/approvals/{id} -> ask() returns.
+A timeout (120s by default), pressing stop, or nobody being online are all treated
+as "denied": better to do less than to authorize on your behalf.
 """
 
 from __future__ import annotations
@@ -33,7 +36,8 @@ def risk_label(risk: str) -> str:
 
 
 def risk_of(spec: dict) -> str:
-    """read 只读 · write 只改本应用自己的数据(记忆) · exec 会执行代码或对外部产生影响(插件、非只读的 MCP 工具)。"""
+    """read is read-only · write only modifies this app's own data (memory) · exec runs
+code or has external effects (plugins, non-read-only MCP tools)."""
     src = spec.get("source")
     if src == "builtin":
         return "write" if spec["name"] == "memory_save" else "read"
@@ -43,7 +47,8 @@ def risk_of(spec: dict) -> str:
 
 
 def policy_for(cfg: dict, spec: dict) -> str:
-    """allow | ask | deny。明确禁止的永远优先;然后看模式和「总是允许」名单。"""
+    """allow | ask | deny. An explicit deny always wins; then the mode and the
+"always allow" list are consulted."""
     name = spec["name"]
     if name in cfg["perm_deny"]:
         return "deny"
@@ -120,11 +125,12 @@ class Approvals:
             self._pending.pop(p.id, None)
             try:
                 await emit({"type": "approval_done", "id": p.id, "group_id": p.group_id, "decision": outcome})
-            except Exception:  # noqa: BLE001 — 通知失败不能掩盖真正的结果
+            except Exception:  # noqa: BLE001 — a notification failure must not mask the real result
                 pass
 
     def resolve(self, aid: str, allow: bool, remember: bool = False) -> bool:
-        """返回 False = 这条审批已经不存在(超时、已处理或已取消)。"""
+        """Returns False when this approval no longer exists (timed out, already handled,
+or cancelled)."""
         p = self._pending.get(aid)
         if not p or p.fut.done():
             return False

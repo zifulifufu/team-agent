@@ -1,6 +1,7 @@
-"""使用统计:全部由本地消息记录计算,不上传任何数据。
+"""Usage statistics: computed entirely from local message records, nothing is uploaded.
 
-注意:目前不记录 token 用量与费用(部分服务商流式响应不返回 usage),只统计调用次数、回退次数与延迟。
+Note: token usage and cost are not tracked yet (some providers omit `usage` in
+streaming responses) — only call counts, fallback counts, and latency.
 """
 
 from __future__ import annotations

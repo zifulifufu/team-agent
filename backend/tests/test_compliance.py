@@ -1,6 +1,9 @@
-"""商用合规相关的行为回归:默认不外联、密钥不落明文、许可与第三方声明就位。
+"""Behaviour regressions tied to commercial compliance: no outbound calls by
+default, secrets never stored in plaintext, licences and third-party notices in
+place.
 
-这些点一旦被改回去,商用交付就会出问题(客户安全审查 / 许可义务),所以用测试钉住。
+If any of these gets reverted, commercial delivery breaks (customer security
+reviews / licence obligations), so the tests pin them down.
 """
 
 from __future__ import annotations
@@ -17,28 +20,30 @@ from app.store import Store
 
 
 def _raw_key(st: Store, pid: str = "deepseek") -> str:
-    """直接读库,看真正落盘的是什么(不走任何解析)。"""
+    """Read the database directly to see what is really persisted (no parsing involved)."""
     return st._one("SELECT api_key FROM providers WHERE id=?", (pid,))["api_key"]
 
 
-# --------------------------------------------------------------- 默认不外联
+# -------------------------------------------------- no outbound calls by default
 def test_auto_check_updates_is_off_by_default(store: Store) -> None:
     assert DEFAULT_SETTINGS["auto_check_updates"] is False
     assert store.get_settings()["auto_check_updates"] is False
 
 
 def test_old_db_with_auto_check_on_is_turned_off_once(tmp_path: Path) -> None:
-    """旧版本的存量值是「开」——升级时关一次;之后用户自己开的不会被改回去。"""
+    """Old installs carried the value "on" - upgrading turns it off once; anything the
+    user turns on afterwards must not be reverted.
+"""
     d = tmp_path / "data"
     st = Store(d)
-    # 造出「迁移还没跑过、且自动检查是开着的」旧库状态
+    # recreate the old state: migration not yet run and auto-check still on
     st._x("DELETE FROM meta WHERE key='auto_check_off_by_default'")
     st.update_settings({"auto_check_updates": True})
     st._db.close()
 
     st2 = Store(d)
     assert st2.get_settings()["auto_check_updates"] is False, "升级时应把自动外联关掉"
-    st2.update_settings({"auto_check_updates": True})          # 用户之后主动打开
+    st2.update_settings({"auto_check_updates": True})          # the user turns it on later, deliberately
     st2._db.close()
 
     st3 = Store(d)
@@ -46,19 +51,23 @@ def test_old_db_with_auto_check_on_is_turned_off_once(tmp_path: Path) -> None:
     st3._db.close()
 
 
-# --------------------------------------------------------------- 不再内置第三方内容
+# ------------------------------------------- no bundled third-party content any more
 def test_no_bundled_third_party_content_ships_with_the_app() -> None:
-    """程序不附带上游项目的内容,避免再分发带来的 Apache-2.0 义务。"""
+    """The app ships no upstream project content, avoiding the Apache-2.0
+    obligations that redistribution would bring.
+"""
     data = Path(__file__).resolve().parent.parent / "app" / "data"
     assert not (data / "awesome_apps.json").exists()
     assert not (data / "awesome_zh.json").exists()
-    # 自带的其余数据都必须是自己整理的目录/清单
+    # the remaining bundled data must be our own catalogs / lists
     assert (data / "catalog.json").exists() and (data / "local_models.json").exists()
 
 
-# --------------------------------------------------------------- 密钥不落明文
+# --------------------------------------------- secrets never stored in plaintext
 class _FakeKeychain:
-    """假的钥匙串后端:用来验证逻辑,又不往真实钥匙串里塞测试数据。"""
+    """Fake keychain backend: exercises the logic without pushing test data into the
+    real keychain.
+"""
 
     def __init__(self) -> None:
         self.items: dict[str, str] = {}
@@ -84,26 +93,26 @@ def test_api_key_is_stored_as_a_keychain_reference(tmp_path: Path, monkeypatch: 
     st = Store(tmp_path / "data")
     st.update_provider("deepseek", {"api_key": "sk-live-abcdef123456"})
 
-    assert _raw_key(st) == "keychain:provider:deepseek"          # 库里只有引用
+    assert _raw_key(st) == "keychain:provider:deepseek"          # only a reference lives in the database
     assert "sk-live" not in json.dumps(st._q("SELECT * FROM providers"), ensure_ascii=False)
     assert kc.items["provider:deepseek"] == "sk-live-abcdef123456"
-    assert st.get_provider("deepseek")["api_key"] == "sk-live-abcdef123456"   # 读出来仍是真值
-    assert st.list_providers()[0]["api_key"] == "sk-live-abcdef123456"       # 调用方无感
+    assert st.get_provider("deepseek")["api_key"] == "sk-live-abcdef123456"   # reads still yield the real value
+    assert st.list_providers()[0]["api_key"] == "sk-live-abcdef123456"       # callers notice nothing
 
     st.update_provider("deepseek", {"api_key": ""})
-    assert "provider:deepseek" not in kc.items                  # 清空会顺手删掉钥匙串条目
+    assert "provider:deepseek" not in kc.items                  # clearing also removes the keychain entry
     assert _raw_key(st) == ""
 
 
 def test_secret_backend_reports_where_keys_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     st = Store(tmp_path / "data")
-    assert st.secret_backend() == "plaintext"          # conftest 关掉了钥匙串
+    assert st.secret_backend() == "plaintext"          # conftest disables the keychain
     _FakeKeychain().install(monkeypatch)
     assert st.secret_backend() == "keychain"
 
 
 def test_keychain_reference_survives_backup_without_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """不含密钥的备份里不能出现任何形式的密钥(引用也不行)。"""
+    """A backup made without keys must contain no trace of them, not even a reference."""
     _FakeKeychain().install(monkeypatch)
     st = Store(tmp_path / "data")
     st.update_provider("deepseek", {"api_key": "sk-live-abcdef123456"})
@@ -111,18 +120,18 @@ def test_keychain_reference_survives_backup_without_keys(tmp_path: Path, monkeyp
     st.backup_to(out, include_keys=False)
     import sqlite3
     assert sqlite3.connect(out).execute("SELECT api_key FROM providers WHERE id='deepseek'").fetchone()[0] == ""
-    # 含密钥的备份则要能带走真值(便于换机器)
+    # a backup that includes keys carries the real values (handy when moving machines)
     out2 = tmp_path / "b2.db"
     st.backup_to(out2, include_keys=True)
     assert sqlite3.connect(out2).execute("SELECT api_key FROM providers WHERE id='deepseek'").fetchone()[0] == "sk-live-abcdef123456"
 
 
 def test_migration_moves_plaintext_keys_into_keychain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """旧库里明文存着的 Key,升级时搬进钥匙串。"""
+    """Keys sitting in plaintext in an old database move into the keychain on upgrade."""
     st = Store(tmp_path / "data")
     st.update_provider("deepseek", {"api_key": "sk-old-abcdef123456"})
-    assert _raw_key(st) == "sk-old-abcdef123456"                # 此时没有钥匙串(conftest 关掉了),是明文
-    st._x("DELETE FROM meta WHERE key='keys_to_keychain'")      # 回到「迁移还没跑过」的旧库状态
+    assert _raw_key(st) == "sk-old-abcdef123456"                # no keychain yet (conftest disabled it), so plaintext
+    st._x("DELETE FROM meta WHERE key='keys_to_keychain'")      # back to the old state: migration not yet run
     st._db.close()
 
     kc = _FakeKeychain().install(monkeypatch)
@@ -133,7 +142,9 @@ def test_migration_moves_plaintext_keys_into_keychain(tmp_path: Path, monkeypatc
 
 
 def test_migration_keeps_plaintext_when_keychain_write_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """搬不动(钥匙串被锁/被拒)就原样留着明文 —— 绝不能因为迁移把 Key 弄丢。"""
+    """When the move fails (keychain locked or denied), keep the plaintext as is - a
+    migration must never lose a key.
+"""
     st = Store(tmp_path / "data")
     st.update_provider("deepseek", {"api_key": "sk-old-abcdef123456"})
     st._x("DELETE FROM meta WHERE key='keys_to_keychain'")
@@ -158,7 +169,9 @@ def test_github_token_is_stored_as_a_keychain_reference(tmp_path: Path, monkeypa
 
 @pytest.mark.skipif(not os.environ.get("TEAM_AGENT_KEYCHAIN_TEST"), reason="需要真实钥匙串,默认跳过")
 def test_real_keychain_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """真实钥匙串的往返验证(会往你的登录钥匙串里写一条测试项,跑完即删)。"""
+    """Round trip against the real keychain (writes one test item to your login
+    keychain and deletes it straight afterwards).
+"""
     monkeypatch.delenv(secrets_store.DISABLE_ENV, raising=False)
     assert secrets_store.backend_available()
     ref = secrets_store.ref_name("selftest", "roundtrip")

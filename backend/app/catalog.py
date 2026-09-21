@@ -1,7 +1,10 @@
-"""模型目录:随程序附带一份快照(app/data/catalog.json),并允许用更新的版本覆盖。
+"""Model catalog: ships with a snapshot (app/data/catalog.json) and allows a newer
+version to override it.
 
-覆盖文件放在数据目录下的 catalog.json(由「更新」页从 GitHub 拉取,或用户手动放入);
-两份里 version 更大的生效。目录只是「可供挑选的清单」,真正可调用的模型永远以服务商 /models 接口为准。
+The override lives at catalog.json in the data directory (pulled from GitHub by the
+"Update" page, or placed there manually); whichever of the two has the larger
+version wins. The catalog is only a "list to choose from" — the models that can
+actually be called are always determined by the provider's /models endpoint.
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ def _load(path: Path) -> dict | None:
 
 
 def validate(data: object) -> str | None:
-    """返回错误说明;合法则返回 None。用于校验从网络下载的目录。"""
+    """Returns an error description, or None when valid. Used to validate a catalog
+downloaded from the network."""
     if not isinstance(data, dict) or not isinstance(data.get("version"), str):
         return i18n.pick_now("version is missing", "缺少 version")
     provs = data.get("providers")
@@ -71,7 +75,8 @@ class Catalog:
 
     # ------------------------------------------------------------------ lookup
     def key_for(self, provider: dict) -> str | None:
-        """把用户的服务商对应到目录里的服务商:先按 id,再按接口地址的域名。"""
+        """Map a user's provider onto a provider in the catalog: first by id, then by the
+domain of the API address."""
         provs = self.data["providers"]
         if provider["id"] in provs:
             return provider["id"]
@@ -99,7 +104,8 @@ class Catalog:
         return i18n.localize(hit[1]) if hit else None
 
     def defaults(self, key: str) -> list[str]:
-        """新建服务商时默认加入的模型:一个主力 + 一个快速档(都跳过旧版和预览版)。"""
+        """Models added by default when a provider is created: one flagship plus one fast
+tier (legacy and preview entries are skipped)."""
         ms = [m for m in self.models_of(key) if not m.get("legacy") and not m.get("preview")]
         out: list[str] = []
         main = next((m for m in ms if m.get("tier") in ("flagship", "balanced")), None)
@@ -115,7 +121,7 @@ class Catalog:
         return strengths.infer(model_name, self.find(key, model_name), is_local=bool(provider.get("is_local")))
 
     def describe(self, provider: dict, model_name: str) -> dict:
-        """给界面展示用的目录信息(摘要、上下文、状态)。"""
+        """Catalog information for display in the UI (summary, context, status)."""
         key = self.key_for(provider)
         e = self.find(key, model_name)
         retired = self.retired_of(key).get(model_name)

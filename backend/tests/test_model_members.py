@@ -1,4 +1,4 @@
-"""模型即成员:把「我添加的模型」直接拉进群。"""
+"""Models as members: pull "a model I added" straight into the group."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def test_from_model_creates_member_and_reuses(tmp_path):
     assert len(ag) == 1 and ag[0]["model_id"] == model["id"]
     assert ag[0]["id"] in r.json()["member_ids"]
     assert " " not in ag[0]["name"] and "@" not in ag[0]["name"]
-    # 再拉一次:复用同一个成员,不重复创建
+    # pulling it a second time reuses the same member instead of creating another
     c.delete(f"/api/groups/{g['id']}/members/{ag[0]['id']}")
     c.post(f"/api/groups/{g['id']}/members/from-model", json={"model_id": model["id"]})
     assert len([a for a in c.get("/api/agents").json() if a.get("origin") == "model"]) == 1
@@ -43,7 +43,7 @@ def test_model_member_strengths_and_capabilities(tmp_path):
     caps = c.get(f"/api/groups/{g['id']}/capabilities").json()
     row = next(m for m in caps["members"] if m["origin"] == "model")
     assert row["manual_model"] is True and row["model"]["id"] == model["id"]
-    assert row["strengths"] == model["strengths"][:6]  # 模型成员的强项就是模型自己的强项
+    assert row["strengths"] == model["strengths"][:6]  # a model member inherits the model strengths
 
 
 def test_disabled_or_unknown_model_rejected(tmp_path):
@@ -79,7 +79,8 @@ def test_model_member_cannot_switch_model_and_dies_with_model(tmp_path):
 
 
 def test_model_member_speaks_with_its_own_model(tmp_path):
-    """群里 @模型成员 时,请求确实发给这个模型(不走强项自动选择)。"""
+    """@-ing a model member really sends the request to that model (no automatic
+    strength-based routing)."""
     fake = FakeLLM(default="收到")
     app = create_app(tmp_path / "data", completion_fn=fake)
     c, store = TestClient(app, base_url="http://127.0.0.1"), app.state.store
@@ -100,7 +101,10 @@ def test_model_member_speaks_with_its_own_model(tmp_path):
 
 
 def test_unusable_pinned_model_is_reported(tmp_path):
-    """DeepSeek 还没填 Key 时,把它拉进群:成员卡片要能看出「指定的模型现在用不了,实际在用别的」。"""
+    """Adding DeepSeek to a group before its key is filled in: the member card has to
+    make it visible that the pinned model cannot be used right now and another one
+    is standing in for it.
+"""
     c, store = make(tmp_path)
     g = first_group(c)
     model = next(m for m in store.list_models() if m["provider_id"] == "deepseek")

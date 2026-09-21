@@ -1,4 +1,6 @@
-"""数据测试:老版本数据库升级、备份/恢复往返、较大数据量、Obsidian 往返、资料库导入、指示灯记录。"""
+"""Data tests: upgrading an old database, backup/restore round trips, larger data
+volumes, the Obsidian round trip, library imports, health-light records.
+"""
 
 from __future__ import annotations
 
@@ -21,9 +23,9 @@ def client(tmp_path, name="data"):
     return TestClient(app, base_url="http://127.0.0.1"), app
 
 
-# ------------------------------------------------------------ 升级
+# ------------------------------------------------------------------- upgrade
 def make_v031_db(path):
-    """造一个 v0.3.1 形状的库:新版才有的列和表都不存在。"""
+    """Build a database shaped like v0.3.1: none of the newer columns or tables exist."""
     st = Store(path.parent / "tmp-build")
     st.add_memory("升级前的记忆", "global", "", "fact")
     g = st.list_groups()[0]
@@ -34,7 +36,7 @@ def make_v031_db(path):
     src.commit()
     dst = sqlite3.connect(path)
     src.backup(dst)
-    for t in ("model_health", "obsidian_map"):        # v0.4.0 新增的表
+    for t in ("model_health", "obsidian_map"):        # tables added in v0.4.0
         dst.execute(f"DROP TABLE IF EXISTS {t}")
     for table, col in [("agents", "origin"), ("agents", "tags"), ("groups", "ext"), ("groups", "prompt"),
                        ("mcp_servers", "transport"), ("mcp_servers", "headers"), ("mcp_servers", "description"),
@@ -51,7 +53,7 @@ def test_opening_an_old_database_upgrades_it_in_place(tmp_path):
     d = tmp_path / "old"
     d.mkdir()
     make_v031_db(d / "team-agent.db")
-    st = Store(d)                                    # 升级发生在这里
+    st = Store(d)                                    # this is where the upgrade happens
     cols = {r["name"] for r in st._q("PRAGMA table_info(agents)")}
     assert {"origin", "tags"} <= cols
     assert st.list_groups()[0]["ext"]["library"]["mode"] in ("all", "off", "selected")
@@ -59,10 +61,10 @@ def test_opening_an_old_database_upgrades_it_in_place(tmp_path):
     assert any(x["content"] == "升级前的消息" for x in st.list_messages(st.list_groups()[0]["id"]))
     assert st.list_mcp()[0]["headers"] == {} and st.list_mcp()[0]["name"] == "旧 MCP"
     assert st.list_docs()[0]["title"] == "旧文档"
-    st.set_health("deepseek/deepseek-flash", "ok", "", 100, "test")           # 新表可用
+    st.set_health("deepseek/deepseek-flash", "ok", "", 100, "test")           # the new table is usable
     st.set_obsidian_map("m", "a.md", "h")
     assert st.obsidian_map()["m"]["rel_path"] == "a.md"
-    st2 = Store(d)                                   # 再开一次(第二次启动)不出错、不重复种子
+    st2 = Store(d)                                   # reopening (a second launch) neither fails nor reseeds
     assert len(st2.list_agents()) == len(st.list_agents())
 
 
@@ -79,7 +81,7 @@ def test_old_database_works_through_the_api_and_can_be_backed_up_and_restored(tm
     assert r.status_code == 200 and r.json()["memories"] == 1 and r.json()["docs"] == 1
 
 
-# ------------------------------------------------------------ 往返
+# -------------------------------------------------------------- round trips
 def test_backup_restore_round_trip_preserves_everything_visible(tmp_path):
     a, app_a = client(tmp_path, "a")
     st = app_a.state.store
@@ -114,7 +116,7 @@ def test_restore_twice_in_a_row_keeps_both_safety_copies(tmp_path):
     assert len(list((tmp_path / "b" / "backups").glob("pre-restore-*.db"))) == 2
 
 
-# ------------------------------------------------------------ 数据量
+# --------------------------------------------------------------- data volume
 def test_larger_dataset_export_restore_and_obsidian(tmp_path):
     a, app_a = client(tmp_path, "a")
     st = app_a.state.store
@@ -127,14 +129,14 @@ def test_larger_dataset_export_restore_and_obsidian(tmp_path):
         st.add_memory(f"第 {i} 条记忆:偏好编号 {i} 需要保持一致", "global" if i % 3 else "group", "" if i % 3 else g["id"], "fact")
     for i in range(60):
         a.post("/api/library/note", json={"title": f"文档{i}", "content": ("这是第 %d 份资料。" % i) * 300})
-    assert len(a.get(f"/api/groups/{g['id']}/messages").json()) >= 30          # 有 history 上限,但接口可用
+    assert len(a.get(f"/api/groups/{g['id']}/messages").json()) >= 30          # history is capped, but the endpoint works
     vault = tmp_path / "vault"
     vault.mkdir()
     st.update_settings({"obsidian_dir": str(vault)})
     ob = ObsidianSync(st)
     r = ob.sync()
     assert r["ok"] and r["written"] == 300
-    assert not ob.sync()["written"]                                              # 幂等
+    assert not ob.sync()["written"]                                              # idempotent
     backup = a.get("/api/data/export").content
     b, app_b = client(tmp_path, "b")
     res = b.post("/api/data/restore", content=backup, headers=OCT).json()
@@ -153,11 +155,11 @@ def test_obsidian_edit_round_trip_at_scale(tmp_path):
     ob = ObsidianSync(st)
     ob.sync()
     files = sorted(vault.rglob("*.md"))
-    for f in files[:30]:                                       # Obsidian 里改 30 条
+    for f in files[:30]:                                       # edit 30 of them from the Obsidian side
         f.write_text(f.read_text(encoding="utf-8").replace("事实", "已改事实"), encoding="utf-8")
-    for f in files[30:40]:                                     # 删 10 条
+    for f in files[30:40]:                                     # delete 10
         f.unlink()
-    for i in range(15):                                        # 新建 15 条
+    for i in range(15):                                        # create 15 new ones
         (vault / f"新{i}.md").write_text(f"新笔记 {i}", encoding="utf-8")
     r = ob.sync()
     assert (r["pulled"], r["deleted_memories"], r["imported"]) == (30, 10, 15)
@@ -165,7 +167,7 @@ def test_obsidian_edit_round_trip_at_scale(tmp_path):
     assert sum(c.startswith("已改事实") for c in contents) == 30 and len(contents) == 120 - 10 + 15
 
 
-# ------------------------------------------------------------ 资料库 / 指示灯
+# ------------------------------------------------- library / health light
 def test_library_directory_import_recursion_and_reimport(tmp_path):
     a, _ = client(tmp_path)
     root = tmp_path / "docs"

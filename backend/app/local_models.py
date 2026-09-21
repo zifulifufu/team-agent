@@ -1,10 +1,13 @@
-"""本地模型推荐目录 + 本机硬件检测 + 「这台电脑跑得动吗」的粗略评估。
+"""Local model recommendation catalog + local hardware detection + a rough
+"can this machine run it" assessment.
 
-目录随程序附带一份快照(app/data/local_models.json),数据目录里的同名文件(由「更新与发现」从 GitHub
-拉取)如果 version 更大就覆盖它;用户在界面里「加入推荐」的新型号另存在 local_extras.json。
-大小取自 ollama.com/library 的标签页,评估是经验估算,不是保证:
-- 模型权重要整个放进内存(或显存),所以拿「模型大小」和「本机内存」比;
-- 没有 GPU 加速(Intel Mac、没有 NVIDIA 卡的电脑)时,能装下不等于跑得快,大模型会非常慢。
+The catalog ships with a snapshot (app/data/local_models.json); a file of the same name in
+the data directory (pulled from GitHub by "Update & discover") overrides it when its version
+is larger; new models the user adds via "add recommendation" are stored separately in
+local_extras.json. Sizes come from the ollama.com/library tags page, and the assessment is a
+rule-of-thumb estimate, not a guarantee:
+- model weights must fit entirely in memory (or VRAM), so "model size" is compared against "this machine's memory";
+- without GPU acceleration (Intel Macs, machines with no NVIDIA card) fitting does not mean fast; large models will be very slow.
 """
 
 from __future__ import annotations
@@ -25,7 +28,8 @@ from .versions import is_newer
 SHIPPED = Path(__file__).parent / "data" / "local_models.json"
 
 TAG_RE = re.compile(r"^(?:[a-z0-9][a-z0-9._-]{0,60}/)?[a-z0-9][a-z0-9._-]{0,60}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,80})?$")
-# 不是对话模型的库(嵌入、安全审核、OCR、重排序……),不要当作「新的大语言模型」推荐
+# libraries that are not chat models (embedding, moderation, OCR, reranking, ...):
+# do not recommend them as "new LLMs"
 NON_CHAT_RE = re.compile(r"embed|guard|safeguard|shield|ocr|rerank|bge-|minilm|reader-lm|nuextract", re.I)
 
 
@@ -37,7 +41,7 @@ def base_name(tag: str) -> str:
     return tag.split(":", 1)[0]
 
 
-# ------------------------------------------------------------------ 硬件
+# ------------------------------------------------------------------ hardware
 def _ram_gb() -> float | None:
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
@@ -54,9 +58,10 @@ def _sysctl(name: str) -> str:
 
 
 def native_machine(system: str, machine: str) -> tuple[str, bool]:
-    """(真实的 CPU 架构, 当前 Python 是不是被 Rosetta 转译着跑的)。
-    苹果芯片上装了 x86_64 版的 Python 时,platform.machine() 会说 x86_64,但硬件其实是 arm64、有 Metal 加速;
-    不纠正的话,所有大模型都会被误判成「会很慢」。"""
+    """(real CPU architecture, whether this Python is running under Rosetta translation).
+    With an x86_64 Python installed on Apple silicon, platform.machine() reports x86_64
+    while the hardware is really arm64 with Metal acceleration; without correcting this,
+    every large model would be misjudged as "will be very slow"."""
     if system == "Darwin" and machine.lower() in ("x86_64", "amd64"):
         if _sysctl("sysctl.proc_translated") == "1" or _sysctl("hw.optional.arm64") == "1":
             return "arm64", True
@@ -64,7 +69,8 @@ def native_machine(system: str, machine: str) -> tuple[str, bool]:
 
 
 def _accel(system: str, machine: str) -> str:
-    """推测有没有 GPU 加速:metal(Apple 芯片)/ cuda(检测到 nvidia-smi)/ none / unknown。"""
+    """Guess whether GPU acceleration is available: metal (Apple silicon) / cuda (nvidia-smi
+detected) / none / unknown."""
     m = machine.lower()
     if system == "Darwin":
         return "metal" if m in ("arm64", "aarch64") else "none"
@@ -74,7 +80,7 @@ def _accel(system: str, machine: str) -> str:
 
 
 def hardware(path: str | None = None) -> dict[str, Any]:
-    """本机(运行后端的这台电脑)的内存、磁盘、加速方式。"""
+    """Memory, disk and acceleration of this machine (the one running the backend)."""
     system = platform.system()
     machine, translated = native_machine(system, platform.machine())
     ram = _ram_gb()
@@ -94,8 +100,9 @@ def hardware(path: str | None = None) -> dict[str, Any]:
 
 
 def assess(size_gb: float, hw: dict[str, Any]) -> dict[str, Any]:
-    """fit: ok(内存宽裕)/ tight(能装下但很紧)/ no(装不下)/ unknown;
-    disk_ok: 磁盘放得下;slow: 没有 GPU 加速且模型较大,会很慢。"""
+    """fit: ok (memory to spare) / tight (fits but only just) / no (does not fit) / unknown;
+    disk_ok: the disk has room; slow: no GPU acceleration and a fairly large model, so
+    it will be slow."""
     ram, free = hw.get("ram_gb"), hw.get("disk_free_gb")
     if not size_gb:
         return {"fit": "unknown", "disk_ok": True, "slow": False}
@@ -112,9 +119,10 @@ def assess(size_gb: float, hw: dict[str, Any]) -> dict[str, Any]:
     return {"fit": fit, "disk_ok": disk_ok, "slow": slow}
 
 
-# ------------------------------------------------------------------ 目录数据
+# ------------------------------------------------------------------ catalog data
 def validate(data: object) -> str | None:
-    """返回错误说明;合法则返回 None。用于校验从网络下载的目录(不可信输入)。"""
+    """Returns an error description, or None when valid. Used to validate a catalog downloaded
+from the network (untrusted input)."""
     if not isinstance(data, dict) or not isinstance(data.get("version"), str) or not data["version"]:
         return i18n.pick_now("version is missing", "缺少 version")
     fams = data.get("families")
@@ -169,7 +177,7 @@ class LocalCatalog:
         tmp.replace(self.override_path)
         self.reload()
 
-    # ---- 用户/发现流程加入的型号
+    # ---- models added by the user or the discovery flow
     def extras(self) -> list[dict]:
         try:
             d = json.loads(self.extras_path.read_text(encoding="utf-8"))
@@ -195,7 +203,7 @@ class LocalCatalog:
         self.extras_path.write_text(json.dumps(keep, ensure_ascii=False, indent=1), encoding="utf-8")
         return True
 
-    # ---- 已知型号(避免把同一个新型号反复当成「新发现」)
+    # ---- known models (so the same new model is not flagged as a "new find" repeatedly)
     def known_bases(self) -> set[str]:
         out: set[str] = set()
         for f in self.data.get("families", []):
@@ -206,7 +214,7 @@ class LocalCatalog:
         return out
 
     def tracked_bases(self) -> list[str]:
-        """需要探测「有没有更新版本」的型号名(每个系列里最新的那几代)。"""
+        """Model names to probe for "is there a newer version" (the latest few generations of each series)."""
         out: list[str] = []
         for f in self.data.get("families", []):
             for n in f.get("track", []):
@@ -219,7 +227,7 @@ class LocalCatalog:
         return {k: [x for x in w.get(k, []) if isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", x)]
                 for k in ("github_orgs", "hf_authors")}
 
-    # ---- 给界面的完整视图
+    # ---- full view for the UI
     def view(self, installed: set[str] | None = None, hw: dict[str, Any] | None = None) -> dict[str, Any]:
         lang = i18n.current()
         data = i18n.localize(self.data, lang)      # English by default, Chinese for the zh UI
@@ -267,9 +275,10 @@ class LocalCatalog:
         }
 
 
-# ------------------------------------------------------------------ 发现流程用的纯函数
+# ------------------------------------------- pure helpers for the discovery flow
 def parse_library_names(html: str) -> list[str]:
-    """从 ollama.com/library 页面里按出现顺序取型号名(去重)。页面结构变了就会取不到,调用方要能容忍。"""
+    """Extract model names from the ollama.com/library page in order of appearance
+(deduplicated). If the page structure changes nothing is found, and callers must tolerate that."""
     seen: list[str] = []
     for n in re.findall(r'href="/library/([a-z0-9][a-z0-9._-]*)"', html):
         if n not in seen:
@@ -278,8 +287,9 @@ def parse_library_names(html: str) -> list[str]:
 
 
 def successor_names(name: str) -> list[str]:
-    """猜「下一代」的型号名:qwen3.8 → qwen3.9、qwen4;glm-4.7-flash → glm-4.8-flash、glm-5-flash。
-    只是猜测,必须再用 Ollama 注册表验证这个名字真的存在。"""
+    """Guess "next generation" model names: qwen3.8 -> qwen3.9, qwen4;
+    glm-4.7-flash -> glm-4.8-flash, glm-5-flash. These are only guesses and must then be
+    checked against the Ollama registry to confirm the name really exists."""
     m = re.search(r"(\d+)(?:\.(\d+))?", name)
     if not m:
         return []
@@ -295,7 +305,7 @@ def successor_names(name: str) -> list[str]:
 
 
 def manifest_size_gb(manifest: Any) -> float | None:
-    """Ollama 注册表清单(Docker manifest 格式)里各层大小之和,单位 GB。"""
+    """Sum of the layer sizes in an Ollama registry manifest (Docker manifest format), in GB."""
     if not isinstance(manifest, dict) or not isinstance(manifest.get("layers"), list):
         return None
     total = sum(int(layer.get("size", 0)) for layer in manifest["layers"] if isinstance(layer, dict))

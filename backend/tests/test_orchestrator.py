@@ -21,7 +21,9 @@ class Collector:
 
 
 def by_sender(fake_reply_map):
-    """按 system prompt 里的名字返回不同回复(中英两种内置提示词都认)。"""
+    """Answer differently depending on the name in the system prompt (recognises both
+    the Chinese and the English built-in phrasing).
+"""
 
     def pick(messages):
         head = messages[0]["content"][:90]
@@ -59,7 +61,7 @@ async def test_handoff_chain_via_at_mentions(store, make_router):
     c = Collector()
     await orch.handle_user_message(g["id"], "写一篇通知", c)
     assert [m["sender_name"] for m in c.ends()] == ["Aide", "Copywriter", "Proofreader"]
-    # 消息与模型信息已落库
+    # messages and their model info are persisted
     saved = store.list_messages(g["id"])
     assert [m["sender_name"] for m in saved][-3:] == ["Aide", "Copywriter", "Proofreader"]
     assert saved[-1]["model_id"] == "deepseek/deepseek-flash"
@@ -107,7 +109,7 @@ async def test_context_labels_speakers_and_merges_roles(store, make_router):
     msgs = next(m for _, m in fake.calls if "Copywriter" in m[0]["content"][:90])
     roles = [m["role"] for m in msgs]
     assert roles[0] == "system" and roles[1] == "user"
-    assert all(a != b for a, b in zip(roles[1:], roles[2:]))  # 严格交替
+    assert all(a != b for a, b in zip(roles[1:], roles[2:]))  # strictly alternating
     assert "[me] 来个通知" in msgs[1]["content"] and "[Aide]" in msgs[1]["content"]
     assert has(msgs[-1]["content"].rstrip(), TURN_NOW) and "Copywriter" in msgs[-1]["content"]
 
@@ -123,7 +125,7 @@ async def test_skill_injected_into_system_prompt(store, make_router):
     assert "[Skill: Office writing conventions]" in sys
     assert "Open with one sentence giving the purpose and the conclusion" in sys
 
-    # 中文界面下,同一个技能以中文名与中文正文注入
+    # under a Chinese interface the same skill is injected with its Chinese name and body
     from app import i18n
     from app.tools import skills_prompt
     i18n.set_current("zh")

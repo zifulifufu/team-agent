@@ -1,5 +1,11 @@
-"""测试用的假 codebuddy:按文档里的 stream-json 格式输出,并把收到的参数/标准输入/环境记到日志里。
-用环境变量 CODEBUDDY_FAKE_MODE 控制行为:ok | delta | slow | error | crash | auth | raw | version"""
+"""Fake `codebuddy` used by the tests.
+
+Emits stream-json in the documented shape and records the arguments it
+received, plus stdin and the environment, into a log file.
+
+Behaviour is switched by CODEBUDDY_FAKE_MODE: ok | delta | slow |
+error | crash | auth | raw | version.
+"""
 import json
 import os
 import sys

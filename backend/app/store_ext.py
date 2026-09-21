@@ -1,6 +1,7 @@
-"""SQLite 持久化(扩展部分):提示词库、记忆、资料库、模型清单缓存、更新记录。
+"""SQLite persistence (extension part): prompt library, memory, document library, model
+listing cache, update records.
 
-作为 Store 的混入类使用(见 store.py),共用它的连接与锁。
+Used as a mixin of Store (see store.py), sharing its connection and lock.
 """
 
 from __future__ import annotations
@@ -92,7 +93,7 @@ MEMORY_KINDS = ("preference", "fact", "decision", "lesson", "action")
 
 
 class ExtStore:
-    """依赖宿主类提供: _q / _one / _x / _lock / _db / new_id()"""
+    """Relies on the host class providing: _q / _one / _x / _lock / _db / new_id()"""
 
     # ------------------------------------------------------------------ prompts
     def list_prompts(self) -> list[dict]:
@@ -149,7 +150,7 @@ class ExtStore:
         return rows
 
     def memories_for(self, group_id: str, agent_id: str) -> list[dict]:
-        """一次发言可用的记忆:全局 + 本群 + 本成员。"""
+        """Memories usable for one reply: global + this group + this member."""
         rows = self._q(  # type: ignore[attr-defined]
             "SELECT * FROM memories WHERE scope='global' OR (scope='group' AND scope_id=?) "
             "OR (scope='agent' AND scope_id=?)",
@@ -176,7 +177,7 @@ class ExtStore:
             "SELECT id FROM memories WHERE scope=? AND scope_id=? AND content=?", (scope, scope_id, content)
         )
         now = time.time()
-        if dup:  # 完全相同的记忆只刷新时间,不重复存
+        if dup:  # an identical memory only refreshes its timestamp, it is not stored twice
             self._x("UPDATE memories SET updated_at=? WHERE id=?", (now, dup["id"]))  # type: ignore[attr-defined]
             return self.get_memory(dup["id"])  # type: ignore[return-value]
         mid = self.new_id()  # type: ignore[attr-defined]
@@ -241,7 +242,7 @@ class ExtStore:
             self._db.commit()  # type: ignore[attr-defined]
 
     def trim_memories(self, scope: str, scope_id: str, keep: int, kind: str = "action") -> None:
-        """行为流水只留最近 keep 条(置顶的不删)。"""
+        """Keep only the most recent `keep` activity log entries (pinned ones are never deleted)."""
         self._x(  # type: ignore[attr-defined]
             "DELETE FROM memories WHERE scope=? AND scope_id=? AND kind=? AND pinned=0 AND id NOT IN ("
             "SELECT id FROM memories WHERE scope=? AND scope_id=? AND kind=? ORDER BY created_at DESC LIMIT ?)",
@@ -290,7 +291,7 @@ class ExtStore:
         return self._q("SELECT idx, text FROM library_chunks WHERE doc_id=? ORDER BY idx", (did,))  # type: ignore[attr-defined]
 
     def all_chunks(self, doc_ids: list[str] | None = None) -> list[dict]:
-        """检索用:所有已启用文档(或指定文档)的分块。"""
+        """For retrieval: the chunks of every enabled document (or of the given document)."""
         sql = ("SELECT c.id, c.doc_id, c.idx, c.text, d.title FROM library_chunks c "
                "JOIN library_docs d ON d.id=c.doc_id WHERE d.enabled=1")
         args: tuple = ()
@@ -314,7 +315,8 @@ class ExtStore:
         return {r["model_id"]: r for r in self._q("SELECT * FROM model_health")}
 
     def clear_health(self, model_id: str | None = None, provider_id: str | None = None, everything: bool = False) -> None:
-        """服务商的密钥/地址改了,或模型没了(或整库恢复过):旧的检测结果不再可信,清掉。"""
+        """A provider's key or address changed, or a model disappeared (or the whole DB was
+restored): old check results are no longer trustworthy, so clear them."""
         if everything:
             self._x("DELETE FROM model_health")  # type: ignore[attr-defined]
         if model_id:
@@ -355,7 +357,8 @@ class ExtStore:
         return rows
 
     def upsert_update(self, kind: str, ref: str, title: str, detail: dict[str, Any]) -> dict:
-        """同一 kind+ref 已有未处理提醒就更新它,否则新建;已被忽略/完成的相同内容不再重复提醒。"""
+        """If an unhandled reminder already exists for the same kind+ref, update it; otherwise create
+one. Identical content that was already ignored/completed is not reminded again."""
         old = self._one("SELECT * FROM updates WHERE kind=? AND ref=? ORDER BY created_at DESC", (kind, ref))  # type: ignore[attr-defined]
         det = json.dumps(detail, ensure_ascii=False)
         if old:

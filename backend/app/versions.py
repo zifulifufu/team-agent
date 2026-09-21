@@ -1,4 +1,5 @@
-"""目录版本比较:既要认日期式版本(2026-09-20),也要认点分版本(1.10.0 比 1.9.0 新)。"""
+"""Catalog version comparison: handles both date-style versions (2026-09-20) and
+dot-separated ones (1.10.0 is newer than 1.9.0)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ def _key(v: object) -> tuple[int, ...]:
 
 
 def is_newer(candidate: object, current: object) -> bool:
-    """candidate 严格比 current 新。数字段逐段比较;两边都没有数字时退回按字符串比。"""
+    """True when candidate is strictly newer than current. Numeric segments are compared
+    one by one; falls back to a string comparison when neither side has digits."""
     a, b = _key(candidate), _key(current)
     if a or b:
         return a > b

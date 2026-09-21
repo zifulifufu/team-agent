@@ -1,4 +1,4 @@
-"""FastAPI 入口:REST + WebSocket。仅监听本机回环地址。"""
+"""FastAPI entry point: REST + WebSocket. Listens on the loopback address only."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ class ModelIn(BaseModel):
 class ModelPatch(BaseModel):
     enabled: bool | None = None
     display_name: str | None = None
-    strengths: list[str] | None = None   # 传 null = 恢复自动推断
+    strengths: list[str] | None = None   # passing null = go back to inferring automatically
 
 
 class AgentIn(BaseModel):
@@ -145,7 +145,7 @@ def public_provider(p: dict) -> dict:
 
 
 class Hub:
-    """按群聊分发 WebSocket 事件。"""
+    """Distributes WebSocket events per group chat."""
 
     def __init__(self) -> None:
         self.conns: dict[str, set[WebSocket]] = {}
@@ -160,7 +160,7 @@ class Hub:
     async def broadcast(self, gid: str, event: dict) -> None:
         for ws in list(self.conns.get(gid, ())):
             try:
-                await asyncio.wait_for(ws.send_text(json.dumps(event, ensure_ascii=False)), 5)   # 卡住的连接不能拖慢整轮对话
+                await asyncio.wait_for(ws.send_text(json.dumps(event, ensure_ascii=False)), 5)   # a stuck connection must not slow down the whole conversation
             except Exception:  # noqa: BLE001
                 self.disconnect(gid, ws)
 
@@ -170,10 +170,11 @@ DEV_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
 
 def ensure_loopback_no_proxy() -> None:
-    """用户开着 Clash 之类的代理(shell 里有 HTTP_PROXY)时,httpx 默认会把访问 127.0.0.1 的请求也发给代理,
-    结果本地 Ollama、自建服务、本机 MCP 全部 502。把回环地址加进 NO_PROXY,只影响本进程。"""
+    """With a proxy such as Clash running (HTTP_PROXY set in the shell), httpx by default sends
+    requests to 127.0.0.1 through the proxy as well, so local Ollama, self-hosted services and
+    local MCP all return 502. Adding the loopback addresses to NO_PROXY affects this process only."""
     have: list[str] = []
-    for key in ("NO_PROXY", "no_proxy"):          # 大小写两种写法不同工具认的不一样,合并后两个都设
+    for key in ("NO_PROXY", "no_proxy"):          # different tools recognize different letter cases, so both spellings are set after merging
         have += [x.strip() for x in os.environ.get(key, "").split(",") if x.strip() and x.strip() not in have]
     merged = ",".join(have + [w for w in ("127.0.0.1", "localhost", "::1") if w not in have])
     os.environ["NO_PROXY"] = os.environ["no_proxy"] = merged
@@ -186,9 +187,11 @@ def create_app(
     github_transport: Any = None,
     background: bool = False,
 ) -> FastAPI:
-    """token: 桌面版由 Electron 随机生成并通过环境变量 TEAM_AGENT_TOKEN 传入。
-    设置后所有 /api 与 WebSocket 请求都必须带上它,防止用户浏览器里的其它网页访问本机后端(含 DNS 重绑定)。
-    未设置(纯浏览器开发模式)时,只允许 localhost 来源的跨域请求。"""
+    """token: in the desktop build Electron generates it at random and passes it in through the
+    TEAM_AGENT_TOKEN environment variable. Once set, every /api and WebSocket request must carry
+    it, which stops other pages in the user's browser from reaching the local backend (DNS
+    rebinding included). When it is unset (pure browser development mode), only cross-origin
+    requests from localhost are allowed."""
     token = token if token is not None else os.environ.get("TEAM_AGENT_TOKEN") or None
     ensure_loopback_no_proxy()
     store = Store(data_dir)
@@ -218,7 +221,7 @@ def create_app(
                     cfg = store.get_settings()
                     if cfg["obsidian_auto"] and cfg["obsidian_dir"]:
                         await asyncio.to_thread(obsidian.sync)
-                except Exception as e:  # noqa: BLE001 — 一次出错不能让自动同步永远停掉
+                except Exception as e:  # noqa: BLE001 — one error must not stop the automatic sync forever
                     print("obsidian auto-sync error:", e)
 
         bg = [asyncio.create_task(updater.run_forever()), asyncio.create_task(obsidian_loop())] if background else []
@@ -234,10 +237,11 @@ def create_app(
     # Resolves the request language (?lang= or Accept-Language) for built-in content.
     app.add_middleware(i18n.LanguageMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
-    if token:  # Electron 渲染进程的 Origin 可能是 file:// (即 "null"),靠 token 而不是来源来鉴权
+    if token:  # the Electron renderer's Origin may be file:// (i.e. "null"), so authenticate by token
+# rather than by origin
         app.add_middleware(
             CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-            expose_headers=["Content-Disposition"],  # 让前端读到备份文件名
+            expose_headers=["Content-Disposition"],  # let the front end read the backup file name
         )
     else:
         app.add_middleware(
@@ -280,14 +284,15 @@ def create_app(
     def public_settings() -> dict:
         s = store.get_settings()
         s["github_token_set"] = bool(s.get("github_token"))
-        s["github_token"] = ""   # 令牌只进不出
+        s["github_token"] = ""   # the token can be written but never read back
         return s
 
     ENUMS = {"plan_mode": ("auto", "on", "off"), "perm_mode": ("ask_risky", "ask_all", "allow_all")}
     RANGES = {"tool_rounds": (0, 10), "tool_timeout": (5, 600), "plan_max_tasks": (2, 12), "memory_top_k": (0, 20),
               "library_top_k": (1, 10), "max_hops": (1, 30), "history_limit": (1, 200), "history_clip": (200, 20000), "tool_output_limit": (500, 50000), "update_interval_hours": (1, 168),
               "perm_timeout": (10, 600), "request_timeout": (5, 600), "circuit_threshold": (1, 10), "circuit_cooldown": (5, 600)}
-    # obsidian_dir 只能通过 /api/obsidian 设置(要做路径校验),这里不接受
+    # obsidian_dir can only be set through /api/obsidian (which validates the path); it is not
+# accepted here
     READONLY = {"obsidian_dir"}
 
     @app.get("/api/settings")
@@ -313,7 +318,8 @@ def create_app(
             if k == "github_token" and v is None:
                 continue
             if k not in ENUMS and k not in RANGES and k not in ("perm_allow", "perm_deny"):
-                # 其余设置按默认值的类型检查:防止 "false" 当成真、null/字符串把路由或超时搞崩
+                # the remaining settings are type-checked against their defaults: this stops "false" counting
+# as true and null/strings from wrecking routing or timeouts
                 d = DEFAULT_SETTINGS[k]
                 if isinstance(d, bool):
                     good = isinstance(v, bool)
@@ -395,7 +401,8 @@ def create_app(
 
     @app.post("/api/providers/{pid}/fetch-models")
     async def fetch_models(pid: str) -> dict:
-        """向服务商查询可用模型列表。外呼被禁用时,只允许查询本地服务商。"""
+        """Ask the provider for its list of available models. When outbound calls are disabled, only
+local providers may be queried."""
         p = need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         if not p["is_local"] and not store.get_settings()["external_calls_enabled"]:
             raise HTTPException(403, i18n.pick_now("Outbound calls are disabled, so the cloud provider's model list cannot be fetched", "外呼已禁用,无法向云端服务商查询模型列表"))
@@ -423,13 +430,15 @@ def create_app(
 
     @app.get("/api/models-health")
     async def models_health() -> dict:
-        """所有模型的指示灯状态(只读库,不发请求;本地服务的探测由 POST 触发)。"""
+        """Indicator state of every model (reads the database only, sends no requests; probing local
+services is triggered by POST)."""
         return {"health": board.view()}
 
     @app.post("/api/models-health/check")
     async def models_health_check(body: dict[str, Any] | None = None) -> dict:
-        """检测连通性。body.model_ids 不填 = 全部;body.cloud=false 只探测本地服务(不花 token)。
-        云端模型会发一条极短的请求,所以只在用户点「检测」时才做。"""
+        """Check connectivity. Leaving body.model_ids empty = all of them; body.cloud=false probes
+        only local services (costs no tokens). Cloud models get one very short request, so this
+        only happens when the user presses "check"."""
         body = body or {}
         ids = body.get("model_ids")
         if ids is not None and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
@@ -455,16 +464,18 @@ def create_app(
             "litellm": _pkg_version("litellm"),
             "fastapi": _pkg_version("fastapi"),
             "data_dir": str(store.data_dir),
-            # WAL 模式下还有 -wal 文件,不统计的话界面上的「数据库大小」会偏小
+            # in WAL mode there is also a -wal file; leaving it out makes the "database size" shown in
+# the UI too small
             "db_bytes": sum(f.stat().st_size for f in (db, Path(str(db) + "-wal")) if f.exists()),
             "external_calls_enabled": store.get_settings()["external_calls_enabled"],
-            "key_secret_backend": store.secret_backend(),   # keychain = 密钥在系统钥匙串;plaintext = 回退明文
+            "key_secret_backend": store.secret_backend(),   # keychain = the key is in the system keychain; plaintext = fell back to plaintext
             "auth": bool(token),
         }
 
     @app.get("/api/data/export")
     async def data_export(bg: BackgroundTasks, include_keys: bool = False) -> FileResponse:
-        """导出数据库快照。默认不含 API Key,避免备份文件被随手转发时泄露密钥。"""
+        """Export a database snapshot. API keys are excluded by default, so casually forwarding the
+backup file cannot leak secrets."""
         fd, tmp = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         store.backup_to(tmp, include_keys=include_keys)
@@ -496,13 +507,14 @@ def create_app(
 
     @app.get("/api/local/catalog")
     async def local_catalog() -> dict:
-        """推荐的本地型号(按厂商分组)+ 本机硬件 + 每个型号「跑不跑得动」的粗略评估(经验估算,不是保证)。"""
+        """Recommended local models (grouped by vendor) + this machine's hardware + a rough "will it
+run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         st = await local_status()
         return {**store.local_catalog.view(set(st["installed"])), "running": st["running"], "installed": st["installed"]}
 
     @app.post("/api/local/pull")
     async def local_pull(body: PullIn) -> StreamingResponse:
-        """代理 Ollama 的 /api/pull,逐行返回下载进度(NDJSON)。"""
+        """Proxy Ollama's /api/pull, returning download progress line by line (NDJSON)."""
 
         async def gen():
             ok = False
@@ -534,7 +546,7 @@ def create_app(
     @app.get("/api/agents")
     async def agents() -> list[dict]:
         # Built-in members are shown in the request language (an install seeded before
-        # the names were translated still holds 小助 in the database — see
+        # the names were translated still holds the Chinese spelling in the database — see
         # presets.localize_agent). Anything the user renamed or rewrote is untouched.
         return templates.member_view(store.list_agents())
 
@@ -641,14 +653,14 @@ def create_app(
                 await orch.handle_user_message(gid, text, emit)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # noqa: BLE001 — 界面上要看得到出了什么事,不能只在后台打印
+            except Exception as e:  # noqa: BLE001 — what went wrong has to be visible in the UI, not just printed in the background
                 print("orchestrator error:", repr(e))
                 try:
                     await orch._system(gid, i18n.pick_now(f"Something went wrong in this round of collaboration: {e}", f"这一轮协作出错了:{e}"), emit)
                 except Exception:  # noqa: BLE001
                     pass
             finally:
-                await emit({"type": "idle"})  # 本轮协作结束(正常/出错/被停止)
+                await emit({"type": "idle"})  # this round of collaboration is over (normally, with an error, or stopped)
 
         task = asyncio.create_task(run())
         tasks.setdefault(gid, set()).add(task)
@@ -673,7 +685,8 @@ def create_app(
             t.cancel()
             n += 1
         await hub.broadcast(gid, {"type": "stopped"})
-        if not n:   # 没有在跑的任务(比如后端刚重启过),也要让界面回到空闲
+        if not n:   # with nothing running (for instance the backend just restarted), the UI has to go back to
+# idle as well
             await hub.broadcast(gid, {"type": "idle"})
         return {"cancelled": n}
 
@@ -687,7 +700,7 @@ def create_app(
         await hub.connect(gid, ws)
         try:
             while True:
-                await ws.receive_text()  # 客户端只需保持连接;发消息走 REST
+                await ws.receive_text()  # clients only keep the connection open; sending messages goes over REST
         except WebSocketDisconnect:
             hub.disconnect(gid, ws)
 

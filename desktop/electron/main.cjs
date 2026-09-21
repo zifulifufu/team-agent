@@ -1,4 +1,4 @@
-// Electron 主进程:启动 Python 后端(FastAPI + LiteLLM),再打开窗口。
+// Electron main process: start the Python backend (FastAPI + LiteLLM), then open the window.
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -8,9 +8,11 @@ const crypto = require("node:crypto");
 const PORT = process.env.TEAM_AGENT_PORT || "8765";
 const DEV = !!process.env.TEAM_AGENT_DEV;
 const DEV_URL = "http://localhost:5173";
-// 界面访问后端的地址:指定了外部后端就用它,否则是本机的 PORT 端口(渲染进程通过预加载脚本拿到,不再各自写死)
+// Where the UI reaches the backend: an external backend if one is given, otherwise this machine's PORT.
+// The renderer receives it through the preload script instead of hardcoding it.
 const API_BASE = (process.env.TEAM_AGENT_BACKEND_URL || `http://127.0.0.1:${PORT}`).replace(/\/+$/, "");
-// 每次启动随机生成;后端拒绝没带它的请求,避免用户浏览器里的其它网页访问本机后端
+// Random per launch; the backend rejects requests without it, so other pages in the user's browser
+// cannot reach the local backend.
 const TOKEN = process.env.TEAM_AGENT_TOKEN || crypto.randomBytes(24).toString("hex");
 let backend = null;
 
@@ -25,8 +27,9 @@ function pythonCommand() {
 }
 
 function startBackend() {
-  if (process.env.TEAM_AGENT_BACKEND_URL) return; // 使用外部已启动的后端
-  // 打包后:后端可执行文件放在 resources/backend/team-agent-backend(用 PyInstaller 构建,见 README)
+  if (process.env.TEAM_AGENT_BACKEND_URL) return; // An externally started backend is in use
+  // Packaged: the backend executable lives in resources/backend/team-agent-backend
+  // (built with PyInstaller — see the README)
   const packaged = path.join(process.resourcesPath || "", "backend", process.platform === "win32" ? "team-agent-backend.exe" : "team-agent-backend");
   if (app.isPackaged && fs.existsSync(packaged)) {
     backend = spawn(packaged, ["--port", PORT], { stdio: "inherit", env: { ...process.env, TEAM_AGENT_TOKEN: TOKEN } });
@@ -69,15 +72,17 @@ async function createWindow() {
     },
   });
   const openExternal = (url) => {
-    // 只交给系统浏览器打开 http(s) 链接;GitHub 上的 README / 更新说明里可能带别的协议,一律不放行
+    // Only http(s) links go to the system browser. READMEs and release notes on GitHub may carry
+    // other schemes, so nothing else is ever opened.
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
   };
   win.webContents.setWindowOpenHandler(({ url }) => {
     openExternal(url);
     return { action: "deny" };
   });
-  // 应用窗口只能停留在自己的页面上:消息里的 Markdown 链接、GitHub 说明里的链接不带 target 时,
-  // 默认会把整个窗口导航过去(并让那个外部页面拿到后端令牌)。这里一律拦下,改交系统浏览器。
+  // The window must stay on its own pages. A Markdown link in a message, or one in a GitHub note,
+  // navigates the whole window by default when it has no target — and the page it lands on would
+  // get the backend token. Everything else is blocked here and handed to the system browser.
   const isAppUrl = (url) => (DEV ? url.startsWith(DEV_URL) : url.startsWith("file://"));
   const guard = (e, url) => {
     if (isAppUrl(url)) return;
@@ -98,7 +103,7 @@ ipcMain.handle("team-agent:pick-folder", async (e) => {
 
 app.whenReady().then(async () => {
   startBackend();
-  await waitBackend(); // 超时也继续打开窗口,界面会显示"后端未连接"
+  await waitBackend(); // Open the window even on timeout; the UI then shows "Backend not connected"
   await createWindow();
   app.on("activate", () => BrowserWindow.getAllWindows().length === 0 && createWindow());
 });

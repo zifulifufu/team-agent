@@ -1,4 +1,6 @@
-"""记忆 ⇄ Obsidian 双向同步:导出、读回、导入、删除、冲突、安全护栏。"""
+"""Two-way memories <-> Obsidian sync: export, read back, import, delete, conflicts,
+safety rails.
+"""
 
 from __future__ import annotations
 
@@ -48,7 +50,7 @@ def test_export_layout_and_skips_action_kind(env):
     text = next(f for f in files if "Global" in str(f)).read_text(encoding="utf-8")
     ours, other, body = parse_note(text)
     assert ours["scope"] == "global" and ours["kind"] == "preference" and ours["pinned"] is True and body == "发布类内容统一写 Team Agent"
-    r2 = ob.sync()                                       # 幂等
+    r2 = ob.sync()                                       # idempotent
     assert (r2["written"], r2["pulled"], r2["imported"], r2["conflicts"]) == (0, 0, 0, 0)
 
 
@@ -90,7 +92,7 @@ def test_new_note_is_imported_and_gets_frontmatter_keeping_other_keys(env):
     assert len(mems) == 1 and mems[0]["content"] == "以后所有报告都用简体中文" and mems[0]["scope"] == "global"
     ours, other, body = parse_note((vault / "我的想法.md").read_text(encoding="utf-8"))
     assert ours["ta_id"] == mems[0]["id"] and "tags:" in "\n".join(other) and "  - 想法" in other and body == "以后所有报告都用简体中文"
-    assert ob.sync()["imported"] == 0                    # 不会重复导入
+    assert ob.sync()["imported"] == 0                    # not imported twice
 
 
 def test_duplicate_of_existing_memory_is_not_double_imported(env):
@@ -123,7 +125,7 @@ def test_delete_in_app_moves_file_to_trash_folder(env):
     st.delete_memory(m["id"])
     r = ob.sync()
     assert r["removed_files"] == 1 and md(vault) == []
-    assert len(list((vault / "_deleted").glob("*.md"))) == 1          # 没有真删,可以找回
+    assert len(list((vault / "_deleted").glob("*.md"))) == 1          # nothing really deleted, still recoverable
 
 
 def test_delete_in_obsidian_deletes_memory_but_mass_delete_is_refused(env):
@@ -133,7 +135,7 @@ def test_delete_in_obsidian_deletes_memory_but_mass_delete_is_refused(env):
     md(vault)[0].unlink()
     r = ob.sync()
     assert r["deleted_memories"] == 1 and len(st.list_memories()) == 9
-    for f in md(vault)[:7]:                                         # 一次少了一大半:多半是文件夹被移走
+    for f in md(vault)[:7]:                                         # most of them vanished at once: the folder was probably moved
         f.unlink()
     r = ob.sync()
     assert r["deleted_memories"] == 0 and len(st.list_memories()) == 9
@@ -150,7 +152,7 @@ def test_missing_folder_changes_nothing(env):
     ob.sync()
     import shutil
 
-    shutil.rmtree(vault)                                             # 文件夹整个没了(比如外接盘没挂载)
+    shutil.rmtree(vault)                                             # the whole folder is gone (an external drive not mounted, say)
     r = ob.sync()
     assert not r["ok"] and "does not exist" in r["error"] and len(st.list_memories()) == 1
 
@@ -171,16 +173,16 @@ def test_conflict_newer_side_wins_and_loser_is_backed_up(env):
     f = md(vault)[0]
     f.write_text(f.read_text(encoding="utf-8").replace("起点", "Obsidian 版本"), encoding="utf-8")
     st.update_memory(m["id"], {"content": "程序版本"})
-    os.utime(f, (time.time() + 100, time.time() + 100))              # 文件更新
+    os.utime(f, (time.time() + 100, time.time() + 100))              # the file is newer
     r = ob.sync()
     assert r["conflicts"] == 1 and st.get_memory(m["id"])["content"] == "Obsidian 版本"
     backup = list((vault / "_conflict-backup").glob("*.md"))
     assert len(backup) == 1 and "程序版本" in backup[0].read_text(encoding="utf-8")
-    # 反过来:程序更新
+    # the other way round: the app is newer
     st.update_memory(m["id"], {"content": "程序又改了"})
     f = md(vault)[0]
     f.write_text(f.read_text(encoding="utf-8").replace("Obsidian 版本", "Obsidian 又改了"), encoding="utf-8")
-    os.utime(f, (time.time() - 1000, time.time() - 1000))            # 文件较旧
+    os.utime(f, (time.time() - 1000, time.time() - 1000))            # the file is older
     r = ob.sync()
     assert r["conflicts"] == 1 and st.get_memory(m["id"])["content"] == "程序又改了"
     assert "程序又改了" in md(vault)[0].read_text(encoding="utf-8")
@@ -228,7 +230,7 @@ def test_api_flow(tmp_path):
     assert st["dir"] == "" and st["exists"] is False and st["auto"] is False
     assert c.post("/api/obsidian/sync").json()["ok"] is False
     assert c.put("/api/obsidian", json={"dir": "not/absolute"}).status_code == 400
-    assert c.put("/api/settings", json={"obsidian_dir": "/tmp/evil"}).json()["obsidian_dir"] == ""   # 只能走 /api/obsidian
+    assert c.put("/api/settings", json={"obsidian_dir": "/tmp/evil"}).json()["obsidian_dir"] == ""   # only /api/obsidian may set it
     vault.mkdir(parents=True)
     st = c.put("/api/obsidian", json={"dir": str(vault), "auto": True}).json()
     assert st["dir"] == str(vault.resolve()) and st["exists"] and st["auto"] is True

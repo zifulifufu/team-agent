@@ -1,8 +1,11 @@
-"""统一的工具调度:内置工具 + 插件工具 + MCP 工具,按「本群启用了什么」给每个成员一份可用清单。
+"""Unified tool dispatch: built-in tools + plugin tools + MCP tools, giving each member a list
+of what is usable based on "what this group has enabled".
 
-内置工具:current_time / library_search / library_read / memory_search / memory_save。
-它们是否可用取决于群设置(资料库开关、记忆开关),插件和 MCP 则要在群里勾选后才可用——
-勾选就是你对「让这个群的成员自主调用它」的授权。每次调用都会记在消息的工具轨迹里,气泡下方能看到。
+Built-in tools: current_time / library_search / library_read / memory_search / memory_save.
+Whether they are available depends on the group settings (library switch, memory switch),
+while plugins and MCP tools only become usable once ticked for the group — ticking is your
+authorization for "let members of this group call it on their own". Every call is recorded in
+the message's tool trace and is visible below the bubble.
 """
 
 from __future__ import annotations
@@ -29,17 +32,20 @@ class ToolOutcome:
     text: str
     ok: bool = True
     ms: int = 0
-    denied: bool = False       # 被权限拦下(用户拒绝、超时未确认、或被禁止),没有真正执行
+    denied: bool = False       # blocked by permissions (denied by the user, timed out unconfirmed, or forbidden):
+# never really executed
 
 
 @dataclass
 class ToolContext:
     group: dict
     agent: dict
-    tools: dict[str, dict] = field(default_factory=dict)   # 名称 -> spec(含 source / server_id)
-    problems: list[str] = field(default_factory=list)      # 连接失败等,提示给用户看
-    # 至少有一个 MCP 服务器只是「还没第一次连上」,不是真的出错。界面据此多显示一句说明;
-    # 用标志而不是文案匹配 —— problems 里的文字跟着请求语言走。
+    tools: dict[str, dict] = field(default_factory=dict)   # name -> spec (including source / server_id)
+    problems: list[str] = field(default_factory=list)      # connection failures and the like, shown to the user
+    # At least one MCP server has merely "not been connected for the first time yet", which is
+# not a real error. The UI shows one extra note based on this;
+    # a flag is used rather than matching on wording, because the text in problems follows
+# the request language.
     mcp_deferred: bool = False
 
     def specs(self) -> list[dict]:
@@ -110,7 +116,7 @@ class ToolHub:
     def __init__(self, store: Store, registry: ToolRegistry, mcp: McpManager, library: Library, memory: MemoryService):
         self.store, self.registry, self.mcp, self.library, self.memory = store, registry, mcp, library, memory
 
-    # ----------------------------------------------------------- 清单
+    # ----------------------------------------------------------- listing
     def _mcp_name(self, server: dict, tool: str, taken: set[str]) -> str:
         base = f"mcp__{slug(server['name'])}__{tool}"
         name = base if base not in taken else f"{base}_{server['id'][:4]}"
@@ -137,7 +143,7 @@ class ToolHub:
             add("memory_search", specs["memory_search"], source="builtin")
             add("memory_save", specs["memory_save"], source="builtin")
         for t in self.registry.plugin_tools(ext["plugins"]):
-            if t.name in ctx.tools or t.name in BUILTIN_TOOL_NAMES:   # 插件不能顶替内置工具(权限判断按名字走)
+            if t.name in ctx.tools or t.name in BUILTIN_TOOL_NAMES:   # a plugin cannot displace a built-in tool (permission checks go by name)
                 ctx.problems.append(i18n.pick_now(f"The plugin tool \"{t.name}\" has the same name as a built-in tool, so it was ignored.", f"插件工具「{t.name}」和内置工具重名,已忽略。"))
                 continue
             ctx.tools[t.name] = {**t.spec(), "source": "plugin"}
@@ -146,14 +152,14 @@ class ToolHub:
             server = self.store.get_mcp(sid)
             if not server or not server["enabled"]:
                 continue
-            if pick_transport(server) != "stdio" and not cfg["external_calls_enabled"]:   # 远程 MCP 也算对外通信
+            if pick_transport(server) != "stdio" and not cfg["external_calls_enabled"]:   # remote MCP counts as outbound communication too
                 ctx.problems.append(i18n.pick_now(f"MCP \"{server['name']}\" is a remote service and outbound calls are switched off, so it was not used this time.", f"MCP「{server['name']}」是远程服务,而「允许外呼」是关的,本次没有使用。"))
                 continue
             st = self.mcp.state(sid)
             if (not st or st.status != "ready") and connect:
                 st = await self.mcp.connect(server, timeout=30)
             if not st or st.status != "ready":
-                if not (st and st.error):                              # 只是还没连过,不是报错
+                if not (st and st.error):                              # simply never connected yet, not an error
                     ctx.mcp_deferred = True
                 ctx.problems.append(i18n.pick_now(f"MCP \"{server['name']}\" is not connected: {(st.error if st else '') or 'not connected yet'}", f"MCP「{server['name']}」未连接:{(st.error if st else '') or '尚未连接'}"))
                 continue
@@ -164,7 +170,7 @@ class ToolHub:
                                    "tool": t["name"], "read_only": t.get("read_only", False)}
         return ctx
 
-    # ----------------------------------------------------------- 调用
+    # ----------------------------------------------------------- calls
     def policy(self, spec: dict) -> str:
         return policy_for(self.store.get_settings(), spec)
 
@@ -172,7 +178,8 @@ class ToolHub:
         self, ctx: ToolContext, name: str, args: dict[str, Any],
         approve: Callable[[dict, dict], Awaitable[bool]] | None = None,
     ) -> ToolOutcome:
-        """approve:需要确认的调用交给它去问用户(返回 True=放行)。没有传时,需要确认的调用一律拒绝。"""
+        """approve: calls that need confirmation are handed to it to ask the user (True = allowed).
+When it is not supplied, calls needing confirmation are always denied."""
         t0 = time.time()
         spec = ctx.tools.get(name)
         if not spec:
@@ -189,9 +196,9 @@ class ToolHub:
                 i18n.pick_now(f"The user did not approve this call ({name}: denied, or no confirmation before the timeout), so it was not run. Do not retry the same operation — find another way, or tell the user what you need and why.", f"用户没有批准这次调用({name}:拒绝或超时未确认),没有执行。不要重试同一操作,请换个办法,或直接告诉用户你需要做什么、为什么。"),
                 False, int((time.time() - t0) * 1000), True,
             )
-        if pol == "ask" and self.policy(spec) == "deny":   # 等确认的这段时间里用户又把它设成了「禁止」
+        if pol == "ask" and self.policy(spec) == "deny":   # while waiting for confirmation the user changed it to "forbidden"
             return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。"), False, 0, True)
-        t0 = time.time()  # 耗时不含等用户确认的时间
+        t0 = time.time()  # elapsed time excludes the wait for user confirmation
         timeout = float(self.store.get_settings()["tool_timeout"])
         try:
             text, ok = await asyncio.wait_for(self._dispatch(ctx, spec, args, timeout), timeout + 5)
@@ -218,7 +225,9 @@ class ToolHub:
             return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %A (%z)"), True
         if name == "library_search":
             k = max(1, min(int(args.get("top_k") or self.store.get_settings()["library_top_k"]), 10))
-            # BM25 打分是纯 CPU 活,大资料库首次检索还要重建索引;放线程池,别卡住事件循环(会拖慢所有人的流式输出)
+            # BM25 scoring is pure CPU work, and the first search over a large library also rebuilds the
+# index; run it in a thread pool so it cannot block the event loop (which would slow down
+# everyone's streaming output)
             hits = await asyncio.to_thread(
                 self.library.search, str(args["query"]), k, self.library.scope_ids(group["ext"]["library"])
             )

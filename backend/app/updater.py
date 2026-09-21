@@ -1,12 +1,20 @@
-"""更新与发现:从 GitHub 检查程序本体、模型目录、技能、插件的新版本,并搜索新的技能 / 插件 / MCP。
+"""Updates and discovery: check GitHub for new versions of the app itself, the model catalog,
+skills and plugins, and search for new skills / plugins / MCP servers.
 
-安全边界(刻意的):
-  * 检查和搜索都是只读的,受「允许调用云端模型」总开关约束(离线模式下不联网)。
-  * 文本类内容(模型目录 JSON、SKILL.md)可以自动更新,且技能自动更新默认关闭。
-  * 会执行代码的东西 —— 插件(Python)、MCP 服务器(命令行)、程序本体 —— 永远不会自动安装:
-    插件必须先预览完整源码,再用预览时算出的 sha256 确认安装(服务器会重新下载并比对,内容变了就拒绝);
-    MCP 只提供「预填的配置表单」,命令由你确认后才保存;程序本体只提示新版本和发布页,不自动替换。
-  * GitHub 的内容一律视为不可信的输入:只当文本处理,技能正文不会被当作指令执行,只作为提示词注入(可预览)。
+Safety boundaries (deliberate):
+  * Checks and searches are read-only and gated by the "allow cloud model calls" master switch
+    (nothing touches the network in offline mode).
+  * Text content (the model catalog JSON, SKILL.md) may be updated automatically, and automatic
+    skill updates are off by default.
+  * Anything that executes code - plugins (Python), MCP servers (command line), the app itself -
+    is never installed automatically:
+    a plugin must be previewed in full source first, then installed by confirming the sha256
+    computed at preview time (the server downloads it again and compares, and refuses if the
+    content changed);
+    MCP only offers a pre-filled config form, and the command is saved once you confirm it;
+    the app itself only reports the new version and the release page, it is never replaced.
+  * Content from GitHub is always treated as untrusted input: handled as text only, a skill body
+    is never executed as instructions, only injected as a prompt (and can be previewed).
 """
 
 from __future__ import annotations
@@ -41,7 +49,7 @@ LOCAL_CATALOG_PATH = "backend/app/data/local_models.json"
 OLLAMA_LIBRARY = "https://ollama.com/library?sort=newest"
 OLLAMA_REGISTRY = "https://registry.ollama.ai/v2"
 HF_API = "https://huggingface.co/api/models"
-MAX_NEW_PER_SOURCE = 6      # 每个来源最多报几个,避免第一次检查就刷屏
+MAX_NEW_PER_SOURCE = 6      # how many items to report per source, so the first check does not flood the screen
 QUANT_RE = re.compile(r"fp8|fp4|int[48]|awq|gptq|gguf|mlx|bnb|nvfp4|mxfp|-eagle|-draft", re.I)
 
 SEARCH_TOPICS = {
@@ -49,7 +57,8 @@ SEARCH_TOPICS = {
     "mcp": ["mcp-server", "mcp-servers"],
     "plugin": ["team-agent-plugin"],
 }
-# 推荐来源:名字取自已知的官方/知名仓库,内容以 GitHub 上的实际情况为准(界面里会提示先看一眼)
+# recommended sources: names come from known official/well-known repos, the contents follow
+# what is actually on GitHub (the UI tells you to look before installing)
 CURATED = [
     {"kind": "skill", "repo": "anthropics/skills",
      "desc": ("Anthropic's official collection of Agent Skills examples (SKILL.md format)",
@@ -67,7 +76,7 @@ def curated() -> list[dict]:
 class GitHubError(Exception):
     def __init__(self, msg: str, status: int = 502, kind: str = ""):
         super().__init__(msg)
-        self.status = status  # 502 = GitHub/网络问题;400 = 参数不对;409 = 冲突
+        self.status = status  # 502 = GitHub/network trouble; 400 = bad arguments; 409 = conflict
         # A stable reason code. Callers must branch on this rather than on the message
         # text: the message is shown to the user and therefore follows the UI language.
         self.kind = kind      # "" | "not_found" | "rate_limit" | "offline"
@@ -130,7 +139,7 @@ class Updater:
         return r.json()
 
     async def file(self, repo: str, path: str, ref: str = "") -> dict:
-        """读取仓库里的一个文本文件 → {content, sha(git blob), size}。"""
+        """Read one text file in the repo -> {content, sha (git blob), size}."""
         repo, path = valid_repo(repo), valid_path(path)
         data = await self._get(f"/repos/{repo}/contents/{quote(path)}", {"ref": ref} if ref else None)
         if isinstance(data, list) or data.get("type") != "file":
@@ -212,7 +221,8 @@ class Updater:
 
     # ------------------------------------------------------------ plugins
     async def install_plugin(self, repo: str, path: str, ref: str, sha256: str, overwrite: bool = False) -> str:
-        """安装插件文件。sha256 必须等于用户预览时看到的内容的哈希,否则拒绝(防止预览后内容被换)。"""
+        """Install a plugin file. sha256 must equal the hash of the content the user saw at preview
+        time, otherwise it is refused (so the content cannot be swapped after the preview)."""
         f = await self.file(repo, path, ref)
         if not path.endswith(".py"):
             raise GitHubError(i18n.pick_now("A plugin has to be a .py file", "插件必须是 .py 文件"), 400)
@@ -302,7 +312,7 @@ class Updater:
         return info
 
     async def check_sources(self, kind: str, auto_apply: bool = False) -> list[dict]:
-        """对已安装且记录了来源的技能/插件,比较 GitHub 上文件的 sha。"""
+        """For installed skills/plugins that recorded a source, compare the sha of the file on GitHub."""
         out = []
         for src in self.store.list_sources(kind):
             try:
@@ -327,7 +337,7 @@ class Updater:
         return out
 
     async def check_models(self) -> list[dict]:
-        """向各云端/本地服务商查询实时模型清单,看有没有你还没看过的新模型。"""
+        """Query every cloud/local provider for its live model list and look for models you have not seen yet."""
         out = []
         cfg = self.store.get_settings()
         for p in self.store.list_providers():
@@ -335,13 +345,13 @@ class Updater:
                 continue
             try:
                 await refresh_live(self.store, p["id"])
-            except Exception as e:  # noqa: BLE001 — 单个服务商失败不影响其它
+            except Exception as e:  # noqa: BLE001 — one provider failing does not affect the others
                 out.append({"provider_id": p["id"], "name": p["name"], "error": str(e)[:120]})
                 continue
             opts = model_options(self.store, p["id"])
             new = [m["id"] for m in opts["models"] if m["is_new"]]
             gone = [m["id"] for m in opts["models"] if m["gone"]]
-            if p["is_local"]:  # 本地服务的清单是「已安装」,对它谈「新/下线」没有意义
+            if p["is_local"]:  # a local provider's list is "what is installed", so "new/gone" means nothing for it
                 continue
             if new:
                 self.store.upsert_update("model", p["id"], i18n.pick_now(f"{p['name']} has {len(new)} new models", f"{p['name']} 有 {len(new)} 个新模型"),
@@ -351,7 +361,7 @@ class Updater:
 
     # ------------------------------------------------------- local models
     async def _fetch(self, url: str, *, params: dict | None = None, accept: str = "") -> httpx.Response:
-        """访问 GitHub 之外的公开站点(Ollama、Hugging Face)。同样受「外呼」总开关约束,只读。"""
+        """Reach public sites other than GitHub (Ollama, Hugging Face). Also gated by the outbound-call master switch, read-only."""
         self._allowed()
         headers = {"User-Agent": "team-agent-updater"}
         if accept:
@@ -363,7 +373,8 @@ class Updater:
             raise GitHubError(i18n.pick_now(f"Cannot reach {url.split('/')[2]}: {type(e).__name__}", f"无法连接 {url.split('/')[2]}:{type(e).__name__}")) from None
 
     async def probe_ollama(self, tag: str) -> dict:
-        """向 Ollama 注册表确认某个型号真的存在,并读出下载大小(各层大小之和)。不下载任何权重。"""
+        """Ask the Ollama registry to confirm a model really exists and read its download size (the
+        sum of its layers). No weights are downloaded."""
         if not lm.valid_tag(tag):
             raise GitHubError(i18n.pick_now("That model tag is not valid (for example qwen3.8:27b)", "型号标签不合法(例如 qwen3.8:27b)"), 400)
         name, _, ver = tag.partition(":")
@@ -397,7 +408,7 @@ class Updater:
                     errors.append(i18n.pick_now(f"Probing {n}: {e}", f"探测 {n}: {e}"))
                     return None
             if not pr["exists"] or not pr["size_gb"]:
-                return None  # 只有云端版(没有可下载的本地权重)
+                return None  # cloud-only release (there are no local weights to download)
             return {"source": "ollama", "name": n, "tag": f"{n}:latest", "size_gb": pr["size_gb"],
                     "desc": i18n.pick_now("New models in the Ollama library", "Ollama 模型库里的新模型"), "url": f"https://ollama.com/library/{n}"}
 
@@ -461,7 +472,7 @@ class Updater:
                 data = await self._get(f"/orgs/{org}/repos", {"sort": "created", "direction": "desc", "per_page": 5})
             except GitHubError as e:
                 if e.kind == "not_found":
-                    continue          # 关注名单里的组织名在 GitHub 上不存在(改名了):静默跳过,不算故障
+                    continue          # the org on the watchlist does not exist on GitHub (renamed): skip it silently, it is not a failure
                 errors.append(f"GitHub {org}: {e}")
                 if e.kind == "rate_limit":
                     break
@@ -485,7 +496,8 @@ class Updater:
         out.extend(found[: MAX_NEW_PER_SOURCE * 2])
 
     async def _ollama_version_note(self) -> dict | None:
-        """本机 Ollama 版本落后于 GitHub 最新发布时提醒(新模型常常需要新版 Ollama)。只提示,不自动升级。"""
+        """Warn when the local Ollama is older than the latest GitHub release (new models often need
+        a newer Ollama). It only warns, it never upgrades by itself."""
         base = next((p["base_url"] for p in self.store.list_providers() if p["kind"] == "ollama"), "") or "http://127.0.0.1:11434"
         try:
             async with httpx.AsyncClient(timeout=3, transport=self._transport) as c:
@@ -499,9 +511,12 @@ class Updater:
         return {"local": local, "latest": latest, "url": rel.get("html_url", ""), "ok": True}
 
     async def check_local_models(self) -> dict:
-        """找新的开源大模型和已有系列的新版本:Ollama 模型库最新列表、系列版本号递增探测(都用注册表验证真的存在)、
-        Hugging Face 与 GitHub 上主要厂商的新仓库、本机 Ollama 是否落后。
-        发现只是「提醒」:不会自动下载几个 GB 的权重,要你点「加入推荐」并确认才会加进列表。"""
+        """Find new open-source models and new versions of series already known: the newest list in
+        the Ollama library, probing for higher version numbers in a series (the registry confirms
+        they really exist), new repos from the main vendors on Hugging Face and GitHub, and whether
+        the local Ollama is behind.
+        A discovery is only a reminder: it never downloads several GB of weights on its own, the
+        model is added to the list only after you click "add to recommended" and confirm."""
         self._allowed()
         cat = self.store.local_catalog
         known = cat.known_bases()
@@ -535,7 +550,8 @@ class Updater:
         return {"found": len(uniq), "candidates": list(uniq.values()), "errors": errors, "ollama": ollama, "catalog": cat.version}
 
     async def check_local_catalog(self, apply: bool = False) -> dict:
-        """本地推荐目录本身的更新:app_repo 仓库里的 local_models.json 版本更大就(校验后)覆盖。目录只是文本数据。"""
+        """Update of the local recommended catalog itself: if local_models.json in the app_repo repo
+        has a higher version it replaces the current one (after validation). The catalog is only text data."""
         cur = self.store.local_catalog
         repo = self.store.get_settings()["app_repo"]
         if not repo:
@@ -559,7 +575,7 @@ class Updater:
         return info
 
     async def check_all(self, auto_apply: bool = True) -> dict:
-        """一次性检查所有来源。任何一项失败都不影响其它项,错误写进结果里。"""
+        """Check every source in one pass. A failure in one item does not affect the others, errors are written into the result."""
         if self.checking:
             return {"busy": True}
         self.checking = True
@@ -589,7 +605,8 @@ class Updater:
         return result
 
     async def run_forever(self) -> None:
-        """后台定时检查。启动 20 秒后先查一次,之后按设置的间隔。任何异常都吞掉,不影响主程序。"""
+        """Periodic background check. It runs once 20 seconds after startup, then on the configured
+        interval. Any exception is swallowed so the main program is unaffected."""
         await asyncio.sleep(20)
         while True:
             try:

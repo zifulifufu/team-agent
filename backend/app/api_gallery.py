@@ -1,11 +1,13 @@
-"""模板中心接口:目录 / 详情 / 一键应用。
+"""Template gallery endpoints: catalog / detail / one-click apply.
 
-  * `GET  /api/gallery`            —— 目录(分类、条目、已装状态、自定义模板的加载情况)
-  * `GET  /api/gallery/{id}`       —— 单条详情(含完整正文,供安装前阅读)
-  * `POST /api/gallery/{id}/apply` —— 一键应用(建群 / 建成员 / 装技能 / 存提示词 / 加 MCP)
+  * `GET  /api/gallery`            -- catalog (categories, entries, installed state, loading state of custom templates)
+  * `GET  /api/gallery/{id}`       -- single entry detail (full body, for reading before install)
+  * `POST /api/gallery/{id}/apply` -- one-click apply (create team / create member / install skill / save prompt / add MCP)
 
-应用是幂等的:重复点不会产生重复的技能、提示词或 MCP;成员按名字复用;
-建群则每次新建一个(同名自动加序号)。全部只往本机数据库与 skills 目录写文本。
+Applying is idempotent: repeating it does not create duplicate skills, prompts, or
+MCP entries; members are reused by name; a team is created fresh each time (a
+duplicate name gets an automatic suffix). Everything only writes text to the local
+database and the skills directory.
 """
 
 from __future__ import annotations
@@ -20,9 +22,9 @@ from .store import Store
 
 
 class ApplyIn(BaseModel):
-    name: str | None = None          # team:建群用的名字(默认取模板名,重名自动加序号)
-    group_id: str | None = None      # agent:顺带拉进哪个群
-    overwrite: bool = False          # skill / prompt:已存在时是否覆盖为模板里的版本
+    name: str | None = None          # team: name for the group (defaults to the template name; duplicates get a suffix)
+    group_id: str | None = None      # agent: which group to pull it into
+    overwrite: bool = False          # skill / prompt: whether to overwrite an existing entry with the template version
 
 
 def build_gallery_router(store: Store) -> APIRouter:

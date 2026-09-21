@@ -1,8 +1,12 @@
-"""「选择模型」对话框的数据:把随程序的目录、服务商实时返回的清单、你已经添加的模型合并成一张表。
+"""Data for the "choose a model" dialog: merges the bundled catalog, the provider's
+live listing, and the models you already added into a single table.
 
-每个条目带有:强项标签、是否已添加、是否「新」(自上次查看后新出现)、是否已被服务商下线/停用。
-判断「新」的办法:每个服务商记一份「已看过的模型 ID」;第一次打开时把当前所有条目记为已看过(不会全标成新),
-以后目录更新或实时清单里多出来的 ID 就是「新」,点「全部标为已读」后清掉。
+Each entry carries: strength tags, whether it is already added, whether it is "new"
+(appeared since the last visit), and whether the provider has retired/disabled it.
+How "new" is decided: one set of "already seen model IDs" is kept per provider; the
+first time the dialog opens, every current entry is recorded as seen (so nothing is
+flagged new), and from then on IDs that appear via a catalog update or the live
+listing count as "new" until "mark all as read" clears them.
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ def model_options(store: Store, pid: str) -> dict:
             ordered.append(i)
 
     seen = store.get_model_seen(pid)
-    if seen is None:  # 第一次打开:现有的都算看过
+    if seen is None:  # first open: everything currently listed counts as seen
         store.set_model_seen(pid, ordered)
         seen = list(ordered)
     seen_set = set(seen)
@@ -63,13 +67,14 @@ def model_options(store: Store, pid: str) -> dict:
         v["live"] = (mid in live_ids) if live_ids is not None else None
         v["is_new"] = mid not in seen_set
         v["retired_reason"] = retired.get(mid)
-        # 服务商实时清单里已经没有、但你添加过的模型:多半已下线。本地服务(Ollama)的清单是「已安装」,不适用。
+        # Added by you but absent from the provider's live listing: most likely retired.
+        # Not applicable to local providers (Ollama), whose listing means "installed".
         v["gone"] = bool(live_ids is not None and not prov["is_local"] and mid in have and mid not in live_ids)
         if prov["is_local"]:
             v["installed"] = (mid in live_ids) if live_ids is not None else None
         items.append(v)
 
-    # 排序:新的在前 → 已添加 → 主力/旧版靠后
+    # Order: new first -> already added -> flagship/legacy last
     tier_rank = {"flagship": 0, "balanced": 1, "fast": 2, None: 3}
     order = {mid: i for i, mid in enumerate(ordered)}
     items.sort(key=lambda v: (not v["is_new"], v["legacy"] or bool(v["retired_reason"]), tier_rank.get(v["tier"], 3), order[v["id"]]))
@@ -90,10 +95,12 @@ def mark_seen(store: Store, pid: str) -> None:
 
 
 async def refresh_live(store: Store, pid: str) -> list[str]:
-    """向服务商查询实时清单并缓存,返回 ID 列表。失败会抛 DiscoveryError。"""
+    """Query the provider for its live listing, cache it, and return the ID list.
+    Raises DiscoveryError on failure."""
     prov = store.get_provider(pid)
     if store.get_model_seen(pid) is None:
-        model_options(store, pid)  # 先把「已看过」的基线记下来,这次实时清单里多出来的才算新
+        model_options(store, pid)  # record the "seen" baseline first, so only IDs new
+        # to this live listing count as new
     ids = await fetch_model_ids(prov, timeout=store.get_settings().get("request_timeout", 60))  # type: ignore[arg-type]
     store.set_model_live(pid, ids)
     return ids

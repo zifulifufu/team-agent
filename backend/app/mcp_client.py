@@ -1,8 +1,11 @@
-"""MCP 客户端:用官方 `mcp` 包连接 MCP 服务器,把它们的工具交给 agent 调用。
+"""MCP client: connects to MCP servers with the official `mcp` package and hands their
+tools to agents.
 
-每个服务器由一个后台任务持有连接(anyio 要求进入和退出上下文在同一个任务里),
-其它任务通过 call_tool() 发请求。连接是「用到时才建立」(首次被群聊使用或点「连接测试」),
-服务器进程随后台任务结束而退出。传输方式:stdio(本地命令)、streamable HTTP、SSE。
+Each server's connection is held by a single background task (anyio requires entering and
+exiting the context in the same task); other tasks send requests through call_tool().
+Connections are established lazily (first use by a group chat, or the "test connection"
+button), and the server process exits when the background task ends. Transports: stdio
+(local command), streamable HTTP, SSE.
 """
 
 from __future__ import annotations
@@ -34,8 +37,9 @@ def pick_transport(cfg: dict) -> str:
 
 
 def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
-    """解析别处导出的 MCP 配置 JSON(Claude Desktop / Cherry Studio / Cursor 等通用的 mcpServers 写法)。
-    只解析、不保存、不运行任何东西。返回 (服务器列表, 提示)。"""
+    """Parse an MCP config JSON exported elsewhere (the mcpServers form shared by Claude
+    Desktop / Cherry Studio / Cursor and others). Parsing only: nothing is saved or run.
+    Returns (server list, note)."""
     warnings: list[str] = []
     if len(text) > 200_000:
         raise ValueError(i18n.pick_now("The content is too long (over 200KB)", "内容太长(超过 200KB)"))
@@ -47,7 +51,7 @@ def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
         raise ValueError(i18n.pick_now("the top level should be an object, such as {\"mcpServers\": {...}}", "顶层应该是一个对象,如 {\"mcpServers\": {...}}"))
     servers = data["mcpServers"] if "mcpServers" in data else data.get("servers")
     if servers is None:
-        # 兼容三种简写:{名字: 配置} / 单个配置(带 command 或 url)
+        # accept three shorthands: {name: config} / a single config (with command or url)
         servers = {"": data} if ("command" in data or "url" in data) else data
     if not isinstance(servers, dict) or not servers:
         raise ValueError(i18n.pick_now("No mcpServers found", "没有找到 mcpServers"))
@@ -149,7 +153,7 @@ class _Conn:
                         from mcp.client.streamable_http import streamablehttp_client
 
                         cm = streamablehttp_client(cfg["url"], headers=cfg.get("headers") or None)
-                    except ImportError:  # mcp 2.x:改名,且请求头要通过 http_client 传入
+                    except ImportError:  # mcp 2.x: renamed, and headers must be passed through http_client
                         import httpx2
                         from mcp.client.streamable_http import streamable_http_client
 
@@ -175,7 +179,7 @@ class _Conn:
                 await self._stop.wait()
         except asyncio.CancelledError:
             raise
-        except BaseException as e:  # noqa: BLE001 — ExceptionGroup 也要兜住
+        except BaseException as e:  # noqa: BLE001 — ExceptionGroup has to be caught as well
             self.state.status = "error"
             self.state.error = _describe(e)
         finally:
@@ -209,7 +213,7 @@ def _describe(e: BaseException) -> str:
 
 
 def flatten_result(result: Any) -> tuple[str, bool]:
-    """把 MCP 的 CallToolResult 变成纯文本。返回 (文本, 是否出错)。"""
+    """Turn an MCP CallToolResult into plain text. Returns (text, whether it errored)."""
     parts: list[str] = []
     for c in getattr(result, "content", None) or []:
         t = getattr(c, "type", "")
@@ -240,7 +244,7 @@ class McpManager:
 
     async def connect(self, cfg: dict, timeout: float = 30) -> ServerState:
         c = self._conns.get(cfg["id"])
-        if c and c.cfg != cfg:  # 配置改过:断开重连
+        if c and c.cfg != cfg:  # config changed: disconnect and reconnect
             await c.stop()
             c = None
         if c is None:
@@ -265,7 +269,8 @@ class McpManager:
             res = await asyncio.wait_for(c.session.call_tool(tool, args), timeout)
         except Exception as e:  # noqa: BLE001
             if type(e).__name__ in ("ClosedResourceError", "BrokenResourceError", "EndOfStream"):
-                # 服务器进程没了:标成断开,下一次使用时会自动重连,而不是一直显示「已连接」
+                # server process is gone: mark it disconnected; the next use reconnects automatically
+# instead of showing "connected" forever
                 c.state.status, c.state.error = "error", "服务器进程已退出或连接断开"
                 await c.stop()
                 raise RuntimeError(i18n.pick_now("The MCP server connection dropped; the next call will reconnect automatically", "MCP 服务器连接已断开,下次调用会自动重连")) from None

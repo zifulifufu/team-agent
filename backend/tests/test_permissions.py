@@ -1,4 +1,6 @@
-"""权限与操控:工具审批(询问/允许/拒绝/超时/总是允许/禁止)、风险分级、接口校验。"""
+"""Permissions and control: tool approval (ask / allow / deny / timeout / always
+allow / forbidden), risk tiers, endpoint validation.
+"""
 
 import asyncio
 
@@ -48,7 +50,7 @@ async def test_plugin_call_waits_for_approval_then_runs(store, make_router):
     ap = pending(c)[0]["approval"]
     assert ap["tool"] == "shout" and ap["risk"] == "exec" and ap["agent"] == "Copywriter" and ap["args"] == {"text": "hi"}
     assert orch.approvals.list(g["id"])[0]["id"] == ap["id"]
-    assert len(fake.calls) == 1                                    # 还没批准:工具没跑,模型也没拿到结果
+    assert len(fake.calls) == 1                                    # not approved yet: the tool never ran and the model got no result
     assert orch.approvals.resolve(ap["id"], True)
     await task
     msg = c.ends()[0]
@@ -56,7 +58,7 @@ async def test_plugin_call_waits_for_approval_then_runs(store, make_router):
     assert statuses(c) == ["running", "waiting", "running", "ok"]
     assert [e["decision"] for e in c.events if e["type"] == "approval_done"] == ["allow"]
     assert orch.approvals.list() == []
-    assert not orch.approvals.resolve(ap["id"], True)              # 已处理的不能再答
+    assert not orch.approvals.resolve(ap["id"], True)              # a settled request cannot be answered twice
 
 
 async def test_denied_call_is_not_executed_and_model_is_told(store, make_router):
@@ -89,11 +91,11 @@ async def test_allow_always_remembers_and_deny_list_wins(store, make_router):
     await task
     assert store.get_settings()["perm_allow"] == ["shout"]
     c2 = Collector()
-    await orch.handle_user_message(g["id"], "@Copywriter 再大写一次", c2)     # 不再询问
+    await orch.handle_user_message(g["id"], "@Copywriter 再大写一次", c2)     # no prompt this time
     assert not pending(c2) and c2.ends()[0]["meta"]["tools"][0]["status"] == "ok"
     store.update_settings({"perm_deny": ["shout"], "perm_mode": "allow_all"})
     c3 = Collector()
-    await orch.handle_user_message(g["id"], "@Copywriter 又一次", c3)          # 禁止名单优先于一切
+    await orch.handle_user_message(g["id"], "@Copywriter 又一次", c3)          # the deny list beats everything
     assert not pending(c3) and c3.ends()[0]["meta"]["tools"][0]["status"] == "denied"
 
 
@@ -150,7 +152,7 @@ def test_api_permissions_and_validation(tmp_path):
     assert c.get("/api/approvals").json() == []
 
 
-# ------------------------------------------------------------------ MCP 导入 / 上下文管理
+# ------------------------------------------------ MCP import / context management
 def test_mcp_json_import_parse_and_add(tmp_path):
     import json
 
@@ -164,7 +166,7 @@ def test_mcp_json_import_parse_and_add(tmp_path):
     }})
     p = c.post("/api/mcp/import/parse", json={"text": text}).json()
     assert [s["name"] for s in p["servers"]] == ["fs", "remote", "off"] and len(p["warnings"]) == 3
-    assert "s3cret" not in json.dumps(p) and "S3CRET" not in json.dumps(p)          # 预览里不出现密钥
+    assert "s3cret" not in json.dumps(p) and "S3CRET" not in json.dumps(p)          # no secrets in the preview
     assert p["servers"][1]["transport"] == "http" and p["servers"][2]["enabled"] is False
     r = c.post("/api/mcp/import", json={"text": text, "names": ["fs", "remote"]}).json()
     assert [m["name"] for m in r["added"]] == ["fs", "remote"] and r["skipped"] == []
@@ -172,11 +174,11 @@ def test_mcp_json_import_parse_and_add(tmp_path):
 
     real = {m["name"]: m for m in Store(tmp_path / "data").list_mcp()}
     assert real["fs"]["env"] == {"TOKEN": "s3cret"} and real["remote"]["headers"]["Authorization"] == "Bearer S3CRET"
-    r2 = c.post("/api/mcp/import", json={"text": text}).json()                        # 同名的跳过,不重复添加
+    r2 = c.post("/api/mcp/import", json={"text": text}).json()                        # names already present are skipped, not duplicated
     assert r2["skipped"] == ["fs", "remote"] and [m["name"] for m in r2["added"]] == ["off"] and r2["added"][0]["enabled"] is False
     for bad in ("nope", "[1]", "{}", '{"mcpServers": {}}'):
         assert c.post("/api/mcp/import/parse", json={"text": bad}).status_code == 400
-    # 三种简写
+    # three shorthand spellings
     assert len(c.post("/api/mcp/import/parse", json={"text": '{"a": {"command": "x"}}'}).json()["servers"]) == 1
     assert c.post("/api/mcp/import/parse", json={"text": '{"command": "x"}'}).json()["servers"][0]["name"] == "x"
 
@@ -190,11 +192,12 @@ def test_history_clip_and_tool_output_limit(store, make_router):
     orch = Orchestrator(store, make_router(FakeLLM(default="ok")))
     g = store.list_groups()[0]
     agent = store.list_agents()[0]
-    # 用户发言的署名跟着界面语言走(orchestrator 用 i18n.pick_now("me", "我"))
+    # the label on a user line follows the interface language (the orchestrator calls
+    # i18n.pick_now("me", <zh>))
     store.add_message(g["id"], "user", None, "me", "开头" + "很长" * 3000 + "结尾")
     store.add_message(g["id"], "user", None, "me", "最新一条:" + "全文" * 800)
     store.update_settings({"history_clip": 500})
     msgs = orch.build_messages(g, agent, [agent])
     body = msgs[-1]["content"]
-    assert "omitted in the middle" in body and body.count("全文") == 800           # 旧消息被截,最新一条原样
+    assert "omitted in the middle" in body and body.count("全文") == 800           # older messages get clipped, the newest stays whole
     assert body.startswith("[me] 开头")

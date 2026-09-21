@@ -1,4 +1,6 @@
-"""第四阶段接口:设置清洗、群聊扩展、能力表、资料库上传、提示词、模板、MCP、插件、技能、备份。"""
+"""Stage four endpoints: settings sanitising, group extras, the capability table,
+library uploads, prompts, templates, MCP, plugins, skills, backups.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ def gid(c):
     return c.get("/api/groups").json()[0]["id"]
 
 
-# ---------------------------------------------------------------- 设置
+# ------------------------------------------------------------------- settings
 def test_settings_validation_and_token_is_write_only(client):
     assert client.put("/api/settings", json={"plan_mode": "bogus"}).status_code == 400
     assert client.put("/api/settings", json={"tool_rounds": 99}).status_code == 400
@@ -35,39 +37,43 @@ def test_settings_validation_and_token_is_write_only(client):
     assert client.put("/api/settings", json={"app_repo": "not a repo"}).status_code == 400
     s = client.put("/api/settings", json={"github_token": "  ghp_x  ", "app_repo": " me/app ", "unknown": 1}).json()
     assert s["github_token"] == "" and s["github_token_set"] is True and s["app_repo"] == "me/app" and "unknown" not in s
-    s = client.put("/api/settings", json={"plan_mode": "off"}).json()          # 没带 token 的保存不会清掉它
+    s = client.put("/api/settings", json={"plan_mode": "off"}).json()          # saving without the token must not clear it
     assert s["github_token_set"] is True and s["plan_mode"] == "off"
     assert client.get("/api/settings").json()["github_token"] == ""
-    s = client.put("/api/settings", json={"github_token": ""}).json()          # 空串 = 主动清除
+    s = client.put("/api/settings", json={"github_token": ""}).json()          # an empty string clears it on purpose
     assert s["github_token_set"] is False
     d = client.get("/api/settings").json()
-    # auto_check_updates 默认关:打开后后端启动 20 秒就会自行联网,企业/涉密环境不该有未授权的自动外联
+    # auto_check_updates ships off: enabled, the backend would reach the internet 20s
+    # after startup, and in corporate or classified environments that is an
+    # unauthorised outbound call
     assert d["auto_update_skills"] is False and d["auto_check_updates"] is False and "{{agent_name}}" in d["system_prompt"]
 
 
-# ---------------------------------------------------------------- 群聊扩展
+# ------------------------------------------------------------- group extras
 def test_group_ext_merge_and_create_with_ext(client):
     g = gid(client)
     r = client.patch(f"/api/groups/{g}", json={"ext": {"skills": ["头脑风暴规则"]}, "prompt": "本群写文案"}).json()
-    # 内置技能名按请求语言返回(提交时用中文写法,读回来是当前语言的名字)
+    # built-in skill names follow the request language: posted with the Chinese
+    # spelling, read back under the language currently in effect
     assert r["ext"]["skills"] == ["Brainstorming rules"] and r["prompt"] == "本群写文案" and r["ext"]["plan"] == "inherit"
     r = client.patch(f"/api/groups/{g}", json={"ext": {"library": {"mode": "selected", "ids": ["a"]}, "plan": "bogus"}}).json()
     assert r["ext"]["skills"] == ["Brainstorming rules"] and r["ext"]["library"] == {"mode": "selected", "ids": ["a"]}
-    assert r["ext"]["plan"] == "inherit"                                        # 非法值被忽略
+    assert r["ext"]["plan"] == "inherit"                                        # an invalid value is ignored
     new = client.post("/api/groups", json={"name": "新群", "ext": {"plugins": ["p"]}, "prompt": "hi"}).json()
     assert new["ext"]["plugins"] == ["p"] and new["prompt"] == "hi"
 
 
 def test_capabilities_roster_and_tools(client, tmp_path):
     g = gid(client)
-    # 用中文标签名提交(旧版口径)仍要被接受,并规范成 ASCII id
+    # posting the Chinese tag names (the old convention) still has to be accepted
+    # and normalised to ASCII ids
     client.patch(f"/api/agents/{client.get('/api/agents').json()[1]['id']}", json={"tags": ["代码"]})
     cap = client.get(f"/api/groups/{g}/capabilities").json()
     assert len(cap["members"]) == 4 and sum(m["is_host"] for m in cap["members"]) == 1
     assert any("coding" in m["strengths"] for m in cap["members"])
     assert all(m["model"] for m in cap["members"])
     names = {t["name"] for t in cap["tools"]}
-    assert {"current_time", "memory_search"} <= names and "library_search" not in names   # 资料库为空时不提供检索工具
+    assert {"current_time", "memory_search"} <= names and "library_search" not in names   # an empty library offers no search tool
     client.post("/api/library/note", json={"title": "备忘", "content": "周五开会"})
     names = {t["name"] for t in client.get(f"/api/groups/{g}/capabilities").json()["tools"]}
     assert {"library_search", "library_read"} <= names
@@ -99,7 +105,7 @@ def test_global_prompt_reset_and_delete(client):
     assert client.delete(f"/api/prompts/{p['id']}").status_code == 404
 
 
-# ------------------------------------------------------ 预设成员 / 群模板
+# ----------------------------------------------- member presets / group templates
 def test_agent_presets_add_member_anytime_and_templates(client):
     g = gid(client)
     presets = client.get("/api/agent-presets").json()
@@ -109,7 +115,7 @@ def test_agent_presets_add_member_anytime_and_templates(client):
     r = client.post(f"/api/groups/{g}/members/from-preset", json={"key": key}).json()
     assert len(r["member_ids"]) == before + 1
     r2 = client.post(f"/api/groups/{g}/members/from-preset", json={"key": key}).json()
-    assert len(r2["member_ids"]) == before + 1                                  # 重复添加不会多出成员或同名成员
+    assert len(r2["member_ids"]) == before + 1                                  # adding twice creates no extra or duplicate member
     assert client.post(f"/api/groups/{g}/members/from-preset", json={"key": "zzz"}).status_code == 404
     tpls = client.get("/api/templates").json()
     assert {t["id"] for t in tpls} >= {"office", "video", "writing", "brainstorm", "review"}
@@ -118,29 +124,29 @@ def test_agent_presets_add_member_anytime_and_templates(client):
     assert client.post("/api/templates/nope/create-group", json={}).status_code == 404
 
 
-# ---------------------------------------------------------- 模型挑选与强项
+# ------------------------------------------------------- model picking / strengths
 def test_model_options_recommend_and_strengths(client):
     opts = client.get("/api/providers/deepseek/model-options").json()
     ids = [m["id"] for m in opts["models"]]
-    assert "deepseek-flash" in ids and opts["new_count"] == 0                  # 首次打开:现有的都算看过
+    assert "deepseek-flash" in ids and opts["new_count"] == 0                  # first open: everything already counts as seen
     m = opts["models"][0]
     assert isinstance(m["strengths"], list) and m["summary"] is not None
     assert client.get("/api/providers/nope/model-options").status_code == 404
-    assert client.get("/api/models/recommend", params={"tags": "代码"}).json()["models"] == []   # 中文标签名仍要被接受(见 strengths.ALIASES)
+    assert client.get("/api/models/recommend", params={"tags": "代码"}).json()["models"] == []   # Chinese tag names are still accepted (see strengths.ALIASES)
     client.patch("/api/providers/deepseek", json={"api_key": "sk-test-1234"})
     rec = client.get("/api/models/recommend", params={"tags": "代码,推理"}).json()
-    assert rec["tags"] == ["coding", "reasoning"] and rec["models"]      # 返回的是规范的 ASCII id
-    # 手动改强项 → 生效;传 null 恢复自动
+    assert rec["tags"] == ["coding", "reasoning"] and rec["models"]      # canonical ASCII ids come back
+    # editing strengths by hand sticks; passing null restores the automatic value
     mid = "deepseek/deepseek-flash"
     r = client.patch(f"/api/models/{mid}", json={"strengths": ["写作"]}).json()
-    assert r["strengths"] == ["writing"] and r["strengths_custom"] is True   # 写入时规范成 ASCII id
+    assert r["strengths"] == ["writing"] and r["strengths_custom"] is True   # normalised to ASCII ids on write
     r = client.patch(f"/api/models/{mid}", json={"strengths": None}).json()
     assert r["strengths_custom"] is False and r["strengths"]
     tags = client.get("/api/strengths").json()["tags"]
     assert "writing" in [t["id"] for t in tags]
-    assert {t["label"] for t in tags} >= {"Writing"} and tags[0]["desc"]        # 英文界面下的标签名与说明
+    assert {t["label"] for t in tags} >= {"Writing"} and tags[0]["desc"]        # label and description in the English UI
     zh = client.get("/api/strengths?lang=zh").json()["tags"]
-    assert "写作" in [t["label"] for t in zh]                                  # 中文界面下同一份 id 显示中文
+    assert "写作" in [t["label"] for t in zh]                                  # the same ids read as Chinese in the Chinese UI
 
 
 def test_refresh_model_options_respects_offline_switch(client):
@@ -149,7 +155,7 @@ def test_refresh_model_options_respects_offline_switch(client):
     assert client.post("/api/providers/deepseek/model-options/seen").status_code == 200
 
 
-# ------------------------------------------------------------------ 资料库
+# -------------------------------------------------------------------- library
 def test_library_upload_search_read_scope_cleanup(client):
     g = gid(client)
     raw = "报销制度:单笔超过 500 元必须附发票。".encode()
@@ -165,12 +171,12 @@ def test_library_upload_search_read_scope_cleanup(client):
     assert client.patch(f"/api/library/{n['id']}", json={"enabled": False}).json()["enabled"] in (False, 0)
     assert client.delete(f"/api/library/{d['id']}").status_code == 200
     ids = client.get("/api/groups").json()[0]["ext"]["library"]["ids"]
-    assert d["id"] not in ids                                                    # 删除文档时群里的勾选一起清理
+    assert d["id"] not in ids                                                    # deleting a document clears the group selection too
     assert client.get(f"/api/library/{d['id']}").status_code == 404
     assert client.get("/api/library").json()["count"] == 1
 
 
-# ------------------------------------------------------------------- 记忆
+# --------------------------------------------------------------------- memory
 def test_memories_crud_and_guardrails(client):
     m = client.post("/api/memories", json={"content": "报告统一用 A4 竖版", "kind": "preference", "pinned": True}).json()
     assert client.post("/api/memories", json={"content": ""}).status_code == 400
@@ -178,12 +184,12 @@ def test_memories_crud_and_guardrails(client):
     assert client.post("/api/memories", json={"content": "x", "scope": "group"}).status_code == 400
     assert client.get("/api/memories", params={"q": "A4"}).json()["count"] == 1
     assert client.patch(f"/api/memories/{m['id']}", json={"pinned": False}).status_code == 200
-    assert client.delete("/api/memories").status_code == 400                    # 不带条件不允许清空
+    assert client.delete("/api/memories").status_code == 400                    # wiping everything needs a filter
     assert client.delete("/api/memories", params={"scope": "global"}).json()["deleted"] >= 1
     assert client.delete(f"/api/memories/{m['id']}").status_code == 404
 
 
-# --------------------------------------------------------------------- MCP
+# ----------------------------------------------------------------------- MCP
 def test_mcp_secrets_masked_preserved_and_validated(client):
     assert client.post("/api/mcp", json={"name": "x"}).status_code == 400
     assert client.post("/api/mcp", json={"name": "x", "url": "ftp://a"}).status_code == 400
@@ -192,7 +198,7 @@ def test_mcp_secrets_masked_preserved_and_validated(client):
                                       "env": {"K": "v"}}).json()
     assert m["headers"] == {"Authorization": "••••••"} and "S3CRET" not in str(client.get("/api/mcp").json())
     assert m["transport_effective"] == "http"
-    # 前端把掩码原样回传 → 保留原值
+    # the frontend posts the mask back unchanged, so the original value is kept
     client.patch(f"/api/mcp/{m['id']}", json={"headers": {"Authorization": "••••••"}, "description": "d"})
     from app.store import Store
     assert Store(client.data).get_mcp(m["id"])["headers"] == {"Authorization": "Bearer S3CRET"}
@@ -215,7 +221,7 @@ def test_mcp_connect_real_server_and_offline_blocks_remote(client):
     assert client.post(f"/api/mcp/{remote['id']}/connect").status_code == 403
 
 
-# ------------------------------------------------------------------- 插件
+# ------------------------------------------------------------------- plugins
 def test_plugins_listing_reload_source_delete_and_group_enablement(client):
     pdir = client.data / "plugins"
     (pdir / "greet.py").write_text(
@@ -235,7 +241,7 @@ def test_plugins_listing_reload_source_delete_and_group_enablement(client):
     assert "greet" not in {t["name"] for t in client.get("/api/tools").json()["tools"]}
 
 
-# ------------------------------------------------------------------- 技能
+# -------------------------------------------------------------------- skills
 def test_skills_crud_rename_propagates_to_members_and_groups(client):
     g = gid(client)
     aid = client.get("/api/agents").json()[0]["id"]
@@ -255,7 +261,7 @@ def test_skills_crud_rename_propagates_to_members_and_groups(client):
     assert [a for a in client.get("/api/agents").json() if a["id"] == aid][0]["skills"] == []
 
 
-# ------------------------------------------------------------------- 备份
+# ------------------------------------------------------------------- backups
 def test_export_strips_secrets_by_default(client, tmp_path):
     client.patch("/api/providers/deepseek", json={"api_key": "sk-topsecret"})
     client.put("/api/settings", json={"github_token": "ghp_topsecret"})
@@ -278,13 +284,15 @@ def test_export_strips_secrets_by_default(client, tmp_path):
 
 
 def test_upgrade_from_old_database_backfills_seed_tags_once(tmp_path):
-    """v0.2 的库里内置成员没有岗位强项:升级时补一次;用户之后清空/修改的不会再被改回去。"""
+    """A v0.2 database has no role strengths on its built-in members: upgrade fills
+    them in once; anything the user clears or edits afterwards stays put.
+"""
     from app.store import Store
 
     s = Store(tmp_path / "d")
     a = next(x for x in s.list_agents() if x["name"] == "Copywriter")
     s.update_agent(a["id"], {"tags": []})
-    s._x("DELETE FROM meta WHERE key='backfill_seed_tags'")           # 模拟「这个标记以前没打过」
+    s._x("DELETE FROM meta WHERE key='backfill_seed_tags'")           # pretend the flag was never applied
     s2 = Store(tmp_path / "d")
     assert next(x for x in s2.list_agents() if x["name"] == "Copywriter")["tags"]
     s2.update_agent(a["id"], {"tags": []})

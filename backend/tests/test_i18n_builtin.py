@@ -1,10 +1,14 @@
-"""内置内容(群模板 / 技能 / 提示词 / MCP / 分类)的中英双语回归。
+"""Chinese/English bilingual regression tests for the built-in content (group
+templates / skills / prompts / MCP / categories).
 
-钉住四件事:
-  1. 英文界面下没有任何内置内容会是中文,中文界面下没有一处是英文;
-  2. 老库(字段里存的是中文写法)在新版本里照样对得上 —— 「已装」标记、去重、挂技能;
-  3. 用户改过的内容两种语言下都原样保留;
-  4. 安装/导入落到磁盘上的名字是语言无关的(不会中英各写一份)。
+Four things are pinned down:
+  1. no built-in content shows Chinese in the English UI, and none shows English in
+     the Chinese UI;
+  2. an old database (whose columns hold the Chinese spellings) still lines up on
+     the new version - the "installed" flag, dedup, attaching skills;
+  3. content the user edited survives verbatim in both languages;
+  4. names written to disk on install/import are language neutral (not duplicated
+     once per language).
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ def en(client, path, **kw):
     return client.get(path, **kw).json()
 
 
-# ------------------------------------------------------------------ 群模板
+# ------------------------------------------------------------- group templates
 def test_group_templates_are_one_language_at_a_time(client) -> None:
     rows = {t["id"]: t for t in en(client, "/api/templates")}
     assert rows["office"]["name"] == "Office documents"
@@ -48,11 +52,11 @@ def test_group_templates_are_one_language_at_a_time(client) -> None:
     assert zrows["office"]["members"] == ["小助", "资料员", "文案", "校对"]
     assert zrows["office"]["skills"] == ["公文写作规范"]
     assert zrows["office"]["host"] == "小助"
-    # 中文版里不该混进英文模板名或说明
+    # no English names or blurbs may leak into the Chinese view
     assert not any(c.isascii() and c.isalpha() for c in zrows["office"]["desc"].replace("Markdown", ""))
 
 
-# ------------------------------------------------------------------ 模板中心
+# ---------------------------------------------------------------- the gallery
 def test_gallery_items_are_one_language_at_a_time(client) -> None:
     en_ov, zh_ov = en(client, "/api/gallery"), zh(client, "/api/gallery")
     assert [c["label"] for c in en_ov["categories"]] == ["Teams", "Roles", "Skills", "Prompts", "MCP"]
@@ -63,7 +67,7 @@ def test_gallery_items_are_one_language_at_a_time(client) -> None:
     def pick(ov, ident):
         return next(i for i in ov["items"] if i["id"] == ident)
 
-    # id 与语言无关,所以两边都能按同一个 id 取到同一条
+    # ids are language neutral, so both sides fetch the same entry by the same id
     for ident, en_name, zh_name in [
         ("team:clinical", "Study design discussion", "研究方案讨论"),
         ("skill:risk-check", "Risk self-check", "风险自查清单"),
@@ -74,7 +78,8 @@ def test_gallery_items_are_one_language_at_a_time(client) -> None:
         assert pick(zh_ov, ident)["name"] == zh_name
         assert pick(en_ov, ident)["tags"] and pick(zh_ov, ident)["tags"]
 
-    # 详情正文也跟着语言走,而且不含 <field>_zh 之类的记账字段
+    # the detail body follows the language too, with no bookkeeping fields such as
+    # <field>_zh leaking through
     det_en = en(client, "/api/gallery/skill:risk-check")
     det_zh = zh(client, "/api/gallery/skill:risk-check")
     assert det_en["preview"]["body"].startswith("Before publishing")
@@ -82,13 +87,13 @@ def test_gallery_items_are_one_language_at_a_time(client) -> None:
     assert "_zh" not in str(en(client, "/api/gallery/team:clinical"))
 
 
-# ------------------------------------------------------------------ 技能
+# --------------------------------------------------------------------- skills
 def test_installed_skills_are_shown_in_the_request_language(client) -> None:
     names_en = {s["name"] for s in en(client, "/api/skills")}
     names_zh = {s["name"] for s in zh(client, "/api/skills")}
     assert "Code review checklist" in names_en and "代码评审清单" in names_zh
     assert not any(HAN.search(n) for n in names_en)
-    # 同一个技能,两种语言下是同一个（磁盘上的）文件
+    # one skill, one file on disk, whatever the language
     en_id = next(s["path"] for s in en(client, "/api/skills") if s["name"] == "Code review checklist")
     zh_id = next(s["path"] for s in zh(client, "/api/skills") if s["name"] == "代码评审清单")
     assert en_id == zh_id
@@ -103,21 +108,23 @@ def test_user_edited_builtin_content_is_never_translated() -> None:
     for lang in ("en", "zh"):
         shown = tools.localize_skill(edited, lang)
         assert shown.description == "我自己的说明" and shown.body == "我自己的正文"
-    # 未改动的才会被换语言
+    # only untouched entries get swapped to the other language
     assert tools.localize_skill(tools.Skill(**{**{k: entry[k] for k in ("name", "description", "body")},
                                                "path": "x"}), "zh").name == "风险自查清单"
     assert presets.localize_prompt({"title": "先给结论", "content": "我改过的"}, "en")["content"] == "我改过的"
 
 
 def test_group_skills_are_stored_language_neutrally(client) -> None:
-    """老库用中文名勾的技能,新版本照样认,并且挂到群里时统一存规范名。"""
+    """Skills an old database picked by their Chinese name are still recognised, and
+    attaching them to a group always stores the canonical name.
+"""
     gid = en(client, "/api/groups")[0]["id"]
     client.patch(f"/api/groups/{gid}", json={"ext": {"skills": ["头脑风暴规则"]}})
     assert en(client, "/api/groups")[0]["ext"]["skills"] == ["Brainstorming rules"]
     assert zh(client, "/api/groups")[0]["ext"]["skills"] == ["头脑风暴规则"]
 
 
-# ------------------------------------------------------------------ 提示词
+# -------------------------------------------------------------------- prompts
 def test_prompts_and_default_system_prompt_follow_the_language(client) -> None:
     en_p = en(client, "/api/prompts")
     zh_p = zh(client, "/api/prompts")
@@ -126,26 +133,28 @@ def test_prompts_and_default_system_prompt_follow_the_language(client) -> None:
     assert en_p["default_system_prompt"].startswith('You are "{{agent_name}}"')
     assert zh_p["default_system_prompt"].startswith("你是「{{agent_name}}」")
     assert all(not HAN.search(p["title"]) for p in en_p["prompts"])
-    # 变量说明也是双语的
+    # variable descriptions are bilingual too
     assert next(v for v in en_p["variables"] if v["name"] == "group_name")["desc"] == "the name of the group chat"
     assert next(v for v in zh_p["variables"] if v["name"] == "group_name")["desc"] == "群聊名称"
 
 
 def test_old_chinese_system_prompt_is_still_recognised() -> None:
-    """老库存的是中文默认提示词:切到英文界面要显示英文默认值,而不是当成用户自定的。"""
+    """An old database stores the Chinese default prompt: switching to the English UI
+    must show the English default rather than treating it as user-authored.
+"""
     assert presets.localize_system_prompt(presets.DEFAULT_SYSTEM_PROMPT_ZH, "en") == presets.DEFAULT_SYSTEM_PROMPT
     assert presets.localize_system_prompt(presets.DEFAULT_SYSTEM_PROMPT, "zh") == presets.DEFAULT_SYSTEM_PROMPT_ZH
     assert presets.localize_system_prompt("我自己写的", "en") == "我自己写的"
 
 
-# ------------------------------------------------------------------ MCP
+# ------------------------------------------------------------------------ MCP
 def test_mcp_templates_are_bilingual(client) -> None:
     en_m = en(client, "/api/mcp/templates")
     zh_m = zh(client, "/api/mcp/templates")
     assert [m["name"] for m in en_m][0] == "Filesystem"
     assert [m["name"] for m in zh_m][0] == "文件系统"
     assert all(not HAN.search(m["name"] + m["note"]) for m in en_m)
-    # 命令本身在任何语言下都一样(不然导入就不对了)
+    # the command itself is identical in every language, otherwise importing breaks
     assert [m["args"] for m in en_m] == [m["args"] for m in zh_m]
 
 

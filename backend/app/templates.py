@@ -1,4 +1,5 @@
-"""群聊模板与成员预设:一键建群、随时把预设成员拉进群。"""
+"""Group chat templates and member presets: create a group in one click, pull a preset
+member into a group at any time."""
 
 from __future__ import annotations
 
@@ -17,9 +18,9 @@ from .tools import display_skill_name
 def _find(store: Store, name: str) -> dict | None:
     """A stored member answering to `name`, in either language.
 
-    An agent created before the built-in names were translated is stored as 小助 while
-    a template may ask for Aide (or the other way round), so compare against every
-    spelling of the built-in name before giving up.
+    An agent created before the built-in names were translated is stored under its
+    Chinese name while a template may ask for the English one (or the other way round),
+    so compare against every spelling of the built-in name before giving up.
     """
     entry = builtin_for(name)
     wanted = set(builtin_names(entry)) if entry else {name}
@@ -31,7 +32,7 @@ def _find(store: Store, name: str) -> dict | None:
 
 
 def ensure_agent(store: Store, name: str) -> dict | None:
-    """按名字找成员;不存在且是已知预设,就创建。"""
+    """Find a member by name; if it does not exist and is a known preset, create it."""
     found = _find(store, name)
     if found:
         return found

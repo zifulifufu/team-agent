@@ -1,11 +1,16 @@
-"""群聊编排:决定谁发言、拼上下文、调用路由层、驱动工具调用、解析 @ 交接、群主分工。
+"""Group chat orchestration: decides who speaks, assembles context, calls the routing layer,
+drives tool calls, parses @ hand-offs, and runs owner delegation.
 
-一条用户消息的处理流程:
-  A. 用户 @ 了成员 / @所有人 → 点名的人依次发言;回复里再 @ 别人就接力(最多 max_hops 轮)。
-  B. 没 @ 任何人 → 交给群主。若开启了分工(默认「auto」),群主先看成员强项分工表决定要不要分工:
-       - 需要:输出 <plan> → 校验 → 按依赖顺序让各成员各做一项(带统一约定和上游成果)→ 群主整合。
-       - 不需要:群主直接回答,回复里的 @ 照常接力。
-  每次发言里,成员可以按文本协议调用工具(资料库 / 记忆 / 插件 / MCP),最多 tool_rounds 轮。
+Processing one user message:
+  A. The user @-mentioned members / @all -> the mentioned members speak in turn; an @ inside
+     a reply hands off to someone else (at most max_hops rounds).
+  B. Nobody was @-mentioned -> it goes to the owner. If delegation is on (default "auto"),
+     the owner first looks at the member strengths roster to decide whether to delegate:
+       - yes: emit <plan> -> validate -> let each member do one task in dependency order
+         (with the shared conventions and upstream results) -> the owner merges.
+       - no: the owner answers directly, and @ in the reply still hands off as usual.
+  Within each turn a member can call tools (library / memory / plugins / MCP) through the
+  text protocol, for at most tool_rounds rounds.
 """
 
 from __future__ import annotations
@@ -35,13 +40,16 @@ from .tools import ToolRegistry
 
 Emit = Callable[[dict], Awaitable[None]]
 
-# 流式分片合并:模型通常每 1~3 个字吐一片,原样转发会让一次 1000 字的回答产生几百个 WebSocket 帧、
-# 前端就要重渲染几百次。攒够 DELTA_BATCH_CHARS 个字、或距上次下发超过 DELTA_BATCH_SECONDS 才发一次,
-# 拼接结果和原来完全一致,但帧数与重渲染次数下降一个量级。
+# Streaming delta coalescing: models usually emit one chunk per 1-3 characters, so
+# forwarding them as-is turns a 1000-character answer into several hundred WebSocket frames
+# and as many front-end re-renders. Send only once DELTA_BATCH_CHARS characters have
+# accumulated, or DELTA_BATCH_SECONDS has passed since the last send; the concatenation is
+# identical to the original, while frame count and re-render count drop by an order of magnitude.
 DELTA_BATCH_CHARS = 24
 DELTA_BATCH_SECONDS = 0.06
 
-# @ 前面是字母数字(邮箱 me@x.com)不算点名;@all 后面接字母(@Allen)也不算
+# an @ preceded by alphanumerics (an address like me@x.com) is not a mention; @all followed
+# by letters (@Allen) is not one either
 _ALL_RE = re.compile(r"(?<![A-Za-z0-9_.])@(?:所有人|all(?![A-Za-z0-9_]))", re.IGNORECASE)  # i18n-keep: accepts @all and @所有人 in any language
 
 
@@ -53,8 +61,8 @@ def _mention_re(name: str) -> "re.Pattern[str]":
 def _member_names(member: dict) -> list[str]:
     """Every spelling this member answers to: the stored name plus its built-in twin.
 
-    A built-in member may be stored as 小助 while the rest of the conversation uses
-    Aide (or the reverse), so @mention has to accept both.
+    A built-in member may be stored under its Chinese name while the rest of the
+    conversation uses the English one (or the reverse), so @mention has to accept both.
     """
     stored = member.get("name") or ""
     twin = twin_name(stored)
@@ -62,7 +70,8 @@ def _member_names(member: dict) -> list[str]:
 
 
 def find_mentions(text: str, members: list[dict], exclude_id: str | None = None) -> list[dict]:
-    """按出现顺序返回被 @ 的成员(名字越长越优先匹配,避免 @文案 误中 @文案组)。
+    """Returns the @-mentioned members in order of appearance (longer names are matched first,
+    so a short name cannot accidentally capture a longer one).
 
     Two passes: first the name each member is actually stored under, then the
     other-language spelling of a built-in name. A stale alias must never steal a
@@ -111,7 +120,7 @@ def plan_fallback() -> str:
 
 @dataclass
 class RunState:
-    """一次用户消息从开始到结束的运行记录(记忆和统计用)。"""
+    """Record of one user message from start to finish (used for memory and statistics)."""
     gid: str
     user_text: str
     started: float = field(default_factory=time.time)
@@ -123,8 +132,8 @@ class RunState:
 
 @dataclass
 class TurnOut:
-    text: str          # 存进聊天记录的可见内容
-    raw: str           # 各轮模型原始输出(含 <plan> / <tool_call>)
+    text: str          # visible content stored in the chat record
+    raw: str           # raw model output of each round (including <plan> / <tool_call>)
     message: dict
 
 
@@ -157,7 +166,7 @@ class Orchestrator:
         t.add_done_callback(self._bg.discard)
 
     async def drain(self) -> None:
-        """等待后台任务(记忆提炼)结束。测试和退出时用。"""
+        """Wait for background tasks (memory extraction) to finish. Used by tests and on shutdown."""
         if self._bg:
             await asyncio.gather(*list(self._bg), return_exceptions=True)
 
@@ -178,13 +187,14 @@ class Orchestrator:
             if h["sender_type"] in ("system", "plan"):
                 continue
             if exclude_plan_id and h["meta"].get("plan_id") == exclude_plan_id:
-                continue  # 本次分工里别人的成果会在任务提示里完整给出,不在历史里重复
-            text = h["content"] if i in (len(history) - 1, last_user) else clip_middle(h["content"], clip)   # 最新一条和用户最新的请求原样带入
+                continue  # other members' results for this delegation are given in full in the task prompt, so they
+# are not repeated in the history
+            text = h["content"] if i in (len(history) - 1, last_user) else clip_middle(h["content"], clip)   # the latest message and the user's latest request are carried over as-is
             if h["sender_type"] == "agent" and h["sender_id"] == agent["id"]:
                 role, content = "assistant", text
             else:
                 role, content = "user", f"[{h['sender_name']}] {text}"
-            if convo and convo[-1]["role"] == role:  # 合并相邻同角色,兼容严格交替的 API
+            if convo and convo[-1]["role"] == role:  # merge adjacent messages with the same role, for APIs that require strict alternation
                 convo[-1]["content"] += "\n\n" + content
             else:
                 convo.append({"role": role, "content": content})
@@ -198,7 +208,8 @@ class Orchestrator:
         return [{"role": "system", "content": sysmsg}] + convo
 
     def _refs_block(self, group: dict, text: str) -> str:
-        """用户消息里的 #文档标题:把这些文档的开头直接放进上下文。"""
+        """`#document-title` references in the user message: the beginning of those documents goes
+straight into the context."""
         if group["ext"]["library"]["mode"] == "off":
             return ""
         allowed = self.library.scope_ids(group["ext"]["library"])
@@ -263,7 +274,7 @@ class Orchestrator:
             out = await self._planning_turn(group, members, host, text, mode, emit, run)
             if out is None:
                 return
-            if out is not True:  # True = 已经按计划执行完;否则 out 是群主的普通回复,走接力
+            if out is not True:  # True = execution followed the plan; otherwise out is the owner's ordinary reply and hands off
                 run.final_text = out.text
                 for m in find_mentions(out.text, members, exclude_id=host["id"]):
                     queue.append(m)
@@ -282,7 +293,7 @@ class Orchestrator:
             run.final_text = out.text
             queued = {a["id"] for a in queue}
             if agent.get("engine") and not (agent.get("engine_cfg") or {}).get("handoff", True):
-                continue   # 这个外部智能体被设为「不接力」:它回复里的 @ 只是文字
+                continue   # this external agent is configured not to hand off: the @ in its reply is just text
             for m in find_mentions(out.text, members, exclude_id=agent["id"]):
                 if m["id"] not in queued:
                     queue.append(m)
@@ -295,7 +306,8 @@ class Orchestrator:
 
     @staticmethod
     def _pick_host(group: dict, members: list[dict]) -> dict:
-        """群主必须是模型成员:外部智能体不会按 <plan> 协议分工,也不该由它决定其他人做什么。"""
+        """The owner must be a model member: an external agent does not delegate through the <plan>
+protocol and should not decide what the others do."""
         host = next((m for m in members if m["id"] == group.get("host_agent_id")), None)
         if host is None or host.get("engine"):
             host = next((m for m in members if not m.get("engine")), host or members[0])
@@ -326,7 +338,8 @@ class Orchestrator:
             if mode == "on":
                 await self._system(group["id"], i18n.pick_now("This group is set to always split the work, but the host produced no plan; treating its reply as an ordinary answer.", "本群设为「总是先分工」,但群主没有给出计划,已按普通回复处理。"), emit)
             return out
-        # 群主这一轮已经把 MCP 连上了;计划里写了不存在的工具名只是被忽略,不当作错误
+        # the owner already connected MCP this round; unknown tool names in the plan are simply
+# ignored rather than treated as an error
         known = {t["name"] for t in (await self.toolhub.context(group, host, connect=False)).specs()}
         try:
             plan = planner.build_plan(obj, members, int(cfg["plan_max_tasks"]), known)
@@ -395,7 +408,8 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 pass
             raise
-        except Exception as e:  # noqa: BLE001  —— 分工执行中途出错:任务板标成失败,别一直显示「进行中」
+        except Exception as e:  # noqa: BLE001  —— an error part-way through delegation: mark the task board as failed
+# instead of showing "in progress" forever
             plan.status = "failed"
             for t in plan.tasks:
                 if t.status in ("running", "pending"):
@@ -435,7 +449,7 @@ class Orchestrator:
         last_emit = time.monotonic()
 
         async def flush_delta() -> None:
-            """把攒着的分片合并成一次 delta 发出去。"""
+            """Merge the buffered deltas and send them out as one delta."""
             nonlocal pending_len, last_emit
             if not pending:
                 return
@@ -457,12 +471,12 @@ class Orchestrator:
 
         async def on_reset() -> None:
             nonlocal filt, pending_len, last_emit
-            pending.clear()   # reset 马上会清屏,攒着的内容没必要再发一遍
+            pending.clear()   # reset clears the screen immediately, so buffered content need not be sent again
             pending_len = 0
             filt = TagFilter()
             await emit({"type": "reset", "message_id": mid})
             earlier = "\n\n".join(visible_parts)
-            if earlier:  # 前几轮已经给用户看过的内容要补回去
+            if earlier:  # content already shown to the user in earlier rounds has to be added back
                 await emit({"type": "delta", "message_id": mid, "text": earlier + "\n\n"})
             last_emit = time.monotonic()
 
@@ -487,13 +501,14 @@ class Orchestrator:
             for rnd in range(rounds + 1):
                 filt = TagFilter()
                 if rnd and visible_parts:
-                    await flush_delta()   # 先落盘再换段,避免上一轮攒着的字跑到分隔符后面
+                    await flush_delta()   # flush to disk before switching segments, so buffered text from the previous round cannot
+# end up after the separator
                     await emit({"type": "delta", "message_id": mid, "text": "\n\n"})
                 res = await self.router.complete(
                     messages, preferred=agent["model_id"], tags=agent.get("tags"),
                     on_delta=on_delta, on_reset=on_reset,
                 )
-                await flush_delta()   # 收尾:把最后不足一批的分片发出去,再处理标签尾巴
+                await flush_delta()   # wrap up: send the last incomplete batch of deltas, then handle a trailing tag
                 tail = filt.flush()
                 if tail:
                     await emit({"type": "delta", "message_id": mid, "text": tail})
@@ -513,7 +528,7 @@ class Orchestrator:
                     await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
 
                     async def approve(spec: dict, args: dict, entry: dict = entry, idx: int = idx) -> bool:
-                        entry["status"] = "waiting"   # 气泡里显示「等你确认」
+                        entry["status"] = "waiting"   # the bubble shows "waiting for your confirmation"
                         await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
                         allowed = await self.approvals.ask(group=group, message_id=mid, agent=agent, spec=spec, args=args, emit=emit)
                         entry["status"] = "running"
@@ -561,7 +576,8 @@ class Orchestrator:
                 group["id"], "agent", agent["id"], agent["name"], content,
                 model_id=res.model_id, fallback_from=res.fallback_from, meta=meta, mid=mid,
             )
-        except Exception as e:  # noqa: BLE001  —— 存库失败也要让界面收尾,别留一个永远在转的气泡
+        except Exception as e:  # noqa: BLE001  —— even when saving fails the UI has to wrap up, leaving no bubble that
+# spins forever
             await emit({"type": "message_discard", "message_id": mid})
             await self._system(group["id"], i18n.pick_now(f"{agent['name']}'s reply could not be saved: {e}", f"「{agent['name']}」的回复没能保存:{e}"), emit)
             return None
@@ -577,8 +593,9 @@ class Orchestrator:
         self, group: dict, agent: dict, members: list[dict], emit: Emit, run: RunState, *, mid: str,
         extra_user: str | None, extra_meta: dict | None, exclude_plan_id: str | None, empty_fallback: str,
     ) -> TurnOut | None:
-        """外部智能体(WorkBuddy)发言:群聊记录喂给它的命令行引擎,流式取回回复。
-        它有自己的工具,所以这里不走模型路由、不解析 <tool_call>/<plan>;回复只当聊天文字。"""
+        """An external agent (WorkBuddy) speaks: the group chat history is fed to its command-line
+        engine and the reply is streamed back. It has its own tools, so this path skips model
+        routing and does not parse <tool_call>/<plan>; the reply counts only as chat text."""
         cfg = self.store.get_settings()
         name = agent["name"]
         gid = group["id"]
@@ -594,7 +611,8 @@ class Orchestrator:
         if not cfg["external_calls_enabled"]:
             return await fail(i18n.pick_now(f"{name} needs a cloud model, but outbound calls are switched off, so it was skipped.", f"「{name}」要连接云端模型,而「禁止外呼」正开着,已跳过。"))
         try:
-            ecfg = external.clean_cfg(agent.get("engine_cfg"))    # 运行前再校验一遍(备份恢复、手改数据库都可能带进不合规的设置)
+            ecfg = external.clean_cfg(agent.get("engine_cfg"))    # validate once more right before running (a restored backup or a hand-edited database can
+# bring in settings that do not comply)
         except ValueError as e:
             return await fail(i18n.pick_now(f"{name}'s external-agent settings are not valid: {e}", f"「{name}」的外部智能体设置不合规:{e}"))
 
@@ -636,7 +654,8 @@ class Orchestrator:
                 await flush_ext_delta()
 
         async def on_tool(idx: int, entry: dict) -> None:
-            await flush_ext_delta()   # 工具胶囊按出现顺序展示,先把已攒的文字发出去,别让胶囊插到文字前面
+            await flush_ext_delta()   # tool pills are displayed in order of appearance, so flush the buffered text first and do
+# not let a pill jump in front of the text
             while len(trace) <= idx:
                 trace.append({})
             trace[idx] = entry
@@ -652,7 +671,7 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             return await fail(i18n.pick_now(f"{name} failed while replying: {e}", f"「{name}」发言出错:{e}"))
 
-        await flush_ext_delta()   # 收尾:把最后不足一批的分片发出去
+        await flush_ext_delta()   # wrap up: send the last incomplete batch of deltas
         content = res.text.strip() or empty_fallback or i18n.pick_now("(no reply content)", "(没有回复内容)")
         meta: dict = {"engine": agent["engine"], "level": ecfg["level"], **(extra_meta or {})}
         info = {k: v for k, v in (("cost_usd", res.cost_usd), ("duration_ms", res.duration_ms),
@@ -675,13 +694,14 @@ class Orchestrator:
         return TurnOut(content, res.text, saved)
 
     async def _plan_failed(self, gid: str, out: "TurnOut", note: str, emit: Emit) -> None:
-        """计划没能执行时,把群主那条只有「已做好分工,见任务板」的消息改掉,免得和下面的系统提示互相矛盾。"""
+        """When the plan could not be executed, rewrite the owner's message that only says
+"delegation is ready, see the task board", so it does not contradict the system note below."""
         if out.text in PLAN_FALLBACK:
             try:
                 fixed = self.store.update_message(out.message["id"], content=i18n.pick_now("(the plan did not take effect — see the system notice below)", "(分工计划没能生效,见下方系统提示)"))
                 if fixed:
                     await emit({"type": "message_end", "message": fixed})
-            except Exception:  # noqa: BLE001 — 改文案失败不影响后面的提示
+            except Exception:  # noqa: BLE001 — failing to rewrite the copy does not affect the notes that follow
                 pass
         await self._system(gid, note, emit)
 
@@ -691,7 +711,8 @@ class Orchestrator:
 
 
 def clip_middle(text: str, limit: int) -> str:
-    """过长的历史消息:保留开头和结尾,省掉中间(开头交代背景,结尾常是结论)。"""
+    """Overly long history messages: keep the beginning and the end, drop the middle (the
+beginning sets the scene, the end usually carries the conclusion)."""
     if len(text) <= limit:
         return text
     head = int(limit * 0.7)

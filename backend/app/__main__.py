@@ -1,4 +1,4 @@
-"""启动: python -m app [--port 8765]"""
+"""Entry point: python -m app [--port 8765]"""
 
 import argparse
 

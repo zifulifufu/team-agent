@@ -1,8 +1,8 @@
-"""内置的模型服务商预设(类似 Cherry Studio 的"添加服务商"列表)。
+"""Built-in model provider presets (like Cherry Studio's "add provider" list).
 
-kind 决定如何映射到 LiteLLM 的 model 字符串:
+kind decides how it maps onto the LiteLLM model string:
   deepseek           -> deepseek/<model>
-  openai_compatible  -> openai/<model> + api_base   (Kimi、通义千问、智谱、硅基流动、OpenRouter、llama.cpp、LM Studio ...)
+  openai_compatible  -> openai/<model> + api_base   (Kimi, Qwen, Zhipu, SiliconFlow, OpenRouter, llama.cpp, LM Studio ...)
   anthropic          -> anthropic/<model>
   gemini             -> gemini/<model>
   ollama             -> ollama_chat/<model> + api_base
@@ -198,55 +198,66 @@ DEFAULT_SYSTEM_PROMPT_ZH = (
 )
 
 DEFAULT_SETTINGS: dict = {
-    # 关闭后,所有非本地服务商都不会被调用(离线/涉密场景)
+    # when off, no non-local provider is ever called (offline or confidential setups)
     "external_calls_enabled": True,
-    # 外部智能体(如 WorkBuddy)总开关:默认关。它们是带工具的智能体,可能读写文件,所以必须由你主动打开
+    # master switch for external agents (e.g. WorkBuddy), off by default. They are agents with
+# tools that may read and write files, so you have to turn them on yourself
     "external_agents_enabled": False,
-    # 路由优先级链:按顺序尝试,最后一个应为本地模型
+    # routing priority chain: tried in order, the last entry should be a local model
     "route_chain": ["deepseek/deepseek-flash", "ollama/qwen2.5:7b"],
-    # 一次用户消息最多触发多少轮 agent 发言(防止互相 @ 死循环)
+    # how many rounds of agent replies one user message may trigger at most (stops an endless
+# @ loop between them)
     "max_hops": 8,
-    # 每次调用带入的群聊历史条数
+    # how many group chat history messages are included per call
     "history_limit": 30,
-    # 上下文管理:过去的每条消息最多带入多少字(超出的截掉中间),工具结果回填给模型时最多多少字
+    # context management: how many characters each past message may contribute (the middle is
+# cut once over), and how many characters a tool result may take when fed back to the model
     "history_clip": 3000,
     "tool_output_limit": 6000,
-    # 单次请求超时(秒)
+    # timeout for a single request (seconds)
     "request_timeout": 60,
-    # 连续失败多少次后熔断,以及熔断时长(秒)
+    # how many consecutive failures trip the breaker, and how long it stays tripped (seconds)
     "circuit_threshold": 2,
     "circuit_cooldown": 30,
-    # ---- 提示词
+    # ---- prompts
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
-    # ---- 协作:auto=由群主判断是否需要分工;on=总是先分工;off=不分工(只用 @ 接力)
+    # ---- collaboration: auto = the owner decides whether to delegate; on = always delegate
+# first; off = never delegate (@ hand-off only)
     "plan_mode": "auto",
     "plan_max_tasks": 8,
-    # ---- 工具调用:单次发言最多调用几轮工具(0=关闭工具调用)、单个工具超时(秒)
+    # ---- tool calls: how many tool rounds one reply may run at most (0 = tool calls off),
+# and the timeout of a single tool (seconds)
     "tool_rounds": 4,
     "tool_timeout": 60,
-    # ---- 权限与操控:工具调用审批
-    # ask_risky = 只有会执行代码/有副作用的工具(插件、非只读 MCP)才问;ask_all = 除 current_time 外每个都问;allow_all = 全部放行
+    # ---- permissions and control: tool call approval
+    # ask_risky = ask only for tools that run code or have side effects (plugins, non-read-only
+# MCP); ask_all = ask for every tool except current_time; allow_all = let everything through
     "perm_mode": "ask_risky",
-    "perm_timeout": 120,       # 等你确认多少秒,超时按拒绝
-    "perm_allow": [],          # 「总是允许」的工具名
-    "perm_deny": [],           # 「永远禁止」的工具名
-    # ---- 记忆 ⇄ Obsidian:同步到库里的一个文件夹(空 = 不启用)
+    "perm_timeout": 120,       # how many seconds to wait for your confirmation, after which it counts as a denial
+    "perm_allow": [],          # tool names that are "always allowed"
+    "perm_deny": [],           # tool names that are "always forbidden"
+    # ---- memory <-> Obsidian: one folder in the vault to sync with (empty = disabled)
     "obsidian_dir": "",
-    "obsidian_auto": False,    # 开启后每 30 秒自动同步一次
-    # ---- 记忆与资料库
+    "obsidian_auto": False,    # when enabled, sync automatically every 30 seconds
+    # ---- memory and document library
     "memory_enabled": True,
     "memory_auto_extract": True,
     "memory_top_k": 6,
     "library_top_k": 5,
-    # ---- 更新(全部只读检查;安装代码类扩展必须由你确认)
-    "app_repo": "",            # 形如 owner/repo,程序本体的发布仓库
-    "catalog_url": "",         # 模型目录 JSON 的地址(可留空,默认取 app_repo 里的 backend/app/data/catalog.json)
-    "github_token": "",        # 可选,提高 GitHub API 频率上限
-    # 默认关:打开后后端启动 20 秒就会自行联网(GitHub / ollama.com / HuggingFace)。
-    # 企业或涉密环境不该出现未经授权的自动外联,要检查时手动点「检查更新」即可。
+    # ---- updates (every check is read-only; installing code-like extensions always needs
+# your confirmation)
+    "app_repo": "",            # of the form owner/repo: the release repository of the app itself
+    "catalog_url": "",         # URL of the model catalog JSON (may be left empty; defaults to
+# backend/app/data/catalog.json inside app_repo)
+    "github_token": "",        # optional, raises the GitHub API rate limit
+    # off by default: when on, the backend goes online by itself 20 seconds after start
+# (GitHub / ollama.com / HuggingFace).
+    # corporate or confidential environments must not see unauthorized automatic outbound
+# traffic; press "check for updates" by hand when you want to check.
     "auto_check_updates": False,
     "update_interval_hours": 12,
-    "auto_update_skills": False,  # 仅文本技能可以自动更新;插件/MCP/程序本体永远需要手动确认
+    "auto_update_skills": False,  # only text skills may update automatically; plugins / MCP / the app itself always need
+# manual confirmation
 }
 
 SEED_AGENTS: list[dict] = [
@@ -314,8 +325,9 @@ SEED_AGENTS: list[dict] = [
 ]
 
 
-# ---------------------------------------------------------------- 成员预设
-# 「随时添加 agent」里的预设库。tags 是这个岗位需要的强项:模型没手动指定时,按这些强项自动挑模型。
+# ---------------------------------------------------------------- member presets
+# the preset library behind "add an agent at any time". tags are the strengths this role
+# needs: when no model is picked by hand, models are chosen from these strengths.
 AGENT_PRESETS: list[dict] = [
     {
         "key": "host", "name": "Facilitator", "name_zh": "主持", "avatar": "🎙️",
@@ -404,11 +416,11 @@ AGENT_PRESETS: list[dict] = [
 AGENT_PRESET_BY_KEY = {a["key"]: a for a in AGENT_PRESETS}
 
 
-# ---------------------------------------------------------------- 内置成员别名
+# ---------------------------------------------------------------- built-in member aliases
 # Members are matched by name throughout the app (group templates, the preset picker,
 # @mentions), and the database stores whichever spelling was in use when the agent was
 # created. These aliases let both spellings resolve to the same built-in entry, so a
-# Chinese install (agents stored as 小助) and a fresh English one (stored as Aide)
+# Chinese install (agents stored under their Chinese names) and a fresh English one (stored as Aide)
 # behave the same without touching anyone's data.
 BUILTIN_AGENTS: list[dict] = [*SEED_AGENTS, *AGENT_PRESETS]
 BUILTIN_AGENT_ALIASES: dict[str, dict] = {}
@@ -519,7 +531,7 @@ def localize_agent(agent: dict, lang: str) -> dict:
         out[field] = zh if lang == "zh" else (entry.get(field) or "")
     return out
 
-# ---------------------------------------------------------------- 群聊模板
+# ---------------------------------------------------------------- group chat templates
 TEMPLATES: list[dict] = [
     # Group-chat templates. `name`/`desc`/`prompt` are the canonical English text and
     # `<field>_zh` the Chinese wording; templates.create_group_from_template() picks one
@@ -621,7 +633,7 @@ TEMPLATES: list[dict] = [
     },
 ]
 
-# ---------------------------------------------------------------- 提示词库示例
+# ---------------------------------------------------------------- prompt library examples
 SEED_PROMPTS: list[dict] = [
     # Prompt library entries seeded on first run. `title` is the canonical English value
     # and therefore the identity that gets stored and de-duplicated against; `title_zh`

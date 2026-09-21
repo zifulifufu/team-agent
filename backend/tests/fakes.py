@@ -1,4 +1,6 @@
-"""真实 HTTP 假服务:用来让 LiteLLM 走完整网络路径(不 mock litellm 本身)。"""
+"""Real HTTP fakes, so LiteLLM goes through the whole network path
+(rather than mocking litellm itself).
+"""
 import json
 import socket
 import threading
@@ -39,7 +41,10 @@ class FakeServer:
 
 
 def openai_like(reply: str = "来自云端", status: int = 200):
-    """OpenAI 兼容 /chat/completions(流式 SSE);status != 200 时模拟鉴权失败等。"""
+    """OpenAI-compatible /chat/completions (streaming SSE).
+
+    A status other than 200 simulates failures such as bad credentials.
+    """
     app = FastAPI()
     app.state.hits = 0
 
@@ -68,7 +73,7 @@ def openai_like(reply: str = "来自云端", status: int = 200):
 
 
 def ollama_like(reply: str = "来自本地"):
-    """Ollama /api/chat(NDJSON 流)。"""
+    """Ollama /api/chat (NDJSON stream)."""
     app = FastAPI()
     app.state.hits = 0
 

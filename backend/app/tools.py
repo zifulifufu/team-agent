@@ -1,9 +1,12 @@
-"""Skills(文本技能)与插件(Python 工具)。MCP 见 mcp_client.py,统一调度见 toolhub.py。
+"""Skills (text skills) and plugins (Python tools). See mcp_client.py for MCP and
+toolhub.py for unified dispatch.
 
-  * Skills —— 数据目录 skills/<名称>/SKILL.md。可以给成员勾选(注入该成员的提示词),
-              也可以挂到整个群(scope: group 的「群聊规则」类技能,全员都遵守)。纯文本,对所有模型通用。
-  * 插件   —— 数据目录 plugins/*.py,里面写 register(registry) 注册若干工具。
-              插件是在本进程里运行的 Python 代码,没有沙箱:只装你读过、信得过的。
+  * Skills -- data directory skills/<name>/SKILL.md. Can be ticked per member (injected
+              into that member's prompt) or attached to a whole group (scope: group, the
+              "group rules" kind, followed by everyone). Plain text, works with any model.
+  * Plugins -- data directory plugins/*.py, each defining register(registry) to register
+              some tools. Plugins are Python code running inside this process with no
+              sandbox: only install ones you have read and trust.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ EXAMPLE_SKILLS: dict[str, dict] = {
     # model — and `<field>_zh` carries the Chinese wording. `localskill()` below swaps
     # in the right one for the request language, and SKILL_ALIASES lets either spelling
     # of a name resolve to the same entry, so a Chinese install whose skills were
-    # seeded as 公文写作规范 and a fresh English one behave the same.
+    # seeded under their Chinese names and a fresh English one behave the same.
     "office-writing": {
         "name": "Office writing conventions", "name_zh": "公文写作规范",
         "description": "Structure and wording for office documents",
@@ -287,7 +290,7 @@ class Skill:
     description: str
     body: str
     path: str
-    scope: str = "member"   # member = 给成员勾选 | group = 群聊规则,挂到群
+    scope: str = "member"   # member = ticked per member | group = group rules, attached to the group
     version: str = ""
 
     def summary(self) -> dict:
@@ -359,8 +362,9 @@ def delete_skill(skills_dir: Path, name: str) -> bool:
 
 
 def ensure_example_skills(skills_dir: Path, flag: Callable[[str], bool] | None = None) -> None:
-    """首次运行时写入示例技能。flag(key) 返回「以前是否已经写过」并同时打上标记,
-    这样用户删掉某个示例后,它不会在下次启动时又被写回来;新增的示例技能能补给老用户。"""
+    """Write the example skills on first run. flag(key) reports whether it has been written
+    before and marks it at the same time, so a deleted example is not written back on the
+    next start, while newly added examples still reach existing users."""
     was_empty = not any(skills_dir.iterdir())
     for key, ex in EXAMPLE_SKILLS.items():
         if flag is not None:
@@ -388,7 +392,8 @@ def list_skills(skills_dir: Path) -> list[Skill]:
 
 
 def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, group: bool = False) -> str:
-    """把勾选的 skills 拼成一段提示词。group=True 时标题写成「群聊规则」。
+    """Assemble the ticked skills into one prompt block. When group=True the heading is
+    written as "Group rules".
 
     Names are looked up by every spelling a built-in skill may have been stored
     under, and the text handed to the model is the one matching the request
@@ -429,7 +434,7 @@ class Tool:
     parameters: dict  # JSON Schema
     fn: ToolFn
     source: str = "builtin"      # builtin | plugin | mcp
-    plugin: str = ""             # 插件 ID(文件名,不含 .py)
+    plugin: str = ""             # plugin id (file name without .py)
 
     def spec(self) -> dict:
         return {"name": self.name, "description": self.description, "parameters": self.parameters,
@@ -452,7 +457,7 @@ class PluginInfo:
 
 
 class _PluginScope:
-    """交给插件的 registry:登记的工具会记在该插件名下。"""
+    """Registry handed to a plugin: tools registered through it are recorded under that plugin."""
 
     def __init__(self, reg: "ToolRegistry", plugin: str):
         self._reg, self._plugin = reg, plugin
@@ -460,7 +465,9 @@ class _PluginScope:
     def register(self, name: str, description: str, parameters: dict | None, fn: ToolFn) -> None:
         old = self._reg._tools.get(name)
         if old is not None:
-            # 以前是后登记的悄悄顶掉先登记的:被顶掉的插件在权限页里仍显示有这个工具,却调不到,还没有任何提示
+            # previously a later registration silently displaced an earlier one: the displaced
+# plugin still showed the tool on the permissions page, but it could not be called
+# and nothing warned about it
             raise ValueError(i18n.pick_now(f"Tool name \"{name}\" is already taken by {('plugin ' + old.plugin) if old.plugin else 'a built-in tool'} — pick another name", f"工具名「{name}」已被{('插件 ' + old.plugin) if old.plugin else '内置工具'}占用,请换个名字"))
         self._reg._add(Tool(name, description, parameters or {"type": "object", "properties": {}}, fn, "plugin", self._plugin))
 
@@ -493,15 +500,15 @@ class ToolRegistry:
         tool = self._tools[name]
         if inspect.iscoroutinefunction(tool.fn):
             return await tool.fn(args)
-        res = await asyncio.to_thread(tool.fn, args)   # 普通函数放到线程里跑,慢插件不会卡住整个后端
+        res = await asyncio.to_thread(tool.fn, args)   # run plain functions in a thread so a slow plugin cannot block the whole backend
         if hasattr(res, "__await__"):
             res = await res  # type: ignore[misc]
         return res
 
     def load_plugins(self, plugins_dir: Path) -> None:
-        """插件文件示例:
-            PLUGIN = {"name": "问候", "description": "打招呼", "version": "1.0"}   # 可选
-            def register(registry): registry.register("hello", "说你好", None, lambda a: "hi")"""
+        """Example plugin file:
+            PLUGIN = {"name": "Greeting", "description": "Say hello", "version": "1.0"}   # optional
+            def register(registry): registry.register("hello", "Say hi", None, lambda a: "hi")"""
         for name in [n for n, t in self._tools.items() if t.source == "plugin"]:
             del self._tools[name]
         self.plugins = {}

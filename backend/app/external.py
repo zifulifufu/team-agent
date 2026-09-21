@@ -1,17 +1,26 @@
-"""外部智能体成员:把 WorkBuddy 接进群聊,和其它成员一起协作。
+"""External agent members: plug WorkBuddy into a group chat so it collaborates with the others.
 
-接法:WorkBuddy 的应用包里自带一个 CodeBuddy Code 命令行引擎(<WorkBuddy.app>/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy),
-它有「无界面」模式:`codebuddy -p --output-format stream-json`。本程序每轮把群聊记录从标准输入喂给它,读它的流式输出,
-把最终回复作为该成员的发言。也就是说:
-  * 不去操控 WorkBuddy 的窗口(Electron 界面没有可靠的自动化入口),也不读它的账号、会话、密钥文件;
-  * 每一轮是一个独立的命令行进程(没有跨轮记忆——上下文靠群聊记录),取消/超时会杀掉整个进程组。
+How it is wired: the WorkBuddy app bundle ships a CodeBuddy Code command-line engine
+(<WorkBuddy.app>/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy) that has a "headless"
+mode: `codebuddy -p --output-format stream-json`. Each round this program feeds the group chat
+history to it on stdin, reads its streaming output, and uses the final reply as that member's
+message. In other words:
+  * the WorkBuddy window is never driven (the Electron UI has no reliable automation entry
+    point) and its account, session or key files are never read;
+  * each round is a separate command-line process (no memory across rounds — the group chat
+    history is the context), and cancelling or timing out kills the whole process group.
 
-安全约定(和整个程序一致):
-  * 总开关 external_agents_enabled 默认关闭;打开之前不能创建、也不会运行任何外部智能体;
-  * 「禁止外呼」开着时不运行(它要连接云端模型);
-  * 默认权限「只读」:只能读文件、搜索,不能改文件、不能跑命令、不能上网;「可改文件」不含命令行;「完全」要显式确认;
-  * 不加载用户机器上配置的 MCP 服务器(--strict-mcp-config);子进程环境变量白名单,不带本程序的令牌、也不带任何模型服务商的 Key;
-  * 它的输出只是聊天文字,不会被当作 <plan> / <tool_call> 解析。
+Security conventions (consistent with the rest of the program):
+  * the external_agents_enabled master switch is off by default; until it is turned on, no
+    external agent can be created or run;
+  * it does not run while "outbound calls disabled" is on (it needs to reach a cloud model);
+  * the default permission is "read-only": it may read files and search, but not edit files,
+    run commands or go online; "may edit files" does not include the command line; "full"
+    needs explicit confirmation;
+  * MCP servers configured on the user's machine are not loaded (--strict-mcp-config); the
+    subprocess environment is allow-listed and carries neither this program's token nor any
+    model provider's key;
+  * its output is only chat text and is never parsed as <plan> / <tool_call>.
 """
 
 from __future__ import annotations
@@ -94,15 +103,15 @@ def level_view(key: str) -> dict:
 
 DEFAULT_CFG: dict[str, Any] = {
     "level": "read",
-    "risk_ack": False,          # 选「完全」时,用户明确确认过风险
-    "cwd": "",                  # 空 = 本程序数据目录下专属的工作目录
-    "add_dirs": [],             # 额外允许访问的目录(最多 5 个)
-    "web": False,               # 只读/可改文件级别下,是否允许它上网搜索/抓网页
-    "model": "",                # 空 = 用引擎自己的默认模型
+    "risk_ack": False,          # picking "full" means the user explicitly confirmed the risk
+    "cwd": "",                  # empty = a dedicated working directory under this program's data directory
+    "add_dirs": [],             # extra directories it is allowed to access (at most 5)
+    "web": False,               # at the read-only / may-edit-files level, whether it may search the web or fetch pages
+    "model": "",                # empty = use the engine's own default model
     "max_turns": 20,
-    "timeout": 600,             # 单次发言最长多少秒
-    "handoff": True,            # 它的回复里 @ 别的成员时,是否让被点名的成员接着发言
-    "cli_path": "",             # 手动指定命令行位置(空 = 自动查找)
+    "timeout": 600,             # maximum number of seconds for one reply
+    "handoff": True,            # when its reply @-mentions another member, whether that member speaks next
+    "cli_path": "",             # command-line location set by hand (empty = look it up automatically)
 }
 
 READ_TOOLS = ("Read", "Grep", "Glob")
@@ -115,7 +124,7 @@ _ENV_PASS = (
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
     "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
 )
-_ENV_DENY_PREFIX = ("CODEBUDDY_COMPUTER_USE",)   # 桌面操控工具:绝不透传
+_ENV_DENY_PREFIX = ("CODEBUDDY_COMPUTER_USE",)   # desktop control tools: never passed through
 
 BUNDLED_MAC = (
     "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
@@ -124,10 +133,11 @@ BUNDLED_MAC = (
 
 
 class ExternalError(Exception):
-    """外部智能体没能给出回复(命令行没找到、没登录、超时、崩溃……),消息可以直接展示给用户。"""
+    """The external agent produced no reply (command line not found, not signed in, timed out,
+crashed, ...); the message can be shown to the user as-is."""
 
 
-# ------------------------------------------------------------------ 配置校验
+# ------------------------------------------------------------------ config validation
 def _dir(path: str, what: str) -> str:
     p = Path(path).expanduser()
     if not p.is_absolute():
@@ -138,7 +148,8 @@ def _dir(path: str, what: str) -> str:
 
 
 def clean_cfg(raw: Any, base: dict | None = None) -> dict:
-    """把用户提交的配置合并进 base 并校验。抛 ValueError(中文提示)。未知字段直接忽略。"""
+    """Merge the config submitted by the user into base and validate it. Raises ValueError (with
+a Chinese message). Unknown fields are ignored outright."""
     cur = {**DEFAULT_CFG, **(base or {})}
     if not isinstance(raw, dict):
         return cur
@@ -193,13 +204,13 @@ def clean_cfg(raw: Any, base: dict | None = None) -> dict:
     return out
 
 
-# ------------------------------------------------------------------ 找命令行
+# ------------------------------------------------------------------ locating the command line
 @dataclass
 class Launcher:
-    argv: list[str]          # 启动命令的前缀(例如 [node, .../codebuddy])
-    path: str                # 命令行文件本身
-    via: str                 # 展示用:bundled / path / custom
-    node_dir: str = ""       # 需要放进 PATH 的 node 所在目录
+    argv: list[str]          # prefix of the launch command (e.g. [node, .../codebuddy])
+    path: str                # the command-line file itself
+    via: str                 # for display: bundled / path / custom
+    node_dir: str = ""       # directory of the node binary that has to go on PATH
 
 
 def _extra_bins() -> list[str]:
@@ -257,7 +268,8 @@ def find_launcher(cli_path: str = "") -> Launcher | None:
 
 
 def build_env(cfg: dict, launcher: Launcher | None = None) -> dict[str, str]:
-    """子进程环境变量白名单:只放行运行必需的几项、代理设置,以及用户自己设置的 CODEBUDDY_*(桌面操控除外)。"""
+    """Allow-list for the subprocess environment: only the few entries needed to run, the proxy
+settings, and the CODEBUDDY_* variables the user set themselves (desktop control excluded)."""
     env = {k: os.environ[k] for k in _ENV_PASS if k in os.environ}
     env["PATH"] = _search_path()
     if launcher and launcher.node_dir:
@@ -265,12 +277,12 @@ def build_env(cfg: dict, launcher: Launcher | None = None) -> dict[str, str]:
     for k, v in os.environ.items():
         if k.startswith("CODEBUDDY_") and not k.startswith(_ENV_DENY_PREFIX):
             env[k] = v
-    env["CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"] = "1"   # 单次运行,不留后台任务
+    env["CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"] = "1"   # a single run, leaving no background task behind
     env["TERM"] = "dumb"
     return env
 
 
-# ------------------------------------------------------------------ 命令行参数
+# ------------------------------------------------------------------ command-line arguments
 def permission_args(cfg: dict) -> list[str]:
     level, web = cfg.get("level", "read"), bool(cfg.get("web"))
     if level == "full":
@@ -317,14 +329,15 @@ def addendum(name: str, group: str, level: str, cwd: str) -> str:
 
 
 def flatten_convo(convo: list[dict]) -> str:
-    """把 [{role, content}] 的群聊记录拼成一段文字(外部智能体没有多轮 API,整段从标准输入喂给它)。"""
+    """Flatten a [{role, content}] group chat history into one block of text (external agents have
+no multi-turn API, so the whole thing is fed to them on stdin)."""
     lines = [i18n.pick_now("[Chat transcript] (a prefix like [name] only marks who is speaking; [you] is your own earlier turns)", "【群聊记录】(形如 [名字] 的前缀只是标注发言人;[你] 是你自己此前的发言)")]
     for m in convo:
         lines.append((i18n.pick_now("[you] ", "[你] ") if m["role"] == "assistant" else "") + str(m["content"]))
     return "\n\n".join(lines)
 
 
-# ------------------------------------------------------------------ 流式输出解析
+# ------------------------------------------------------------------ streaming output parsing
 @dataclass
 class ExtResult:
     text: str = ""
@@ -357,17 +370,19 @@ def _block_text(content: Any) -> str:
 
 
 class StreamParser:
-    """逐行读 stream-json:init / assistant / user(tool_result)/ result,以及可选的增量事件。
-    对不认识的事件一律忽略;解析不出内容时由调用方退回到原始输出。"""
+    """Read stream-json line by line: init / assistant / user (tool_result) / result, plus the
+    optional incremental events. Unknown events are ignored; when no content can be parsed the
+    caller falls back to the raw output."""
 
     def __init__(self, on_delta: DeltaFn | None, on_tool: ToolFn | None):
         self.on_delta, self.on_tool = on_delta, on_tool
         self.res = ExtResult()
         self.final: str | None = None
         self.error: str = ""
-        self.assistant_text: str = ""        # 最后一条带文字的助手消息
-        self.raw_lines: list[str] = []       # 不是 JSON 的行(退回用)
-        self._stream_buf = ""                # 靠增量事件已经输出、但还没被完整助手消息「认领」的文字
+        self.assistant_text: str = ""        # the last assistant message that carries text
+        self.raw_lines: list[str] = []       # lines that are not JSON (kept as a fallback)
+        self._stream_buf = ""                # text already emitted through incremental events but not yet "claimed" by a complete
+# assistant message
         self._emitted_any = False
         self._need_sep = False
         self._tool_idx: dict[str, int] = {}
@@ -422,13 +437,13 @@ class StreamParser:
 
     async def _assistant(self, ev: dict) -> None:
         if ev.get("parent_tool_use_id"):
-            return   # 子智能体的中间话不进群
+            return   # intermediate messages from sub-agents stay out of the group
         msg = ev.get("message") or {}
         content = msg.get("content")
         text = _block_text(content)
         if text.strip():
             self.assistant_text = text
-            if not self._stream_buf.strip():      # 没有增量事件时(没开 partial 或引擎不支持),整段输出
+            if not self._stream_buf.strip():      # with no incremental events (partial off, or unsupported by the engine), output it all at once
                 await self._emit(text)
             self._stream_buf = ""
             self._need_sep = True
@@ -460,8 +475,10 @@ class StreamParser:
                 c = b.get("content")
                 text = c if isinstance(c, str) else _block_text(c)
                 entry["preview"] = text[:300]
-                # 真机实测(CodeBuddy 2.137.1):被权限挡下的工具,结果是一段 "Error: Permission to use X has been denied…" 的普通文字,
-                # 既没有 is_error,最终 result 里的 permission_denials 也是空的——所以要靠这段文字自己认出来
+                # Measured on a real machine (CodeBuddy 2.137.1): a tool blocked by permissions comes back
+# as plain text "Error: Permission to use X has been denied…",
+                # with no is_error flag and an empty permission_denials in the final result — so it has to be
+# recognized from that text alone
                 if DENIED_TEXT.match(text.lstrip()):
                     entry["status"] = "denied"
                     nm = str(entry.get("name") or "")
@@ -494,7 +511,7 @@ class StreamParser:
     def outcome(self) -> ExtResult:
         text = (self.final if self.final is not None else self.assistant_text) or ""
         if not text.strip() and self.raw_lines and not self.error:
-            text = "\n".join(self.raw_lines)[:20000]      # 引擎没按 stream-json 输出:直接采用它的文字输出
+            text = "\n".join(self.raw_lines)[:20000]      # the engine did not emit stream-json: take its text output as-is
         self.res.text = text.strip()
         return self.res
 
@@ -515,7 +532,7 @@ def explain_failure(rc: int | None, stderr: str, error: str) -> str:
     return msg
 
 
-# ------------------------------------------------------------------ 子进程
+# ------------------------------------------------------------------ subprocess
 async def _kill(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is not None:
         return
@@ -613,7 +630,7 @@ class ExternalRunner:
         except asyncio.TimeoutError:
             await _kill(proc)
             raise ExternalError(i18n.pick_now(f"It did not finish within {timeout} seconds, so it was stopped (you can raise the timeout in the member's settings)", f"超过 {timeout} 秒还没完成,已停止(可在成员设置里调大超时)")) from None
-        except BaseException:   # 含用户点「停止」触发的取消
+        except BaseException:   # includes the cancellation triggered by the user pressing "stop"
             await _kill(proc)
             raise
         return rc, err.decode("utf-8", "replace")
@@ -640,7 +657,8 @@ class ExternalRunner:
         return out
 
     async def probe(self, cfg: dict, *, live: bool = False) -> dict:
-        """检测:找到命令行、读版本(不联网);live=True 时再发一句极短的话确认能登录、能回复(会调用云端模型)。"""
+        """Check: locate the command line and read its version (no network); with live=True it also
+sends one very short message to confirm it can sign in and reply (this calls a cloud model)."""
         cfg = {**DEFAULT_CFG, **cfg}
         lc = find_launcher(cfg["cli_path"])
         info = self.describe(cfg["cli_path"])

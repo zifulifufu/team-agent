@@ -1,4 +1,5 @@
-"""外部智能体成员(WorkBuddy)的接口:检测、创建、修改设置、连通性测试。"""
+"""Endpoints for external agent members (WorkBuddy): detection, creation, settings updates,
+connectivity test."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ NAME_BAD = re.compile(r"[\s@]")
 class ExternalCreate(BaseModel):
     engine: str = "workbuddy"
     name: str | None = None
-    group_id: str | None = None      # 顺便拉进这个群
+    group_id: str | None = None      # also pull it into this group
     cfg: dict = {}
 
 
@@ -27,7 +28,7 @@ class ExternalPatch(BaseModel):
 
 
 class ExternalProbe(BaseModel):
-    live: bool = False               # True = 真的发一句话试试(会调用云端模型)
+    live: bool = False               # True = really send a message to try it (this calls a cloud model)
     agent_id: str | None = None
     cli_path: str = ""
 
@@ -117,7 +118,8 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
             cfg = external.clean_cfg(cfg)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        need_enabled()   # 检测会真的启动一次命令行(读版本),所以总开关没开时也不做
+        need_enabled()   # detection really starts a command line (to read the version), so it is skipped when the
+# master switch is off
         if body.live:
             if not store.get_settings()["external_calls_enabled"]:
                 raise HTTPException(403, i18n.pick_now("Outbound calls are switched off: an external agent needs a cloud model, so allow outbound calls under Routing first", "「禁止外呼」正开着:外部智能体要连接云端模型,先在「路由」里放开"))

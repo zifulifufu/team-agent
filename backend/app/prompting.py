@@ -1,6 +1,8 @@
-"""提示词装配:全局系统提示词 + 成员设定 + 补充提示词 + 群提示词 + 群/成员技能 + 成员分工表(含强项)+ 记忆 + 工具。
+"""Prompt assembly: global system prompt + member persona + extra prompt + group prompt +
+group/member skills + member roster (with strengths) + memory + tools.
 
-变量(在系统提示词、提示词库、群提示词里都能用,写法 {{变量}},未知变量原样保留):
+Variables (usable in the system prompt, the prompt library and the group prompt; written
+as {{variable}}, unknown variables are left as-is):
   {{agent_name}} {{agent_role}} {{group_name}} {{members}} {{model_name}} {{date}} {{time}} {{datetime}} {{weekday}} {{os}} {{username}}
 """
 
@@ -38,7 +40,8 @@ VARIABLES = [
 
 
 def estimate_tokens(text: str) -> int:
-    """粗估 token 数:汉字约 1 个/字,其它约 4 字符 1 个。仅供参考。"""
+    """Rough token count: about 1 token per CJK character, about 1 token per 4 characters
+otherwise. For reference only."""
     cjk = len(re.findall(r"[㐀-鿿]", text))  # i18n-keep: counts CJK characters to estimate tokens
     return cjk + (len(text) - cjk + 3) // 4
 
@@ -48,7 +51,8 @@ def render_vars(text: str, values: dict[str, str]) -> str:
 
 
 def merge_strengths(agent: dict, model: dict | None) -> list[str]:
-    """成员的强项 = 岗位需要的标签 + 模型自身的强项(岗位在前),最多 6 个。"""
+    """A member's strengths = the tags the role needs + the model's own strengths
+(role tags first), at most 6."""
     out: list[str] = []
     for t in list(agent.get("tags") or []) + list((model or {}).get("strengths") or []):
         if t not in out:
@@ -107,7 +111,7 @@ class PromptBuilder:
     def roster_entries(self, members: list[dict]) -> list[dict]:
         out = []
         for m in (self._shown(x) or x for x in members):
-            if m.get("engine"):   # 外部智能体:不经过模型路由
+            if m.get("engine"):   # external agent: does not go through model routing
                 out.append({"agent": m, "model": None, "strengths": merge_strengths(m, None),
                             "model_display": i18n.pick_now(f"external agent ({m['name']})",
                                                            f"外部智能体({m['name']})")})
