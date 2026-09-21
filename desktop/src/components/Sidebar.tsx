@@ -20,7 +20,7 @@ export type View =
   | { kind: "library" }
   | { kind: "memory" };
 
-/** 侧边栏「工具」区:每一项对应一个独立页面(设置 → 工具 里也能进到同样的页面) */
+/** The Tools section of the sidebar: each entry is its own page (Settings → Tools reaches the same ones) */
 const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "prompts" | "library" | "memory"; label: string; icon: typeof Sparkles }[] = [
   { kind: "skills", label: "Skills", icon: Sparkles },
   { kind: "plugins", label: "Plugins", icon: Puzzle },
@@ -58,7 +58,7 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
   }, [groups, q]);
 
   const activeGid = view.kind === "chat" ? view.gid : null;
-  // 「成员」下面显示当前群的成员;离开群聊页后仍然显示最近打开的那个群
+  // Members are listed under Members; after leaving the chat view the most recently opened group stays shown
   useEffect(() => { if (view.kind === "chat") setLastGid(view.gid); }, [view]);
   const dockGroup = groups.find((g) => g.id === (activeGid ?? lastGid)) ?? null;
   const offline = settings ? !settings.external_calls_enabled : false;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Capabilities, type Group } from "../api";
 import { useData } from "../data";
+import { useI18n } from "../i18n";
 import type { SettingsTab } from "../settings/SettingsModal";
 import ExtTab from "./group/ExtTab";
 import PromptTab from "./group/PromptTab";
@@ -8,14 +9,16 @@ import "../styles/chat.css";
 
 export type PanelTab = "ext" | "prompt";
 
-const TABS: { id: PanelTab; label: string }[] = [
-  { id: "ext", label: "技能 · 插件 · MCP" },
-  { id: "prompt", label: "提示词" },
+// Both spellings live here; the component picks one, because a module-level `tr()` would
+// be evaluated before the language provider is mounted.
+const TABS: { id: PanelTab; label: string; labelZh: string }[] = [
+  { id: "ext", label: "Skills · plugins · MCP", labelZh: "技能 · 插件 · MCP" },
+  { id: "prompt", label: "Prompts", labelZh: "提示词" },
 ];
 
 /**
- * 本群的能力清单(成员实际用的模型 / 强项、可用工具、问题)。
- * 群的成员、群主、扩展设置、成员资料变化后自动重新拉取;也可手动 refresh。
+ * This group's capability list (the model and strengths each member really uses, the tools in reach, problems).
+ * Re-fetched when the members, host, extension settings or member profiles change; there is also a manual refresh.
  */
 export function useCapabilities(group: Group | null): { caps: Capabilities | null; err: string; refresh: () => void } {
   const { agents } = useData();
@@ -55,6 +58,7 @@ interface Props {
 }
 
 export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onTab, onSettings }: Props) {
+  const { t, pick } = useI18n();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const onKey = (e: React.KeyboardEvent, i: number) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
@@ -64,22 +68,22 @@ export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onT
     tabRefs.current[n]?.focus();
   };
   return (
-    <aside className="gp" aria-label="群聊设置面板">
+    <aside className="gp" aria-label={t("Group settings panel")}>
       <div className="gp-tabs" role="tablist">
-        {TABS.map((t, i) => (
+        {TABS.map((tb, i) => (
           <button
-            key={t.id}
-            ref={(el) => { tabRefs.current[t.id] = el; }}
+            key={tb.id}
+            ref={(el) => { tabRefs.current[tb.id] = el; }}
             role="tab"
-            id={"gp-tab-" + t.id}
-            aria-selected={tab === t.id}
-            aria-controls={"gp-pane-" + t.id}
-            tabIndex={tab === t.id ? 0 : -1}
-            className={tab === t.id ? "on" : ""}
-            onClick={() => onTab(t.id)}
+            id={"gp-tab-" + tb.id}
+            aria-selected={tab === tb.id}
+            aria-controls={"gp-pane-" + tb.id}
+            tabIndex={tab === tb.id ? 0 : -1}
+            className={tab === tb.id ? "on" : ""}
+            onClick={() => onTab(tb.id)}
             onKeyDown={(e) => onKey(e, i)}
           >
-            {t.label}
+            {pick(tb.label, tb.labelZh)}
           </button>
         ))}
       </div>

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { AlertTriangle, Info, Loader2 } from "lucide-react";
 import { relTime } from "../api";
 
-/** GitHub 的 Octocat 标志(lucide 已不再收录品牌图标,这里内联一个)。 */
+/** GitHub's Octocat mark (lucide dropped brand icons, so it is inlined here). */
 export function GithubMark({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flex: "none" }}>
@@ -15,7 +15,7 @@ export function Spin({ size = 14 }: { size?: number }) {
   return <Loader2 size={size} className="ext-spin" aria-hidden="true" />;
 }
 
-/** 只有 https 链接才会被当作可点击的链接;其它一律当文字显示。 */
+/** Only https links become clickable links; anything else is shown as plain text. */
 export const isHttps = (u: unknown): u is string => typeof u === "string" && /^https:\/\/[^\s]+$/i.test(u);
 
 export function ExtLink({ href, children, className }: { href: unknown; children: ReactNode; className?: string }) {
@@ -31,7 +31,7 @@ export function githubUrl(repo: string): string {
   return `https://github.com/${repo}`;
 }
 
-/** 带 GitHub 图标的来源徽标。 */
+/** A source badge carrying the GitHub mark. */
 export function SourceBadge({ repo, path }: { repo: string; path?: string }) {
   return (
     <a className="tag ext-gh" href={githubUrl(repo)} target="_blank" rel="noreferrer" title={path ? `${repo} / ${path}` : repo}>
@@ -52,7 +52,7 @@ export function Callout({ tone = "info", title, children }: { tone?: "info" | "w
   );
 }
 
-/** GitHub 返回的 ISO 时间 → 「3 天前」。 */
+/** An ISO time from GitHub → "3 days ago". */
 export function agoIso(iso: string): string {
   const t = Date.parse(iso);
   return Number.isFinite(t) ? relTime(t / 1000) : "";

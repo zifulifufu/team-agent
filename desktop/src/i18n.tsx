@@ -1107,6 +1107,16 @@ const ZH: Record<string, string> = {
   "OK": "确定",
   "Please confirm": "请确认",
   "The backend is not connected; retrying… (the first start needs a few seconds to load LiteLLM)": "后端未连接,正在重试…(首次启动需要几秒加载 LiteLLM)",
+  // ---------------------------------------------------------------- 审批条与群面板
+  " wants to call ": " 想调用 ",
+  "Allow once": "允许一次",
+  "Denied automatically in {n}s": "{n}s 后自动拒绝",
+  "Deny": "拒绝",
+  "Group settings panel": "群聊设置面板",
+  "Never ask about this tool again (undo it under Settings → Permissions & control)": "以后这个工具不再询问(可在 设置 → 权限与操控 里撤销)",
+  "Tool calls that need your confirmation": "需要你确认的工具调用",
+  "Without a confirmation in time it is treated as a denial": "超时未确认会按拒绝处理",
+  "{agent} wants to call {tool}": "「{agent}」想调用 {tool}",
 };
 
 let current: Lang = DEFAULT_LANG;
