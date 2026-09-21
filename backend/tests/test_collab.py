@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.orchestrator import Orchestrator
-from tests.conftest import FakeLLM, chunk
+from tests.conftest import ASSIGNMENT, INTEGRATE, PLAN_MODE, TASK_HEAD, UPSTREAM, FakeLLM, chunk, has
 
 
 def role(messages):
@@ -55,13 +55,13 @@ PLAN = json.dumps({
 def plan_script(plan=PLAN):
     def script(messages):
         name, u = role(messages), last_user(messages)
-        if name == "Aide" and "【分工模式】" in u:
+        if name == "Aide" and has(u, PLAN_MODE):
             return "思路:先写后审。\n<plan>" + plan + "</plan>"
-        if name == "Aide" and "【整合】" in u:
+        if name == "Aide" and has(u, INTEGRATE):
             return "最终通知:各位同事…(来自:文案)"
-        if name == "Copywriter" and "【分工任务" in u:
+        if name == "Copywriter" and has(u, TASK_HEAD):
             return "【分工】我负责初稿;发挥写作;用无;承接无\n初稿正文ABC"
-        if name == "Proofreader" and "【分工任务" in u:
+        if name == "Proofreader" and has(u, TASK_HEAD):
             return "【分工】我负责审校;发挥中文;用无;承接文案\n审校意见XYZ"
         return "好的"
     return script
@@ -90,11 +90,11 @@ async def test_host_plans_by_strengths_and_chains_outputs(store, make_router):
     assert tasks[0]["message_id"] == draft["id"] and tasks[1]["needs"] == ["t1"]
     assert sum(1 for e in c.events if e["type"] == "plan") >= 5          # 每次状态变化都推送
 
-    calls = {(role(m), "整合" if "【整合】" in last_user(m) else "任务" if "【分工任务" in last_user(m) else "其它"): m
+    calls = {(role(m), "整合" if has(last_user(m), INTEGRATE) else "任务" if has(last_user(m), TASK_HEAD) else "其它"): m
              for _, m in fake.calls}
     # 校对拿到上游成果、统一约定、声明要求,以及带强项的分工表
     p = last_user(calls[("Proofreader", "任务")])
-    assert "初稿正文ABC" in p and "各位同事" in p and "【分工】" in p and "← 你" in p
+    assert "初稿正文ABC" in p and "各位同事" in p and has(p, ASSIGNMENT) and has(p, UPSTREAM)
     sysmsg = calls[("Proofreader", "任务")][0]["content"]
     assert "strengths:" in sysmsg and "(host)" in sysmsg and "model:" in sysmsg
     # 文案的历史里不重复出现自己/他人的分工成果(成果只通过任务提示传递)
@@ -116,7 +116,7 @@ async def test_planning_instruction_lists_members_strengths_and_past_actions(sto
     await orch.handle_user_message(g["id"], "再写一份发布会通知", c)
     msgs = fake.calls[0][1]
     u = last_user(msgs)
-    assert "【分工模式】" in u and "先判断" in u and "以往类似任务的做法" in u and "Copywriter(deepseek-flash)" in u
+    assert has(u, PLAN_MODE) and "Decide first" in u and "How similar tasks were handled before" in u and "Copywriter(deepseek-flash)" in u
     assert "[Members and their parts]" in msgs[0]["content"] and "Aide(Coordinator) (host)" in msgs[0]["content"]
     assert msgs[0]["content"].count("(host)") == 1
     assert [m["sender_name"] for m in c.ends()] == ["Aide"]                # 群主判断不需要分工 → 直接回答
@@ -130,7 +130,7 @@ async def test_invalid_plan_falls_back_with_notice(store, make_router):
     await orch.handle_user_message(g["id"], "写通知", c)
     assert [m["sender_name"] for m in c.ends()] == ["Aide"]
     notes = [m["content"] for m in store.list_messages(g["id"]) if m["sender_type"] == "system"]
-    assert any("不合规" in n and "路人甲" in n for n in notes)
+    assert any("was not valid" in n and "路人甲" in n for n in notes)
     assert not [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"]
 
 
@@ -138,29 +138,29 @@ async def test_plan_modes_off_explicit_mention_and_on(store, make_router):
     fake = FakeLLM(default=plan_script())
     orch, g = setup(store, make_router, fake, plan_mode="off")
     await orch.handle_user_message(g["id"], "写通知", Collector())
-    assert "【分工模式】" not in last_user(fake.calls[0][1])               # 全局关闭
+    assert not has(last_user(fake.calls[0][1]), PLAN_MODE)               # 全局关闭
     store.update_settings({"plan_mode": "auto"})
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter 写通知", Collector())    # 点名 → 不分工
-    assert all("【分工模式】" not in last_user(m) for _, m in fake.calls)
+    assert all(not has(last_user(m), PLAN_MODE) for _, m in fake.calls)
     fake.calls.clear()
     store.update_group(g["id"], {"ext": {"plan": "off"}})                  # 群内覆盖全局
     await orch.handle_user_message(g["id"], "写通知", Collector())
-    assert "【分工模式】" not in last_user(fake.calls[0][1])
+    assert not has(last_user(fake.calls[0][1]), PLAN_MODE)
     store.update_group(g["id"], {"ext": {"plan": "on"}})
     fake2 = FakeLLM(default="我直接答了")                                   # 「总是分工」但群主没给计划
     orch2 = Orchestrator(store, make_router(fake2))
     await orch2.handle_user_message(g["id"], "写通知", Collector())
-    assert "必须分工" in last_user(fake2.calls[0][1])
+    assert "You must split the work" in last_user(fake2.calls[0][1])
     notes = [m["content"] for m in store.list_messages(g["id"]) if m["sender_type"] == "system"]
-    assert any("总是先分工" in n for n in notes)
+    assert any("always split the work" in n for n in notes)
 
 
 async def test_failed_task_does_not_block_others_and_is_reported(store, make_router):
     inner = plan_script()
 
     def script(messages):
-        if role(messages) == "Copywriter" and "【分工任务" in last_user(messages):
+        if role(messages) == "Copywriter" and has(last_user(messages), TASK_HEAD):
             raise RuntimeError("model down")
         return inner(messages)
 
@@ -171,9 +171,9 @@ async def test_failed_task_does_not_block_others_and_is_reported(store, make_rou
     tasks = next(m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan")["meta"]
     assert [t["status"] for t in tasks["tasks"]] == ["failed", "done"] and tasks["status"] == "done"
     review_prompt = next(last_user(m) for _, m in fake.calls if role(m) == "Proofreader")
-    assert "没有产出" in review_prompt                                        # 下游被告知上游缺失
-    integ = next(last_user(m) for _, m in fake.calls if "【整合】" in last_user(m))
-    assert "没有完成" in integ
+    assert "produced nothing" in review_prompt                              # 下游被告知上游缺失
+    integ = next(last_user(m) for _, m in fake.calls if has(last_user(m), INTEGRATE))
+    assert "did not finish" in integ
 
 
 async def test_cancel_marks_plan_stopped(store, make_router):
@@ -182,7 +182,7 @@ async def test_cancel_marks_plan_stopped(store, make_router):
 
     async def fn(**kw):
         msgs = kw["messages"]
-        if role(msgs) == "Copywriter" and "【分工任务" in last_user(msgs):
+        if role(msgs) == "Copywriter" and has(last_user(msgs), TASK_HEAD):
             async def gen():
                 yield chunk("开头")
                 started.set()
@@ -366,10 +366,10 @@ async def test_hash_refs_inline_document_text(store, make_router):
     orch.library.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。")
     await orch.handle_user_message(g["id"], "@Copywriter 按 #差旅制度 总结一下", Collector())
     s = fake.calls[0][1][0]["content"]
-    assert "【用户引用的资料】" in s and "不超过 600 元" in s
+    assert "[Documents the user referenced]" in s and "不超过 600 元" in s
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter 按 #不存在的文档 总结", Collector())
-    assert "【用户引用的资料】" not in fake.calls[0][1][0]["content"]
+    assert "[Documents the user referenced]" not in fake.calls[0][1][0]["content"]
 
 
 async def test_memory_injected_scoped_and_toggleable_and_saved_by_tool(store, make_router):

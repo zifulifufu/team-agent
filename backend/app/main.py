@@ -140,7 +140,7 @@ def public_provider(p: dict) -> dict:
     key = p.get("api_key") or ""
     out = {k: v for k, v in p.items() if k != "api_key"}
     out["has_key"] = bool(key)
-    out["key_hint"] = ("…" + key[-4:]) if len(key) >= 8 else ("已设置" if key else "")
+    out["key_hint"] = ("…" + key[-4:]) if len(key) >= 8 else (i18n.pick_now("set", "已设置") if key else "")
     return out
 
 
@@ -265,7 +265,7 @@ def create_app(
 
     def need(x: Any, what: str) -> Any:
         if x is None:
-            raise HTTPException(404, f"{what}不存在")
+            raise HTTPException(404, i18n.pick_now(f"{what} not found", f"{what}不存在"))
         return x
 
     # -------------------------------------------------------------- misc
@@ -301,14 +301,14 @@ def create_app(
             if k not in DEFAULT_SETTINGS or k in READONLY:
                 continue
             if k in ENUMS and v not in ENUMS[k]:
-                raise HTTPException(400, f"{k} 的取值不合法")
+                raise HTTPException(400, i18n.pick_now(f"{k} has an invalid value", f"{k} 的取值不合法"))
             if k in RANGES:
                 lo, hi = RANGES[k]
                 if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
-                    raise HTTPException(400, f"{k} 需要是 {lo}~{hi} 的整数")
+                    raise HTTPException(400, i18n.pick_now(f"{k} must be an integer between {lo} and {hi}", f"{k} 需要是 {lo}~{hi} 的整数"))
             if k in ("perm_allow", "perm_deny"):
                 if not (isinstance(v, list) and len(v) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 200 for x in v)):
-                    raise HTTPException(400, f"{k} 需要是工具名列表")
+                    raise HTTPException(400, i18n.pick_now(f"{k} must be a list of tool names", f"{k} 需要是工具名列表"))
                 v = list(dict.fromkeys(v))
             if k == "github_token" and v is None:
                 continue
@@ -322,9 +322,9 @@ def create_app(
                 else:
                     good = isinstance(v, str)
                 if not good:
-                    raise HTTPException(400, f"{k} 的类型不对")
+                    raise HTTPException(400, i18n.pick_now(f"{k} has the wrong type", f"{k} 的类型不对"))
             if k in ("app_repo",) and v and not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", v.strip()):
-                raise HTTPException(400, "程序仓库格式应为 owner/repo")
+                raise HTTPException(400, i18n.pick_now("The app repository must be in owner/repo form", "程序仓库格式应为 owner/repo"))
             clean[k] = v.strip() if isinstance(v, str) and k in ("app_repo", "catalog_url", "github_token") else v
         store.update_settings(clean)
         router.reset_circuit()
@@ -356,11 +356,11 @@ def create_app(
             from .presets import PRESET_BY_ID
 
             if body.preset not in PRESET_BY_ID:
-                raise HTTPException(400, "未知预设")
+                raise HTTPException(400, i18n.pick_now("Unknown preset", "未知预设"))
             p = store.add_provider_from_preset(body.preset, body.api_key)
         else:
             if not body.name:
-                raise HTTPException(400, "请填写名称")
+                raise HTTPException(400, i18n.pick_now("A name is required", "请填写名称"))
             p = store.add_provider(body.name, body.kind, body.base_url, body.api_key, body.is_local)
         pp = public_provider(p)
         pp["models"] = [m for m in store.list_models() if m["provider_id"] == p["id"]]
@@ -368,37 +368,37 @@ def create_app(
 
     @app.patch("/api/providers/{pid}")
     async def patch_provider(pid: str, body: ProviderPatch) -> dict:
-        need(store.get_provider(pid), "服务商")
+        need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         p = store.update_provider(pid, body.model_dump(exclude_unset=True))
         router.reset_circuit()
         return public_provider(p)  # type: ignore[arg-type]
 
     @app.delete("/api/providers/{pid}")
     async def del_provider(pid: str) -> dict:
-        need(store.get_provider(pid), "服务商")
+        need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         store.delete_provider(pid)
         return {"ok": True}
 
     @app.post("/api/providers/{pid}/models")
     async def add_model(pid: str, body: ModelIn) -> dict:
-        need(store.get_provider(pid), "服务商")
+        need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         name = body.model_name.strip()
         if not name:
-            raise HTTPException(400, "请填写模型 ID")
+            raise HTTPException(400, i18n.pick_now("A model ID is required", "请填写模型 ID"))
         return store.add_model(pid, name, body.display_name)
 
     @app.post("/api/providers/{pid}/models/batch")
     async def add_models_batch(pid: str, body: ModelBatchIn) -> list[dict]:
-        need(store.get_provider(pid), "服务商")
+        need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         names = [n.strip() for n in body.model_names if n and n.strip()]
         return [store.add_model(pid, n) for n in dict.fromkeys(names)]
 
     @app.post("/api/providers/{pid}/fetch-models")
     async def fetch_models(pid: str) -> dict:
         """向服务商查询可用模型列表。外呼被禁用时,只允许查询本地服务商。"""
-        p = need(store.get_provider(pid), "服务商")
+        p = need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         if not p["is_local"] and not store.get_settings()["external_calls_enabled"]:
-            raise HTTPException(403, "外呼已禁用,无法向云端服务商查询模型列表")
+            raise HTTPException(403, i18n.pick_now("Outbound calls are disabled, so the cloud provider's model list cannot be fetched", "外呼已禁用,无法向云端服务商查询模型列表"))
         try:
             ids = await fetch_model_ids(p, timeout=store.get_settings().get("request_timeout", 60))
         except DiscoveryError as e:
@@ -412,12 +412,12 @@ def create_app(
 
     @app.patch("/api/models/{model_id:path}")
     async def patch_model(model_id: str, body: ModelPatch) -> dict:
-        need(store.get_model(model_id), "模型")
+        need(store.get_model(model_id), i18n.pick_now("Model", "模型"))
         return store.update_model(model_id, body.model_dump(exclude_unset=True))  # type: ignore[return-value]
 
     @app.delete("/api/models/{model_id:path}")
     async def del_model(model_id: str) -> dict:
-        need(store.get_model(model_id), "模型")
+        need(store.get_model(model_id), i18n.pick_now("Model", "模型"))
         store.delete_model(model_id)
         return {"ok": True}
 
@@ -433,7 +433,7 @@ def create_app(
         body = body or {}
         ids = body.get("model_ids")
         if ids is not None and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
-            raise HTTPException(400, "model_ids 需要是字符串列表")
+            raise HTTPException(400, i18n.pick_now("model_ids must be a list of strings", "model_ids 需要是字符串列表"))
         return await board.check(ids, cloud=bool(body.get("cloud", True)))
 
     @app.post("/api/test-model")
@@ -521,7 +521,7 @@ def create_app(
                             except ValueError:
                                 pass
             except Exception as e:  # noqa: BLE001
-                yield json.dumps({"error": f"无法连接 Ollama: {e}"}, ensure_ascii=False) + "\n"
+                yield json.dumps({"error": i18n.pick_now(f"Cannot reach Ollama: {e}", f"无法连接 Ollama: {e}")}, ensure_ascii=False) + "\n"
                 return
             if ok:
                 prov = next((p for p in store.list_providers() if p["kind"] == "ollama"), None)
@@ -540,11 +540,11 @@ def create_app(
 
     def check_agent_name(name: str, exclude_id: str | None = None) -> None:
         if not name or not name.strip():
-            raise HTTPException(400, "请填写成员名字")
+            raise HTTPException(400, i18n.pick_now("A member name is required", "请填写成员名字"))
         if len(name) > 30 or any(ch in name for ch in " @\n\t"):
-            raise HTTPException(400, "名字不能包含空格或 @,最长 30 字")
+            raise HTTPException(400, i18n.pick_now("A name cannot contain spaces or @, and is at most 30 characters long", "名字不能包含空格或 @,最长 30 字"))
         if any(a["name"] == name and a["id"] != exclude_id for a in store.list_agents()):
-            raise HTTPException(409, "已有同名成员")
+            raise HTTPException(409, i18n.pick_now("A member with this name already exists", "已有同名成员"))
 
     @app.post("/api/agents")
     async def create_agent(body: AgentIn) -> dict:
@@ -553,19 +553,19 @@ def create_app(
 
     @app.patch("/api/agents/{aid}")
     async def patch_agent(aid: str, body: AgentPatch) -> dict:
-        cur = need(store.get_agent(aid), "成员")
+        cur = need(store.get_agent(aid), i18n.pick_now("Member", "成员"))
         patch = body.model_dump(exclude_unset=True)
         if "name" in patch:
             check_agent_name(patch["name"], aid)
         if cur.get("engine") and patch.get("model_id"):
-            raise HTTPException(400, "外部智能体不使用模型路由,不能指定模型")
+            raise HTTPException(400, i18n.pick_now("External agents do not use model routing, so they cannot take a model", "外部智能体不使用模型路由,不能指定模型"))
         if cur.get("origin") == "model" and "model_id" in patch and patch["model_id"] != cur["model_id"]:
-            raise HTTPException(400, "模型成员就是这个模型本身,不能换模型;想换的话把它移出群、再拉入另一个模型")
+            raise HTTPException(400, i18n.pick_now("A model member *is* that model, so its model cannot be changed; to change it, remove the member from the group and add a different model", "模型成员就是这个模型本身,不能换模型;想换的话把它移出群、再拉入另一个模型"))
         return store.update_agent(aid, patch)  # type: ignore[return-value]
 
     @app.delete("/api/agents/{aid}")
     async def del_agent(aid: str) -> dict:
-        need(store.get_agent(aid), "成员")
+        need(store.get_agent(aid), i18n.pick_now("Member", "成员"))
         store.delete_agent(aid)
         return {"ok": True}
 
@@ -578,7 +578,7 @@ def create_app(
     async def create_group(body: GroupIn) -> dict:
         known = {a["id"] for a in store.list_agents()}
         if any(i not in known for i in [*body.member_ids, *([body.host_agent_id] if body.host_agent_id else [])]):
-            raise HTTPException(400, "成员或群主不存在")
+            raise HTTPException(400, i18n.pick_now("A member or the host does not exist", "成员或群主不存在"))
         check_host(body.host_agent_id)
         return templates.group_view(
             store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt))
@@ -586,11 +586,11 @@ def create_app(
     def check_host(host_id: str | None) -> None:
         host = store.get_agent(host_id) if host_id else None
         if host and host.get("engine"):
-            raise HTTPException(400, "外部智能体不能当群主(群主负责分工,需要是模型成员)")
+            raise HTTPException(400, i18n.pick_now("An external agent cannot be the host (the host splits the work, so it has to be a model member)", "外部智能体不能当群主(群主负责分工,需要是模型成员)"))
 
     @app.patch("/api/groups/{gid}")
     async def patch_group(gid: str, body: GroupPatch) -> dict:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         if body.host_agent_id:
             check_host(body.host_agent_id)
         return templates.group_view(
@@ -598,40 +598,40 @@ def create_app(
 
     @app.delete("/api/groups/{gid}")
     async def del_group(gid: str) -> dict:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         store.delete_group(gid)
         return {"ok": True}
 
     @app.post("/api/groups/{gid}/members")
     async def add_member(gid: str, body: MemberIn) -> dict:
-        need(store.get_group(gid), "群聊")
-        need(store.get_agent(body.agent_id), "成员")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        need(store.get_agent(body.agent_id), i18n.pick_now("Member", "成员"))
         store.add_member(gid, body.agent_id)
         return templates.group_view(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.delete("/api/groups/{gid}/members/{aid}")
     async def remove_member(gid: str, aid: str) -> dict:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         store.remove_member(gid, aid)
         return templates.group_view(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.get("/api/groups/{gid}/messages")
     async def messages(gid: str) -> list[dict]:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         return store.list_messages(gid)
 
     @app.delete("/api/groups/{gid}/messages")
     async def clear_messages(gid: str) -> dict:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         store.clear_messages(gid)
         return {"ok": True}
 
     @app.post("/api/groups/{gid}/messages")
     async def send_message(gid: str, body: MessageIn) -> dict:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         text = body.text.strip()
         if not text:
-            raise HTTPException(400, "消息不能为空")
+            raise HTTPException(400, i18n.pick_now("A message cannot be empty", "消息不能为空"))
 
         async def emit(ev: dict) -> None:
             await hub.broadcast(gid, ev)
@@ -644,7 +644,7 @@ def create_app(
             except Exception as e:  # noqa: BLE001 — 界面上要看得到出了什么事,不能只在后台打印
                 print("orchestrator error:", repr(e))
                 try:
-                    await orch._system(gid, f"这一轮协作出错了:{e}", emit)
+                    await orch._system(gid, i18n.pick_now(f"Something went wrong in this round of collaboration: {e}", f"这一轮协作出错了:{e}"), emit)
                 except Exception:  # noqa: BLE001
                     pass
             finally:
@@ -663,7 +663,7 @@ def create_app(
 
     @app.get("/api/groups/{gid}/status")
     async def group_status(gid: str) -> dict:
-        need(store.get_group(gid), "群聊")
+        need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         return {"busy": any(not t.done() for t in tasks.get(gid, ()))}
 
     @app.post("/api/groups/{gid}/stop")

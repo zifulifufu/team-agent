@@ -2,6 +2,7 @@ import pytest
 
 from app import planner
 from app.toolcall import TagFilter, format_result, parse_tool_calls, strip_hidden, tools_prompt
+from tests.conftest import ASSIGNMENT, INTEGRATE, UPSTREAM, has
 
 
 # ---------------------------------------------------------------- toolcall
@@ -92,9 +93,9 @@ def test_build_plan_orders_by_dependency_and_remaps_ids():
 
 
 def test_build_plan_rejects_unknown_owner_cycle_and_empty():
-    with pytest.raises(planner.PlanError, match="不是群成员"):
+    with pytest.raises(planner.PlanError, match="not a member of this group"):
         planner.build_plan(_obj([{"owner": "路人", "instruction": "x"}]), MEMBERS)
-    with pytest.raises(planner.PlanError, match="循环"):
+    with pytest.raises(planner.PlanError, match="depend on each other"):
         planner.build_plan(_obj([
             {"id": "a", "owner": "Copywriter", "instruction": "x", "needs": ["b"]},
             {"id": "b", "owner": "Proofreader", "instruction": "y", "needs": ["a"]}]), MEMBERS)
@@ -116,9 +117,9 @@ def test_task_prompt_carries_conventions_upstream_and_declaration():
         {"id": "t1", "owner": "Copywriter", "title": "初稿", "instruction": "写初稿", "deliverable": "Markdown"},
         {"id": "t2", "owner": "Proofreader", "title": "审校", "instruction": "审校初稿", "needs": ["t1"], "strengths": ["中文"]}]), MEMBERS)
     p = planner.task_prompt(plan, plan.tasks[1], {"t1": "这是文案的初稿"}, 2)
-    assert "各位同事" in p and "这是文案的初稿" in p and "【分工】" in p and "← 你" in p and "中文" in p
+    assert "各位同事" in p and "这是文案的初稿" in p and has(p, ASSIGNMENT) and has(p, UPSTREAM) and "中文" in p
     # 上游没有产出时,要明确告诉下游
     p2 = planner.task_prompt(plan, plan.tasks[1], {}, 2)
-    assert "没有产出" in p2
+    assert "produced nothing" in p2
     integ = planner.integration_prompt(plan, {"t1": "稿"})
-    assert "整合" in integ and "没有完成" in integ  # t2 还是 pending → 视为未完成
+    assert has(integ, INTEGRATE) and "did not finish" in integ   # t2 还是 pending → 视为未完成

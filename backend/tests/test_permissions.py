@@ -186,7 +186,7 @@ def test_history_clip_and_tool_output_limit(store, make_router):
 
     assert clip_middle("a" * 100, 200) == "a" * 100
     out = clip_middle("头" * 50 + "中" * 400 + "尾" * 50, 100)
-    assert out.startswith("头" * 50) and out.endswith("尾" * 30) and "中间省略 400 字" in out
+    assert out.startswith("头" * 50) and out.endswith("尾" * 30) and "400 characters omitted in the middle" in out
     orch = Orchestrator(store, make_router(FakeLLM(default="ok")))
     g = store.list_groups()[0]
     agent = store.list_agents()[0]
@@ -195,5 +195,5 @@ def test_history_clip_and_tool_output_limit(store, make_router):
     store.update_settings({"history_clip": 500})
     msgs = orch.build_messages(g, agent, [agent])
     body = msgs[-1]["content"]
-    assert "中间省略" in body and body.count("全文") == 800           # 旧消息被截,最新一条原样
+    assert "omitted in the middle" in body and body.count("全文") == 800           # 旧消息被截,最新一条原样
     assert body.startswith("[我] 开头")

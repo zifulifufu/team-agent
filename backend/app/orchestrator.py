@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import asyncio
 import re
 import time
@@ -97,7 +99,7 @@ def mentions_all(text: str) -> bool:
     return bool(_ALL_RE.search(text))
 
 
-PLAN_FALLBACK = "已做好分工,见任务板。"
+PLAN_FALLBACK = i18n.pick_now("The work is split — see the task board.", "已做好分工,见任务板。")
 
 
 @dataclass
@@ -182,8 +184,8 @@ class Orchestrator:
         while convo and convo[0]["role"] == "assistant":
             convo.pop(0)
         if not convo or convo[-1]["role"] != "user":
-            convo.append({"role": "user", "content": "(请继续)"})
-        convo[-1]["content"] += f"\n\n(现在轮到你「{agent['name']}」发言)"
+            convo.append({"role": "user", "content": i18n.pick_now("(please continue)", "(请继续)")})
+        convo[-1]["content"] += i18n.pick_now(f"\n\n(it is now your turn, {agent['name']})", f"\n\n(现在轮到你「{agent['name']}」发言)")
         if extra_user:
             convo[-1]["content"] += "\n\n" + extra_user
         return [{"role": "system", "content": sysmsg}] + convo
@@ -198,14 +200,18 @@ class Orchestrator:
             doc = self.library.find_by_title(m.group(1))
             if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed) and all(doc["title"] not in o for o in out):
                 r = self.library.read(doc["id"], 0, 2500)
-                more = "(节选,完整内容可用 library_read 继续读)" if r["end"] < r["total"] else ""
-                out.append(f"《{doc['title']}》{more}\n{r['text']}")
+                more = i18n.pick_now("(excerpt; use library_read to read the rest)", "(节选,完整内容可用 library_read 继续读)") if r["end"] < r["total"] else ""
+                out.append(i18n.pick_now(f"[{doc['title']}]{more}\n{r['text']}", f"《{doc['title']}》{more}\n{r['text']}"))
             if len(out) >= 3:
                 break
-        return ("【用户引用的资料】\n" + "\n\n".join(out)) if out else ""
+        return (i18n.pick_now("[Documents the user referenced]\n", "【用户引用的资料】\n") + "\n\n".join(out)) if out else ""
 
     # ------------------------------------------------------------- entrypoint
-    async def handle_user_message(self, gid: str, text: str, emit: Emit, sender_name: str = "我") -> None:
+    async def handle_user_message(self, gid: str, text: str, emit: Emit,
+                               sender_name: str | None = None) -> None:
+        # The name the user is labelled with in the transcript; resolved per request
+        # rather than as a default argument, which is evaluated once at import time.
+        sender_name = sender_name or i18n.pick_now("me", "我")
         group = self.store.get_group(gid)
         if not group:
             return
@@ -231,7 +237,7 @@ class Orchestrator:
     async def _run_turns(self, group: dict, text: str, emit: Emit, run: RunState) -> None:
         members = self.store.group_members(group["id"])
         if not members:
-            await self._system(group["id"], "群里还没有成员,请先添加 agent。", emit)
+            await self._system(group["id"], i18n.pick_now("This group has no members yet — add an agent first.", "群里还没有成员,请先添加 agent。"), emit)
             return
         cfg = self.store.get_settings()
         host = self._pick_host(group, members)
@@ -275,9 +281,9 @@ class Orchestrator:
                     queue.append(m)
                     queued.add(m["id"])
         if queue:
-            names = "、".join(a["name"] for a in queue)
+            names = i18n.pick_now(", ", "、").join(a["name"] for a in queue)
             await self._system(
-                group["id"], f"已达到单次最大发言轮数({max_hops}),{names} 的发言被暂停。可再发一条消息继续。", emit
+                group["id"], i18n.pick_now(f"Reached the limit of {max_hops} turns for one message, so {names} was paused. Send another message to carry on.", f"已达到单次最大发言轮数({max_hops}),{names} 的发言被暂停。可再发一条消息继续。"), emit
             )
 
     @staticmethod
@@ -307,18 +313,18 @@ class Orchestrator:
         try:
             obj = planner.extract_plan_json(out.raw)
         except planner.PlanError as e:
-            await self._plan_failed(group["id"], out, f"群主的分工计划格式不对({e}),已改用普通接力模式。", emit)
+            await self._plan_failed(group["id"], out, i18n.pick_now(f"The host's plan was malformed ({e}); falling back to ordinary turn-taking.", f"群主的分工计划格式不对({e}),已改用普通接力模式。"), emit)
             return out
         if obj is None:
             if mode == "on":
-                await self._system(group["id"], "本群设为「总是先分工」,但群主没有给出计划,已按普通回复处理。", emit)
+                await self._system(group["id"], i18n.pick_now("This group is set to always split the work, but the host produced no plan; treating its reply as an ordinary answer.", "本群设为「总是先分工」,但群主没有给出计划,已按普通回复处理。"), emit)
             return out
         # 群主这一轮已经把 MCP 连上了;计划里写了不存在的工具名只是被忽略,不当作错误
         known = {t["name"] for t in (await self.toolhub.context(group, host, connect=False)).specs()}
         try:
             plan = planner.build_plan(obj, members, int(cfg["plan_max_tasks"]), known)
         except planner.PlanError as e:
-            await self._plan_failed(group["id"], out, f"群主的分工计划不合规({e}),已改用普通接力模式。", emit)
+            await self._plan_failed(group["id"], out, i18n.pick_now(f"The host's plan was not valid ({e}); falling back to ordinary turn-taking.", f"群主的分工计划不合规({e}),已改用普通接力模式。"), emit)
             return out
         await self._execute_plan(group, members, host, plan, run, emit)
         return True
@@ -327,7 +333,7 @@ class Orchestrator:
         self, group: dict, members: list[dict], host: dict, plan: planner.Plan, run: RunState, emit: Emit
     ) -> None:
         gid = group["id"]
-        pm = self.store.add_message(gid, "plan", None, "任务板", planner.summarize(plan), meta=plan.to_meta())
+        pm = self.store.add_message(gid, "plan", None, i18n.pick_now("Task board", "任务板"), planner.summarize(plan), meta=plan.to_meta())
         plan.message_id = pm["id"]
         await emit({"type": "message", "message": pm})
         by_id = {m["id"]: m for m in members}
@@ -341,7 +347,7 @@ class Orchestrator:
             for i, task in enumerate(plan.tasks, 1):
                 agent = by_id.get(task.owner_id)
                 if agent is None:
-                    task.status, task.error = "failed", "成员已不在群里"
+                    task.status, task.error = "failed", i18n.pick_now("the member has left the group", "成员已不在群里")
                     await push()
                     continue
                 task.status = "running"
@@ -353,7 +359,7 @@ class Orchestrator:
                     extra_meta={"plan_id": plan.message_id, "task_id": task.id, "task_title": task.title},
                 )
                 if out is None:
-                    task.status, task.error = "failed", "模型调用失败"
+                    task.status, task.error = "failed", i18n.pick_now("the model call failed", "模型调用失败")
                 else:
                     task.status, task.message_id = "done", out.message["id"]
                     outputs[task.id] = out.text
@@ -364,7 +370,7 @@ class Orchestrator:
                 group, host, members, emit, run,
                 extra_user=planner.integration_prompt(plan, outputs),
                 exclude_plan_id=plan.message_id,
-                extra_meta={"plan_id": plan.message_id, "task_id": "final", "task_title": "整合"},
+                extra_meta={"plan_id": plan.message_id, "task_id": "final", "task_title": i18n.pick_now("Consolidate", "整合")},
             )
             plan.status = "done" if final is not None else "failed"
             if final is not None:
@@ -386,12 +392,12 @@ class Orchestrator:
             plan.status = "failed"
             for t in plan.tasks:
                 if t.status in ("running", "pending"):
-                    t.status, t.error = "failed", t.error or "分工执行出错"
+                    t.status, t.error = "failed", t.error or i18n.pick_now("the plan failed while running", "分工执行出错")
             try:
                 await push()
             except Exception:  # noqa: BLE001
                 pass
-            await self._system(gid, f"分工执行出错:{e}", emit)
+            await self._system(gid, i18n.pick_now(f"The plan failed while running: {e}", f"分工执行出错:{e}"), emit)
 
     # -------------------------------------------------------------- one turn
     async def _agent_turn(
@@ -494,7 +500,7 @@ class Orchestrator:
                     break
                 results = []
                 for call in calls:
-                    entry = {"name": call.name or "(格式错误)", "args": _short_args(call.arguments), "status": "running"}
+                    entry = {"name": call.name or i18n.pick_now("(malformed)", "(格式错误)"), "args": _short_args(call.arguments), "status": "running"}
                     trace.append(entry)
                     idx = len(trace) - 1
                     await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
@@ -518,12 +524,12 @@ class Orchestrator:
                     await emit({"type": "tool", "message_id": mid, "index": len(trace) - 1, "call": dict(entry)})
                     results.append(format_result(call.name or "error", ok, text, int(cfg["tool_output_limit"])))
                 messages.append({"role": "assistant", "content": res.text})
-                messages.append({"role": "user", "content": "\n\n".join(results) + "\n\n请基于工具结果继续。"})
+                messages.append({"role": "user", "content": "\n\n".join(results) + i18n.pick_now("\n\nCarry on based on the tool results.", "\n\n请基于工具结果继续。")})
         except AllRoutesFailed as e:
-            detail = "; ".join(f"{a.model_id}:{a.detail}" for a in e.attempts) or "没有可用模型"
+            detail = "; ".join(f"{a.model_id}:{a.detail}" for a in e.attempts) or i18n.pick_now("no model available", "没有可用模型")
             await emit({"type": "message_discard", "message_id": mid})
             await self._system(
-                group["id"], f"「{agent['name']}」暂时无法回复,所有模型均不可用({detail})。", emit
+                group["id"], i18n.pick_now(f"{agent['name']} cannot reply right now: no model is available ({detail}).", f"「{agent['name']}」暂时无法回复,所有模型均不可用({detail})。"), emit
             )
             run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
             return None
@@ -532,14 +538,14 @@ class Orchestrator:
             raise
         except Exception as e:  # noqa: BLE001
             await emit({"type": "message_discard", "message_id": mid})
-            await self._system(group["id"], f"「{agent['name']}」发言出错:{e}", emit)
+            await self._system(group["id"], i18n.pick_now(f"{agent['name']} failed while replying: {e}", f"「{agent['name']}」发言出错:{e}"), emit)
             run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
             return None
 
         assert res is not None
         content = "\n\n".join(visible_parts).strip()
         if not content:
-            content = empty_fallback or ("(已调用工具,没有额外说明)" if trace else res.text.strip())
+            content = empty_fallback or (i18n.pick_now("(a tool was called; there was no further explanation)", "(已调用工具,没有额外说明)") if trace else res.text.strip())
         meta = {"attempts": attempts, **(extra_meta or {})}
         if trace:
             meta["tools"] = trace
@@ -550,7 +556,7 @@ class Orchestrator:
             )
         except Exception as e:  # noqa: BLE001  —— 存库失败也要让界面收尾,别留一个永远在转的气泡
             await emit({"type": "message_discard", "message_id": mid})
-            await self._system(group["id"], f"「{agent['name']}」的回复没能保存:{e}", emit)
+            await self._system(group["id"], i18n.pick_now(f"{agent['name']}'s reply could not be saved: {e}", f"「{agent['name']}」的回复没能保存:{e}"), emit)
             return None
         await emit({"type": "message_end", "message": saved})
         run.steps.append({
@@ -577,13 +583,13 @@ class Orchestrator:
             return None
 
         if not cfg["external_agents_enabled"]:
-            return await fail(f"「{name}」是外部智能体,而外部智能体总开关是关着的,已跳过。到「设置 → 外部智能体」里打开后再试。")
+            return await fail(i18n.pick_now(f"{name} is an external agent, but the external-agent master switch is off, so it was skipped. Turn it on under Settings → External agents and try again.", f"「{name}」是外部智能体,而外部智能体总开关是关着的,已跳过。到「设置 → 外部智能体」里打开后再试。"))
         if not cfg["external_calls_enabled"]:
-            return await fail(f"「{name}」要连接云端模型,而「禁止外呼」正开着,已跳过。")
+            return await fail(i18n.pick_now(f"{name} needs a cloud model, but outbound calls are switched off, so it was skipped.", f"「{name}」要连接云端模型,而「禁止外呼」正开着,已跳过。"))
         try:
             ecfg = external.clean_cfg(agent.get("engine_cfg"))    # 运行前再校验一遍(备份恢复、手改数据库都可能带进不合规的设置)
         except ValueError as e:
-            return await fail(f"「{name}」的外部智能体设置不合规:{e}")
+            return await fail(i18n.pick_now(f"{name}'s external-agent settings are not valid: {e}", f"「{name}」的外部智能体设置不合规:{e}"))
 
         memory_block = ""
         if cfg["memory_enabled"] and group["ext"]["memory"]:
@@ -632,15 +638,15 @@ class Orchestrator:
         try:
             res = await self.external.run(agent, system=system, prompt=prompt, on_delta=on_delta, on_tool=on_tool)
         except ExternalError as e:
-            return await fail(f"「{name}」没能回复:{e}")
+            return await fail(i18n.pick_now(f"{name} could not reply: {e}", f"「{name}」没能回复:{e}"))
         except asyncio.CancelledError:
             await emit({"type": "message_discard", "message_id": mid})
             raise
         except Exception as e:  # noqa: BLE001
-            return await fail(f"「{name}」发言出错:{e}")
+            return await fail(i18n.pick_now(f"{name} failed while replying: {e}", f"「{name}」发言出错:{e}"))
 
         await flush_ext_delta()   # 收尾:把最后不足一批的分片发出去
-        content = res.text.strip() or empty_fallback or "(没有回复内容)"
+        content = res.text.strip() or empty_fallback or i18n.pick_now("(no reply content)", "(没有回复内容)")
         meta: dict = {"engine": agent["engine"], "level": ecfg["level"], **(extra_meta or {})}
         info = {k: v for k, v in (("cost_usd", res.cost_usd), ("duration_ms", res.duration_ms),
                                   ("num_turns", res.num_turns), ("model", res.model)) if v not in (None, "")}
@@ -655,7 +661,7 @@ class Orchestrator:
                 gid, "agent", agent["id"], name, content, model_id=f"ext:{agent['engine']}", meta=meta, mid=mid,
             )
         except Exception as e:  # noqa: BLE001
-            return await fail(f"「{name}」的回复没能保存:{e}")
+            return await fail(i18n.pick_now(f"{name}'s reply could not be saved: {e}", f"「{name}」的回复没能保存:{e}"))
         await emit({"type": "message_end", "message": saved})
         run.steps.append({"agent": name, "model": f"ext:{agent['engine']}", "ok": True,
                           "tools": [t["name"] for t in trace if t.get("status") == "ok"], "fallback": False})
@@ -665,7 +671,7 @@ class Orchestrator:
         """计划没能执行时,把群主那条只有「已做好分工,见任务板」的消息改掉,免得和下面的系统提示互相矛盾。"""
         if out.text == PLAN_FALLBACK:
             try:
-                fixed = self.store.update_message(out.message["id"], content="(分工计划没能生效,见下方系统提示)")
+                fixed = self.store.update_message(out.message["id"], content=i18n.pick_now("(the plan did not take effect — see the system notice below)", "(分工计划没能生效,见下方系统提示)"))
                 if fixed:
                     await emit({"type": "message_end", "message": fixed})
             except Exception:  # noqa: BLE001 — 改文案失败不影响后面的提示
@@ -673,7 +679,7 @@ class Orchestrator:
         await self._system(gid, note, emit)
 
     async def _system(self, gid: str, text: str, emit: Emit) -> None:
-        msg = self.store.add_message(gid, "system", None, "系统", text)
+        msg = self.store.add_message(gid, "system", None, i18n.pick_now("System", "系统"), text)
         await emit({"type": "message", "message": msg})
 
 
@@ -683,7 +689,7 @@ def clip_middle(text: str, limit: int) -> str:
         return text
     head = int(limit * 0.7)
     tail = limit - head
-    return f"{text[:head]}\n…(中间省略 {len(text) - limit} 字)…\n{text[-tail:]}"
+    return i18n.pick_now(f"{text[:head]}\n...({len(text) - limit} characters omitted in the middle)...\n{text[-tail:]}", f"{text[:head]}\n…(中间省略 {len(text) - limit} 字)…\n{text[-tail:]}")
 
 
 def _short_args(args: dict) -> dict:

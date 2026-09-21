@@ -13,7 +13,7 @@ from app.main import ensure_loopback_no_proxy
 from app.router import litellm_params, retry_after
 from app.tools import ToolRegistry
 from app.versions import is_newer
-from tests.conftest import FakeLLM
+from tests.conftest import PLAN_MODE, FakeLLM, has
 from tests.test_collab import Collector, setup
 
 
@@ -154,7 +154,7 @@ async def test_failed_plan_does_not_leave_a_misleading_done_message(store, make_
     from tests.test_collab import role
 
     def script(messages):                          # 群主只给了计划、没有任何说明文字 → 会用「已做好分工,见任务板」兜底
-        if role(messages) == "Aide" and "【分工模式】" in messages[-1]["content"]:
+        if role(messages) == "Aide" and has(messages[-1]["content"], PLAN_MODE):
             return "<plan>" + bad + "</plan>"
         return "好的"
 
@@ -164,6 +164,6 @@ async def test_failed_plan_does_not_leave_a_misleading_done_message(store, make_
     await orch.drain()
     msgs = store.list_messages(g["id"])
     host = next(m for m in msgs if m["sender_type"] == "agent")
-    assert "见任务板" not in host["content"] and "没能生效" in host["content"]
-    assert any(m["sender_type"] == "system" and "普通接力" in m["content"] for m in msgs)
+    assert "see the task board" not in host["content"] and "did not take effect" in host["content"]
+    assert any(m["sender_type"] == "system" and "ordinary turn-taking" in m["content"] for m in msgs)
     assert [e for e in c.events if e["type"] == "message_end"][-1]["message"]["content"] == host["content"]

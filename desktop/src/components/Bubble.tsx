@@ -8,22 +8,24 @@ import { levelLabel } from "../lib";
 import "../styles/chat.css";
 
 /** Protocol marker the backend asks members to start their reply with (see the
- * planner prompt). It is a machine-readable token, not UI text, so it stays the
- * same in every language; only the label shown next to it is translated. */
-const DECL_PREFIX = "【分工】";
+ * planner prompt). It is a machine-readable token, not UI text, so it is not run
+ * through the dictionary — but the backend does emit it in the language of the
+ * request, and both spellings have to be recognized. */
+const DECL_PREFIXES = ["【分工】", "[Assignment]"];
 
 /** When a member reply starts with the marker, its first line becomes an "assignment"
  * row. While streaming, an unfinished first line is shown as ordinary content so the
  * text does not flicker between the two forms. */
 function splitDeclaration(content: string, streaming: boolean): { decl: string | null; rest: string } {
   const c = content.replace(/^\s+/, "");
-  if (!c.startsWith(DECL_PREFIX)) return { decl: null, rest: content };
+  const prefix = DECL_PREFIXES.find((p) => c.startsWith(p));
+  if (!prefix) return { decl: null, rest: content };
   const nl = c.indexOf("\n");
   if (nl < 0) {
     if (streaming) return { decl: null, rest: content };
-    return { decl: c.slice(DECL_PREFIX.length).trim(), rest: "" };
+    return { decl: c.slice(prefix.length).trim(), rest: "" };
   }
-  return { decl: c.slice(DECL_PREFIX.length, nl).trim(), rest: c.slice(nl + 1).replace(/^\s+/, "") };
+  return { decl: c.slice(prefix.length, nl).trim(), rest: c.slice(nl + 1).replace(/^\s+/, "") };
 }
 
 type Source = "builtin" | "plugin" | "mcp" | "";

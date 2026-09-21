@@ -1,5 +1,5 @@
 from app.orchestrator import Orchestrator, find_mentions
-from tests.conftest import FakeLLM
+from tests.conftest import TURN_NOW, FakeLLM, has
 
 
 def setup(store, make_router, fake):
@@ -89,7 +89,7 @@ async def test_ping_pong_is_capped_by_max_hops(store, make_router):
     await orch.handle_user_message(g["id"], "@Copywriter 开始", c)
     assert len(c.ends()) == 5
     last = store.list_messages(g["id"])[-1]
-    assert last["sender_type"] == "system" and "最大发言轮数" in last["content"]
+    assert last["sender_type"] == "system" and "Reached the limit of" in last["content"]
 
 
 async def test_self_mention_ignored(store, make_router):
@@ -108,8 +108,8 @@ async def test_context_labels_speakers_and_merges_roles(store, make_router):
     roles = [m["role"] for m in msgs]
     assert roles[0] == "system" and roles[1] == "user"
     assert all(a != b for a, b in zip(roles[1:], roles[2:]))  # 严格交替
-    assert "[我] 来个通知" in msgs[1]["content"] and "[Aide]" in msgs[1]["content"]
-    assert msgs[-1]["content"].rstrip().endswith("(现在轮到你「Copywriter」发言)")
+    assert "[me] 来个通知" in msgs[1]["content"] and "[Aide]" in msgs[1]["content"]
+    assert has(msgs[-1]["content"].rstrip(), TURN_NOW) and "Copywriter" in msgs[-1]["content"]
 
 
 async def test_skill_injected_into_system_prompt(store, make_router):
@@ -142,7 +142,7 @@ async def test_all_models_down_emits_system_notice_not_crash(store, make_router)
     types = [e["type"] for e in c.events]
     assert "message_discard" in types
     last = store.list_messages(g["id"])[-1]
-    assert last["sender_type"] == "system" and "暂时无法回复" in last["content"]
+    assert last["sender_type"] == "system" and "cannot reply right now" in last["content"]
 
 
 async def test_fallback_is_recorded_on_message(store, make_router):

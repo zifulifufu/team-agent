@@ -19,6 +19,21 @@ def store(tmp_path):
     return st
 
 
+# Protocol markers the backend puts in its prompts (see planner.py). The wording follows
+# the request language, so tests match either spelling instead of pinning one of them.
+PLAN_MODE = ("[Plan mode]", "【分工模式】")
+ASSIGNMENT = ("[Assignment]", "【分工】")
+TASK_HEAD = ("[Task ", "【分工任务")
+INTEGRATE = ("[Integration]", "【整合】")
+HOST_MARK = ("(host)", "〔群主〕")
+UPSTREAM = ("<- you", "← 你")
+TURN_NOW = ("it is now your turn", "现在轮到你")
+
+
+def has(text: str, marker: tuple[str, ...]) -> bool:
+    return any(m in text for m in marker)
+
+
 def chunk(text: str):
     return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
 

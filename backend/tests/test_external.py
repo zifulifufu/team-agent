@@ -330,12 +330,12 @@ def test_external_disabled_or_offline_is_skipped_with_notice(store, make_router,
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
     assert not col.ends() and any(e["type"] == "message_discard" for e in col.events)
     sys_msgs = [e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system"]
-    assert any("总开关" in t for t in sys_msgs)
+    assert any("master switch" in t for t in sys_msgs)
     assert not fake_env.exists()                                  # 命令行根本没被启动
     enable(store, external_calls_enabled=False)
     col = Collector()
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
-    assert any("禁止外呼" in e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system")
+    assert any("outbound calls are switched off" in e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system")
     assert not fake_env.exists()
 
 
@@ -347,7 +347,7 @@ def test_external_failure_shows_system_notice_and_no_bubble(store, make_router, 
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
     assert not col.ends() and any(e["type"] == "message_discard" for e in col.events)
     notes = [e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system"]
-    assert any("WorkBuddy" in t and "没能回复" in t and "登录" in t for t in notes)
+    assert any("WorkBuddy" in t and "could not reply" in t and "登录" in t for t in notes)
 
 
 def test_tampered_settings_are_rejected_at_run_time(store, make_router, fake_env):
@@ -357,7 +357,7 @@ def test_tampered_settings_are_rejected_at_run_time(store, make_router, fake_env
     col = Collector()
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
     assert not col.ends() and not fake_env.exists()
-    assert any("不合规" in e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system")
+    assert any("are not valid" in e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system")
 
 
 def test_external_agent_is_never_the_host_and_plan_still_works(store, make_router, fake_env):

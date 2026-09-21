@@ -252,7 +252,7 @@ async def test_exception_before_model_call_still_closes_the_bubble(store, make_r
     await orch.handle_user_message(g["id"], "@Copywriter 你好", c)
     types = [e["type"] for e in c.events]
     assert "message_start" in types and "message_discard" in types
-    assert any(e["type"] == "message" and "发言出错" in e["message"]["content"] for e in c.events)
+    assert any(e["type"] == "message" and "failed while replying" in e["message"]["content"] for e in c.events)
 
 
 async def test_plan_execution_error_marks_plan_failed(store, make_router, monkeypatch):
@@ -274,7 +274,7 @@ async def test_plan_execution_error_marks_plan_failed(store, make_router, monkey
     await orch.handle_user_message(g["id"], "帮我出一份发布会通知", c)
     plan_msgs = [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"]
     assert plan_msgs and plan_msgs[0]["meta"]["status"] == "failed"
-    assert any("分工执行出错" in e["message"]["content"] for e in c.events if e["type"] == "message")
+    assert any("plan failed while running" in e["message"]["content"] for e in c.events if e["type"] == "message")
 
 
 def test_plan_with_scalar_fields_is_a_plan_not_a_crash():
@@ -311,7 +311,7 @@ async def test_long_user_request_stays_intact_for_later_speakers(store, make_rou
     msgs = orch.build_messages(g, store.list_agents()[1], store.group_members(g["id"]))
     assert long_req in json.dumps(msgs, ensure_ascii=False).replace("\\n", "\n") or long_req in "".join(m["content"] for m in msgs)
     assert "中间省略" not in "".join(m["content"] for m in msgs)
-    assert "中间省略" in clip_middle("长" * 1000, 300)
+    assert "omitted in the middle" in clip_middle("长" * 1000, 300)
 
 
 async def test_request_problems_do_not_trip_the_circuit(store, make_router):

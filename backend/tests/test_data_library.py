@@ -130,7 +130,7 @@ def test_export_chat_markdown_and_obsidian(tmp_path):
     r = c.get(f"/api/groups/{g['id']}/export")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/markdown") and "filename*=UTF-8''" in r.headers["content-disposition"]
     text = r.text
-    assert text.startswith(f"# {g['name']}") and "**我**" in text and "帮我写发布会开场" in text and "调用工具 `library_search`:ok" in text
+    assert text.startswith(f"# {g['name']}") and "**我**" in text and "帮我写发布会开场" in text and "Tool call `library_search`: ok" in text
     assert c.get("/api/groups/nope/export").status_code == 404
     assert c.post(f"/api/groups/{g['id']}/export-obsidian").status_code == 400          # 还没设置 Obsidian
     vault = tmp_path / "v" / "记忆"
