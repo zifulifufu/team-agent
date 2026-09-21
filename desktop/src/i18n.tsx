@@ -90,6 +90,32 @@ const ZH: Record<string, string> = {
   "Language": "语言",
   "Interface language. Built-in templates and role presets follow the same setting.":
     "界面语言。自带的模板与岗位预设也跟随这个设置。",
+  // ---------------------------------------------------------------- 通用
+  "Offline mode · local models only": "离线模式 · 仅本地模型",
+  "No model available": "无可用模型",
+
+  // ---------------------------------------------------------------- 首页
+  "Pull hosted and local models into one group and let each do what it is best at — office documents, video production, writing.":
+    "把国内外大模型拉进同一个群,各展所长,协同完成办公、视频制作与创作。",
+  "Describe your task; type @ to assign members, or leave it and 小助 will coordinate":
+    "描述你的任务;输入 @ 点名成员分工,不点名则由小助统筹",
+  "Which group chat to send to": "发送到哪个群聊",
+  "Send to": "发送到",
+  "New group chat · {names}": "新建群聊 · {names}",
+  'Send to "{name}"': "发送到「{name}」",
+  "Group templates": "群聊模板",
+  "Members, host, skills and prompt installed in one click": "一键建好成员、群主、技能和提示词",
+  "More teams: template gallery →": "更多团队:模板中心 →",
+  'Create a group chat from template "{name}"': "用模板「{name}」新建群聊",
+  "{name} (host)": "{name}(群主)",
+  "No members yet — create some under Members in the sidebar first": "还没有成员,请先到左侧「成员」里创建",
+  "Everyone": "所有人",
+  "Everyone speaks in turn": "全员依次发言",
+  "Message input": "消息输入框",
+  "@-mention a member": "@ 点名成员",
+  "Click to allow / block hosted model calls": "点击切换:允许 / 禁止调用云端模型",
+  "Stop": "停止",
+  "Send": "发送",
 };
 
 let current: Lang = DEFAULT_LANG;
@@ -107,10 +133,20 @@ function translate(lang: Lang, key: string, vars?: Record<string, string | numbe
 /** 非组件代码(api.ts / lib.ts / 事件回调)用的翻译函数:按当前语言返回。 */
 export const tr = (key: string, vars?: Record<string, string | number>) => translate(current, key, vars);
 
+/**
+ * 双语内容取值:源码里同时写着英文和中文的「内容」用这个(界面文案不要用它,用 t())。
+ * 中文缺失时回退英文,所以可以先把英文补上、中文随后补。
+ */
+export function pickLang(en: string, zh: string | undefined, lang: Lang): string {
+  return lang === "zh" ? zh || en : en;
+}
+
 interface I18nCtx {
   lang: Lang;
   setLang: (l: Lang) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
+  /** 双语内容取值(见 pickLang)。 */
+  pick: (en: string, zh?: string) => string;
 }
 const Ctx = createContext<I18nCtx | null>(null);
 
@@ -137,7 +173,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     [lang],
   );
 
-  const value = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t]);
+  const pick = useCallback((en: string, zh?: string) => pickLang(en, zh, lang), [lang]);
+
+  const value = useMemo(() => ({ lang, setLang, t, pick }), [lang, setLang, t, pick]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

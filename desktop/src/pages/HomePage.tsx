@@ -3,12 +3,14 @@ import { LayoutTemplate, LoaderCircle, Sparkles } from "lucide-react";
 import { api, type GroupTemplate } from "../api";
 import { useData } from "../data";
 import { useRoute } from "../hooks";
+import { useI18n } from "../i18n";
 import { SCENES } from "../lib";
 import Composer from "../components/Composer";
 import type { SettingsTab } from "../settings/SettingsModal";
 import "../styles/chat.css";
 
-export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string, autoSend: string) => void; onSettings?: (t: SettingsTab) => void }) {
+export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string, autoSend: string) => void; onSettings?: (tab: SettingsTab) => void }) {
+  const { t, pick } = useI18n();
   const { agents, groups, reload, reloadGroups } = useData();
   const route = useRoute();
   const [sceneId, setSceneId] = useState(SCENES[0].id);
@@ -23,17 +25,18 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
 
   useEffect(() => {
     api.templates().then(setTemplates).catch((e) => setTplErr((e as Error).message));
-    // 模板里的成员可能还没创建(会由预设岗位新建),用预设的头像先显示
+    // Members referenced by a template may not exist yet (they get created from the role presets),
+    // so show the preset avatar until the real member shows up.
     api.agentPresets().then((ps) => setPresetAva(new Map(ps.map((p) => [p.name, p.avatar])))).catch(() => undefined);
   }, []);
 
-  const useTemplate = async (t: GroupTemplate) => {
+  const useTemplate = async (tpl: GroupTemplate) => {
     if (tplBusy) return;
     setTplErr("");
-    setTplBusy(t.id);
+    setTplBusy(tpl.id);
     try {
-      const g = await api.createFromTemplate(t.id);
-      await reload(); // 模板可能新建了成员,连同群一起刷新
+      const g = await api.createFromTemplate(tpl.id);
+      await reload(); // a template may have created members, so refresh both lists
       onOpen(g.id, "");
     } catch (e) {
       setTplErr((e as Error).message);
@@ -42,31 +45,32 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     }
   };
 
-  // 首页只放常用的几张模板卡片,更全的在「设置 → 模板中心」
-  const homeTemplates = useMemo(() => templates.filter((t) => t.home !== false), [templates]);
+  // Only the common templates go on the home page; the rest live in Settings → Template gallery
+  const homeTemplates = useMemo(() => templates.filter((tpl) => tpl.home !== false), [templates]);
   const scene = SCENES.find((s) => s.id === sceneId)!;
   const sceneAgents = useMemo(() => {
     const picked = scene.members.map((n) => agents.find((a) => a.name === n)).filter(Boolean) as typeof agents;
     return picked.length ? picked : agents;
   }, [scene, agents]);
 
-  const targetGroup = target === "new" ? null : groups.find((g) => g.id === target) ?? null;  const mentionable = useMemo(() => {
+  const targetGroup = target === "new" ? null : groups.find((g) => g.id === target) ?? null;
+  const mentionable = useMemo(() => {
     if (targetGroup) return targetGroup.member_ids.map((i) => agents.find((a) => a.id === i)).filter(Boolean) as typeof agents;
     return sceneAgents;
   }, [targetGroup, sceneAgents, agents]);
 
   const start = async () => {
-    const t = text.trim();
-    if (!t || busy) return;
+    const task = text.trim();
+    if (!task || busy) return;
     setErr("");
     setBusy(true);
     try {
-      if (targetGroup) return onOpen(targetGroup.id, t);
-      if (sceneAgents.length === 0) throw new Error("还没有成员,请先到左侧「成员」里创建");
-      const title = t.replace(/@\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 14) || scene.label;
+      if (targetGroup) return onOpen(targetGroup.id, task);
+      if (sceneAgents.length === 0) throw new Error(t("No members yet — create some under Members in the sidebar first"));
+      const title = task.replace(/@\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 14) || pick(scene.label, scene.labelZh);
       const g = await api.createGroup(title, sceneAgents.map((a) => a.id), sceneAgents[0].id);
       await reloadGroups();
-      onOpen(g.id, t);
+      onOpen(g.id, task);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -80,13 +84,13 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
         <div className="hero">
           <div className="hero-logo"><Sparkles size={22} /></div>
           <h1>Team Agent</h1>
-          <p>把国内外大模型拉进同一个群,各展所长,协同完成办公、视频制作与创作。</p>
+          <p>{t("Pull hosted and local models into one group and let each do what it is best at — office documents, video production, writing.")}</p>
         </div>
 
         <div className="scene-tabs" role="tablist">
           {SCENES.map((s) => (
             <button key={s.id} role="tab" aria-selected={s.id === sceneId} className={s.id === sceneId ? "on" : ""} onClick={() => setSceneId(s.id)}>
-              {s.label}
+              {pick(s.label, s.labelZh)}
             </button>
           ))}
         </div>
@@ -97,7 +101,7 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           onSend={start}
           busy={busy}
           members={mentionable}
-          placeholder="描述你的任务;输入 @ 点名成员分工,不点名则由小助统筹"
+          placeholder={t("Describe your task; type @ to assign members, or leave it and 小助 will coordinate")}
           routeText={route.text}
           offline={route.offline}
           onToggleExternal={route.toggleExternal}
@@ -105,11 +109,11 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           autoFocus
           error={err}
           extra={
-            <label className="target-select" title="发送到哪个群聊">
-              <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label="发送到">
-                <option value="new">新建群聊 · {sceneAgents.map((a) => a.name).join("、")}</option>
+            <label className="target-select" title={t("Which group chat to send to")}>
+              <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("Send to")}>
+                <option value="new">{t("New group chat · {names}", { names: sceneAgents.map((a) => a.name).join("、") })}</option>
                 {groups.map((g) => (
-                  <option key={g.id} value={g.id}>发送到「{g.name}」</option>
+                  <option key={g.id} value={g.id}>{t('Send to "{name}"', { name: g.name })}</option>
                 ))}
               </select>
             </label>
@@ -118,39 +122,39 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
 
         <div className="chips">
           {scene.chips.map((c) => (
-            <button key={c.label} className="chip-btn" onClick={() => setText(c.prompt)}>
-              {c.label}
+            <button key={c.label} className="chip-btn" onClick={() => setText(pick(c.prompt, c.promptZh))}>
+              {pick(c.label, c.labelZh)}
             </button>
           ))}
         </div>
 
         {(homeTemplates.length > 0 || tplErr) && (
-          <section className="tpl-section" aria-label="群聊模板">
+          <section className="tpl-section" aria-label={t("Group templates")}>
             <div className="tpl-title">
-              <LayoutTemplate size={14} aria-hidden /> 群聊模板
-              <span className="muted small">一键建好成员、群主、技能和提示词</span>
-              {onSettings && <button className="link small" style={{ marginLeft: "auto" }} onClick={() => onSettings("gallery")}>更多团队:模板中心 →</button>}
+              <LayoutTemplate size={14} aria-hidden /> {t("Group templates")}
+              <span className="muted small">{t("Members, host, skills and prompt installed in one click")}</span>
+              {onSettings && <button className="link small" style={{ marginLeft: "auto" }} onClick={() => onSettings("gallery")}>{t("More teams: template gallery →")}</button>}
             </div>
             {tplErr && <div className="err tpl-err" role="alert">{tplErr}</div>}
             <div className="tpl-grid">
-              {homeTemplates.map((t) => (
-                <button key={t.id} className="tpl-card" disabled={!!tplBusy} onClick={() => void useTemplate(t)} aria-label={`用模板「${t.name}」新建群聊`}>
+              {homeTemplates.map((tpl) => (
+                <button key={tpl.id} className="tpl-card" disabled={!!tplBusy} onClick={() => void useTemplate(tpl)} aria-label={t('Create a group chat from template "{name}"', { name: tpl.name })}>
                   <div className="tpl-name">
-                    {t.name}
-                    {tplBusy === t.id && <LoaderCircle size={13} className="spin" aria-hidden />}
+                    {tpl.name}
+                    {tplBusy === tpl.id && <LoaderCircle size={13} className="spin" aria-hidden />}
                   </div>
-                  <div className="tpl-desc">{t.desc}</div>
+                  <div className="tpl-desc">{tpl.desc}</div>
                   <div className="tpl-members">
-                    {t.members.map((n) => (
-                      <span key={n} className={"tpl-mem" + (n === t.host ? " host" : "")} title={n === t.host ? `${n}(群主)` : n}>
+                    {tpl.members.map((n) => (
+                      <span key={n} className={"tpl-mem" + (n === tpl.host ? " host" : "")} title={n === tpl.host ? t("{name} (host)", { name: n }) : n}>
                         <span className="tpl-ava">{agents.find((a) => a.name === n)?.avatar ?? presetAva.get(n) ?? "🤖"}</span>
                         {n}
                       </span>
                     ))}
                   </div>
-                  {t.skills.length > 0 && (
+                  {tpl.skills.length > 0 && (
                     <div className="tpl-skills">
-                      {t.skills.map((k) => (
+                      {tpl.skills.map((k) => (
                         <span key={k} className="tag on">{k}</span>
                       ))}
                     </div>

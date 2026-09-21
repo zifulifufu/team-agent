@@ -1,10 +1,14 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, AtSign, Cloud, Lock, Square } from "lucide-react";
+import { useI18n } from "../i18n";
 
 interface Mentionable {
   name: string;
   avatar: string;
   role: string;
+  /** Text to insert for this entry. Defaults to "@" + name; the "everyone" entry overrides it because
+   *  the backend accepts both "@all" and "@所有人" and we want the one that matches the UI language. */
+  insert?: string;
 }
 
 interface Props {
@@ -22,20 +26,26 @@ interface Props {
   autoFocus?: boolean;
   disabled?: boolean;
   error?: string;
-  /** 输入框下方左侧的额外控件(首页用来放"发送到哪个群") */
+  /** Extra control at the bottom-left of the box (the home page uses it for "send to which group") */
   extra?: ReactNode;
 }
 
-/** WorkBuddy 风格的大圆角输入框:左侧 @ 按钮,中间路由状态,右侧圆形发送。 */
+/** Large rounded composer: @ button on the left, routing status in the middle, round send button on the right. */
 export default function Composer(p: Props) {
+  const { t, lang } = useI18n();
   const [mention, setMention] = useState<{ q: string; idx: number } | null>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
 
   const candidates = useMemo(() => {
     if (!mention) return [];
-    const all: Mentionable[] = [{ name: "所有人", avatar: "👥", role: "全员依次发言" }, ...p.members];
-    return all.filter((a) => a.name.includes(mention.q));
-  }, [mention, p.members]);
+    const all: Mentionable = {
+      name: t("Everyone"),
+      insert: lang === "zh" ? "@所有人" : "@all",
+      avatar: "👥",
+      role: t("Everyone speaks in turn"),
+    };
+    return [all, ...p.members].filter((a) => a.name.includes(mention.q) || a.name.toLowerCase().includes(mention.q.toLowerCase()));
+  }, [mention, p.members, t, lang]);
 
   const onInput = (v: string) => {
     p.onChange(v);
@@ -44,9 +54,11 @@ export default function Composer(p: Props) {
     setMention(m ? { q: m[1], idx: 0 } : null);
   };
 
-  const pick = (name: string) => {
+  /** Replace the half-typed @mention at the caret with the chosen entry. */
+  const chooseMention = (c: Mentionable) => {
     const pos = ta.current?.selectionStart ?? p.value.length;
-    const before = p.value.slice(0, pos).replace(/@([^\s@]*)$/, "@" + name + " ");
+    const token = c.insert ?? "@" + c.name;
+    const before = p.value.slice(0, pos).replace(/@([^\s@]*)$/, token + " ");
     p.onChange(before + p.value.slice(pos));
     setMention(null);
     ta.current?.focus();
@@ -71,7 +83,7 @@ export default function Composer(p: Props) {
       }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) {
         e.preventDefault();
-        pick(candidates[mention.idx].name);
+        chooseMention(candidates[mention.idx]);
         return;
       }
       if (e.key === "Escape") return setMention(null);
@@ -87,7 +99,7 @@ export default function Composer(p: Props) {
       {mention && candidates.length > 0 && (
         <div className="mention-pop" role="listbox">
           {candidates.map((c, i) => (
-            <button key={c.name} role="option" aria-selected={i === mention.idx} className={i === mention.idx ? "on" : ""} onMouseDown={(e) => { e.preventDefault(); pick(c.name); }}>
+            <button key={c.name} role="option" aria-selected={i === mention.idx} className={i === mention.idx ? "on" : ""} onMouseDown={(e) => { e.preventDefault(); chooseMention(c); }}>
               <span className="mp-ava">{c.avatar}</span>
               <b>{c.name}</b>
               <span className="muted">{c.role}</span>
@@ -105,26 +117,26 @@ export default function Composer(p: Props) {
           onKeyDown={onKey}
           placeholder={p.placeholder}
           rows={p.rows ?? 3}
-          aria-label="消息输入框"
+          aria-label={t("Message input")}
         />
         <div className="composer-bar">
-          <button className="round-btn" title="@ 点名成员" aria-label="@ 点名成员" onClick={insertAt}>
+          <button className="round-btn" title={t("@-mention a member")} aria-label={t("@-mention a member")} onClick={insertAt}>
             <AtSign size={16} />
           </button>
           {p.extra}
           <div className="grow" />
           {p.routeText !== undefined && (
-            <button className={"route-pill" + (p.offline ? " off" : "")} onClick={p.onToggleExternal} title="点击切换:允许 / 禁止调用云端模型">
+            <button className={"route-pill" + (p.offline ? " off" : "")} onClick={p.onToggleExternal} title={t("Click to allow / block hosted model calls")}>
               {p.offline ? <Lock size={13} /> : <Cloud size={13} />}
               <span>{p.routeText}</span>
             </button>
           )}
           {p.busy && p.onStop ? (
-            <button className="send-btn stop" title="停止" aria-label="停止" onClick={p.onStop}>
+            <button className="send-btn stop" title={t("Stop")} aria-label={t("Stop")} onClick={p.onStop}>
               <Square size={13} fill="currentColor" />
             </button>
           ) : (
-            <button className="send-btn" title="发送" aria-label="发送" disabled={!p.value.trim() || p.disabled || p.busy} onClick={p.onSend}>
+            <button className="send-btn" title={t("Send")} aria-label={t("Send")} disabled={!p.value.trim() || p.disabled || p.busy} onClick={p.onSend}>
               <ArrowUp size={17} />
             </button>
           )}
