@@ -1,89 +1,84 @@
-Team Agent 专有软件许可协议
-============================
+Business Source License 1.1
 
-版权所有 (c) 2026 zifulifufu <<请替换为你的姓名或公司全称>>
-保留所有权利 (All Rights Reserved)。
+License text copyright © 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
 
-【重要】请先把上面尖括号里的权利人名称改成你的真实姓名或公司全称 —— 这是本许可唯一需要你填写的地方。
+Parameters
 
+Licensor:             zifulifufu
+Licensed Work:        Team Agent version 0.5.0
+                      The Licensed Work is (c) 2026 zifulifufu
+Additional Use Grant: None
+Change Date:          2030-09-21
+Change License:       Mozilla Public License Version 2.0 (MPL 2.0)
 
-一、定义
---------
-「本软件」指本仓库中的全部内容：源代码、文档、界面设计、配置与数据结构，以及随附的其它文件。
-「著作权人」指上文所载的权利人。
-「你」指接触或使用本软件的个人或组织。
-
-
-二、你可以做的事
-----------------
-1. 在你自己控制的设备上安装、运行本软件，用于个人使用、内部评估或经著作权人授权的用途；
-2. 为上述使用目的制作必要数量的备份副本；
-3. 在未修改著作权声明的前提下，向你的雇员或同一法人实体内的成员提供本软件的内部使用。
+For information about alternative licensing arrangements (including a commercial
+license for production use) please contact the Licensor.
 
 
-三、未经书面许可，你不得
-------------------------
-1. 复制、发布、传播、出租、出借、公开提供或以其它方式向第三方分发本软件或其任何部分；
-2. 修改、改编、翻译、演绎本软件，或基于本软件创作衍生作品；
-3. 反向工程、反编译或反汇编本软件（法律强制允许的情形除外）；
-4. 将本软件或其衍生作品用于商业用途，包括但不限于销售、许可、收费分发、
-   以本软件为组成部分提供软件即服务（SaaS）或托管服务；
-5. 移除、遮蔽或更改本软件中的版权声明、许可声明、商标或其它权利标识；
-6. 使用著作权人的名称或商标来推广你的产品或服务，或暗示存在关联、赞助或背书。
+Terms
 
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited
+production use.
 
-四、商业授权
-------------
-如你需要分发、嵌入、二次开发、托管运营或其它超出本协议范围的授权，
-请与著作权人联系以取得书面商业许可。
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and the rights granted in the paragraph
+above terminate.
 
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
 
-五、第三方组件与第三方内容
---------------------------
-1. 本软件使用了若干第三方开源组件。这些组件由各自的著作权人按其许可条款授权，
-   其授权条件**不适用**于本协议第三部分的限制。完整清单与其许可证见 `THIRD_PARTY_NOTICES.md`。
-   你在分发本软件（含打包后的安装包）时，须遵守这些条款，通常包括保留其版权声明与许可证副本。
-2. 本软件**不附带**任何第三方内容（例如示例库数据）。若你自行获取并在你的环境中使用这类内容，
-   由你自行遵守其许可条款（例如上游项目的署名、许可证副本与「已修改」标注要求）。
-3. 本软件可调用你本机已安装的其它命令行程序（「外部智能体」功能）。
-   那些程序的使用受其自身许可与服务条款约束，**由你自行遵守**；
-   本软件与其开发者之间不存在任何关联、赞助或背书关系。
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work and the Change Date may vary
+for each version of the Licensed Work released by Licensor.
 
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
 
-六、免责声明
-------------
-本软件按「现状」提供，不附带任何明示或默示的担保，包括但不限于对适销性、
-特定用途适用性、准确性与不侵权的担保。在任何情况下，著作权人都不对因使用或无法使用
-本软件而产生的任何直接、间接、附带、特殊或后果性损害承担责任，即使已被告知此类损害的可能性。
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
 
-你应自行评估本软件是否适合你的用途；涉及医疗、法律、财务等受监管领域的决策，
-不得仅依赖本软件的输出。
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this License).
 
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN “AS IS” BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
 
-七、其它
---------
-1. 本协议受中华人民共和国法律管辖。
-2. 本协议中任何条款被认定为无效或不可执行，不影响其余条款的效力。
-3. 著作权人可随时发布本协议的新版本；已获得的使用授权按其获得时的版本执行。
+MariaDB hereby grants you permission to use this License’s text to license
+your works, and to refer to it using the trademark “Business Source License”,
+as long as you comply with the Covenants of Licensor below.
 
+Covenants of Licensor
 
---------------------------------------------------------------------------------
-English summary (for reference only; the Chinese text above prevails)
+In consideration of the right to use this License’s text and the “Business
+Source License” name and trademark, Licensor covenants to MariaDB, and to all
+other recipients of the licensed work to be provided by Licensor:
 
-Copyright (c) 2026 <copyright holder>. All rights reserved.
+1. To specify as the Change License the GPL Version 2.0 or any later version,
+   or a license that is compatible with GPL Version 2.0 or a later version,
+   where “compatible” means that software provided under the Change License can
+   be included in a program with software provided under GPL Version 2.0 or a
+   later version. Licensor may specify additional Change Licenses without
+   limitation.
 
-This software is proprietary. You may install and use it on devices you control for personal,
-evaluation, or authorized internal purposes. You may NOT copy, distribute, publish, sublicense,
-modify, create derivative works from, reverse engineer, or use it commercially (including as part
-of a hosted or SaaS offering) without prior written permission from the copyright holder.
+2. To either: (a) specify an additional grant of rights to use that does not
+   impose any additional restriction on the right granted in this License, as
+   the Additional Use Grant; or (b) insert the text “None”.
 
-Third-party open-source components are licensed by their respective owners under their own terms
-— see THIRD_PARTY_NOTICES.md. This repository does not bundle third-party content; if you obtain
-such content yourself, you are responsible for complying with its license.
+3. To specify a Change Date.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT
-SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE
-USE OF THE SOFTWARE.
-
-All product names and trademarks mentioned are the property of their respective owners and are
-used for identification or interoperability purposes only; no affiliation or endorsement is implied.
+4. Not to modify this License in any other way.
