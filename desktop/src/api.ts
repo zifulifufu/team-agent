@@ -988,8 +988,8 @@ export const api = {
   repoPlugins: (repo: string, ref = "") => get<RepoFile[]>(`/api/updates/repo/plugins${qs({ repo, ref })}`),
   repoReadme: (repo: string) => get<{ repo: string; content: string; url: string }>(`/api/updates/repo/readme${qs({ repo })}`),
   previewFile: (repo: string, path: string, ref = "") => post<FilePreview>("/api/updates/preview", { repo, path, ref }),
-  installSkill: (repo: string, path: string, ref = "", overwrite = false) =>
-    post<Skill>("/api/updates/skill/install", { repo, path, ref, overwrite }),
+  installSkill: (repo: string, path: string, ref = "", overwrite = false, sha256 = "") =>
+    post<Skill>("/api/updates/skill/install", { repo, path, ref, overwrite, sha256 }),
   updateSkill: (name: string) => post<Skill>(`/api/updates/skill/update/${encodeURIComponent(name)}`),
   /** sha256 must come from a previewFile result; the server re-downloads and compares it, and refuses if the content changed */
   installPlugin: (repo: string, path: string, sha256: string, ref = "", overwrite = false) =>

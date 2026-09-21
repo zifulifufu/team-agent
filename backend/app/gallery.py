@@ -30,25 +30,25 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .presets import builtin_for, builtin_names
 from . import i18n
 from .presets import (
     AGENT_PRESETS,
     SEED_AGENTS,
     SEED_PROMPTS,
     TEMPLATES,
+    builtin_for,
+    builtin_names,
     display_name,
-    localize_prompt,
     prompt_for,
     prompt_titles,
 )
 from .store import Store
-from .templates import ensure_agent
-from .templates import group_view
+from .templates import ensure_agent, group_view
 from .tools import (
     EXAMPLE_SKILLS,
     canonical_skill_name,
@@ -703,6 +703,12 @@ def _install_skill(store: Store, name: str, idx: dict, overwrite: bool) -> str:
     return "written"
 
 
+# One install at a time. A team install creates the members, writes their skills to disk and only
+# then creates the group — none of that is a transaction, and `groups.name` has no unique constraint
+# to catch a duplicate, so two overlapping installs would interleave into a half-built template.
+_APPLY_LOCK = threading.Lock()
+
+
 def apply(store: Store, item_id: str, opts: dict | None = None) -> dict:
     opts = opts or {}
     item = find(store, item_id)
@@ -711,7 +717,8 @@ def apply(store: Store, item_id: str, opts: dict | None = None) -> dict:
                                          "模板不存在(可能刚被移除)"))
     fn = {"team": _apply_team, "agent": _apply_agent, "skill": _apply_skill,
           "prompt": _apply_prompt, "mcp": _apply_mcp}[item["kind"]]
-    return fn(store, item, opts)
+    with _APPLY_LOCK:
+        return fn(store, item, opts)
 
 
 def _result(item: dict, summary: str, **kw: Any) -> dict:
@@ -823,7 +830,6 @@ def _apply_agent(store: Store, item: dict, opts: dict) -> dict:
 
 def _apply_skill(store: Store, item: dict, opts: dict) -> dict:
     idx = _defs_index(store)
-    lang = i18n.current()
     label = item["name"]
     r = _install_skill(store, label, idx, bool(opts.get("overwrite")))
     if r == "missing":

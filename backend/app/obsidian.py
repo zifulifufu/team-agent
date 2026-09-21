@@ -446,8 +446,11 @@ it takes no part in memory sync)."""
             try:   # keep a copy of the content in _已删除 before deleting the memory, so an accidental
 # delete or move in Obsidian can still be recovered
                 self._stash(base, i18n.pick_now("_deleted", "_已删除"), Path(maps[mid]["rel_path"]).name, render_note(m, self._scope_name(m, gn, an)))
-            except (ObsidianError, OSError):
-                pass
+            except (ObsidianError, OSError) as e:
+                # The file is already gone from the vault, so that copy is the only place this memory
+                # would still exist: failing to make it is a reason to keep the memory, not to delete it.
+                rep.warnings.append(i18n.pick_now(f"Could not keep a copy of {maps[mid]['rel_path']} before deleting it, so the memory was left alone: {e}", f"删除前没能为 {maps[mid]['rel_path']} 留下副本,所以这条记忆没有删除:{e}"))
+                continue
             st.delete_memory(mid)
             st.del_obsidian_map(mid)
             rep.deleted_memories += 1

@@ -351,7 +351,8 @@ function SkillPreviewModal({
     setBusy(true);
     setErr("");
     try {
-      await api.installSkill(repo, path, gitRef, overwrite);
+      // The hash pins what was previewed: the server re-downloads and refuses if it changed.
+      await api.installSkill(repo, path, gitRef, overwrite, pv?.sha256 ?? "");
       onInstalled();
     } catch (e) {
       const msg = (e as Error).message;

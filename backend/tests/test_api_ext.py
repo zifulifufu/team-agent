@@ -4,7 +4,6 @@ library uploads, prompts, templates, MCP, plugins, skills, backups.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import sys
 from pathlib import Path
@@ -253,7 +252,6 @@ def test_a_group_that_picked_documents_is_moved_to_knowledge_bases(tmp_path):
     """The old `ext.library.ids` listed documents. Opening a database that has one must end up
     with the knowledge bases holding those documents, and never with a wider scope than the
     group could already reach."""
-    import sqlite3
     import json as _json
 
     from app.store import Store

@@ -3,6 +3,8 @@ member into a group at any time."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from . import i18n
 from .presets import (
     AGENT_PRESET_BY_KEY,
@@ -13,6 +15,9 @@ from .presets import (
     localize_member,
 )
 from .tools import display_skill_name
+
+if TYPE_CHECKING:   # annotations only — importing Store for real would be a cycle (store → templates)
+    from .store import Store
 
 
 def _find(store: Store, name: str) -> dict | None:

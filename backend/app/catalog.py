@@ -70,7 +70,13 @@ class Catalog:
         return str(self.data.get("version", ""))
 
     def save_override(self, data: dict) -> None:
-        self.override_path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        # Same atomic pattern as local_models: write beside the target and rename, so a crash midway
+        # cannot leave an unparsable catalog behind (which would silently fall back to the built-in
+        # one and quietly drop the update the user just applied).
+        self.override_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.override_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(self.override_path)
         self.reload()
 
     # ------------------------------------------------------------------ lookup

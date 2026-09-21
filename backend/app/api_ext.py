@@ -29,7 +29,7 @@ from .gallery import MCP_TEMPLATES, mcp_display_name as display_mcp_name
 from .memory import MemoryService
 from .obsidian import ObsidianError, ObsidianSync
 from .orchestrator import Orchestrator
-from .presets import AGENT_PRESETS, DEFAULT_SYSTEM_PROMPT, TEMPLATES
+from .presets import AGENT_PRESETS, DEFAULT_SYSTEM_PROMPT
 from .prompting import VARIABLES, PromptBuilder, estimate_tokens, render_vars
 from .router import ModelRouter, has_credentials
 from .store import Store, new_id
@@ -1243,7 +1243,7 @@ def build_router(c: Ctx) -> APIRouter:
     @r.post("/api/updates/skill/install")
     @gh
     async def updates_skill_install(body: RepoFileIn) -> dict:
-        s = await c.updater.install_skill(body.repo, body.path, body.ref, body.overwrite)
+        s = await c.updater.install_skill(body.repo, body.path, body.ref, body.overwrite, body.sha256)
         return s.summary()
 
     @r.post("/api/updates/skill/update/{name}")

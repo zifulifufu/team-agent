@@ -39,7 +39,7 @@ from .modelopts import model_options, refresh_live
 from .router import has_credentials
 from .store import Store
 from .versions import is_newer
-from .tools import Skill, parse_skill_text, safe_skill_name, write_skill
+from .tools import Skill, parse_skill_text, safe_skill_name, write_skill, write_text_atomic
 
 API = "https://api.github.com"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
@@ -202,8 +202,17 @@ class Updater:
         f = await self.file(repo, path, ref)
         return {**f, "sha256": sha256_hex(f["content"]), "repo": valid_repo(repo), "path": valid_path(path), "ref": ref}
 
-    async def install_skill(self, repo: str, path: str, ref: str = "", overwrite: bool = False) -> Skill:
+    async def install_skill(self, repo: str, path: str, ref: str = "", overwrite: bool = False,
+                            sha256: str = "") -> Skill:
+        """Install a SKILL.md.
+
+        When `sha256` is supplied it has to match the content the user previewed, so what lands on
+        disk is what they read — the plugin path has required this from the start. Automatic skill
+        updates pass no hash: they compare the upstream blob sha to decide *whether* to update.
+        """
         f = await self.file(repo, path, ref)
+        if sha256 and sha256_hex(f["content"]) != sha256:
+            raise GitHubError(i18n.pick_now("The file content no longer matches what you previewed (it may have changed); preview it again before installing", "文件内容与你预览的不一致(可能已被修改),请重新预览后再安装"), 412)
         parts = valid_path(path).split("/")
         parsed = parse_skill_text(f["content"], parts[-2] if len(parts) > 1 else valid_repo(repo).split("/")[1])
         name = safe_skill_name(parsed.name)
@@ -236,7 +245,7 @@ class Updater:
         src = self.store.get_source("plugin", stem)
         if dest.exists() and not overwrite and not (src and src["repo"] == valid_repo(repo)):
             raise GitHubError(i18n.pick_now(f"A plugin named \"{stem}\" already exists; tick Overwrite to replace it", f"已有同名插件「{stem}」,勾选「覆盖」才会替换"), 409)
-        dest.write_text(f["content"], encoding="utf-8")
+        write_text_atomic(dest, f["content"])
         self.store.set_source("plugin", stem, valid_repo(repo), valid_path(path), ref, f["sha"])
         self.store.resolve_updates("plugin", stem)
         return stem

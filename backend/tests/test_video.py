@@ -169,7 +169,7 @@ async def test_it_polls_until_the_clip_is_ready_and_downloads_once(video_env, fa
 
 async def test_the_key_is_sent_as_a_bearer_token(store, make_router, fake):
     store.update_settings({"video_enabled": True})
-    prov = store.add_provider_from_preset("minimax-h3", api_key="sk-video-123456")
+    store.add_provider_from_preset("minimax-h3", api_key="sk-video-123456")
     orch, g = setup(store, make_router, FakeLLM(default="好"))
     srv = fake(key_expected="sk-video-123456")
 
@@ -214,7 +214,7 @@ async def test_it_asks_before_rendering(store, make_router, fake):
 
 async def test_a_failed_render_is_reported_and_leaves_no_file(video_env, fake):
     orch, store, g, prov = video_env
-    srv = fake(statuses=("failed",), detail={"error": "CUDA out of memory"})
+    fake(statuses=("failed",), detail={"error": "CUDA out of memory"})
 
     out = await generate(orch, store, g)
 
@@ -253,7 +253,7 @@ async def test_an_oversized_clip_is_refused_before_it_is_saved(video_env, fake):
 async def test_a_declared_size_over_the_cap_is_refused_without_downloading_it(video_env, fake):
     orch, store, g, prov = video_env
     store.update_settings({"video_max_mb": 1})
-    srv = fake(content_length=99 * 1024 * 1024, body=b"x" * 10)
+    fake(content_length=99 * 1024 * 1024, body=b"x" * 10)
 
     out = await generate(orch, store, g)
 

@@ -271,16 +271,16 @@ def localize_skill(skill: "Skill", lang: str) -> "Skill":
     if not entry:
         return skill
     out = copy.copy(skill)
-    for field, zh_field in (("name", "name_zh"), ("description", "description_zh"),
-                            ("body", "body_zh")):
-        zh = entry.get(zh_field)
-        base = (entry.get(field) or "").strip()
+    for attr, zh_attr in (("name", "name_zh"), ("description", "description_zh"),
+                          ("body", "body_zh")):
+        zh = entry.get(zh_attr)
+        base = (entry.get(attr) or "").strip()
         if not zh:
             continue
-        current = (getattr(skill, field) or "").strip()
+        current = (getattr(skill, attr) or "").strip()
         if current not in {base, zh.strip()}:
             continue                       # user edited this field — keep their text
-        setattr(out, field, zh.strip() if lang == "zh" else base)
+        setattr(out, attr, zh.strip() if lang == "zh" else base)
     return out
 
 
@@ -337,6 +337,17 @@ def render_skill(name: str, description: str, body: str, scope: str = "member", 
     return head + f"---\n{body.strip()}\n"
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write beside the target and rename.
+
+    Replacing a skill or a plugin is exactly when this matters: an interrupted write would leave a
+    truncated file, with the old version already gone and nothing to re-download it from.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def write_skill(skills_dir: Path, name: str, description: str, body: str, scope: str = "member",
                 version: str = "", old_name: str | None = None) -> Skill:
     folder = safe_skill_name(name)
@@ -344,10 +355,12 @@ def write_skill(skills_dir: Path, name: str, description: str, body: str, scope:
         raise ValueError(i18n.pick_now("That skill name is not valid", "技能名称不合法"))
     d = skills_dir / folder
     d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(
-        render_skill(folder, description, body, scope if scope in ("member", "group") else "member", version),
-        encoding="utf-8",
-    )
+    # The name is already stripped of separators, but the folder is still checked: this is the one
+    # place that turns a remote string into a directory, so it should not depend on that alone.
+    if not d.resolve().is_relative_to(skills_dir.resolve()):
+        raise ValueError(i18n.pick_now("That skill name is not valid", "技能名称不合法"))
+    write_text_atomic(d / "SKILL.md",
+                      render_skill(folder, description, body, scope if scope in ("member", "group") else "member", version))
     if old_name and safe_skill_name(old_name) != folder:
         delete_skill(skills_dir, old_name)
     return _parse_skill(d / "SKILL.md")  # type: ignore[return-value]

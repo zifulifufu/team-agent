@@ -21,7 +21,6 @@ from app import coderun
 from app.api_ext import MAX_UPLOAD_BYTES, _refuse_oversized
 from app.library import MAX_CHARS
 from app.main import create_app
-from app.store import Store
 from tests.conftest import FakeLLM, chunk
 from tests.test_collab import Collector, setup
 
