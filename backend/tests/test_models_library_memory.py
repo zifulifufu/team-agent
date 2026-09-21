@@ -235,10 +235,10 @@ async def test_extract_saves_valid_items_and_skips_secrets_and_dupes(store):
 def test_record_action_summarises_and_trims(store):
     mem = MemoryService(store, _router(store))
     g = store.list_groups()[0]
-    steps = [{"agent": "文案", "model": "deepseek/deepseek-flash", "tools": ["library_search"], "ok": True},
-             {"agent": "校对", "model": "ollama/qwen2.5:7b", "fallback": True, "ok": True}]
+    steps = [{"agent": "Copywriter", "model": "deepseek/deepseek-flash", "tools": ["library_search"], "ok": True},
+             {"agent": "Proofreader", "model": "ollama/qwen2.5:7b", "fallback": True, "ok": True}]
     m = mem.record_action(g, "写发布会通知", steps, 12.4)
-    assert m["kind"] == "action" and "文案" in m["content"] and "library_search" in m["content"] and "回退" in m["content"]
+    assert m["kind"] == "action" and "Copywriter" in m["content"] and "library_search" in m["content"] and "回退" in m["content"]
     for i in range(50):
         mem.record_action(g, f"任务{i}", steps, 1)
     assert len(store.list_memories("group", g["id"], "action")) == 40

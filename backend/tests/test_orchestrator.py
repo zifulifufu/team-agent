@@ -34,9 +34,9 @@ def by_sender(fake_reply_map):
 
 
 def test_find_mentions_longest_first_and_order():
-    members = [{"id": "1", "name": "文案"}, {"id": "2", "name": "文案组"}, {"id": "3", "name": "校对"}]
-    got = find_mentions("请 @校对 和 @文案组 看看", members)
-    assert [m["name"] for m in got] == ["校对", "文案组"]
+    members = [{"id": "1", "name": "Copywriter"}, {"id": "2", "name": "文案组"}, {"id": "3", "name": "Proofreader"}]
+    got = find_mentions("请 @Proofreader 和 @文案组 看看", members)
+    assert [m["name"] for m in got] == ["Proofreader", "文案组"]
     assert find_mentions("@文案组", members)[0]["name"] == "文案组"
     assert len(find_mentions("@文案组", members)) == 1
 
@@ -46,22 +46,22 @@ async def test_no_mention_goes_to_host(store, make_router):
     orch, g, ag = setup(store, make_router, fake)
     c = Collector()
     await orch.handle_user_message(g["id"], "帮我写个发布会通知", c)
-    assert [m["sender_name"] for m in c.ends()] == ["小助"]
+    assert [m["sender_name"] for m in c.ends()] == ["Aide"]
 
 
 async def test_handoff_chain_via_at_mentions(store, make_router):
     fake = FakeLLM(default=by_sender({
-        "小助": "拆解完毕。@文案 请写初稿。",
-        "文案": "初稿如下……@校对 请审校。",
-        "校对": "已审校,无问题。",
+        "Aide": "拆解完毕。@Copywriter 请写初稿。",
+        "Copywriter": "初稿如下……@Proofreader 请审校。",
+        "Proofreader": "已审校,无问题。",
     }))
     orch, g, ag = setup(store, make_router, fake)
     c = Collector()
     await orch.handle_user_message(g["id"], "写一篇通知", c)
-    assert [m["sender_name"] for m in c.ends()] == ["小助", "文案", "校对"]
+    assert [m["sender_name"] for m in c.ends()] == ["Aide", "Copywriter", "Proofreader"]
     # 消息与模型信息已落库
     saved = store.list_messages(g["id"])
-    assert [m["sender_name"] for m in saved][-3:] == ["小助", "文案", "校对"]
+    assert [m["sender_name"] for m in saved][-3:] == ["Aide", "Copywriter", "Proofreader"]
     assert saved[-1]["model_id"] == "deepseek/deepseek-flash"
 
 
@@ -69,8 +69,8 @@ async def test_explicit_mention_skips_host(store, make_router):
     fake = FakeLLM(default="行")
     orch, g, ag = setup(store, make_router, fake)
     c = Collector()
-    await orch.handle_user_message(g["id"], "@分镜 给我一个 15 秒的分镜", c)
-    assert [m["sender_name"] for m in c.ends()] == ["分镜"]
+    await orch.handle_user_message(g["id"], "@Storyboard 给我一个 15 秒的分镜", c)
+    assert [m["sender_name"] for m in c.ends()] == ["Storyboard"]
 
 
 async def test_at_all_fans_out_to_everyone(store, make_router):
@@ -78,38 +78,38 @@ async def test_at_all_fans_out_to_everyone(store, make_router):
     orch, g, ag = setup(store, make_router, fake)
     c = Collector()
     await orch.handle_user_message(g["id"], "@所有人 自我介绍", c)
-    assert [m["sender_name"] for m in c.ends()] == ["小助", "文案", "分镜", "校对"]
+    assert [m["sender_name"] for m in c.ends()] == ["Aide", "Copywriter", "Storyboard", "Proofreader"]
 
 
 async def test_ping_pong_is_capped_by_max_hops(store, make_router):
     store.update_settings({"max_hops": 5})
-    fake = FakeLLM(default=by_sender({"文案": "@校对 你看看", "校对": "@文案 你再改改"}))
+    fake = FakeLLM(default=by_sender({"Copywriter": "@Proofreader 你看看", "Proofreader": "@Copywriter 你再改改"}))
     orch, g, ag = setup(store, make_router, fake)
     c = Collector()
-    await orch.handle_user_message(g["id"], "@文案 开始", c)
+    await orch.handle_user_message(g["id"], "@Copywriter 开始", c)
     assert len(c.ends()) == 5
     last = store.list_messages(g["id"])[-1]
     assert last["sender_type"] == "system" and "最大发言轮数" in last["content"]
 
 
 async def test_self_mention_ignored(store, make_router):
-    fake = FakeLLM(default=by_sender({"文案": "我 @文案 自己搞定"}))
+    fake = FakeLLM(default=by_sender({"Copywriter": "我 @Copywriter 自己搞定"}))
     orch, g, ag = setup(store, make_router, fake)
     c = Collector()
-    await orch.handle_user_message(g["id"], "@文案 写", c)
+    await orch.handle_user_message(g["id"], "@Copywriter 写", c)
     assert len(c.ends()) == 1
 
 
 async def test_context_labels_speakers_and_merges_roles(store, make_router):
-    fake = FakeLLM(default=by_sender({"小助": "@文案 写", "文案": "写好了"}))
+    fake = FakeLLM(default=by_sender({"Aide": "@Copywriter 写", "Copywriter": "写好了"}))
     orch, g, ag = setup(store, make_router, fake)
     await orch.handle_user_message(g["id"], "来个通知", Collector())
-    msgs = next(m for _, m in fake.calls if m[0]["content"].startswith("你是「文案」"))
+    msgs = next(m for _, m in fake.calls if m[0]["content"].startswith("你是「Copywriter」"))
     roles = [m["role"] for m in msgs]
     assert roles[0] == "system" and roles[1] == "user"
     assert all(a != b for a, b in zip(roles[1:], roles[2:]))  # 严格交替
-    assert "[我] 来个通知" in msgs[1]["content"] and "[小助]" in msgs[1]["content"]
-    assert msgs[-1]["content"].rstrip().endswith("(现在轮到你「文案」发言)")
+    assert "[我] 来个通知" in msgs[1]["content"] and "[Aide]" in msgs[1]["content"]
+    assert msgs[-1]["content"].rstrip().endswith("(现在轮到你「Copywriter」发言)")
 
 
 async def test_skill_injected_into_system_prompt(store, make_router):
@@ -118,7 +118,7 @@ async def test_skill_injected_into_system_prompt(store, make_router):
     ensure_example_skills(store.data_dir / "skills")
     fake = FakeLLM(default="ok")
     orch, g, ag = setup(store, make_router, fake)
-    await orch.handle_user_message(g["id"], "@文案 写", Collector())
+    await orch.handle_user_message(g["id"], "@Copywriter 写", Collector())
     sys = fake.calls[0][1][0]["content"]
     assert "【技能:公文写作规范】" in sys and "开头一句话交代目的和结论" in sys
 
@@ -161,7 +161,7 @@ async def test_cancel_discards_streaming_message_and_saves_nothing(store, make_r
 
     orch, g, ag = setup(store, make_router, slow)
     c = Collector()
-    task = asyncio.create_task(orch.handle_user_message(g["id"], "@文案 写", c))
+    task = asyncio.create_task(orch.handle_user_message(g["id"], "@Copywriter 写", c))
     await asyncio.wait_for(started.wait(), 5)
     task.cancel()
     try:

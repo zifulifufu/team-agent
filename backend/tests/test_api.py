@@ -61,7 +61,7 @@ def test_deleting_model_unpins_agents(client):
 
 def test_agent_name_validation(client):
     assert client.post("/api/agents", json={"name": "有 空格"}).status_code == 400
-    assert client.post("/api/agents", json={"name": "文案"}).status_code == 409
+    assert client.post("/api/agents", json={"name": "Copywriter"}).status_code == 409
     assert client.post("/api/agents", json={"name": "配音", "avatar": "🎙️"}).status_code == 200
 
 
@@ -69,7 +69,7 @@ def test_send_message_streams_over_websocket(client):
     client.patch("/api/providers/deepseek", json={"api_key": "sk-abcdef123456"})
     gid = client.get("/api/groups").json()[0]["id"]
     with client.websocket_connect(f"ws://127.0.0.1/ws/groups/{gid}") as ws:
-        assert client.post(f"/api/groups/{gid}/messages", json={"text": "@文案 你好"}).json()["ok"]
+        assert client.post(f"/api/groups/{gid}/messages", json={"text": "@Copywriter 你好"}).json()["ok"]
         seen = []
         for _ in range(500):                      # 有上限;出错时后端会发 message_discard / idle,一样会收尾,不会永远等下去
             ev = ws.receive_json()
@@ -78,7 +78,7 @@ def test_send_message_streams_over_websocket(client):
                 break
     assert ev["type"] == "message_end", f"没有等到成员回复,收到的事件:{seen}"
     assert seen[0] == "message" and "message_start" in seen and "delta" in seen
-    assert ev["message"]["sender_name"] == "文案" and ev["message"]["content"] == "你好,我是助手"
+    assert ev["message"]["sender_name"] == "Copywriter" and ev["message"]["content"] == "你好,我是助手"
     msgs = client.get(f"/api/groups/{gid}/messages").json()
     assert msgs[-2]["sender_type"] == "user" and msgs[-1]["sender_type"] == "agent"
 

@@ -36,7 +36,7 @@ def test_export_layout_and_skips_action_kind(env):
     a = st.list_agents()[0]
     st.add_memory("发布类内容统一写 Team Agent", "global", "", "preference", "manual", True)
     st.add_memory("本群的截止日期是 10 月 18 日", "group", g["id"], "fact")
-    st.add_memory("小助喜欢先列提纲", "agent", a["id"], "lesson")
+    st.add_memory("Aide 喜欢先列提纲", "agent", a["id"], "lesson")
     st.add_memory("任务→谁做了什么(流水)", "global", "", "action", "auto")
     r = ob.sync()
     assert r["ok"] and r["written"] == 3

@@ -43,10 +43,10 @@ def prep(store, make_router, **cfg):
 async def test_plugin_call_waits_for_approval_then_runs(store, make_router):
     orch, g, fake = prep(store, make_router)
     c = Collector()
-    task = asyncio.create_task(orch.handle_user_message(g["id"], "@文案 大写 hi", c))
+    task = asyncio.create_task(orch.handle_user_message(g["id"], "@Copywriter 大写 hi", c))
     await wait_for(lambda: pending(c))
     ap = pending(c)[0]["approval"]
-    assert ap["tool"] == "shout" and ap["risk"] == "exec" and ap["agent"] == "文案" and ap["args"] == {"text": "hi"}
+    assert ap["tool"] == "shout" and ap["risk"] == "exec" and ap["agent"] == "Copywriter" and ap["args"] == {"text": "hi"}
     assert orch.approvals.list(g["id"])[0]["id"] == ap["id"]
     assert len(fake.calls) == 1                                    # 还没批准:工具没跑,模型也没拿到结果
     assert orch.approvals.resolve(ap["id"], True)
@@ -62,7 +62,7 @@ async def test_plugin_call_waits_for_approval_then_runs(store, make_router):
 async def test_denied_call_is_not_executed_and_model_is_told(store, make_router):
     orch, g, fake = prep(store, make_router)
     c = Collector()
-    task = asyncio.create_task(orch.handle_user_message(g["id"], "@文案 大写 hi", c))
+    task = asyncio.create_task(orch.handle_user_message(g["id"], "@Copywriter 大写 hi", c))
     await wait_for(lambda: pending(c))
     orch.approvals.resolve(pending(c)[0]["approval"]["id"], False)
     await task
@@ -74,7 +74,7 @@ async def test_denied_call_is_not_executed_and_model_is_told(store, make_router)
 async def test_timeout_counts_as_deny(store, make_router):
     orch, g, _ = prep(store, make_router, perm_timeout=0.05)
     c = Collector()
-    await orch.handle_user_message(g["id"], "@文案 大写 hi", c)
+    await orch.handle_user_message(g["id"], "@Copywriter 大写 hi", c)
     assert c.ends()[0]["meta"]["tools"][0]["status"] == "denied"
     assert [e["decision"] for e in c.events if e["type"] == "approval_done"] == ["timeout"]
     assert orch.approvals.list() == []
@@ -83,24 +83,24 @@ async def test_timeout_counts_as_deny(store, make_router):
 async def test_allow_always_remembers_and_deny_list_wins(store, make_router):
     orch, g, _ = prep(store, make_router)
     c = Collector()
-    task = asyncio.create_task(orch.handle_user_message(g["id"], "@文案 大写 hi", c))
+    task = asyncio.create_task(orch.handle_user_message(g["id"], "@Copywriter 大写 hi", c))
     await wait_for(lambda: pending(c))
     orch.approvals.resolve(pending(c)[0]["approval"]["id"], True, remember=True)
     await task
     assert store.get_settings()["perm_allow"] == ["shout"]
     c2 = Collector()
-    await orch.handle_user_message(g["id"], "@文案 再大写一次", c2)     # 不再询问
+    await orch.handle_user_message(g["id"], "@Copywriter 再大写一次", c2)     # 不再询问
     assert not pending(c2) and c2.ends()[0]["meta"]["tools"][0]["status"] == "ok"
     store.update_settings({"perm_deny": ["shout"], "perm_mode": "allow_all"})
     c3 = Collector()
-    await orch.handle_user_message(g["id"], "@文案 又一次", c3)          # 禁止名单优先于一切
+    await orch.handle_user_message(g["id"], "@Copywriter 又一次", c3)          # 禁止名单优先于一切
     assert not pending(c3) and c3.ends()[0]["meta"]["tools"][0]["status"] == "denied"
 
 
 async def test_stop_while_waiting_cleans_up(store, make_router):
     orch, g, _ = prep(store, make_router)
     c = Collector()
-    task = asyncio.create_task(orch.handle_user_message(g["id"], "@文案 大写 hi", c))
+    task = asyncio.create_task(orch.handle_user_message(g["id"], "@Copywriter 大写 hi", c))
     await wait_for(lambda: pending(c))
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -113,7 +113,7 @@ async def test_allow_all_mode_and_read_tools_do_not_ask(store, make_router):
     orch, g, _ = prep(store, make_router)
     store.update_settings({"perm_mode": "allow_all"})
     c = Collector()
-    await orch.handle_user_message(g["id"], "@文案 大写 hi", c)
+    await orch.handle_user_message(g["id"], "@Copywriter 大写 hi", c)
     assert not pending(c) and c.ends()[0]["meta"]["tools"][0]["status"] == "ok"
 
 

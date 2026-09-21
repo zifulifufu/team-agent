@@ -154,7 +154,7 @@ async def test_failed_plan_does_not_leave_a_misleading_done_message(store, make_
     from tests.test_collab import role
 
     def script(messages):                          # 群主只给了计划、没有任何说明文字 → 会用「已做好分工,见任务板」兜底
-        if role(messages) == "小助" and "【分工模式】" in messages[-1]["content"]:
+        if role(messages) == "Aide" and "【分工模式】" in messages[-1]["content"]:
             return "<plan>" + bad + "</plan>"
         return "好的"
 

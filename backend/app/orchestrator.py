@@ -23,6 +23,7 @@ from .external import ExternalError, ExternalRunner
 from .library import Library
 from .mcp_client import McpManager
 from .memory import MemoryService
+from .presets import twin_name
 from .prompting import PromptBuilder
 from .router import AllRoutesFailed, ModelRouter
 from .store import Store, new_id
@@ -47,20 +48,47 @@ def _mention_re(name: str) -> "re.Pattern[str]":
     return re.compile(r"(?<![A-Za-z0-9_.])@" + re.escape(name) + tail)
 
 
+def _member_names(member: dict) -> list[str]:
+    """Every spelling this member answers to: the stored name plus its built-in twin.
+
+    A built-in member may be stored as 小助 while the rest of the conversation uses
+    Aide (or the reverse), so @mention has to accept both.
+    """
+    stored = member.get("name") or ""
+    twin = twin_name(stored)
+    return [n for n in (stored, twin) if n] or [stored]
+
+
 def find_mentions(text: str, members: list[dict], exclude_id: str | None = None) -> list[dict]:
-    """按出现顺序返回被 @ 的成员(名字越长越优先匹配,避免 @文案 误中 @文案组)。"""
+    """按出现顺序返回被 @ 的成员(名字越长越优先匹配,避免 @文案 误中 @文案组)。
+
+    Two passes: first the name each member is actually stored under, then the
+    other-language spelling of a built-in name. A stale alias must never steal a
+    mention from a member whose real name matches.
+    """
     hits: list[tuple[int, dict]] = []
     taken: list[tuple[int, int]] = []
-    for m in sorted(members, key=lambda a: -len(a["name"])):
-        if m["id"] == exclude_id:
-            continue
-        for match in _mention_re(m["name"]).finditer(text):
+    matched: set[str] = set()
+
+    def try_match(m: dict, names: list[str]) -> None:
+        for name in sorted(names, key=len, reverse=True):
+            match = _mention_re(name).search(text)
+            if not match:
+                continue
             s, e = match.span()
             if any(s < te and e > ts for ts, te in taken):
                 continue
             taken.append((s, e))
             hits.append((s, m))
-            break
+            matched.add(m["id"])
+            return
+
+    order = sorted(members, key=lambda a: -len(a["name"]))
+    for names_of in (lambda m: [m["name"]], _member_names):
+        for m in order:
+            if m["id"] == exclude_id or m["id"] in matched:
+                continue
+            try_match(m, names_of(m))
     hits.sort(key=lambda x: x[0])
     return [m for _, m in hits]
 

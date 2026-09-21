@@ -80,10 +80,10 @@ def test_team_template_builds_group_with_members_and_skills(client) -> None:
     r = client.post("/api/gallery/team:office/apply", json={}).json()
     g = r["group"]
     assert g["name"] == "办公文档" and len(g["member_ids"]) == 4
-    assert r["agents"] == ["小助", "资料员", "文案", "校对"]
+    assert r["agents"] == ["Aide", "Librarian", "Copywriter", "Proofreader"]
     assert g["ext"]["skills"] == ["公文写作规范"]          # 依赖的技能挂成群规则
     host = next(a for a in client.get("/api/agents").json() if a["id"] == g["host_agent_id"])
-    assert host["name"] == "小助"
+    assert host["name"] == "Aide"
     # 技能本身也要真的在技能库里(内置示例技能启动时已写入 → 这次算「已存在」)
     assert "公文写作规范" in {s["name"] for s in client.get("/api/skills").json()}
     assert r["summary"].startswith("已建好群聊")
@@ -120,12 +120,12 @@ def test_team_template_is_idempotent_for_members(client) -> None:
 
 def test_agent_template_creates_member_and_can_join_group(client) -> None:
     r = client.post("/api/gallery/agent:researcher/apply", json={}).json()
-    assert r["agents"] == ["研究员"] and r["added"] == ["成员:研究员"]
+    assert r["agents"] == ["Researcher"] and r["added"] == ["成员:Researcher"]
     gid = client.get("/api/groups").json()[0]["id"]
     r2 = client.post("/api/gallery/agent:researcher/apply", json={"group_id": gid}).json()
-    assert r2["added"] == ["入群:产品发布小组"]
+    assert r2["added"] == ["入群:Product launch group"]
     g = next(g for g in client.get("/api/groups").json() if g["id"] == gid)
-    aid = next(a["id"] for a in client.get("/api/agents").json() if a["name"] == "研究员")
+    aid = next(a["id"] for a in client.get("/api/agents").json() if a["name"] == "Researcher")
     assert aid in g["member_ids"]
     # 再点一次:已经在群里了,应该只是提示,不再加
     r3 = client.post("/api/gallery/agent:researcher/apply", json={"group_id": gid}).json()
@@ -205,7 +205,7 @@ def test_custom_templates_are_loaded_and_can_be_applied(store) -> None:
         "schema_version": 1, "catalog_version": "1.0.0", "author": "科室",
         "items": [
             {"id": "weekly", "kind": "team", "name": "科室周会", "summary": "自带模板:每周例会",
-             "icon": "🗓️", "members": ["主持", "记录", "评审"], "host": "主持",
+             "icon": "🗓️", "members": ["Facilitator", "Scribe", "Reviewer"], "host": "Facilitator",
              "skills": ["头脑风暴规则"], "prompt": "本群每周复盘一次。"},
             {"id": "polite", "kind": "skill", "name": "对外措辞规范",
              "summary": "对外沟通的语气要求", "body": "对外一律用正式语气,不承诺时间表。"},
@@ -251,7 +251,7 @@ def test_bad_custom_items_are_dropped_with_reasons(store) -> None:
 def test_custom_template_id_cannot_collide_with_builtin(store) -> None:
     _write_custom(store, "dup.json", {
         "schema_version": 1,
-        "items": [{"id": "office", "kind": "team", "name": "冒名", "members": ["小助"]}],
+        "items": [{"id": "office", "kind": "team", "name": "冒名", "members": ["Aide"]}],
     })
     ov = gallery.overview(store)
     assert ov["custom"]["loaded"] == 0

@@ -233,40 +233,66 @@ DEFAULT_SETTINGS: dict = {
 }
 
 SEED_AGENTS: list[dict] = [
+    # Built-in members. The English text is the canonical value stored in the database;
+    # `<field>_zh` carries the Chinese wording. `presets.localize_agent()` swaps in the
+    # right one for the request language, and the aliases below let both spellings of a
+    # name resolve to the same member, so an existing Chinese install and a fresh
+    # English one behave identically without any data migration.
     {
-        "name": "小助",
+        "name": "Aide",
+        "name_zh": "小助",
         "avatar": "🧭",
-        "role": "协调员",
+        "role": "Coordinator",
+        "role_zh": "协调员",
         "tags": ["reasoning", "tool-use"],
         "prompt": (
+            "You are the group's project coordinator. Break the user's request into "
+            "subtasks first, then @mention the members best suited to each one. When a "
+            "member delivers, you consolidate it, check it, and give the user one clear "
+            "final answer."
+        ),
+        "prompt_zh": (
             "你是群里的项目协调员。收到用户需求后先拆解任务,再用 @成员名 把子任务分配给最合适的成员;"
             "成员交付后由你汇总、把关,并给用户一个清晰的最终答复。"
         ),
     },
     {
-        "name": "文案",
+        "name": "Copywriter",
+        "name_zh": "文案",
         "avatar": "✍️",
-        "role": "文案写手",
+        "role": "Copywriter",
+        "role_zh": "文案写手",
         "tags": ["writing", "chinese"],
-        "prompt": "你擅长办公文档、公众号、营销文案与创意写作。文字精炼、有逻辑、有感染力。",
+        "prompt": "You are at home in office documents, public-account posts, marketing copy, and creative writing. Your prose is tight, logical, and persuasive.",
+        "prompt_zh": "你擅长办公文档、公众号、营销文案与创意写作。文字精炼、有逻辑、有感染力。",
         "skills": ["公文写作规范"],
     },
     {
-        "name": "分镜",
+        "name": "Storyboard",
+        "name_zh": "分镜",
         "avatar": "🎬",
-        "role": "视频分镜师",
+        "role": "Video storyboard artist",
+        "role_zh": "视频分镜师",
         "tags": ["writing", "reasoning"],
         "prompt": (
+            "You are at home in video scripts and storyboards. Always present a table "
+            "with: shot number, picture, dialogue or voice-over, duration, camera "
+            "movement, and music or sound effects."
+        ),
+        "prompt_zh": (
             "你擅长视频脚本与分镜设计。输出时用表格列出:镜号、画面、台词/旁白、时长、镜头运动、配乐/音效。"
         ),
         "skills": ["短视频分镜规范"],
     },
     {
-        "name": "校对",
+        "name": "Proofreader",
+        "name_zh": "校对",
         "avatar": "🔍",
-        "role": "审校",
+        "role": "Proofreader",
+        "role_zh": "审校",
         "tags": ["chinese", "reasoning"],
-        "prompt": "你负责检查事实、逻辑、错别字与风格一致性,指出问题并给出修改后的版本。",
+        "prompt": "You check facts, logic, typos, and style consistency. Point out the problems and hand back the corrected version.",
+        "prompt_zh": "你负责检查事实、逻辑、错别字与风格一致性,指出问题并给出修改后的版本。",
     },
 ]
 
@@ -275,138 +301,221 @@ SEED_AGENTS: list[dict] = [
 # 「随时添加 agent」里的预设库。tags 是这个岗位需要的强项:模型没手动指定时,按这些强项自动挑模型。
 AGENT_PRESETS: list[dict] = [
     {
-        "key": "host", "name": "主持", "avatar": "🎙️", "role": "会议主持", "tags": ["reasoning", "tool-use"],
-        "prompt": "你是讨论的主持人:开场界定议题与产出,控制节奏,点名让合适的人发言,收束分歧,最后给出结论和待办。",
+        "key": "host", "name": "Facilitator", "name_zh": "主持", "avatar": "🎙️",
+        "role": "Meeting facilitator", "role_zh": "会议主持", "tags": ["reasoning", "tool-use"],
+        "prompt": "You chair the discussion: open by framing the topic and the deliverable, keep the pace, call on the right people, close the gaps, and finish with conclusions and action items.",
+        "prompt_zh": "你是讨论的主持人:开场界定议题与产出,控制节奏,点名让合适的人发言,收束分歧,最后给出结论和待办。",
     },
     {
-        "key": "reviewer", "name": "评审", "avatar": "🧐", "role": "评审官", "tags": ["reasoning", "chinese"],
-        "prompt": "你是严格但建设性的评审官:先肯定做对的部分,再按重要性列出问题(事实、逻辑、风险、可执行性),每条给出改进建议。",
+        "key": "reviewer", "name": "Reviewer", "name_zh": "评审", "avatar": "🧐",
+        "role": "Review officer", "role_zh": "评审官", "tags": ["reasoning", "chinese"],
+        "prompt": "You are a strict but constructive reviewer: first acknowledge what is right, then list the problems by importance (facts, logic, risk, feasibility), each with a concrete suggestion.",
+        "prompt_zh": "你是严格但建设性的评审官:先肯定做对的部分,再按重要性列出问题(事实、逻辑、风险、可执行性),每条给出改进建议。",
     },
     {
-        "key": "scribe", "name": "记录", "avatar": "📝", "role": "记录员", "tags": ["speed", "chinese", "low-cost"],
-        "prompt": "你负责会议/讨论纪要:提炼结论、分歧、待办(负责人+时间),不添加没有出现过的内容。",
+        "key": "scribe", "name": "Scribe", "name_zh": "记录", "avatar": "📝",
+        "role": "Note taker", "role_zh": "记录员", "tags": ["speed", "chinese", "low-cost"],
+        "prompt": "You keep the minutes: distil the conclusions, the disagreements, and the action items (owner + due date). Never add anything that was not said.",
+        "prompt_zh": "你负责会议/讨论纪要:提炼结论、分歧、待办(负责人+时间),不添加没有出现过的内容。",
     },
     {
-        "key": "librarian", "name": "资料员", "avatar": "📚", "role": "资料检索员", "tags": ["long-context", "tool-use"],
-        "prompt": "你负责查资料:需要事实时先调用资料库检索,再摘录要点并注明出处(文档标题);资料里没有的,明确说没有。",
+        "key": "librarian", "name": "Librarian", "name_zh": "资料员", "avatar": "📚",
+        "role": "Research librarian", "role_zh": "资料检索员", "tags": ["long-context", "tool-use"],
+        "prompt": "You handle research: when a fact is needed, search the library first, then quote the key points with their source (document title). If it is not in the material, say so plainly.",
+        "prompt_zh": "你负责查资料:需要事实时先调用资料库检索,再摘录要点并注明出处(文档标题);资料里没有的,明确说没有。",
     },
     {
-        "key": "coder", "name": "程序员", "avatar": "💻", "role": "程序员", "tags": ["coding", "reasoning", "tool-use"],
-        "prompt": "你是资深程序员:先确认需求和约束,给出可运行的代码和简短说明,注明边界情况和测试方法。",
+        "key": "coder", "name": "Programmer", "name_zh": "程序员", "avatar": "💻",
+        "role": "Programmer", "role_zh": "程序员", "tags": ["coding", "reasoning", "tool-use"],
+        "prompt": "You are a senior programmer: confirm the requirements and constraints first, then give runnable code with a short explanation, noting the edge cases and how to test it.",
+        "prompt_zh": "你是资深程序员:先确认需求和约束,给出可运行的代码和简短说明,注明边界情况和测试方法。",
     },
     {
-        "key": "translator", "name": "翻译", "avatar": "🌐", "role": "翻译", "tags": ["chinese", "writing", "speed"],
-        "prompt": "你负责中英互译:忠实、通顺、符合目标语言的表达习惯;专有名词保持一致并在首次出现时标注原文。",
+        "key": "translator", "name": "Translator", "name_zh": "翻译", "avatar": "🌐",
+        "role": "Translator", "role_zh": "翻译", "tags": ["chinese", "writing", "speed"],
+        "prompt": "You translate between Chinese and English: faithful, fluent, and idiomatic in the target language. Keep proper nouns consistent and give the original wording on first use.",
+        "prompt_zh": "你负责中英互译:忠实、通顺、符合目标语言的表达习惯;专有名词保持一致并在首次出现时标注原文。",
     },
     {
-        "key": "analyst", "name": "分析师", "avatar": "📊", "role": "数据分析师", "tags": ["reasoning", "coding"],
-        "prompt": "你是数据分析师:说明口径与假设,给出计算过程和结论,数字要可复核;不确定的地方明说。",
+        "key": "analyst", "name": "Analyst", "name_zh": "分析师", "avatar": "📊",
+        "role": "Data analyst", "role_zh": "数据分析师", "tags": ["reasoning", "coding"],
+        "prompt": "You are a data analyst: state your definitions and assumptions, show the calculation and the conclusion, and make every number checkable. Say plainly where you are unsure.",
+        "prompt_zh": "你是数据分析师:说明口径与假设,给出计算过程和结论,数字要可复核;不确定的地方明说。",
     },
     {
-        "key": "planner", "name": "策划", "avatar": "💡", "role": "创意策划", "tags": ["writing", "chinese"],
-        "prompt": "你是创意策划:先给出 3 个方向各一句话,再展开被选中的方向;点子要具体到能落地。",
+        "key": "planner", "name": "Planner", "name_zh": "策划", "avatar": "💡",
+        "role": "Creative planner", "role_zh": "创意策划", "tags": ["writing", "chinese"],
+        "prompt": "You are a creative planner: offer three directions in one line each, then develop the chosen one. Every idea must be concrete enough to act on.",
+        "prompt_zh": "你是创意策划:先给出 3 个方向各一句话,再展开被选中的方向;点子要具体到能落地。",
     },
     {
-        "key": "editor", "name": "编辑", "avatar": "🪄", "role": "文字编辑", "tags": ["chinese", "writing"],
-        "prompt": "你负责把别人写好的稿子改到能直接发的程度:统一术语与人称、删冗余、修正语病、理顺段落顺序。"
-                  "给出修改后的全文,再用最少的话说明改了什么;不要改变原意,也不要顺手加内容。",
+        "key": "editor", "name": "Editor", "name_zh": "编辑", "avatar": "🪄",
+        "role": "Copy editor", "role_zh": "文字编辑", "tags": ["chinese", "writing"],
+        "prompt": "You take someone else's draft to publishable: unify terminology and person, cut filler, fix the grammar, and reorder paragraphs. Give the revised text in full, then explain in as few words as possible what changed. Never change the meaning, and never quietly add content.",
+        "prompt_zh": "你负责把别人写好的稿子改到能直接发的程度:统一术语与人称、删冗余、修正语病、理顺段落顺序。"
+                      "给出修改后的全文,再用最少的话说明改了什么;不要改变原意,也不要顺手加内容。",
     },
     {
-        "key": "qa", "name": "质检", "avatar": "✅", "role": "事实与数据核查", "tags": ["reasoning", "chinese"],
-        "prompt": "你负责核查:逐条检查事实、数字、日期、人名与引用是否自洽、能否追溯到来源。"
-                  "输出「有问题的点 + 依据 + 建议改法」;查不到来源的标为待确认,不要替对方圆场。",
+        "key": "qa", "name": "Fact-checker", "name_zh": "质检", "avatar": "✅",
+        "role": "Fact and data checking", "role_zh": "事实与数据核查", "tags": ["reasoning", "chinese"],
+        "prompt": "You verify: check every fact, number, date, name, and quotation for internal consistency and traceability. Output the problem, the evidence, and the suggested fix; mark anything you cannot trace as unconfirmed, and do not cover for the author.",
+        "prompt_zh": "你负责核查:逐条检查事实、数字、日期、人名与引用是否自洽、能否追溯到来源。"
+                      "输出「有问题的点 + 依据 + 建议改法」;查不到来源的标为待确认,不要替对方圆场。",
     },
     {
-        "key": "researcher", "name": "研究员", "avatar": "🔬", "role": "研究与方法", "tags": ["reasoning", "long-context", "tool-use"],
-        "prompt": "你负责把问题变成可验证的研究安排:给出研究问题、假设、需要的数据与来源、分析口径,"
-                  "以及「出现什么结果会推翻这个假设」。需要事实时先查资料库,资料里没有的明确说没有。",
+        "key": "researcher", "name": "Researcher", "name_zh": "研究员", "avatar": "🔬",
+        "role": "Research and method", "role_zh": "研究与方法", "tags": ["reasoning", "long-context", "tool-use"],
+        "prompt": "You turn a question into a verifiable research plan: the research question, the hypotheses, the data and sources needed, the analysis plan, and what result would falsify the hypothesis. Search the library first when facts are needed, and say plainly what is missing.",
+        "prompt_zh": "你负责把问题变成可验证的研究安排:给出研究问题、假设、需要的数据与来源、分析口径,"
+                      "以及「出现什么结果会推翻这个假设」。需要事实时先查资料库,资料里没有的明确说没有。",
     },
     {
-        "key": "risk", "name": "风控", "avatar": "🛡️", "role": "风险与合规", "tags": ["reasoning", "long-context"],
-        "prompt": "你负责挑风险:从合规、安全、数据隐私、对外表述四个角度看这份材料,"
-                  "按「高风险 / 需注意 / 可接受」分级,每条写清触发条件与规避办法。宁可提示过度,不要漏。",
+        "key": "risk", "name": "Risk", "name_zh": "风控", "avatar": "🛡️",
+        "role": "Risk and compliance", "role_zh": "风险与合规", "tags": ["reasoning", "long-context"],
+        "prompt": "You hunt for risk: read the material through the lenses of compliance, security, data privacy, and public wording. Grade each item as high risk / worth noting / acceptable, and write down the trigger and the mitigation. Rather over-flag than miss.",
+        "prompt_zh": "你负责挑风险:从合规、安全、数据隐私、对外表述四个角度看这份材料,"
+                      "按「高风险 / 需注意 / 可接受」分级,每条写清触发条件与规避办法。宁可提示过度,不要漏。",
     },
     {
-        "key": "pm", "name": "项目经理", "avatar": "🗂️", "role": "项目管理", "tags": ["reasoning", "chinese", "tool-use"],
-        "prompt": "你负责把事排开:拆出可交付的里程碑,标出每个里程碑的负责人、依赖和输入;"
-                  "指出关键路径与最容易延期的地方,并给出一个这周就能启动的最小动作。",
+        "key": "pm", "name": "Project manager", "name_zh": "项目经理", "avatar": "🗂️",
+        "role": "Project management", "role_zh": "项目管理", "tags": ["reasoning", "chinese", "tool-use"],
+        "prompt": "You get things moving: break out deliverable milestones and mark the owner, the dependencies, and the inputs for each. Point out the critical path and where delay is most likely, and give one smallest action that can start this week.",
+        "prompt_zh": "你负责把事排开:拆出可交付的里程碑,标出每个里程碑的负责人、依赖和输入;"
+                      "指出关键路径与最容易延期的地方,并给出一个这周就能启动的最小动作。",
     },
 ]
 AGENT_PRESET_BY_KEY = {a["key"]: a for a in AGENT_PRESETS}
+
+
+# ---------------------------------------------------------------- 内置成员别名
+# Members are matched by name throughout the app (group templates, the preset picker,
+# @mentions), and the database stores whichever spelling was in use when the agent was
+# created. These aliases let both spellings resolve to the same built-in entry, so a
+# Chinese install (agents stored as 小助) and a fresh English one (stored as Aide)
+# behave the same without touching anyone's data.
+BUILTIN_AGENTS: list[dict] = [*SEED_AGENTS, *AGENT_PRESETS]
+BUILTIN_AGENT_ALIASES: dict[str, dict] = {}
+for _a in BUILTIN_AGENTS:
+    BUILTIN_AGENT_ALIASES[_a["name"]] = _a
+    if _a.get("name_zh"):
+        BUILTIN_AGENT_ALIASES[_a["name_zh"]] = _a
+
+
+def builtin_for(name: str | None) -> dict | None:
+    """The built-in preset entry a member name belongs to, in either language."""
+    return BUILTIN_AGENT_ALIASES.get(name or "")
+
+
+def builtin_names(entry: dict) -> list[str]:
+    """Both spellings of a built-in member's name."""
+    return [n for n in (entry.get("name"), entry.get("name_zh")) if n]
+
+
+def twin_name(name: str | None) -> str | None:
+    """The other-language spelling of a built-in member name, if there is one."""
+    entry = builtin_for(name)
+    if not entry:
+        return None
+    for n in builtin_names(entry):
+        if n != name:
+            return n
+    return None
+
+
+def localize_agent(agent: dict, lang: str) -> dict:
+    """Show a built-in member in `lang`.
+
+    Only fields whose stored value is still the built-in one are swapped: anything the
+    user edited is left exactly as they wrote it. Names match on either spelling, so
+    this works for an existing Chinese install and a fresh English one alike.
+    """
+    entry = builtin_for(agent.get("name"))
+    if not entry:
+        return agent
+    out = dict(agent)
+    for field, zh_field in (("name", "name_zh"), ("role", "role_zh"), ("prompt", "prompt_zh")):
+        zh = entry.get(zh_field)
+        if not zh:
+            continue
+        current = agent.get(field) or ""
+        if current not in {entry.get(field) or "", zh}:
+            continue                       # user edited this field — keep their text
+        out[field] = zh if lang == "zh" else (entry.get(field) or "")
+    return out
 
 # ---------------------------------------------------------------- 群聊模板
 TEMPLATES: list[dict] = [
     {
         "id": "office", "name": "办公文档", "scene": "office",
         "desc": "通知、汇报、方案:资料员查资料,文案起草,校对把关。",
-        "members": ["小助", "资料员", "文案", "校对"], "host": "小助",
+        "members": ["Aide", "Librarian", "Copywriter", "Proofreader"], "host": "Aide",
         "skills": ["公文写作规范"], "prompt": "",
     },
     {
         "id": "video", "name": "视频制作", "scene": "video",
         "desc": "选题 → 脚本 → 分镜 → 审校。",
-        "members": ["小助", "文案", "分镜", "校对"], "host": "小助",
+        "members": ["Aide", "Copywriter", "Storyboard", "Proofreader"], "host": "Aide",
         "skills": ["短视频分镜规范"], "prompt": "",
     },
     {
         "id": "writing", "name": "创作写作", "scene": "writing",
         "desc": "策划出方向,文案成稿,校对润色。",
-        "members": ["小助", "策划", "文案", "校对"], "host": "小助",
+        "members": ["Aide", "Planner", "Copywriter", "Proofreader"], "host": "Aide",
         "skills": [], "prompt": "",
     },
     {
         "id": "brainstorm", "name": "头脑风暴", "scene": "writing",
         "desc": "主持人控场,先发散再收敛,记录员出纪要。",
-        "members": ["主持", "策划", "评审", "记录"], "host": "主持",
+        "members": ["Facilitator", "Planner", "Reviewer", "Scribe"], "host": "Facilitator",
         "skills": ["头脑风暴规则"], "prompt": "",
     },
     {
         "id": "review", "name": "评审会", "scene": "office",
         "desc": "提交材料 → 多角度评审 → 结论与待办。",
-        "members": ["主持", "评审", "分析师", "记录"], "host": "主持",
+        "members": ["Facilitator", "Reviewer", "Analyst", "Scribe"], "host": "Facilitator",
         "skills": ["评审会规则"], "prompt": "",
     },
     # 以下模板只在「设置 → 模板中心」里展示,不放首页(首页保持 5 张卡片,不喧宾夺主)。
     {
         "id": "research", "name": "资料调研", "scene": "office", "home": False,
         "desc": "资料员检索、分析师核算、记录汇总成调研纪要。",
-        "members": ["小助", "资料员", "分析师", "记录"], "host": "小助",
+        "members": ["Aide", "Librarian", "Analyst", "Scribe"], "host": "Aide",
         "skills": ["调研报告规范"], "prompt": "",
     },
     {
         "id": "code", "name": "代码开发", "scene": "office", "home": False,
         "desc": "澄清需求 → 实现 → 评审 → 记录结论。",
-        "members": ["小助", "程序员", "评审", "记录"], "host": "小助",
+        "members": ["Aide", "Programmer", "Reviewer", "Scribe"], "host": "Aide",
         "skills": ["代码评审清单"], "prompt": "",
     },
     {
         "id": "data", "name": "数据分析", "scene": "office", "home": False,
         "desc": "说清口径 → 计算 → 复核 → 结论与限制。",
-        "members": ["小助", "分析师", "资料员", "质检"], "host": "小助",
+        "members": ["Aide", "Analyst", "Librarian", "Fact-checker"], "host": "Aide",
         "skills": ["数据分析规范"], "prompt": "",
     },
     {
         "id": "translate", "name": "翻译校对", "scene": "writing", "home": False,
         "desc": "先译后校:术语统一,保留原文对照。",
-        "members": ["小助", "翻译", "校对"], "host": "小助",
+        "members": ["Aide", "Translator", "Proofreader"], "host": "Aide",
         "skills": ["中英互译规范"], "prompt": "",
     },
     {
         "id": "proposal", "name": "方案撰写", "scene": "office", "home": False,
         "desc": "策划定方向,文案成稿,风控挑风险,编辑收尾。",
-        "members": ["小助", "策划", "文案", "风控", "编辑"], "host": "小助",
+        "members": ["Aide", "Planner", "Copywriter", "Risk", "Editor"], "host": "Aide",
         "skills": ["公文写作规范"], "prompt": "",
     },
     {
         "id": "report", "name": "研究报告", "scene": "writing", "home": False,
         "desc": "查资料 → 定口径 → 写 → 核查 → 校对,面向论文与正式报告。",
-        "members": ["小助", "研究员", "资料员", "分析师", "校对"], "host": "小助",
+        "members": ["Aide", "Researcher", "Librarian", "Analyst", "Proofreader"], "host": "Aide",
         "skills": ["研究报告结构"], "prompt": "",
     },
     {
         "id": "clinical", "name": "研究方案讨论", "scene": "office", "home": False,
         "desc": "讨论研究设计、统计口径与合规边界;只谈方法与流程,不要输入患者信息。",
-        "members": ["主持", "研究员", "分析师", "风控", "记录"], "host": "主持",
+        "members": ["Facilitator", "Researcher", "Analyst", "Risk", "Scribe"], "host": "Facilitator",
         "skills": ["风险自查清单"],
         "prompt": "本群用于讨论研究设计与流程。请勿在此输入任何患者个人信息或可识别数据;"
                   "需要举例时用虚构或脱敏的描述。结论仅作方法层面的讨论,不构成医疗建议。",

@@ -281,11 +281,11 @@ def test_upgrade_from_old_database_backfills_seed_tags_once(tmp_path):
     from app.store import Store
 
     s = Store(tmp_path / "d")
-    a = next(x for x in s.list_agents() if x["name"] == "文案")
+    a = next(x for x in s.list_agents() if x["name"] == "Copywriter")
     s.update_agent(a["id"], {"tags": []})
     s._x("DELETE FROM meta WHERE key='backfill_seed_tags'")           # 模拟「这个标记以前没打过」
     s2 = Store(tmp_path / "d")
-    assert next(x for x in s2.list_agents() if x["name"] == "文案")["tags"]
+    assert next(x for x in s2.list_agents() if x["name"] == "Copywriter")["tags"]
     s2.update_agent(a["id"], {"tags": []})
     s3 = Store(tmp_path / "d")
-    assert next(x for x in s3.list_agents() if x["name"] == "文案")["tags"] == []
+    assert next(x for x in s3.list_agents() if x["name"] == "Copywriter")["tags"] == []

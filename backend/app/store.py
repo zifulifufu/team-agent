@@ -15,7 +15,8 @@ from typing import Any
 from . import strengths as strength_lib
 from .catalog import Catalog
 from .local_models import LocalCatalog
-from .presets import DEFAULT_SETTINGS, PRESET_BY_ID, SEED_AGENTS, SEED_PROMPTS
+from . import i18n
+from .presets import DEFAULT_SETTINGS, PRESET_BY_ID, SEED_AGENTS, SEED_PROMPTS, builtin_for
 from . import secrets as secrets_store
 from .store_ext import SCHEMA_EXT, ExtStore
 
@@ -226,19 +227,32 @@ class Store(ExtStore):
             for k, v in DEFAULT_SETTINGS.items():
                 self._x("INSERT INTO settings(key,value) VALUES(?,?)", (k, json.dumps(v)))
         if self._one("SELECT 1 FROM agents LIMIT 1") is None:
-            ids = [self.create_agent(**a)["id"] for a in SEED_AGENTS]
-            g = self.create_group("产品发布小组", host_agent_id=ids[0], member_ids=ids)
+            # SEED_AGENTS carries `<field>_zh` alongside the English base value; those
+            # are for display only, so they never reach create_agent().
+            ids = [self.create_agent(**{k: v for k, v in a.items() if not k.endswith("_zh")})["id"]
+                   for a in SEED_AGENTS]
+            lang = i18n.current()
+            g = self.create_group(
+                i18n.pick(lang, "Product launch group", "产品发布小组"),
+                host_agent_id=ids[0], member_ids=ids,
+            )
             self.add_message(
-                g["id"], "system", None, "系统",
-                "欢迎!直接发消息,协调员「小助」会响应;也可以用 @成员名 点名。"
-                "先在「模型」页给 DeepSeek 填入 API Key,未填或不可用时会自动回退到本地模型。",
+                g["id"], "system", None, i18n.pick(lang, "System", "系统"),
+                i18n.pick(
+                    lang,
+                    "Welcome! Just send a message and Aide, the coordinator, will pick it up; "
+                    "you can also @mention a member. Start by adding a DeepSeek API key on the "
+                    "Models page — without one (or when it is unavailable) this falls back to a "
+                    "local model.",
+                    "欢迎!直接发消息,协调员「小助」会响应;也可以用 @成员名 点名。"
+                    "先在「模型」页给 DeepSeek 填入 API Key,未填或不可用时会自动回退到本地模型。",
+                ),
             )
 
         if not self._flag("backfill_seed_tags"):
             # 从旧版本升级:内置的四个成员原来没有岗位强项,补上一次(只补空的,用户改过的不动)
-            by_name = {a["name"]: a for a in SEED_AGENTS}
             for a in self.list_agents():
-                seed = by_name.get(a["name"])
+                seed = builtin_for(a["name"])
                 if seed and not a["tags"] and seed.get("tags"):
                     self.update_agent(a["id"], {"tags": seed["tags"]})
 

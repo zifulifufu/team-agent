@@ -249,7 +249,7 @@ async def test_exception_before_model_call_still_closes_the_bubble(store, make_r
 
     orch.toolhub.context = boom          # type: ignore[method-assign]
     c = Collector()
-    await orch.handle_user_message(g["id"], "@文案 你好", c)
+    await orch.handle_user_message(g["id"], "@Copywriter 你好", c)
     types = [e["type"] for e in c.events]
     assert "message_start" in types and "message_discard" in types
     assert any(e["type"] == "message" and "发言出错" in e["message"]["content"] for e in c.events)
@@ -278,10 +278,10 @@ async def test_plan_execution_error_marks_plan_failed(store, make_router, monkey
 
 
 def test_plan_with_scalar_fields_is_a_plan_not_a_crash():
-    members = [{"id": "1", "name": "文案"}, {"id": "2", "name": "校对"}]
+    members = [{"id": "1", "name": "Copywriter"}, {"id": "2", "name": "Proofreader"}]
     plan = build_plan({"tasks": [
-        {"id": "t1", "owner": "文案", "instruction": "写", "needs": [], "tools": "library_search", "strengths": "writing"},
-        {"id": "t2", "owner": "校对", "instruction": "审", "needs": 1},
+        {"id": "t1", "owner": "Copywriter", "instruction": "写", "needs": [], "tools": "library_search", "strengths": "writing"},
+        {"id": "t2", "owner": "Proofreader", "instruction": "审", "needs": 1},
     ]}, members)
     assert [t.id for t in plan.tasks] == ["t1", "t2"]
     with pytest.raises(PlanError):
@@ -289,11 +289,11 @@ def test_plan_with_scalar_fields_is_a_plan_not_a_crash():
 
 
 def test_mentions_are_word_aware():
-    members = [{"id": "1", "name": "Al"}, {"id": "2", "name": "文案"}]
+    members = [{"id": "1", "name": "Al"}, {"id": "2", "name": "Copywriter"}]
     assert not mentions_all("发到 me@allianz.com") and not mentions_all("@Allen 你好")
     assert mentions_all("大家好 @all") and mentions_all("@所有人 开会") and mentions_all("@ALL")
     assert [m["name"] for m in find_mentions("@Allen 你好", members)] == []
-    assert [m["name"] for m in find_mentions("@Al 你好 @文案", members)] == ["Al", "文案"]
+    assert [m["name"] for m in find_mentions("@Al 你好 @Copywriter", members)] == ["Al", "Copywriter"]
     assert find_mentions("写信给 x@文案.com", members) == []
 
 

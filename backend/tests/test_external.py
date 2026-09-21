@@ -302,7 +302,7 @@ def test_external_turn_replies_in_group_and_hands_off(store, make_router, fake_e
     assert wb["meta"]["tools"][0]["name"] == "Read" and wb["meta"]["tools"][0]["status"] == "ok"
     assert wb["meta"]["denied"] == ["Bash"] and wb["meta"]["external"]["cost_usd"] == 0.01
     # 它 @ 了「文案」,被点名的成员接着发言(用的是模型)
-    assert [m["sender_name"] for m in ends][-1] == "文案" and fake.calls
+    assert [m["sender_name"] for m in ends][-1] == "Copywriter" and fake.calls
     log = json.loads(fake_env.read_text())
     assert "帮我读一下文件" in log["stdin"] and "【群聊记录】" in log["stdin"]
     sysprompt = opt(log["argv"], "--append-system-prompt")

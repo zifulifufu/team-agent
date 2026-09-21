@@ -87,7 +87,7 @@ def test_backup_restore_round_trip_preserves_everything_visible(tmp_path):
     st.update_settings({"max_hops": 5, "perm_mode": "ask_all", "perm_allow": ["x"]})
     a.post("/api/memories", json={"content": "偏好 A", "kind": "preference", "pinned": True})
     a.post("/api/library/note", json={"title": "文档 A", "content": "独角兽资料"})
-    st.add_message(g["id"], "agent", st.list_agents()[0]["id"], "小助", "一条回复", meta={"tools": [{"name": "t", "status": "ok"}]})
+    st.add_message(g["id"], "agent", st.list_agents()[0]["id"], "Aide", "一条回复", meta={"tools": [{"name": "t", "status": "ok"}]})
     st.set_health("ollama/qwen2.5:7b", "ok", "", 12, "test")
     before = {"groups": a.get("/api/groups").json(), "agents": a.get("/api/agents").json(),
               "messages": a.get(f"/api/groups/{g['id']}/messages").json(), "settings": a.get("/api/settings").json(),

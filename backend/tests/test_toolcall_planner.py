@@ -63,7 +63,7 @@ def test_tools_prompt_lists_signature_and_required():
 
 
 # ----------------------------------------------------------------- planner
-MEMBERS = [{"id": "1", "name": "小助"}, {"id": "2", "name": "文案"}, {"id": "3", "name": "校对"}]
+MEMBERS = [{"id": "1", "name": "Aide"}, {"id": "2", "name": "Copywriter"}, {"id": "3", "name": "Proofreader"}]
 
 
 def _obj(tasks):
@@ -82,8 +82,8 @@ def test_extract_plan_json_variants():
 
 def test_build_plan_orders_by_dependency_and_remaps_ids():
     plan = planner.build_plan(_obj([
-        {"id": "a", "owner": "@校对", "title": "审", "instruction": "审校", "needs": ["b"]},
-        {"id": "b", "owner": "文案", "title": "写", "instruction": "起草", "strengths": ["写作"], "tools": ["library_search", "nope"]},
+        {"id": "a", "owner": "@Proofreader", "title": "审", "instruction": "审校", "needs": ["b"]},
+        {"id": "b", "owner": "Copywriter", "title": "写", "instruction": "起草", "strengths": ["写作"], "tools": ["library_search", "nope"]},
     ]), MEMBERS, 8, {"library_search"})
     assert [t.id for t in plan.tasks] == ["b", "a"]            # 依赖在前
     assert plan.tasks[1].needs == ["b"] and plan.tasks[1].owner_id == "3"
@@ -96,16 +96,16 @@ def test_build_plan_rejects_unknown_owner_cycle_and_empty():
         planner.build_plan(_obj([{"owner": "路人", "instruction": "x"}]), MEMBERS)
     with pytest.raises(planner.PlanError, match="循环"):
         planner.build_plan(_obj([
-            {"id": "a", "owner": "文案", "instruction": "x", "needs": ["b"]},
-            {"id": "b", "owner": "校对", "instruction": "y", "needs": ["a"]}]), MEMBERS)
+            {"id": "a", "owner": "Copywriter", "instruction": "x", "needs": ["b"]},
+            {"id": "b", "owner": "Proofreader", "instruction": "y", "needs": ["a"]}]), MEMBERS)
     with pytest.raises(planner.PlanError):
         planner.build_plan(_obj([]), MEMBERS)
     with pytest.raises(planner.PlanError, match="instruction"):
-        planner.build_plan(_obj([{"owner": "文案"}]), MEMBERS)
+        planner.build_plan(_obj([{"owner": "Copywriter"}]), MEMBERS)
 
 
 def test_build_plan_caps_tasks_dedups_ids_and_drops_bad_needs():
-    tasks = [{"id": "t1", "owner": "文案", "instruction": str(i), "needs": ["t1", "ghost"]} for i in range(6)]
+    tasks = [{"id": "t1", "owner": "Copywriter", "instruction": str(i), "needs": ["t1", "ghost"]} for i in range(6)]
     plan = planner.build_plan(_obj(tasks), MEMBERS, max_tasks=3)
     assert len(plan.tasks) == 3 and len({t.id for t in plan.tasks}) == 3
     assert all("ghost" not in t.needs and t.id not in t.needs for t in plan.tasks)
@@ -113,8 +113,8 @@ def test_build_plan_caps_tasks_dedups_ids_and_drops_bad_needs():
 
 def test_task_prompt_carries_conventions_upstream_and_declaration():
     plan = planner.build_plan(_obj([
-        {"id": "t1", "owner": "文案", "title": "初稿", "instruction": "写初稿", "deliverable": "Markdown"},
-        {"id": "t2", "owner": "校对", "title": "审校", "instruction": "审校初稿", "needs": ["t1"], "strengths": ["中文"]}]), MEMBERS)
+        {"id": "t1", "owner": "Copywriter", "title": "初稿", "instruction": "写初稿", "deliverable": "Markdown"},
+        {"id": "t2", "owner": "Proofreader", "title": "审校", "instruction": "审校初稿", "needs": ["t1"], "strengths": ["中文"]}]), MEMBERS)
     p = planner.task_prompt(plan, plan.tasks[1], {"t1": "这是文案的初稿"}, 2)
     assert "各位同事" in p and "这是文案的初稿" in p and "【分工】" in p and "← 你" in p and "中文" in p
     # 上游没有产出时,要明确告诉下游

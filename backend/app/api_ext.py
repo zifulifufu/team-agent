@@ -21,6 +21,8 @@ from .approvals import RISK_LABEL, Approvals, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
 from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug
+from .presets import builtin_names
+from .templates import member_view
 from .gallery import MCP_TEMPLATES
 from .memory import MemoryService
 from .obsidian import ObsidianError, ObsidianSync
@@ -303,7 +305,8 @@ def build_router(c: Ctx) -> APIRouter:
     @r.get("/api/agent-presets")
     async def agent_presets() -> list[dict]:
         have = {a["name"] for a in store.list_agents()}
-        return [{**p, "exists": p["name"] in have} for p in AGENT_PRESETS]
+        rows = [{**p, "exists": any(n in have for n in builtin_names(p))} for p in AGENT_PRESETS]
+        return i18n.localize(rows)
 
     @r.post("/api/groups/{gid}/members/from-preset")
     async def member_from_preset(gid: str, body: PresetIn) -> dict:
@@ -356,7 +359,7 @@ def build_router(c: Ctx) -> APIRouter:
 
     def chat_markdown(gid: str) -> tuple[dict, str]:
         g = _need(store.get_group(gid), "群聊")
-        agents = {a["id"]: a for a in store.list_agents()}
+        agents = {a["id"]: a for a in member_view(store.list_agents())}
         members = [agents[i]["name"] for i in g["member_ids"] if i in agents]
         out = [f"# {g['name']}", "", f"导出时间:{time.strftime('%Y-%m-%d %H:%M')} · 成员:{'、'.join(members) or '无'}", ""]
         for m in store.list_messages(gid, 1_000_000):
@@ -755,7 +758,7 @@ def build_router(c: Ctx) -> APIRouter:
             key = q.strip().lower()
             rows = [m for m in rows if key in m["content"].lower()]
         groups = {g["id"]: g["name"] for g in store.list_groups()}
-        agents = {a["id"]: a["name"] for a in store.list_agents()}
+        agents = {a["id"]: a["name"] for a in member_view(store.list_agents())}
         for m in rows:
             m["scope_name"] = groups.get(m["scope_id"]) if m["scope"] == "group" else agents.get(m["scope_id"]) if m["scope"] == "agent" else ""
         return {"memories": rows, "count": len(rows)}

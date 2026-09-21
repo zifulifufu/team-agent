@@ -133,7 +133,7 @@ def test_batch_add_models_dedupes(client):
 
 # --------------------------------------------------------------------- stats
 def _agent_msg(store, gid, model_id, *, ts, fallback_from=None, latency=100):
-    m = store.add_message(gid, "agent", None, "文案", "x", model_id=model_id, fallback_from=fallback_from,
+    m = store.add_message(gid, "agent", None, "Copywriter", "x", model_id=model_id, fallback_from=fallback_from,
                           meta={"attempts": [{"model_id": model_id, "status": "ok", "detail": "", "latency_ms": latency}]})
     store._x("UPDATE messages SET created_at=? WHERE id=?", (ts, m["id"]))
 

@@ -31,6 +31,7 @@ from .library import Library
 from .local_models import native_machine
 from .mcp_client import McpManager
 from .memory import MemoryService
+from . import templates
 from . import i18n
 from . import net
 from .obsidian import ObsidianSync
@@ -532,7 +533,10 @@ def create_app(
     # ------------------------------------------------------------ agents
     @app.get("/api/agents")
     async def agents() -> list[dict]:
-        return store.list_agents()
+        # Built-in members are shown in the request language (an install seeded before
+        # the names were translated still holds 小助 in the database — see
+        # presets.localize_agent). Anything the user renamed or rewrote is untouched.
+        return templates.member_view(store.list_agents())
 
     def check_agent_name(name: str, exclude_id: str | None = None) -> None:
         if not name or not name.strip():

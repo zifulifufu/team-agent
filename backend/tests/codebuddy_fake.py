@@ -59,7 +59,7 @@ if mode == "error":
          "errors": ["模型服务返回 401 unauthorized"], "duration_ms": 10, "num_turns": 1})
     sys.exit(1)
 out({"type": "assistant", "session_id": "sess-1", "parent_tool_use_id": None,
-     "message": {"role": "assistant", "content": [{"type": "text", "text": "读完了:文件里写着 abc。 @文案 请确认。"}]}})
-out({"type": "result", "subtype": "success", "is_error": False, "result": "读完了:文件里写着 abc。 @文案 请确认。",
+     "message": {"role": "assistant", "content": [{"type": "text", "text": "读完了:文件里写着 abc。 @Copywriter 请确认。"}]}})
+out({"type": "result", "subtype": "success", "is_error": False, "result": "读完了:文件里写着 abc。 @Copywriter 请确认。",
      "session_id": "sess-1", "total_cost_usd": 0.01, "duration_ms": 1234, "num_turns": 2,
      "permission_denials": [{"tool_name": "Bash", "tool_input": {}}]})

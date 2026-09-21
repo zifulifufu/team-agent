@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .presets import builtin_for, builtin_names
+from . import i18n
 from .presets import AGENT_PRESETS, SEED_AGENTS, SEED_PROMPTS, TEMPLATES
 from .store import Store
 from .templates import ensure_agent
@@ -121,14 +123,24 @@ def _team_rows() -> list[dict]:
 def _agent_rows() -> list[dict]:
     out = []
     for p in AGENT_PRESETS:
+        # `<field>_zh` is carried alongside the English base value so that
+        # i18n.localize() can swap it in for the Chinese UI. Built-in names are
+        # English on purpose — see presets.SEED_AGENTS.
         out.append({
             "id": f"agent:{p['key']}", "kind": "agent", "name": p["name"],
-            "summary": p.get("role", ""), "icon": p.get("avatar", _ICONS["agent"]),
+            "name_zh": p.get("name_zh", ""),
+            "summary": p.get("role", ""), "summary_zh": p.get("role_zh", ""),
+            "icon": p.get("avatar", _ICONS["agent"]),
             "tags": list(p.get("tags", [])), "source": "builtin",
             "preview": {"avatar": p.get("avatar", "🤖"), "role": p.get("role", ""),
-                        "tags": list(p.get("tags", [])), "prompt": _clip(p.get("prompt", ""), 200)},
-            "def": {"name": p["name"], "avatar": p.get("avatar", "🤖"), "role": p.get("role", ""),
-                    "prompt": p.get("prompt", ""), "tags": list(p.get("tags", []))},
+                        "role_zh": p.get("role_zh", ""),
+                        "tags": list(p.get("tags", [])), "prompt": _clip(p.get("prompt", ""), 200),
+                        "prompt_zh": _clip(p.get("prompt_zh", ""), 200)},
+            "def": {"name": p["name"], "name_zh": p.get("name_zh", ""),
+                    "avatar": p.get("avatar", "🤖"), "role": p.get("role", ""),
+                    "role_zh": p.get("role_zh", ""),
+                    "prompt": p.get("prompt", ""), "prompt_zh": p.get("prompt_zh", ""),
+                    "tags": list(p.get("tags", []))},
         })
     return out
 
@@ -390,7 +402,7 @@ def _states(store: Store) -> dict:
     """一次性把各表的现状取出来,用于标注「已装/未装」。"""
     return {
         "groups": [g["name"] for g in store.list_groups()],
-        "agents": {a["name"] for a in store.list_agents()},
+        "agents": {n for a in store.list_agents() for n in (builtin_names(builtin_for(a["name"])) or [a["name"]])},
         "skills": {s.name for s in list_skills(store.data_dir / "skills")},
         "prompts": {p["title"] for p in store.list_prompts()},
         "mcp": {m["name"] for m in store.list_mcp()},
@@ -401,18 +413,18 @@ def _state(item: dict, st: dict) -> tuple[bool, str]:
     kind, name = item["kind"], item["name"]
     if kind == "team":
         n = sum(1 for g in st["groups"] if g == name or g.startswith(name + " "))
-        return (n > 0, f"已建 {n} 个群" if n else "")
+        return (n > 0, i18n.pick_now(f"{n} already created", f"已建 {n} 个群") if n else "")
     if kind == "agent":
         ok = name in st["agents"]
-        return (ok, "已有同名成员" if ok else "")
+        return (ok, i18n.pick_now("A member with this name exists", "已有同名成员") if ok else "")
     if kind == "skill":
         ok = name in st["skills"]
-        return (ok, "已在技能库" if ok else "")
+        return (ok, i18n.pick_now("Already in the skill library", "已在技能库") if ok else "")
     if kind == "prompt":
         ok = name in st["prompts"]
-        return (ok, "已在提示词库" if ok else "")
+        return (ok, i18n.pick_now("Already in the prompt library", "已在提示词库") if ok else "")
     ok = name in st["mcp"]
-    return (ok, "已添加" if ok else "")
+    return (ok, i18n.pick_now("Already added", "已添加") if ok else "")
 
 
 def _slim(item: dict, st: dict) -> dict:
@@ -420,8 +432,14 @@ def _slim(item: dict, st: dict) -> dict:
     return {k: v for k, v in item.items() if k != "def"} | {"installed": installed, "state_note": note}
 
 
+def _localized(items: list[dict]) -> list[dict]:
+    """内置条目按请求语言返回(英文基础字段 / 中文 `<字段>_zh`)。"""
+    lang = i18n.current()
+    return [i18n.localize(it, lang) for it in items]
+
+
 def overview(store: Store) -> dict:
-    items = _all_items(store)
+    items = _localized(_all_items(store))
     st = _states(store)
     counts = {k: 0 for k in KINDS}
     for it in items:
@@ -440,7 +458,7 @@ def overview(store: Store) -> dict:
 
 
 def find(store: Store, item_id: str) -> dict | None:
-    item = next((r for r in _all_items(store) if r["id"] == item_id), None)
+    item = next((r for r in _localized(_all_items(store)) if r["id"] == item_id), None)
     if item is None:
         return None
     installed, note = _state(item, _states(store))
@@ -520,7 +538,7 @@ def _apply_team(store: Store, item: dict, opts: dict) -> dict:
     idx = _defs_index(store)
     members, created, reused, notes = [], [], [], []
     for n in src.get("members", []):
-        existed = any(a["name"] == n for a in store.list_agents())
+        existed = any(a["name"] in (builtin_names(builtin_for(n)) or [n]) for a in store.list_agents())
         a = _ensure_member(store, n, idx)
         if a is None:
             notes.append(f"找不到成员「{n}」的定义(自定义团队模板里的成员要能被岗位预设或自定义角色解析),已跳过")
@@ -567,7 +585,7 @@ def _apply_team(store: Store, item: dict, opts: dict) -> dict:
 
 def _apply_agent(store: Store, item: dict, opts: dict) -> dict:
     idx = _defs_index(store)
-    existed = any(a["name"] == item["name"] for a in store.list_agents())
+    existed = any(a["name"] in (builtin_names(builtin_for(item["name"])) or [item["name"]]) for a in store.list_agents())
     a = _ensure_member(store, item["name"], idx)
     if a is None:
         raise GalleryError("无法创建这个角色")
