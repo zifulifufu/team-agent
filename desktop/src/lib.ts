@@ -1,4 +1,4 @@
-export const APP_VERSION = "0.5.0";
+export const APP_VERSION = "0.5.1";
 
 import { modelLabel, type Model, type RoutePreview } from "./api";
 import { tr } from "./i18n";

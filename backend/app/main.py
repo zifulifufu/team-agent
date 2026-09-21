@@ -131,7 +131,7 @@ class ModelBatchIn(BaseModel):
     model_names: list[str]
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 
 def _pkg_version(name: str) -> str | None:

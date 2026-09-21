@@ -86,13 +86,16 @@ Browser only: `cd backend && python -m app`, then `cd desktop && npm run dev:web
 
 ## Licence
 
-**[Business Source License 1.1](LICENSE)** — Licensor **zifulifufu**.
+**[Apache License 2.0](LICENSE)** — Copyright 2026 **zifulifufu**.
 
-- Free for non-production use: read, modify, redistribute, evaluate.
-- Production use requires a commercial licence (the Additional Use Grant is `None`).
-- On **2030-09-21** this version becomes **MPL 2.0**, with no commercial restriction.
-- No trademark rights are granted. BUSL-1.1 is source-available, not an OSI open-source licence.
-- When you distribute a copy, display this licence with it.
+- Free to use, modify, redistribute and sell, including commercially.
+- Keep the copyright notice, the licence text and [NOTICE](NOTICE) with any copy you distribute, and
+  state which files you changed.
+- It carries an express patent grant, which ends automatically if you sue contributors over the
+  software's patents. No trademark rights are granted, and there is no warranty.
+- Releases **up to and including 0.5.0** were published under the Business Source License 1.1; from
+  **0.5.1** on, this repository is Apache-2.0. A copy you already hold under BUSL-1.1 keeps the terms
+  it came with.
 
 Third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). They are all
 permissively licensed (MIT / BSD / Apache-2.0 / ISC) with no GPL or AGPL, so none of them require you to

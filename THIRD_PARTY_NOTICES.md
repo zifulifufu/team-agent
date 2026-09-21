@@ -1,19 +1,20 @@
 Third-Party Notices
 ===================
 
-Team Agent itself is released under the **Business Source License 1.1**
-(see [LICENSE](LICENSE); Licensor `zifulifufu`, Change Date 2030-09-21, after which it
-converts to **MPL 2.0**). That license covers only this project's own content and does
-not change the terms of the third-party components listed below — those remain under
-their own licenses.
+Team Agent itself is released under the **Apache License 2.0**
+(see [LICENSE](LICENSE); Copyright 2026 `zifulifufu`; releases up to and including 0.5.0
+were published under the Business Source License 1.1 instead). That license covers only
+this project's own content and does not change the terms of the third-party components
+listed below — those remain under their own licenses.
 
 This project bundles no third-party content. Everything shipped with it — including the
 team / role / skill / prompt templates in the template gallery — is original text written
 for this project, so redistributing the program (including selling packaged builds)
 creates no third-party license obligations for that content.
 
-Last verified: 2026-09-21 (checked against the versions actually installed on a local
-machine, reading each package's metadata and LICENSE file).
+Last verified: 2026-09-22 (the installed frontend tree was re-checked for copyleft
+licences — none found; the backend list dates from 2026-09-21, checked by reading each
+package's metadata and LICENSE file).
 
 Backend (Python — see `backend/requirements.txt`)
 -------------------------------------------------
@@ -65,7 +66,9 @@ plus an electron-builder desktop build), you must:
 1. keep the copyright notices and license texts of those components;
 2. for the Apache-2.0 components (pytest-asyncio, openai), also keep their NOTICE file
    if present, and mark any files you modified;
-3. ideally ship an "Open source licenses" screen in the app, or place this file and the
+3. keep this project's own [LICENSE](LICENSE) and [NOTICE](NOTICE) as well, and mark the
+   files you changed — Team Agent itself is Apache-2.0 (see the top of this file);
+4. ideally ship an "Open source licenses" screen in the app, or place this file and the
    full license texts in the installation directory.
 
 Reference commands to generate the complete list:

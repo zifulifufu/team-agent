@@ -1,7 +1,7 @@
 {
   "name": "team-agent",
   "productName": "Team Agent",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A multi-model agent group-chat workbench",
   "main": "electron/main.cjs",
   "private": true,
@@ -30,5 +30,5 @@
     "vite": "^8.3.0",
     "wait-on": "^7.2.0"
   },
-  "license": "BUSL-1.1"
+  "license": "Apache-2.0"
 }

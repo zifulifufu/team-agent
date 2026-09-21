@@ -81,13 +81,13 @@ cd desktop && npm run dev       # 启动后端并打开桌面窗口
 
 ## 许可
 
-**[Business Source License 1.1](LICENSE)**,权利人 **zifulifufu**。
+**[Apache License 2.0](LICENSE)**,Copyright 2026 **zifulifufu**。
 
-- 非生产用途免费:可阅读、修改、再分发、评估。
-- 生产环境使用需取得商业授权(`Additional Use Grant` 为 `None`)。
-- **2030-09-21** 起本版本转为 **MPL 2.0**,不再有商业限制。
-- 不授予商标权。BUSL-1.1 属于源码可见(source-available)许可,不是 OSI 开源许可。
-- 分发副本时请一并展示本许可。
+- 可自由使用、修改、再分发与出售,包括商业用途。
+- 分发副本时保留版权声明、许可全文与 [NOTICE](NOTICE),并注明你改动了哪些文件。
+- 含明确的专利授权:若你以本软件的专利起诉贡献者,该授权自动终止。不授予商标权,亦不提供担保。
+- **0.5.0 及更早**的版本以 Business Source License 1.1 发布;**0.5.1 起**本仓库改用 Apache-2.0。
+  你此前按 BUSL-1.1 取得的副本,仍适用当时的条款。
 
 第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md):全部是宽松许可(MIT / BSD / Apache-2.0 /
 ISC),没有 GPL / AGPL,不会要求你开源自己的代码;但再分发时要保留它们的声明。仓库不附带任何其它项目的内容。
