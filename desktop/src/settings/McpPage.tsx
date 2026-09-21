@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { ChevronRight, ExternalLink, FileJson, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type McpServer, type McpTemplate } from "../api";
 import { useData } from "../data";
+import { tr, useI18n } from "../i18n";
 import { Modal, Switch, useConfirm } from "../ui";
 import { Callout, GithubMark, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
@@ -9,11 +10,11 @@ import McpImportModal from "../components/McpImport";
 import "../styles/ext.css";
 
 const MASK = "••••••";
-const STATUS_TEXT: Record<string, string> = { ready: "已连接", connecting: "连接中…", error: "连接失败", idle: "未连接" };
-const TRANSPORT_TEXT: Record<string, string> = { stdio: "本地命令 · stdio", http: "远程 · http", sse: "远程 · sse" };
+const STATUS_TEXT: Record<string, string> = { ready: tr("Connected"), connecting: tr("Connecting…"), error: tr("Connection failed"), idle: tr("Not connected") };
+const TRANSPORT_TEXT: Record<string, string> = { stdio: tr("Local command · stdio"), http: tr("Remote · http"), sse: tr("Remote · sse") };
 export const hasPlaceholder = (s: string) => /\/path\/to\//.test(s);
 
-/** 把带 /path/to/… 占位的文字里的占位部分高亮出来。 */
+/** Highlight the /path/to/… placeholders inside a string. */
 function Highlight({ text }: { text: string }) {
   const parts = text.split(/(\/path\/to\/[^\s"]*)/g);
   return <>{parts.map((p, i) => (hasPlaceholder(p) ? <mark key={i} className="ext-ph">{p}</mark> : <Fragment key={i}>{p}</Fragment>))}</>;
@@ -27,7 +28,7 @@ export interface FormInit {
   command: string;
   args: string[];
   url: string;
-  transport: string;   // "" = 自动
+  transport: string;   // "" = automatic
   env: Record<string, string>;
   headers: Record<string, string>;
 }
@@ -36,15 +37,16 @@ export const EMPTY_INIT: FormInit = { name: "", description: "", remote: false, 
 type Dialog = { server: McpServer | null; init: FormInit } | null;
 
 const MARKETS = [
-  { name: "官方参考服务器", url: "https://github.com/modelcontextprotocol/servers", note: "MCP 官方仓库,有文件系统、抓取网页、Git、记忆等参考实现。" },
-  { name: "MCP 官方 Registry", url: "https://registry.modelcontextprotocol.io", note: "官方维护的服务器登记处。" },
-  { name: "mcp.so", url: "https://mcp.so", note: "社区收集的 MCP 服务器目录。" },
-  { name: "Smithery", url: "https://smithery.ai", note: "MCP 服务器的第三方市场。" },
+  { name: tr("Official reference servers"), url: "https://github.com/modelcontextprotocol/servers", note: tr("The official MCP repository, with reference implementations for filesystem, web fetching, Git, memory, and more.") },
+  { name: tr("Official MCP registry"), url: "https://registry.modelcontextprotocol.io", note: tr("The officially maintained server registry.") },
+  { name: "mcp.so", url: "https://mcp.so", note: tr("A community-collected directory of MCP servers.") },
+  { name: "Smithery", url: "https://smithery.ai", note: tr("A third-party marketplace for MCP servers.") },
 ];
 
 import type { SettingsTab } from "./SettingsModal";
 
 export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } = {}) {
+  const { t } = useI18n();
   const { groups, reloadGroups } = useData();
   const confirm = useConfirm();
   const [servers, setServers] = useState<McpServer[] | null>(null);
@@ -55,7 +57,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   const [importing, setImporting] = useState(false);
   const [note, setNote] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState<Record<string, string>>({});       // id → 正在做什么
+  const [busy, setBusy] = useState<Record<string, string>>({});       // id → what it is doing
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
   const timer = useRef<number>();
 
@@ -72,7 +74,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
     api.mcpTemplates().then(setTemplates).catch(() => undefined);
   }, [load]);
 
-  // 有服务器还在「连接中」(比如在别处触发的连接)时,轮询到结束
+  // While a server is still connecting (a connection triggered elsewhere, say), poll until it finishes
   useEffect(() => {
     window.clearTimeout(timer.current);
     if (servers?.some((s) => s.status === "connecting")) timer.current = window.setTimeout(() => void load(), 1500);
@@ -90,7 +92,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
     try {
       replace(await api.connectMcp(s.id));
     } catch (e) {
-      setE(s.id, (e as Error).message);   // 外呼关闭时远程服务器会返回 403,原文显示
+      setE(s.id, (e as Error).message);   // A remote server returns 403 when outbound calls are off; show the original text
       await load();
     } finally {
       setB(s.id, "");
@@ -106,8 +108,8 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   };
   const remove = async (s: McpServer) => {
     const used = groups.filter((g) => g.ext?.mcp?.includes(s.id));
-    const extra = used.length ? `它正在 ${used.length} 个群里启用,删除后会从这些群里移除。` : "";
-    if (!(await confirm(`删除 MCP 服务器「${s.name}」?会先断开连接。${extra}`, { okText: "删除" }))) return;
+    const extra = used.length ? t("It is enabled in {n} group(s) and deleting it removes it from them.", { n: used.length }) : "";
+    if (!(await confirm(t("Delete the MCP server {name}? Its connection is closed first. {extra}", { name: s.name, extra }), { okText: t("Delete") }))) return;
     try { await api.delMcp(s.id); await load(); await reloadGroups(); } catch (e) { setE(s.id, (e as Error).message); }
   };
 
@@ -126,28 +128,28 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   return (
     <div className="sp">
       <div className="sp-head">
-        <h2 className="sp-title">MCP 服务器</h2>
+        <h2 className="sp-title">{t("MCP servers")}</h2>
         <div className="sp-head-actions">
-          <button className="btn" onClick={() => setImporting(true)}><FileJson size={14} /> 导入 JSON</button>
-          <button className="btn" onClick={() => setDiscover(true)}><GithubMark size={14} /> 从 GitHub 发现</button>
-          <button className="btn primary" onClick={() => openAdd()}><Plus size={15} /> 添加 MCP 服务器</button>
+          <button className="btn" onClick={() => setImporting(true)}><FileJson size={14} /> {t("Import JSON")}</button>
+          <button className="btn" onClick={() => setDiscover(true)}><GithubMark size={14} /> {t("Discover on GitHub")}</button>
+          <button className="btn primary" onClick={() => openAdd()}><Plus size={15} /> {t("Add an MCP server")}</button>
         </div>
       </div>
       <p className="sp-desc">
-        MCP 服务器是一个本机进程(或远程服务),成员通过它使用外部工具,如读写文件、抓取网页。它和「插件」是两回事。在群聊右侧面板的「扩展」里启用后,第一次被用到时才会连接;也可以在这里手动连接看看能不能用。{onTab && <> <button className="link" onClick={() => onTab("gallery")}>模板中心</button>里有一些现成的 MCP 用法(导入后一律是停用状态)。</>}
+        {t("An MCP server is a local process (or a remote service) that members use to reach external tools such as reading and writing files or fetching web pages. It is not the same thing as a plugin. Once you enable it under Extensions in the chat's right-hand panel, it connects the first time it is actually used; you can also connect it here by hand to see whether it works.")}{onTab && <> <button className="link" onClick={() => onTab("gallery")}>{t("Template gallery")}</button>{t(" has some ready-made MCP setups (always imported disabled).")}</>}
       </p>
-      <Callout tone="warn" title="MCP 服务器会以你的权限运行命令">
-        本地命令会在你的电脑上以你的账号权限执行,请只添加信任的。远程服务会收到成员发给它的内容。
+      <Callout tone="warn" title={t("An MCP server runs commands with your privileges")}>
+        {t("Local commands run on your computer with your account's privileges, so only add servers you trust. Remote services receive whatever members send them.")}
       </Callout>
 
       {note && <div className="ok-text" role="status" style={{ marginBottom: 8 }}>{note}</div>}
-      {err && <div className="ext-errbox"><div className="err">读取失败:{err}</div><button className="btn small" onClick={() => void load()}>重试</button></div>}
-      {!servers && !err && <div className="empty"><Spin /> 加载中…</div>}
+      {err && <div className="ext-errbox"><div className="err">{t("Failed to load: {err}", { err })}</div><button className="btn small" onClick={() => void load()}>{t("Retry")}</button></div>}
+      {!servers && !err && <div className="empty"><Spin /> {t("Loading…")}</div>}
       {servers && (
         <div className="card flush">
           {servers.length === 0 && (
             <div className="empty" style={{ lineHeight: 1.8 }}>
-              还没有 MCP 服务器。可以从下面的模板开始(会先填好表单,由你确认后保存),<br />或点「添加 MCP 服务器」手动填写。
+              {t("No MCP servers yet. Start from a template below (it pre-fills the form for you to confirm and save),")}<br />{t("or click Add an MCP server to fill it in by hand.")}
             </div>
           )}
           {servers.map((s) => {
@@ -158,7 +160,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
             return (
               <div key={s.id} className={"ext-item" + (st === "error" ? " err-state" : "")}>
                 <div className="model-row">
-                  <button className="icon-btn tiny ext-toggle" data-open={isOpen} aria-expanded={isOpen} aria-label={`${isOpen ? "收起" : "展开"} ${s.name} 详情`}
+                  <button className="icon-btn tiny ext-toggle" data-open={isOpen} aria-expanded={isOpen} aria-label={t("{action} details for {name}", { action: isOpen ? t("Collapse") : t("Expand"), name: s.name })}
                     onClick={() => setOpen((o) => { const n = new Set(o); if (n.has(s.id)) n.delete(s.id); else n.add(s.id); return n; })}>
                     <span className={isOpen ? "ext-rot" : ""} style={{ display: "inline-flex", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .12s" }}><ChevronRight size={14} /></span>
                   </button>
@@ -168,45 +170,45 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
                       {s.name}
                       <span className="tag">{TRANSPORT_TEXT[eff] ?? eff}</span>
                       <span className={"ext-status-text " + st}>{STATUS_TEXT[st]}</span>
-                      {!s.enabled && <span className="tag warn">已停用</span>}
+                      {!s.enabled && <span className="tag warn">{t("Disabled")}</span>}
                     </div>
                     <div className="mr-id" title={eff === "stdio" ? [s.command, ...s.args].join(" ") : s.url}>
                       {eff === "stdio" ? [s.command, ...s.args].join(" ") : s.url}
                     </div>
                     <div className="ext-item-sub">
-                      {s.status === "ready" ? `${s.tools.length} 个工具` : "连接后列出工具"}
-                      {inGroups ? ` · ${inGroups} 个群启用` : " · 还没有群启用"}
+                      {s.status === "ready" ? t("{n} tools", { n: s.tools.length }) : t("Tools are listed once connected")}
+                      {inGroups ? t(" · enabled in {n} groups", { n: inGroups }) : t(" · not enabled in any group yet")}
                     </div>
                     {(rowErr[s.id] || (st === "error" && s.error)) && <div className="ext-errline">{rowErr[s.id] || s.error}</div>}
                   </div>
                   <div className="ext-item-actions">
                     {s.status === "ready" ? (
-                      <button className="btn small" disabled={!!busy[s.id]} onClick={() => void disconnect(s)}>{busy[s.id] === "disconnect" ? <Spin size={12} /> : null}断开</button>
+                      <button className="btn small" disabled={!!busy[s.id]} onClick={() => void disconnect(s)}>{busy[s.id] === "disconnect" ? <Spin size={12} /> : null}{t("Disconnect")}</button>
                     ) : (
-                      <button className="btn small" disabled={!!busy[s.id] || s.status === "connecting" || !s.enabled} title={s.enabled ? "" : "先启用这个服务器"} onClick={() => void connect(s)}>
-                        {busy[s.id] === "connect" || s.status === "connecting" ? <><Spin size={12} /> 连接中</> : "连接"}
+                      <button className="btn small" disabled={!!busy[s.id] || s.status === "connecting" || !s.enabled} title={s.enabled ? "" : t("Enable this server first")} onClick={() => void connect(s)}>
+                        {busy[s.id] === "connect" || s.status === "connecting" ? <><Spin size={12} /> {t("Connecting")}</> : t("Connect")}
                       </button>
                     )}
-                    <Switch checked={s.enabled} disabled={!!busy[s.id]} label={`启用 ${s.name}`} onChange={(v) => void toggle(s, v)} />
-                    <button className="icon-btn" title="编辑" aria-label={`编辑 ${s.name}`} onClick={() => openEdit(s)}><Pencil size={15} /></button>
-                    <button className="icon-btn" title="删除" aria-label={`删除 ${s.name}`} onClick={() => void remove(s)}><Trash2 size={15} /></button>
+                    <Switch checked={s.enabled} disabled={!!busy[s.id]} label={t("Enable {name}", { name: s.name })} onChange={(v) => void toggle(s, v)} />
+                    <button className="icon-btn" title={t("Edit")} aria-label={t("Edit {name}", { name: s.name })} onClick={() => openEdit(s)}><Pencil size={15} /></button>
+                    <button className="icon-btn" title={t("Delete")} aria-label={t("Delete {name}", { name: s.name })} onClick={() => void remove(s)}><Trash2 size={15} /></button>
                   </div>
                 </div>
                 {isOpen && (
                   <div className="ext-item-detail">
                     {s.description && <div className="ext-item-desc" style={{ marginTop: 0 }}>{s.description}</div>}
                     {s.tools.length > 0 ? (
-                      <div className="ext-tool-list" aria-label={`${s.name} 的工具`}>
-                        {s.tools.map((t) => (
-                          <div key={t.name} className="ext-tool">
-                            <code>{t.name}</code>
-                            {t.read_only && <span className="tag on" title="服务器声明这个工具只读">只读</span>}
-                            <span className="muted">{t.description}</span>
+                      <div className="ext-tool-list" aria-label={t("Tools of {name}", { name: s.name })}>
+                        {s.tools.map((tool) => (
+                          <div key={tool.name} className="ext-tool">
+                            <code>{tool.name}</code>
+                            {tool.read_only && <span className="tag on" title={t("The server declares this tool read-only")}>{t("Read-only")}</span>}
+                            <span className="muted">{tool.description}</span>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <div className="muted small" style={{ marginTop: 6 }}>还没有工具信息 —— 点「连接」后会列出这个服务器提供的工具。</div>
+                      <div className="muted small" style={{ marginTop: 6 }}>{t("No tool information yet — click Connect and the tools this server provides will be listed.")}</div>
                     )}
                   </div>
                 )}
@@ -216,25 +218,25 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
         </div>
       )}
 
-      <div className="sec">模板</div>
-      <p className="muted small" style={{ margin: "-4px 0 10px", lineHeight: 1.7 }}>点一个模板只会把它填进表单,不会直接保存;你需要看过命令再点保存。</p>
+      <div className="sec">{t("Templates")}</div>
+      <p className="muted small" style={{ margin: "-4px 0 10px", lineHeight: 1.7 }}>{t("Clicking a template only fills the form in; it is not saved straight away. Check the command, then save.")}</p>
       <div className="ext-tpl-grid">
-        {templates.map((t) => {
-          const ph = t.args.some(hasPlaceholder);
+        {templates.map((tpl) => {
+          const ph = tpl.args.some(hasPlaceholder);
           return (
-            <button key={t.name} className="ext-tpl" onClick={() => openAdd({ name: t.name, description: t.note, command: t.command, args: t.args })}>
-              <b>{t.name}{ph && <span className="tag warn">要改路径</span>}</b>
-              <span className="ext-tpl-cmd"><Highlight text={[t.command, ...t.args].join(" ")} /></span>
-              <span className="ext-tpl-note">{t.note}</span>
+            <button key={tpl.name} className="ext-tpl" onClick={() => openAdd({ name: tpl.name, description: tpl.note, command: tpl.command, args: tpl.args })}>
+              <b>{tpl.name}{ph && <span className="tag warn">{t("Path needs changing")}</span>}</b>
+              <span className="ext-tpl-cmd"><Highlight text={[tpl.command, ...tpl.args].join(" ")} /></span>
+              <span className="ext-tpl-note">{tpl.note}</span>
             </button>
           );
         })}
-        {templates.length === 0 && <div className="muted small">没有可用的模板。</div>}
+        {templates.length === 0 && <div className="muted small">{t("No templates available.")}</div>}
       </div>
 
-      <div className="sec">去哪儿找更多</div>
+      <div className="sec">{t("Where to find more")}</div>
       <p className="muted small" style={{ margin: "-4px 0 10px", lineHeight: 1.7 }}>
-        下面是第三方网站,内容和质量由它们负责,本程序没有核实过。看中一个服务器后,把它的配置 JSON 复制下来,用上面的「导入 JSON」添加,先看命令再决定要不要用。
+        {t("These are third-party sites; their content and quality are their responsibility and this app has not verified them. Once you find a server you like, copy its config JSON and add it with Import JSON above — read the command before deciding whether to use it.")}
       </p>
       <div className="ext-tpl-grid">
         {MARKETS.map((m) => (
@@ -256,7 +258,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
       {importing && (
         <McpImportModal
           onClose={() => setImporting(false)}
-          onDone={async (n) => { setImporting(false); setNote(n ? `已导入 ${n} 个服务器。它们还没有在任何群里启用,也没有运行。` : "没有导入新的服务器(同名的已跳过)。"); await load(); }}
+          onDone={async (n) => { setImporting(false); setNote(n ? t("Imported {n} servers. They are not enabled in any group yet, and they are not running.", { n }) : t("No new servers were imported (ones with the same name were skipped).")); await load(); }}
         />
       )}
       {discover && (
@@ -270,36 +272,38 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   );
 }
 
-// ---------------------------------------------------------------- 表单
+// ---------------------------------------------------------------- Form
 let rowId = 1;
 const toRows = (o: Record<string, string>): KvRow[] => Object.entries(o).map(([k, v]) => ({ id: rowId++, k, v: v === MASK ? "" : v, masked: v === MASK }));
 
 function KvEditor({ rows, setRows, kPlaceholder, vPlaceholder, label }: { rows: KvRow[]; setRows: (r: KvRow[]) => void; kPlaceholder: string; vPlaceholder: string; label: string }) {
+  const { t } = useI18n();
   const upd = (id: number, patch: Partial<KvRow>) => setRows(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   return (
     <div>
       {rows.map((r) => (
         <div key={r.id} className="ext-kv">
-          <input value={r.k} readOnly={r.masked} onChange={(e) => upd(r.id, { k: e.target.value })} placeholder={kPlaceholder} aria-label={`${label}名`} spellCheck={false} title={r.masked ? "已保存的项不能改名;想改就删掉再新加一行" : ""} />
+          <input value={r.k} readOnly={r.masked} onChange={(e) => upd(r.id, { k: e.target.value })} placeholder={kPlaceholder} aria-label={t("{label} name", { label })} spellCheck={false} title={r.masked ? t("A saved entry cannot be renamed; delete it and add a new row instead") : ""} />
           <input
             className={r.masked && !r.v ? "masked" : ""}
             type={r.masked && !r.v ? "text" : "password"}
             value={r.v}
             onChange={(e) => upd(r.id, { v: e.target.value })}
-            placeholder={r.masked ? "已设置(不显示)" : vPlaceholder}
-            aria-label={`${label}值`}
+            placeholder={r.masked ? t("Already set (hidden)") : vPlaceholder}
+            aria-label={t("{label} value", { label })}
             autoComplete="off"
             spellCheck={false}
           />
-          <button type="button" className="icon-btn tiny" title="删除这一行" aria-label={`删除${label} ${r.k || ""}`} onClick={() => setRows(rows.filter((x) => x.id !== r.id))}><X size={14} /></button>
+          <button type="button" className="icon-btn tiny" title={t("Delete this row")} aria-label={t("Delete {label} {name}", { label, name: r.k || "" })} onClick={() => setRows(rows.filter((x) => x.id !== r.id))}><X size={14} /></button>
         </div>
       ))}
-      <button type="button" className="btn small" onClick={() => setRows([...rows, { id: rowId++, k: "", v: "", masked: false }])}><Plus size={13} /> 添加{label}</button>
+      <button type="button" className="btn small" onClick={() => setRows([...rows, { id: rowId++, k: "", v: "", masked: false }])}><Plus size={13} /> {t("Add {label}", { label })}</button>
     </div>
   );
 }
 
 export function McpDialog({ server, init, onClose, onSaved }: { server: McpServer | null; init: FormInit; onClose: () => void; onSaved: (s: McpServer) => Promise<void> }) {
+  const { t } = useI18n();
   const confirm = useConfirm();
   const [name, setName] = useState(init.name);
   const [description, setDescription] = useState(init.description);
@@ -319,7 +323,7 @@ export function McpDialog({ server, init, onClose, onSaved }: { server: McpServe
   const kv = (rows: KvRow[]) => Object.fromEntries(rows.filter((r) => r.k.trim()).map((r) => [r.k.trim(), r.masked && r.v === "" ? MASK : r.v]));
 
   const save = async () => {
-    if (!remote && phLines.length && !(await confirm(`参数里还有 /path/to/ 占位路径(第 ${phLines.join("、")} 行),这不是真实路径,服务器多半启动不了。仍然保存吗?`, { okText: "仍然保存", danger: false }))) return;
+    if (!remote && phLines.length && !(await confirm(t("The arguments still contain /path/to/ placeholder paths (line {lines}). These are not real paths, so the server most likely will not start. Save anyway?", { lines: phLines.join(", ") }), { okText: t("Save anyway"), danger: false }))) return;
     setBusy(true);
     setErr("");
     const body: Record<string, unknown> = remote
@@ -337,35 +341,35 @@ export function McpDialog({ server, init, onClose, onSaved }: { server: McpServe
   const canSave = name.trim() && (remote ? url.trim() : command.trim()) && !busy;
   return (
     <Modal
-      title={server ? `编辑「${server.name}」` : "添加 MCP 服务器"}
+      title={server ? t("Edit {name}", { name: server.name }) : t("Add an MCP server")}
       onClose={onClose}
       wide
       actions={
         <>
           {err && <span className="err ext-act-err" role="alert">{err}</span>}
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" disabled={!canSave} onClick={() => void save()}>{busy ? <><Spin /> 保存中…</> : "保存"}</button>
+          <button className="btn" onClick={onClose}>{t("Cancel")}</button>
+          <button className="btn primary" disabled={!canSave} onClick={() => void save()}>{busy ? <><Spin /> {t("Saving…")}</> : t("Save")}</button>
         </>
       }
     >
       <label className="field">
-        <span>名称</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="如:文件系统" autoFocus />
+        <span>{t("Name")}</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("e.g. Filesystem")} autoFocus />
       </label>
       <label className="field">
-        <span>说明(可选)</span>
-        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="它能做什么" />
+        <span>{t("Description (optional)")}</span>
+        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t("What it can do")} />
       </label>
       <div className="field">
-        <span>连接方式</span>
-        <div className="ext-radio-row" role="radiogroup" aria-label="连接方式">
+        <span>{t("Connection type")}</span>
+        <div className="ext-radio-row" role="radiogroup" aria-label={t("Connection type")}>
           <label className={"check" + (!remote ? " on" : "")}>
             <input type="radio" name="mcp-mode" checked={!remote} onChange={() => setRemote(false)} />
-            <span>本地命令<small>在本机启动一个进程(stdio)</small></span>
+            <span>{t("Local command")}<small>{t("Starts a process on this machine (stdio)")}</small></span>
           </label>
           <label className={"check" + (remote ? " on" : "")}>
             <input type="radio" name="mcp-mode" checked={remote} onChange={() => setRemote(true)} />
-            <span>远程服务<small>连接一个 http / sse 地址,需要允许外呼</small></span>
+            <span>{t("Remote service")}<small>{t("Connects to an http / sse URL; Allow outbound calls is required")}</small></span>
           </label>
         </div>
       </div>
@@ -373,42 +377,42 @@ export function McpDialog({ server, init, onClose, onSaved }: { server: McpServe
       {!remote ? (
         <>
           <label className="field">
-            <span>启动命令</span>
-            <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="如:npx / uvx / python" spellCheck={false} />
+            <span>{t("Start command")}</span>
+            <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder={t("e.g. npx / uvx / python")} spellCheck={false} />
           </label>
           <label className="field">
-            <span>参数(每行一个,含空格的参数不会被拆开)</span>
-            <textarea className={"ext-mono-area" + (phLines.length ? " warn" : "")} rows={4} value={argsText} onChange={(e) => setArgsText(e.target.value)} placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/你的/目录"} spellCheck={false} />
-            {phLines.length > 0 && <span className="ext-field-note warn">第 {phLines.join("、")} 行的 /path/to/… 是占位,需要替换成你的真实路径。</span>}
+            <span>{t("Arguments (one per line; arguments containing spaces are not split)")}</span>
+            <textarea className={"ext-mono-area" + (phLines.length ? " warn" : "")} rows={4} value={argsText} onChange={(e) => setArgsText(e.target.value)} placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/your/directory"} spellCheck={false} />
+            {phLines.length > 0 && <span className="ext-field-note warn">{t("The /path/to/… on line {lines} is a placeholder — replace it with your real path.", { lines: phLines.join(", ") })}</span>}
           </label>
           <div className="field">
-            <span>环境变量(如需要 API Key)</span>
-            <KvEditor rows={env} setRows={setEnv} kPlaceholder="变量名,如 GITHUB_TOKEN" vPlaceholder="值" label="环境变量" />
-            {env.some((r) => r.masked) && <span className="ext-field-note">「已设置(不显示)」的值不会回显;不改就保持原样,输入新值会覆盖。</span>}
+            <span>{t("Environment variables (for an API key, say)")}</span>
+            <KvEditor rows={env} setRows={setEnv} kPlaceholder={t("Variable name, e.g. GITHUB_TOKEN")} vPlaceholder={t("Value")} label={t("Environment variable")} />
+            {env.some((r) => r.masked) && <span className="ext-field-note">{t("A value that is already set (hidden) is never echoed back; leave it alone to keep it, or type a new value to replace it.")}</span>}
           </div>
         </>
       ) : (
         <>
           <label className="field">
-            <span>服务地址(URL)</span>
+            <span>{t("Service URL")}</span>
             <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/mcp" spellCheck={false} />
           </label>
           <label className="field">
-            <span>传输方式</span>
+            <span>{t("Transport")}</span>
             <select value={transport} onChange={(e) => setTransport(e.target.value)}>
-              <option value="">自动(地址以 /sse 结尾按 sse,否则按 http)</option>
+              <option value="">{t("Automatic (sse if the URL ends in /sse, otherwise http)")}</option>
               <option value="http">http(Streamable HTTP)</option>
               <option value="sse">sse</option>
             </select>
           </label>
           <div className="field">
-            <span>请求头(如 Authorization)</span>
-            <KvEditor rows={headers} setRows={setHeaders} kPlaceholder="名称,如 Authorization" vPlaceholder="值" label="请求头" />
-            {headers.some((r) => r.masked) && <span className="ext-field-note">「已设置(不显示)」的值不会回显;不改就保持原样,输入新值会覆盖。</span>}
+            <span>{t("Request headers (e.g. Authorization)")}</span>
+            <KvEditor rows={headers} setRows={setHeaders} kPlaceholder={t("Name, e.g. Authorization")} vPlaceholder={t("Value")} label={t("Request header")} />
+            {headers.some((r) => r.masked) && <span className="ext-field-note">{t("A value that is already set (hidden) is never echoed back; leave it alone to keep it, or type a new value to replace it.")}</span>}
           </div>
         </>
       )}
-      <p className="ext-field-note" style={{ margin: "4px 0 0" }}>保存后不会立刻连接;在列表里点「连接」试一下,或在群里启用后第一次被用到时自动连接。</p>
+      <p className="ext-field-note" style={{ margin: "4px 0 0" }}>{t("Saving does not connect it immediately; click Connect in the list to try it, or enable it for a group and it connects the first time it is used.")}</p>
     </Modal>
   );
 }
