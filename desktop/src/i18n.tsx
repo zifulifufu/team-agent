@@ -484,7 +484,6 @@ const ZH: Record<string, string> = {
   "Search results": "检索结果",
   "Search the library": "检索资料库",
   "Skipped {n}": "跳过 {n} 个",
-  "Skipped {n} 个": "跳过 {n} 个",
   "Supports {formats}; select several at once and they upload one by one.": "支持 {formats};可一次选多个,逐个上传。",
   "The library is empty.": "资料库还是空的。",
   "This is exactly what a member sees when searching in a group chat: keyword matches (adjacent character pairs for Chinese), most relevant snippets first; disabled documents are excluded.": "这就是成员在群聊里检索时看到的内容:按关键词匹配(中文按相邻两字),取最相关的片段;已停用的文档不参与。",
