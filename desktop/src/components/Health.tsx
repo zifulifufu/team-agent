@@ -2,34 +2,45 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Check, ChevronDown, RefreshCw } from "lucide-react";
 import { relTime, type HealthState, type ModelHealth } from "../api";
 import { useData } from "../data";
+import { currentLang, pickLang, tr, useI18n } from "../i18n";
 import { useOutside } from "../ui";
 import "../styles/health.css";
 
-const HEALTH_LABEL: Record<HealthState, string> = {
-  ok: "连通",
-  limited: "限速/暂不可用",
-  bad: "连不通",
-  unknown: "未检测",
-  off: "未就绪",
+// Both spellings per state. `healthTitle` below is a plain function, so it cannot use the
+// hook; it resolves through `pickLang(..., currentLang())` instead, exactly like lib.ts.
+const HEALTH_LABEL: Record<HealthState, { en: string; zh: string }> = {
+  ok: { en: "Connected", zh: "连通" },
+  limited: { en: "Rate-limited / unavailable", zh: "限速/暂不可用" },
+  bad: { en: "Cannot connect", zh: "连不通" },
+  unknown: { en: "Not checked", zh: "未检测" },
+  off: { en: "Not ready", zh: "未就绪" },
 };
 
-/** 悬停提示:状态 + 原因/耗时 + 多久前检测的、怎么检测的 */
+const healthLabel = (s: HealthState): string =>
+  pickLang(HEALTH_LABEL[s].en, HEALTH_LABEL[s].zh, currentLang());
+
+/** Hover text: the state, the reason or latency, and when and how it was checked */
 function healthTitle(h: ModelHealth | undefined): string {
-  if (!h) return "状态未知";
-  const parts = [HEALTH_LABEL[h.state]];
+  if (!h) return tr("Status unknown");
+  const parts = [healthLabel(h.state)];
   if (h.detail) parts.push(h.detail);
   if (h.state === "ok" && h.latency_ms) parts.push(`${h.latency_ms}ms`);
-  if (h.checked_at) parts.push(`${relTime(h.checked_at)}${h.source === "chat" ? "(聊天时)" : h.source === "probe" ? "(本地探测)" : h.source === "test" ? "(手动检测)" : ""}${h.stale ? ",结果较旧" : ""}`);
+  if (h.checked_at) {
+    const how = h.source === "chat" ? tr("during a chat")
+      : h.source === "probe" ? tr("local probe")
+      : h.source === "test" ? tr("manual check") : "";
+    parts.push(`${relTime(h.checked_at)}${how ? ` (${how})` : ""}${h.stale ? tr(", and the result is old") : ""}`);
+  }
   return parts.join(" · ");
 }
 
-/** 一个小圆点:绿=连通 黄=限速 红=连不通 空心=未检测 灰=未就绪。不只靠颜色:有文字提示,可选带文字。 */
+/** A small dot: green = connected, amber = rate-limited, red = cannot connect, hollow = not checked, grey = not ready. Never colour alone: it always has a title, and optionally a label. */
 export function HealthDot({ h, label = false }: { h: ModelHealth | undefined; label?: boolean }) {
   const st: HealthState = h?.state ?? "unknown";
   return (
-    <span className={"hd hd-" + st + (h?.stale && st !== "off" ? " stale" : "")} title={healthTitle(h)} role="img" aria-label={HEALTH_LABEL[st]}>
+    <span className={"hd hd-" + st + (h?.stale && st !== "off" ? " stale" : "")} title={healthTitle(h)} role="img" aria-label={healthLabel(st)}>
       <i className="hd-dot" />
-      {label && <span className="hd-text">{HEALTH_LABEL[st]}</span>}
+      {label && <span className="hd-text">{healthLabel(st)}</span>}
     </span>
   );
 }
@@ -37,22 +48,23 @@ export function HealthDot({ h, label = false }: { h: ModelHealth | undefined; la
 const NO_EXCLUDE: string[] = [];
 
 /**
- * 带指示灯的模型下拉:每个模型前面一个灯,一眼看出哪些能连通。
- * 打开时会静默探测本地服务(不花 token);「检测全部」才会向云端模型各发一条极短的请求。
+ * A model picker with indicator lights: one before each model, so it is obvious at a glance which ones can connect.
+ * Opening it probes local services silently (no tokens); only Check all sends one very short request to each cloud model.
  */
 export function ModelSelect({
   value, onChange, autoLabel, disabled, ariaLabel, className = "", exclude = NO_EXCLUDE,
 }: {
   value: string | null;
   onChange: (id: string | null) => void;
-  /** 传了就多一项「自动」(值为 null) */
+  /** Pass it to get an extra "Auto" entry (a null value) */
   autoLabel?: string;
   disabled?: boolean;
   ariaLabel: string;
   className?: string;
-  /** 不列出的模型(比如已经在链里的) */
+  /** Models to leave out (ones already in the chain, say) */
   exclude?: string[];
 }) {
+  const { t } = useI18n();
   const { providers, health, checkHealth } = useData();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -60,7 +72,7 @@ export function ModelSelect({
   const ref = useOutside<HTMLDivElement>(open, () => setOpen(false));
   const btnRef = useRef<HTMLButtonElement>(null);
   const [pos, setPos] = useState<CSSProperties>({});
-  // 弹层用 fixed 定位:侧边栏、面板都有 overflow 裁剪,absolute 会被切掉
+  // The popover is fixed-positioned: the sidebar and panels clip with overflow, which would cut an absolute one off
   useEffect(() => {
     if (!open || !btnRef.current) return;
     const place = () => {
@@ -109,8 +121,8 @@ export function ModelSelect({
   return (
     <div className={"msel " + className} ref={ref}>
       <button type="button" ref={btnRef} className="msel-btn" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={toggle}>
-        {cur ? <HealthDot h={health[cur.id]} /> : value ? <HealthDot h={{ state: "off", detail: "模型已被移除或停用", latency_ms: 0, checked_at: 0, source: "", stale: false }} /> : null}
-        <span className="msel-cur">{cur ? cur.display_name : value ? `${value}(已移除/停用)` : (autoLabel ?? "选择模型")}</span>
+        {cur ? <HealthDot h={health[cur.id]} /> : value ? <HealthDot h={{ state: "off", detail: tr("The model was removed or disabled"), latency_ms: 0, checked_at: 0, source: "", stale: false }} /> : null}
+        <span className="msel-cur">{cur ? cur.display_name : value ? `${value}${t("(removed/disabled)")}` : (autoLabel ?? t("Choose a model"))}</span>
         <ChevronDown size={13} aria-hidden />
       </button>
       {open && (
@@ -123,7 +135,7 @@ export function ModelSelect({
           )}
           {groups.map(({ p, models }) => (
             <div key={p.id} className="msel-grp">
-              <div className="msel-prov">{p.name}{p.is_local && <span className="tag">本地</span>}</div>
+              <div className="msel-prov">{p.name}{p.is_local && <span className="tag">{t("Local")}</span>}</div>
               {models.map((m) => {
                 const h = health[m.id];
                 const note = h && h.state !== "ok" && h.state !== "unknown" ? h.detail : "";
@@ -141,7 +153,7 @@ export function ModelSelect({
               })}
             </div>
           ))}
-          {groups.length === 0 && <div className="msel-empty">还没有启用的模型</div>}
+          {groups.length === 0 && <div className="msel-empty">{t("No models are enabled yet")}</div>}
           <div className="msel-foot">
             <span className="msel-legend">
               <HealthDot h={{ state: "ok", detail: "", latency_ms: 0, checked_at: 0, source: "", stale: false }} label />
@@ -150,8 +162,8 @@ export function ModelSelect({
               <HealthDot h={undefined} label />
               <HealthDot h={{ state: "off", detail: "", latency_ms: 0, checked_at: 0, source: "", stale: false }} label />
             </span>
-            <button type="button" className="btn small" disabled={busy} onClick={() => void runAll()} title="向每个可用的云端模型发一条极短的请求(花几个 token),本地模型只探测服务">
-              <RefreshCw size={12} className={busy ? "mp-spin" : ""} /> {busy ? "检测中…" : "检测全部"}
+            <button type="button" className="btn small" disabled={busy} onClick={() => void runAll()} title={t("Send one very short request to every available cloud model (a few tokens); local models only get a service probe")}>
+              <RefreshCw size={12} className={busy ? "mp-spin" : ""} /> {busy ? t("Checking…") : t("Check all")}
             </button>
             {err && <div className="err small" role="alert">{err}</div>}
           </div>
