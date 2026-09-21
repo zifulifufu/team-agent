@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.presets import PRESET_BY_ID
 from tests.conftest import FakeLLM
 
 ECHO = str(Path(__file__).parent / "mcp_echo_server.py")
@@ -153,6 +154,33 @@ def test_refresh_model_options_respects_offline_switch(client):
     client.put("/api/settings", json={"external_calls_enabled": False})
     assert client.post("/api/providers/deepseek/model-options/refresh").status_code == 403
     assert client.post("/api/providers/deepseek/model-options/seen").status_code == 200
+
+
+def test_aggregator_presets_stay_remote(client):
+    """MetaChat and Cherry Studio can join a group, but neither may claim to be local.
+
+    `is_local` is what lets a provider run while outbound calls are off
+    (router.build_chain). Cherry Studio's gateway listens on loopback yet forwards to the
+    providers configured inside it, so calling it local would silently defeat the switch.
+    """
+    presets = {p["preset"]: p for p in client.get("/api/presets").json()}
+    assert {"metachat", "cherry-studio"} <= set(presets)
+    for pid in ("metachat", "cherry-studio"):
+        p = presets[pid]
+        assert p["kind"] == "openai_compatible" and p["is_local"] is False, pid
+        assert p["base_url"].startswith("http")
+        # Both languages, like every other preset. The API localizes `*_zh` away, so read the
+        # source table to check the pair exists.
+        assert PRESET_BY_ID[pid]["hint"] and PRESET_BY_ID[pid]["hint_zh"]
+    # Neither ships a model list: the roster is whatever the account or the gateway reports
+    assert presets["metachat"]["models"] == [] and presets["cherry-studio"]["models"] == []
+    # Adding one really does create a provider, and a model on it still obeys the offline switch
+    prov = client.post("/api/providers", json={"preset": "cherry-studio"}).json()
+    assert prov["id"] == "cherry-studio" and prov["is_local"] is False
+    client.post("/api/providers/cherry-studio/models", json={"model_name": "whatever"})
+    client.put("/api/settings", json={"external_calls_enabled": False})
+    r = client.post("/api/test-model", json={"model_id": "cherry-studio/whatever"}).json()
+    assert r["ok"] is False and "Outbound calls are disabled" in r["error"]
 
 
 # -------------------------------------------------------------------- library

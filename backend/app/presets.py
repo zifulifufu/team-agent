@@ -138,6 +138,28 @@ PRESETS: list[dict] = [
         "hint": "",
     },
     {
+        "preset": "metachat",
+        "name": "MetaChat", "name_zh": "MetaChat 元语",
+        "kind": "openai_compatible",
+        "base_url": "https://llm-api.mmchat.xyz/v1",
+        "is_local": False,
+        "models": [],
+        "hint": "One key for GPT, Claude, Gemini, Grok, DeepSeek, GLM, Kimi and more. Model IDs are the upstream names (gpt-5.2, claude-opus-4-6, gemini-2.5-pro); click Fetch model list after adding. Backup address: https://llm-api.mmchat.dev/v1", "hint_zh": "一个 Key 调用 GPT、Claude、Gemini、Grok、DeepSeek、GLM、Kimi 等。模型 ID 用上游原名(gpt-5.2、claude-opus-4-6、gemini-2.5-pro),添加后点「获取模型列表」。备用地址:https://llm-api.mmchat.dev/v1",
+    },
+    {
+        # The gateway listens on loopback, but it forwards to whatever providers are configured
+        # inside Cherry Studio — which are usually cloud. `is_local` has to stay False: it is the
+        # flag that lets a provider run while "outbound calls" is off (see router.build_chain), so
+        # marking it local would quietly turn the offline guarantee into a lie.
+        "preset": "cherry-studio",
+        "name": "Cherry Studio (local gateway)", "name_zh": "Cherry Studio(本地网关)",
+        "kind": "openai_compatible",
+        "base_url": "http://127.0.0.1:23333/v1",
+        "is_local": False,
+        "models": [],
+        "hint": "In Cherry Studio: Settings → Tools → API Gateway, start it, then paste the cs-sk- key it generates. The port (23333) is editable after adding. Model IDs are whatever you configured inside Cherry Studio.", "hint_zh": "在 Cherry Studio 里:设置 → 工具 → API Gateway,启动后把它生成的 cs-sk- 密钥填进来。端口(23333)添加后可改。模型 ID 是你在 Cherry Studio 里配好的那些。",
+    },
+    {
         "preset": "ollama",
         "name": "Ollama (local)", "name_zh": "Ollama(本地)",
         "kind": "ollama",
