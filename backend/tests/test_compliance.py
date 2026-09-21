@@ -167,7 +167,8 @@ def test_github_token_is_stored_as_a_keychain_reference(tmp_path: Path, monkeypa
     assert st.get_settings()["github_token"] == "ghp_testtoken0123456789"
 
 
-@pytest.mark.skipif(not os.environ.get("TEAM_AGENT_KEYCHAIN_TEST"), reason="需要真实钥匙串,默认跳过")
+@pytest.mark.skipif(not os.environ.get("TEAM_AGENT_KEYCHAIN_TEST"),
+                    reason="需要真实钥匙串(会往登录钥匙串写一条测试项再删掉),默认跳过;设 TEAM_AGENT_KEYCHAIN_TEST=1 可运行")
 def test_real_keychain_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Round trip against the real keychain (writes one test item to your login
     keychain and deletes it straight afterwards).

@@ -54,6 +54,26 @@ cd desktop && npm run dev       # 启动后端并打开桌面窗口
 只在浏览器里看:`cd backend && python -m app`,再 `cd desktop && npm run dev:web`,打开
 <http://localhost:5173>。
 
+## 测试
+
+```bash
+cd backend && ../.venv/bin/python -m pytest    # 全量,约一分钟
+cd desktop && npx tsc --noEmit                 # 前端类型
+python3 scripts/check-i18n.py                  # 在仓库根目录运行:查词典缺口与语言被冻结
+```
+
+有 **1 个测试默认跳过**:`test_real_keychain_round_trip`。它会往你真实的登录钥匙串写一条
+(service `team-agent`、account `selftest:roundtrip`),读回来再删掉,所以平时跑测试不会碰到你的密钥。
+要连它一起跑:
+
+```bash
+cd backend
+TEAM_AGENT_KEYCHAIN_TEST=1 ../.venv/bin/python -m pytest tests/test_compliance.py::test_real_keychain_round_trip
+```
+
+其余测试一律走内存里的假钥匙串——`tests/conftest.py` 用 `TEAM_AGENT_NO_KEYCHAIN=1` 维持这一点,
+把这行去掉才会碰到真实钥匙串。
+
 ## 功能
 
 | 模块 | 说明 |

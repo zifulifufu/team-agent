@@ -59,6 +59,26 @@ model), then pick a scene or a group template on the home page and describe your
 Browser only: `cd backend && python -m app`, then `cd desktop && npm run dev:web`, and open
 <http://localhost:5173>.
 
+## Tests
+
+```bash
+cd backend && ../.venv/bin/python -m pytest    # the whole suite, about a minute
+cd desktop && npx tsc --noEmit                 # front-end types
+python3 scripts/check-i18n.py                  # run from the repo root: dictionary gaps + frozen language
+```
+
+One test is **skipped by default**: `test_real_keychain_round_trip`. It writes a single item to your
+real login keychain (service `team-agent`, account `selftest:roundtrip`), reads it back and deletes it
+again, so an ordinary test run never touches your credentials. To run it as well:
+
+```bash
+cd backend
+TEAM_AGENT_KEYCHAIN_TEST=1 ../.venv/bin/python -m pytest tests/test_compliance.py::test_real_keychain_round_trip
+```
+
+Every other test uses an in-memory fake keychain — `tests/conftest.py` sets `TEAM_AGENT_NO_KEYCHAIN=1`
+to keep it that way, and removing that variable is what makes the real keychain reachable.
+
 ## Features
 
 | Area | What you get |
