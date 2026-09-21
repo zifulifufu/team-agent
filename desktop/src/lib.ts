@@ -3,6 +3,11 @@ export const APP_VERSION = "0.5.0";
 import { modelLabel, type Model, type RoutePreview } from "./api";
 import { tr } from "./i18n";
 
+/** Permission level of an external-agent engine, as a label in the current language.
+ * Shared by the message bubble and the member card so the two cannot drift apart. */
+export const levelLabel = (level: string): string =>
+  ({ read: tr("Read-only"), edit: tr("Can edit files"), full: tr("Full access") })[level] ?? level;
+
 export function routeText(preview: RoutePreview | null, models: Model[]): { text: string; offline: boolean } {
   if (!preview) return { text: "", offline: false };
   if (!preview.external_calls_enabled) return { text: tr("Offline mode · local models only"), offline: true };

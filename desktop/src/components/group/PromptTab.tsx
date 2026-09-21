@@ -3,11 +3,13 @@ import { Eye, Save } from "lucide-react";
 import { api, type Group, type PromptsInfo } from "../../api";
 import { useData } from "../../data";
 import { Modal, useConfirm } from "../../ui";
+import { useI18n } from "../../i18n";
 
-/** 常用变量;完整清单以后端 /api/prompts 的 variables 为准。 */
+/** Common variables; the authoritative list is the `variables` field of /api/prompts. */
 const COMMON_VARS = ["agent_name", "agent_role", "group_name", "members", "model_name", "date", "time", "datetime", "weekday", "os", "username"];
 
 export default function PromptTab({ group, active }: { group: Group; active: boolean }) {
+  const { t } = useI18n();
   const { agents, reloadGroups } = useData();
   const confirm = useConfirm();
   const gid = group.id;
@@ -34,7 +36,8 @@ export default function PromptTab({ group, active }: { group: Group; active: boo
     if (!viewer || !members.some((m) => m.id === viewer)) setViewer(members[0]?.id ?? "");
   }, [members, viewer]);
 
-  // 后端里的群提示词变了(套用提示词、切换群)→ 同步到输入框
+  // The group prompt changed on the backend (a prompt was applied, or the group was
+  // switched): sync it into the textarea.
   useEffect(() => {
     setDraft(group.prompt);
   }, [group.prompt, gid]);
@@ -84,7 +87,8 @@ export default function PromptTab({ group, active }: { group: Group; active: boo
   };
 
   const apply = async (id: string, title: string, mode: "replace" | "append") => {
-    if (mode === "replace" && (dirty || group.prompt.trim()) && !(await confirm(`用「${title}」替换本群现有的提示词?`, { okText: "替换" }))) return;
+    if (mode === "replace" && (dirty || group.prompt.trim())
+      && !(await confirm(t("Replace this group's prompt with \"{title}\"?", { title }), { okText: t("Replace") }))) return;
     setApplying(id + mode);
     setErr("");
     try {
@@ -138,30 +142,30 @@ export default function PromptTab({ group, active }: { group: Group; active: boo
   return (
     <div className="gp-scroll">
       <section className="gp-block">
-        <div className="gp-sec">本群提示词</div>
-        <label className="sr-only" htmlFor="gp-prompt">本群提示词</label>
+        <div className="gp-sec">{t("Group prompt")}</div>
+        <label className="sr-only" htmlFor="gp-prompt">{t("Group prompt")}</label>
         <textarea
           id="gp-prompt"
           ref={ta}
           className="gp-textarea"
           rows={7}
           value={draft}
-          placeholder="例如:本群是产品发布小组,统一用「Team Agent」称呼产品,口语化、不超过 3 句。"
+          placeholder={t("For example: this group works on a product launch; call the product \"Team Agent\", keep it conversational, at most 3 sentences.")}
           onChange={(e) => { setDraft(e.target.value); remember(); }}
           onSelect={remember}
           onBlur={() => void save()}
         />
         <div className="gp-prompt-bar">
           <span className="gp-note">
-            {saving ? "保存中…" : saved ? "已保存" : dirty ? "有未保存的修改(失焦时自动保存)" : "支持 {{变量}},发给成员前会代入真实内容。"}
+            {saving ? t("Saving…") : saved ? t("Saved") : dirty ? t("Unsaved changes (saved automatically when the field loses focus)") : t("Supports {{variables}}, which are filled in before the prompt reaches a member.")}
           </span>
           <span className="grow" />
           <button className="btn small primary" disabled={!dirty || saving} onClick={() => void save()}>
-            <Save size={12} /> 保存
+            <Save size={12} /> {t("Save")}
           </button>
         </div>
         {err && <div className="err gp-err" role="alert">{err}</div>}
-        <div className="gp-sub">点击插入变量</div>
+        <div className="gp-sub">{t("Click to insert a variable")}</div>
         {infoErr && <div className="err gp-err">{infoErr}</div>}
         <div className="gp-vars">
           {common.map(varChip)}
@@ -169,29 +173,29 @@ export default function PromptTab({ group, active }: { group: Group; active: boo
         </div>
         {rest.length > 0 && (
           <button className="link-btn" onClick={() => setShowAllVars((v) => !v)}>
-            {showAllVars ? "收起" : `更多变量(${rest.length})`}
+            {showAllVars ? t("Show less") : t("More variables ({n})", { n: rest.length })}
           </button>
         )}
       </section>
 
       <section className="gp-block">
-        <div className="gp-sec">从提示词库套用</div>
-        {info === null && !infoErr && <div className="gp-none">加载中…</div>}
-        {info !== null && lib.length === 0 && <div className="gp-none">提示词库里还没有内容。到左侧「提示词」页添加。</div>}
+        <div className="gp-sec">{t("Apply from the prompt library")}</div>
+        {info === null && !infoErr && <div className="gp-none">{t("Loading…")}</div>}
+        {info !== null && lib.length === 0 && <div className="gp-none">{t("The prompt library is empty. Add one on the Prompts page.")}</div>}
         <div className="gp-plist">
           {lib.map((p) => (
             <div key={p.id} className="gp-pitem">
               <div className="gp-pitem-head">
                 <b title={p.title}>{p.title}</b>
-                {p.kind === "group" && <span className="tag on">群聊</span>}
+                {p.kind === "group" && <span className="tag on">{t("Group")}</span>}
               </div>
               <div className="gp-pitem-body">{p.content}</div>
               <div className="gp-pitem-act">
-                <button className="btn small" disabled={!!applying} onClick={() => void apply(p.id, p.title, "replace")} aria-label={`用「${p.title}」替换本群提示词`}>
-                  替换
+                <button className="btn small" disabled={!!applying} onClick={() => void apply(p.id, p.title, "replace")} aria-label={t("Replace the group prompt with \"{title}\"", { title: p.title })}>
+                  {t("Replace")}
                 </button>
-                <button className="btn small" disabled={!!applying} onClick={() => void apply(p.id, p.title, "append")} aria-label={`把「${p.title}」追加到本群提示词`}>
-                  追加
+                <button className="btn small" disabled={!!applying} onClick={() => void apply(p.id, p.title, "append")} aria-label={t("Append \"{title}\" to the group prompt", { title: p.title })}>
+                  {t("Append")}
                 </button>
               </div>
             </div>
@@ -200,24 +204,24 @@ export default function PromptTab({ group, active }: { group: Group; active: boo
       </section>
 
       <section className="gp-block">
-        <div className="gp-sec">成员实际收到的系统提示词</div>
-        <div className="gp-note">全局提示词、岗位设定、本群提示词、技能等拼好之后的最终文本。</div>
+        <div className="gp-sec">{t("The system prompt a member actually receives")}</div>
+        <div className="gp-note">{t("The final text after the global prompt, the role setup, the group prompt and skills are combined.")}</div>
         <div className="gp-viewer">
-          <select value={viewer} onChange={(e) => setViewer(e.target.value)} aria-label="选择成员" disabled={members.length === 0}>
+          <select value={viewer} onChange={(e) => setViewer(e.target.value)} aria-label={t("Choose a member")} disabled={members.length === 0}>
             {members.map((m) => (
               <option key={m.id} value={m.id}>{m.avatar} {m.name}</option>
             ))}
           </select>
           <button className="btn small" disabled={!viewer || pvBusy} onClick={() => void openPreview()}>
-            <Eye size={12} /> {pvBusy ? "读取中…" : "查看"}
+            <Eye size={12} /> {pvBusy ? t("Loading…") : t("View")}
           </button>
         </div>
         {pvErr && <div className="err gp-err" role="alert">{pvErr}</div>}
       </section>
 
       {preview && (
-        <Modal title={`「${preview.name}」实际收到的系统提示词`} wide onClose={() => setPreview(null)}>
-          <div className="gp-pv-meta">约 {preview.tokens} tokens(估算)</div>
+        <Modal title={t("The system prompt {name} actually receives", { name: preview.name })} wide onClose={() => setPreview(null)}>
+          <div className="gp-pv-meta">{t("About {n} tokens (estimated)", { n: preview.tokens })}</div>
           <pre className="gp-pv" tabIndex={0}>{preview.text}</pre>
         </Modal>
       )}

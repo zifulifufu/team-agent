@@ -3,13 +3,17 @@ import { useData } from "../../data";
 import type { Group } from "../../api";
 import { useCapabilities } from "../GroupPanel";
 import MemberCard, { type MemberRow } from "./MemberCard";
+import { useI18n } from "../../i18n";
 
-/** 侧边栏「成员」下面:当前群的成员列表(随时可展开、换模型、移出)。 */
+/** Under "Members" in the sidebar: the current group's members (expandable at any
+ * time; switch their model or remove them). */
 export default function MemberDock({ group }: { group: Group }) {
+  const { t } = useI18n();
   const { agents } = useData();
   const { caps, err } = useCapabilities(group);
 
-  // 能力清单还没回来时,先用本地数据顶上,避免列表闪空
+  // Until the capability list arrives, fall back to local data so the list does not
+  // flash empty.
   const rows: MemberRow[] = useMemo(() => {
     if (caps) return caps.members;
     return group.member_ids
@@ -23,10 +27,10 @@ export default function MemberDock({ group }: { group: Group }) {
   }, [caps, group, agents]);
 
   return (
-    <div className="mdock" aria-label={`「${group.name}」的成员`}>
-      {rows.length === 0 && <div className="side-empty">本群还没有成员,点上面的 + 添加</div>}
+    <div className="mdock" aria-label={t("Members of \"{group}\"", { group: group.name })}>
+      {rows.length === 0 && <div className="side-empty">{t("This group has no members yet — use the + above to add one")}</div>}
       {rows.map((m) => <MemberCard key={m.agent_id} group={group} m={m} hasCaps={!!caps} />)}
-      {err && <div className="err mdock-err">读取成员能力失败:{err}</div>}
+      {err && <div className="err mdock-err">{t("Could not load member capabilities: {err}", { err })}</div>}
     </div>
   );
 }

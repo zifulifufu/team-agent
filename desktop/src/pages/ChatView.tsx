@@ -4,6 +4,7 @@ import { api, downloadChat, useGroupSocket, type Approval, type ChatEvent, type 
 import { useData } from "../data";
 import { useRoute } from "../hooks";
 import { useConfirm, useOutside } from "../ui";
+import { useI18n } from "../i18n";
 import Bubble from "../components/Bubble";
 import Composer from "../components/Composer";
 import ApprovalBar from "../components/ApprovalBar";
@@ -17,10 +18,11 @@ interface Props {
   gid: string;
   autoSend?: string;
   onAutoSent: () => void;
-  onSettings: (t: SettingsTab) => void;
+  onSettings: (tab: SettingsTab) => void;
 }
 
 export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Props) {
+  const { t } = useI18n();
   const { groups, agents, models, reloadGroups } = useData();
   const confirm = useConfirm();
   const route = useRoute();
@@ -35,7 +37,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   const [err, setErr] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const autoSent = useRef(false);
-  const stick = useRef(true); // 用户在底部时才自动跟随新消息
+  const stick = useRef(true); // only auto-follow new messages while the user is at the bottom
   const hlTimer = useRef<number>();
 
   const group = groups.find((g) => g.id === gid) ?? null;
@@ -48,7 +50,9 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   const { caps, err: capsErr, refresh: refreshCaps } = useCapabilities(group);
   const toolSources = useMemo(() => new Map((caps?.tools ?? []).map((t) => [t.name, t.source])), [caps]);
 
-  /** 从后端补齐现状:消息、等确认的调用、是否还在跑。打开群、WebSocket 重连时都用它,不会因为断线漏掉东西。 */
+  /** Re-sync from the backend: messages, pending approvals, whether a turn is still
+   * running. Used when opening a group and after a WebSocket reconnect, so nothing
+   * is missed while the socket was down. */
   const resync = useCallback(async () => {
     const [list, aps, st] = await Promise.all([
       api.messages(gid),
@@ -57,7 +61,9 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
     ]);
     const lastTs = list.length ? list[list.length - 1].created_at ?? 0 : 0;
     const ids = new Set(list.map((m) => m.id));
-    // 服务器给的为准;本地多出来的只留两种:正在流式输出的(且后端确实还在跑),和比服务器最新一条还新的(拉取期间刚到的)
+    // The server is the source of truth. Keep only two kinds of local extras: ones
+    // still streaming while the backend is busy, and ones newer than the newest
+    // server row (they arrived while this fetch was in flight).
     setMsgs((cur) => [
       ...list,
       ...cur.filter((m) => !ids.has(m.id) && ((m.streaming && st.busy) || (m.created_at ?? 0) > lastTs)),
@@ -76,7 +82,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   const everUp = useRef(false);
   useEffect(() => {
     if (!wsUp) return;
-    if (everUp.current) void resync().catch(() => undefined);   // 断线后重新连上:补齐断线期间漏掉的消息、审批和「是否还在跑」
+    if (everUp.current) void resync().catch(() => undefined);   // reconnected: catch up on messages, approvals and run state
     everUp.current = true;
   }, [wsUp, resync]);
 
@@ -91,7 +97,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   };
 
-  /** 任务板里点某一行 → 滚到对应发言并短暂高亮 */
+  /** Clicking a row on the plan card: scroll to that message and flash it briefly. */
   const jumpTo = useCallback((mid: string) => {
     const el = listRef.current?.querySelector(`[data-mid="${mid}"]`);
     if (!el) return;
@@ -116,7 +122,8 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
           case "reset":
             return cur.map((m) => (m.id === e.message_id ? { ...m, content: "" } : m));
           case "message_end":
-            // 以后端给的为准;后端没带的 meta 字段(如流式期间收到的工具轨迹)沿用之前的
+            // The backend wins; meta fields it omits (tool traces received while
+            // streaming, for example) keep their previous value.
             return cur.map((m) =>
               m.id === e.message.id ? { ...e.message, meta: { ...m.meta, ...e.message.meta }, streaming: false } : m,
             );
@@ -153,11 +160,11 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   useGroupSocket(gid, onEvent, setWsUp);
 
   const sendText = useCallback(
-    async (t: string): Promise<boolean> => {
+    async (body: string): Promise<boolean> => {
       setErr("");
       setBusy(true);
       try {
-        await api.send(gid, t);
+        await api.send(gid, body);
         return true;
       } catch (e) {
         setBusy(false);
@@ -168,7 +175,8 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
     [gid],
   );
 
-  // 从首页带着任务进来:等实时连接就绪后再发,保证能收到流式输出
+  // Arriving from the home screen with a task: wait for the live connection first so
+  // the streaming output is not missed.
   useEffect(() => {
     if (autoSend && wsUp && !autoSent.current) {
       autoSent.current = true;
@@ -178,15 +186,15 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   }, [autoSend, wsUp, onAutoSent, sendText]);
 
   const send = () => {
-    const t = text.trim();
-    if (!t || busy) return;
+    const body = text.trim();
+    if (!body || busy) return;
     setText("");
-    void sendText(t).then((ok) => {
-      if (!ok) setText((cur) => cur || t);   // 没发出去:把输入还给用户,别让一大段话白写
+    void sendText(body).then((ok) => {
+      if (!ok) setText((cur) => cur || body);   // not sent: give the text back to the user
     });
   };
 
-  if (!group) return <div className="empty big">群聊不存在</div>;
+  if (!group) return <div className="empty big">{t("Group chat not found")}</div>;
 
   return (
     <div className="chat-layout">
@@ -200,15 +208,15 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
               <span key={a.id} title={a.name}>{a.avatar}</span>
             ))}
           </div>
-          {!wsUp && <span className="chip warn">实时连接中断,重连中…</span>}
+          {!wsUp && <span className="chip warn">{t("Live connection lost, reconnecting…")}</span>}
           <div className="grow" />
           <div className="head-actions nodrag">
             <button
               className="icon-btn"
-              title="清空聊天记录"
-              aria-label="清空聊天记录"
+              title={t("Clear chat history")}
+              aria-label={t("Clear chat history")}
               onClick={async () => {
-                if (await confirm("清空本群的聊天记录?", { okText: "清空" })) {
+                if (await confirm(t("Clear this group's chat history?"), { okText: t("Clear all") })) {
                   await api.clearMessages(gid);
                   setMsgs([]);
                   await reloadGroups();
@@ -218,8 +226,8 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
               <Eraser size={16} />
             </button>
             <ExportMenu gid={gid} />
-            <AddMemberButton group={group} align="right" label="添加成员" className="icon-btn" />
-            <button className={"icon-btn" + (panel ? " on" : "")} title="技能 / 插件 / MCP 与提示词" aria-label="技能、插件、MCP 与提示词面板" aria-pressed={panel} onClick={() => setPanel((p) => !p)}>
+            <AddMemberButton group={group} align="right" label={t("Add member")} className="icon-btn" />
+            <button className={"icon-btn" + (panel ? " on" : "")} title={t("Skills / plugins / MCP and prompts")} aria-label={t("Skills, plugins, MCP and prompts panel")} aria-pressed={panel} onClick={() => setPanel((p) => !p)}>
               <PanelRight size={16} />
             </button>
           </div>
@@ -259,14 +267,14 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
             busy={busy}
             onStop={() => api.stop(gid)}
             members={members}
-            placeholder="输入消息,@成员 点名分工;Enter 发送,Shift+Enter 换行"
+            placeholder={t("Type a message; @mention a member to assign work. Enter to send, Shift+Enter for a new line")}
             routeText={route.text}
             offline={route.offline}
             onToggleExternal={route.toggleExternal}
             rows={2}
             error={err}
           />
-          <div className="composer-hint">{busy ? "成员正在协作…可随时点击停止" : "不 @ 任何人时由群主持人响应"}</div>
+          <div className="composer-hint">{t(busy ? "Members are working — you can stop at any time" : "With no @mention, the group host answers")}</div>
         </div>
       </section>
 
@@ -285,8 +293,10 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
   );
 }
 
-/** 导出聊天记录:下载 Markdown;设置了 Obsidian 文件夹时还可以直接写进库里(_聊天记录 子文件夹,不会被当成记忆)。 */
+/** Export the chat: download Markdown, or write it straight into the Obsidian vault
+ * when one is configured (into a _chat-log subfolder, so it is not read as memory). */
 function ExportMenu({ gid }: { gid: string }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [hasObsidian, setHasObsidian] = useState(false);
   const [note, setNote] = useState("");
@@ -296,23 +306,23 @@ function ExportMenu({ gid }: { gid: string }) {
     try {
       setNote(await fn());
     } catch (e) {
-      setNote("导出失败:" + (e as Error).message);
+      setNote(t("Export failed: ") + (e as Error).message);
     }
     window.setTimeout(() => setNote(""), 6000);
   };
   return (
     <div className="gp-addmenu" ref={ref}>
-      <button className="icon-btn" title="导出聊天记录" aria-label="导出聊天记录" aria-haspopup="menu" aria-expanded={open} onClick={() => {
+      <button className="icon-btn" title={t("Export chat history")} aria-label={t("Export chat history")} aria-haspopup="menu" aria-expanded={open} onClick={() => {
         if (!open) api.obsidian().then((o) => setHasObsidian(!!o.dir && o.exists)).catch(() => setHasObsidian(false));
         setOpen((o) => !o);
       }}>
         <Download size={16} />
       </button>
       {open && (
-        <div className="gp-addmenu-pop" role="menu" aria-label="导出聊天记录" style={{ right: 0, left: "auto" }}>
-          <button role="menuitem" onClick={() => void run(async () => { await downloadChat(gid); return "已下载 Markdown 文件"; })}><span>下载为 Markdown</span></button>
+        <div className="gp-addmenu-pop" role="menu" aria-label={t("Export chat history")} style={{ right: 0, left: "auto" }}>
+          <button role="menuitem" onClick={() => void run(async () => { await downloadChat(gid); return t("Markdown file downloaded"); })}><span>{t("Download as Markdown")}</span></button>
           {hasObsidian && (
-            <button role="menuitem" onClick={() => void run(async () => `已写入 Obsidian:${(await api.exportChatObsidian(gid)).path}`)}><span>写入 Obsidian</span><small>库里的 _聊天记录 文件夹</small></button>
+            <button role="menuitem" onClick={() => void run(async () => t("Written to Obsidian: {path}", { path: (await api.exportChatObsidian(gid)).path }))}><span>{t("Write to Obsidian")}</span><small>{t("The _chat-log folder in your vault")}</small></button>
           )}
         </div>
       )}

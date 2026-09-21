@@ -3,23 +3,25 @@ import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleMinus, CircleSlas
 import type { Agent, Message, PlanStatus, PlanTaskStatus } from "../api";
 import { useData } from "../data";
 import { StrengthChips } from "./Strengths";
+import { pick, tr, useI18n } from "../i18n";
 import "../styles/chat.css";
 
-const PLAN_LABEL: Record<PlanStatus, string> = {
-  running: "进行中",
-  integrating: "群主整合中",
-  done: "已完成",
-  stopped: "已停止",
-  failed: "失败",
+/** Module scope, so these use `tr` and stay reactive to the current language. */
+const PLAN_LABEL: Record<PlanStatus, () => string> = {
+  running: () => tr("In progress"),
+  integrating: () => tr("Host is consolidating"),
+  done: () => tr("Finished"),
+  stopped: () => tr("Stopped"),
+  failed: () => tr("Failed"),
 };
 
-const TASK_LABEL: Record<PlanTaskStatus, string> = {
-  pending: "待开始",
-  running: "进行中",
-  done: "完成",
-  failed: "失败",
-  stopped: "已停止",
-  skipped: "已跳过",
+const TASK_LABEL: Record<PlanTaskStatus, () => string> = {
+  pending: () => tr("Not started"),
+  running: () => tr("In progress"),
+  done: () => tr("Done"),
+  failed: () => tr("Failed"),
+  stopped: () => tr("Stopped"),
+  skipped: () => tr("Skipped"),
 };
 
 function StatusIcon({ status, size = 16 }: { status: PlanTaskStatus; size?: number }) {
@@ -39,31 +41,32 @@ function StatusIcon({ status, size = 16 }: { status: PlanTaskStatus; size?: numb
   }
 }
 
-/** 「群主整合」这一行的状态由整张任务板的状态推出。 */
+/** The "host consolidates" row derives its state from the whole plan. */
 function finalStatus(s: PlanStatus | undefined): { status: PlanTaskStatus; label: string } {
   switch (s) {
     case "integrating":
-      return { status: "running", label: "进行中" };
+      return { status: "running", label: tr("In progress") };
     case "done":
-      return { status: "done", label: "完成" };
+      return { status: "done", label: tr("Done") };
     case "failed":
-      return { status: "failed", label: "失败" };
+      return { status: "failed", label: tr("Failed") };
     case "stopped":
-      return { status: "stopped", label: "未执行" };
+      return { status: "stopped", label: tr("Not run") };
     default:
-      return { status: "pending", label: "待开始" };
+      return { status: "pending", label: tr("Not started") };
   }
 }
 
 interface Props {
   m: Message;
-  /** 「群主整合」那条消息(有的话,点击整合行可以跳过去) */
+  /** The host's consolidation message, if there is one (the row jumps to it) */
   finalMessageId?: string;
   onJump: (messageId: string) => void;
   highlight?: boolean;
 }
 
 function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
+  const { t } = useI18n();
   const { agents, groups } = useData();
   const [conv, setConv] = useState(true);
   const meta = m.meta ?? {};
@@ -85,7 +88,7 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
       ? {
           role: "button" as const,
           tabIndex: 0,
-          title: "点击定位到这条发言",
+          title: t("Click to jump to this message"),
           onClick: () => onJump(mid),
           onKeyDown: (e: React.KeyboardEvent) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -97,27 +100,27 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
       : {};
 
   return (
-    <section className={"plan-card" + (highlight ? " hl" : "")} data-mid={m.id} aria-label="任务板">
+    <section className={"plan-card" + (highlight ? " hl" : "")} data-mid={m.id} aria-label={t("Plan board")}>
       <header className="plan-head">
         <span className="plan-ico"><ListChecks size={15} /></span>
-        <b className="plan-title">任务板</b>
+        <b className="plan-title">{t("Plan board")}</b>
         <span className={"plan-pill " + status}>
           {(status === "running" || status === "integrating") && <LoaderCircle size={11} className="spin" aria-hidden />}
-          {PLAN_LABEL[status] ?? status}
+          {PLAN_LABEL[status]?.() ?? status}
         </span>
         <span className="grow" />
-        <span className="plan-count" title="已完成任务 / 总任务数">
-          {done}/{total} 已完成
+        <span className="plan-count" title={t("Finished tasks / total tasks")}>
+          {t("{done}/{total} finished", { done, total })}
         </span>
       </header>
-      <div className="plan-bar" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-label="任务进度">
+      <div className="plan-bar" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-label={t("Task progress")}>
         <i className={status} style={{ width: pct + "%" }} />
       </div>
 
       {meta.goal && (
         <div className="plan-goal">
           <Target size={14} aria-hidden />
-          <span><b>总目标</b>{meta.goal}</span>
+          <span><b>{t("Goal")}</b>{meta.goal}</span>
         </div>
       )}
 
@@ -125,50 +128,50 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
         <div className="plan-conv">
           <button className="plan-conv-head" aria-expanded={conv} onClick={() => setConv((v) => !v)}>
             {conv ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            全组统一约定
+            {t("Shared conventions")}
           </button>
           {conv && <div className="plan-conv-body">{conventions}</div>}
         </div>
       )}
 
       <ol className="plan-tasks">
-        {tasks.map((t, i) => {
-          const owner = byId.get(t.owner_id) ?? agents.find((a) => a.name === t.owner);
+        {tasks.map((task, i) => {
+          const owner = byId.get(task.owner_id) ?? agents.find((a) => a.name === task.owner);
           return (
-            <li key={t.id} className={"plan-row " + t.status + (t.message_id ? " jump" : "")} {...rowProps(t.message_id)}>
+            <li key={task.id} className={"plan-row " + task.status + (task.message_id ? " jump" : "")} {...rowProps(task.message_id)}>
               <span className="plan-no">{i + 1}</span>
               <div className="plan-main">
                 <div className="plan-line1">
-                  <span className="plan-owner" title={t.owner}>
+                  <span className="plan-owner" title={task.owner}>
                     <span className="avatar xs">{owner?.avatar ?? "🤖"}</span>
-                    {t.owner}
+                    {task.owner}
                   </span>
-                  <span className="plan-ttl">{t.title}</span>
+                  <span className="plan-ttl">{task.title}</span>
                 </div>
-                {(t.strengths.length > 0 || t.tools.length > 0 || t.needs.length > 0) && (
+                {(task.strengths.length > 0 || task.tools.length > 0 || task.needs.length > 0) && (
                   <div className="plan-line2">
-                    {t.strengths.length > 0 && <StrengthChips tags={t.strengths} max={4} />}
-                    {t.tools.map((n) => (
-                      <span key={n} className="plan-tool" title={"计划使用工具:" + n}>
+                    {task.strengths.length > 0 && <StrengthChips tags={task.strengths} max={4} />}
+                    {task.tools.map((n) => (
+                      <span key={n} className="plan-tool" title={t("Planned tool: {name}", { name: n })}>
                         <Wrench size={10} aria-hidden />
                         {n}
                       </span>
                     ))}
-                    {t.needs.length > 0 && (
-                      <span className="plan-needs" title={t.needs.map((n) => `${n} ${titleOf.get(n) ?? ""}`.trim()).join("\n")}>
-                        承接 {t.needs.join("、")}
+                    {task.needs.length > 0 && (
+                      <span className="plan-needs" title={task.needs.map((n) => `${n} ${titleOf.get(n) ?? ""}`.trim()).join("\n")}>
+                        {t("Depends on {tasks}", { tasks: task.needs.join(pick(", ", "、")) })}
                       </span>
                     )}
                   </div>
                 )}
-                {t.deliverable && (
-                  <div className="plan-deliv"><span>交付物</span>{t.deliverable}</div>
+                {task.deliverable && (
+                  <div className="plan-deliv"><span>{t("Deliverable")}</span>{task.deliverable}</div>
                 )}
-                {t.status === "failed" && t.error && <div className="plan-err">{t.error}</div>}
+                {task.status === "failed" && task.error && <div className="plan-err">{task.error}</div>}
               </div>
-              <span className={"plan-state " + t.status} title={TASK_LABEL[t.status]}>
-                <StatusIcon status={t.status} />
-                <em>{TASK_LABEL[t.status]}</em>
+              <span className={"plan-state " + task.status} title={TASK_LABEL[task.status]()}>
+                <StatusIcon status={task.status} />
+                <em>{TASK_LABEL[task.status]()}</em>
               </span>
             </li>
           );
@@ -179,11 +182,11 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
             <div className="plan-line1">
               <span className="plan-owner" title={host?.name}>
                 <span className="avatar xs">{host?.avatar ?? "🤖"}</span>
-                {host?.name ?? "群主"}
+                {host?.name ?? t("Host")}
               </span>
-              <span className="plan-ttl">群主整合</span>
+              <span className="plan-ttl">{t("Host consolidation")}</span>
             </div>
-            <div className="plan-deliv"><span>说明</span>汇总各成员交付,统一口径后给出最终结果</div>
+            <div className="plan-deliv"><span>{t("Note")}</span>{t("Merges every member's deliverable into one final answer.")}</div>
           </div>
           <span className={"plan-state " + fin.status} title={fin.label}>
             <StatusIcon status={fin.status} />
