@@ -1,0 +1,80 @@
+/* 模型挑选与强项:选择模型对话框、服务商里的强项编辑、成员表单里的岗位强项 */
+
+/* ---- 选择模型对话框 ---- */
+.modal.wide:has(.mp-root) { width: 780px; }
+.mp-root { display: flex; flex-direction: column; gap: 10px; }
+.mp-sub { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.7; }
+.mp-sub .mp-note { color: var(--text-3); }
+.mp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mp-bar .search-box { flex: 1; min-width: 200px; }
+.mp-bar .check-inline { font-size: 12.5px; color: var(--text-2); }
+.mp-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mp-filter-label { font-size: 12px; color: var(--text-3); margin-right: 2px; }
+.mp-status { font-size: 12.5px; line-height: 1.6; }
+.mp-status.err-box { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
+.mp-status.err-box .mp-err-note { display: block; color: var(--text-2); margin-top: 2px; }
+.mp-listbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.mp-list { border: 1px solid var(--border); border-radius: 10px; max-height: min(46vh, 460px); overflow-y: auto; background: var(--card); }
+.mp-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--border); cursor: pointer; }
+.mp-row:first-child { border-top: 0; }
+.mp-row:hover { background: var(--hover); }
+.mp-row.added { cursor: default; }
+.mp-row.added:hover { background: transparent; }
+.mp-row.added .mp-body { opacity: 0.72; }
+.mp-row.checked { background: var(--primary-soft); }
+.mp-row input[type="checkbox"] { width: 16px; height: 16px; margin: 3px 0 0; flex: none; accent-color: var(--primary); }
+.mp-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.mp-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mp-name { font-weight: 600; }
+.mp-id { font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text-3); word-break: break-all; }
+.mp-summary { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+.mp-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-3); }
+.mp-meta .sep { opacity: 0.5; }
+.mp-warn { font-size: 12px; color: var(--warn); line-height: 1.5; }
+.mp-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.tag.mp-warn-tag { background: var(--warn-bg); color: var(--warn); }
+.mp-manual { border-top: 1px solid var(--border); padding-top: 8px; }
+.mp-manual-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-2); }
+.mp-manual-toggle:hover { color: var(--text); }
+.mp-manual-toggle svg { transition: transform 0.12s; }
+.mp-manual-toggle.open svg { transform: rotate(90deg); }
+.mp-manual-body { margin-top: 8px; }
+.mp-foot-note { margin-right: auto; align-self: center; font-size: 12.5px; }
+
+/* ---- 服务商详情里的模型行 ---- */
+.mp-mrow { align-items: flex-start; }
+.mp-mrow .mr-main { display: flex; flex-direction: column; gap: 2px; }
+.mp-mrow .mr-name { flex-wrap: wrap; }
+.mp-mrow .mr-actions { display: flex; align-items: center; gap: 8px; flex: none; padding-top: 1px; }
+.mp-mrow .test-res { max-width: 150px; }
+.mp-new-btn { cursor: pointer; }
+.mp-new-btn:hover { opacity: 0.88; }
+.mp-head-tags { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; vertical-align: middle; }
+.detail-head h2 { display: flex; align-items: center; }
+
+/* ---- 强项编辑弹层 ---- */
+.mp-str-note { font-size: 12.5px; color: var(--text-2); line-height: 1.7; margin: 0 0 12px; }
+.mp-str-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; font-size: 12.5px; color: var(--text-3); }
+
+/* ---- 成员表单 ---- */
+.ag-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.ag-preset { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--border); border-radius: 18px; font-size: 13px; background: var(--card); }
+.ag-preset:hover:not(:disabled) { border-color: var(--primary); background: var(--primary-soft); }
+.ag-preset:disabled { opacity: 0.55; cursor: not-allowed; }
+.ag-preset small { color: var(--text-3); font-size: 11px; }
+.ag-help { font-size: 12px; color: var(--text-3); line-height: 1.7; margin: 2px 0 0; }
+.ag-help.warn { color: var(--warn); }
+.ag-reco { margin-top: 8px; padding: 8px 12px; border-radius: 10px; background: var(--bg-sub); border: 1px solid var(--border); font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+.ag-reco b { color: var(--text); font-weight: 600; }
+.ag-reco.warn { background: var(--warn-bg); border-color: transparent; color: var(--warn); }
+.ag-reco .str-chips { margin-left: 4px; vertical-align: middle; }
+.ag-prompt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ag-prompt-head select { width: auto; max-width: 240px; padding: 3px 24px 3px 8px; font-size: 12px; border-radius: 7px; color: var(--text-2); }
+.li-sub .ag-tags { color: var(--ok); }
+
+.mp-spin { animation: mp-rot 0.9s linear infinite; }
+@keyframes mp-rot { to { transform: rotate(360deg); } }
+.ag-prompt-head > span { font-size: 12.5px; color: var(--text-2); }
+
+/* 测试失败的完整原因:换行显示,不截断(限速、鉴权等错误信息比较长) */
+.mp-testerr { margin-top: 6px; white-space: normal; word-break: break-word; line-height: 1.5; }

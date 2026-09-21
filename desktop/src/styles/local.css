@@ -1,0 +1,61 @@
+/* 本地模型页(设置 → 本地模型) */
+.lp-hw { display: block; margin-top: 4px; }
+.lp-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 22px 0 10px; }
+.lp-ver { font-weight: 400; margin-left: 6px; }
+
+.lp-cands { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-sub); padding: 12px 14px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+.lp-cands-title { font-weight: 600; font-size: 13.5px; }
+.lp-cand { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.lp-cands-title + .lp-cand { border-top: 0; padding-top: 0; }
+.lp-cand-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+.lp-cand-act { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+
+.lp-tools { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.lp-search { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 0 10px; background: var(--card); color: var(--text-3); }
+.lp-search input { flex: 1; border: 0; outline: 0; background: transparent; padding: 8px 0; font: inherit; color: var(--text); min-width: 0; }
+.lp-search:focus-within { border-color: var(--primary); }
+.lp-only { white-space: nowrap; }
+.lp-hidden { margin-bottom: 8px; }
+
+.lp-fams { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.lp-fam, .lp-self { border: 1px solid var(--border); border-radius: 12px; background: var(--card); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.lp-self { margin-top: 22px; }
+.lp-self .sec { margin: 0; display: flex; align-items: center; gap: 6px; }
+.lp-fam-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lp-vendor { background: var(--bg-sub); }
+.lp-fam-desc { line-height: 1.6; }
+
+.lp-rows { display: flex; flex-direction: column; margin-top: 4px; }
+.lp-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--border); }
+.lp-row:first-child { border-top: 0; }
+.lp-row-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; flex: 1; }
+.lp-row-act { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.lp-tag { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.lp-size { font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.lp-note-txt { flex-basis: 100%; }
+.lp-prog { flex-basis: 100%; }
+.lp-fit.ok { color: var(--ok, #16a34a); }
+.lp-fit.tight { color: var(--warn, #b45309); }
+.lp-fit.no { color: var(--danger); }
+.lp-note { margin-top: 10px; line-height: 1.6; }
+
+.lp-cmds { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.lp-cmd { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-sub); padding: 8px 12px; }
+.lp-cmd-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lp-cmd pre { margin: 6px 0 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+
+.lp-cloud { margin-top: 18px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; }
+.lp-cloud summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
+.lp-cloud ul { margin: 8px 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
+
+.lp-installed { display: flex; flex-direction: column; gap: 2px; }
+.lp-inst { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); }
+.lp-inst:first-child { border-top: 0; }
+
+@media (max-width: 900px) {
+  .lp-row-act { width: 100%; justify-content: flex-start; }
+  .lp-cand { flex-direction: column; }
+  .lp-cand-act { justify-content: flex-start; }
+}
+.lp-errs { margin-bottom: 8px; }
+.lp-errs ul { margin: 6px 0 0; padding-left: 18px; line-height: 1.7; overflow-wrap: anywhere; }

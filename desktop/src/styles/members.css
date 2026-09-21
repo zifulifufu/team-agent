@@ -1,0 +1,49 @@
+/* 侧边栏「成员」区、添加成员面板、成员卡片 */
+.nav-split { display: flex; align-items: center; gap: 2px; position: relative; }
+.nav-split .nav-item { flex: 1; min-width: 0; }
+.nav-item .count { margin-left: 2px; color: var(--text-3); font-weight: 400; font-size: 12px; }
+.madd-wrap { position: relative; display: inline-flex; }
+.nav-split .madd-wrap { position: static; }
+.madd-pop { position: absolute; top: calc(100% + 6px); z-index: 60; width: 320px; max-width: calc(100vw - 24px); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.madd-pop.left { left: 0; }
+.nav-split .madd-pop.left { left: 4px; }
+.madd-pop.right { right: 0; }
+.madd-title { padding: 10px 14px 6px; font-weight: 600; font-size: 13px; }
+.madd-scroll { max-height: min(70vh, 560px); overflow-y: auto; padding: 0 12px 12px; }
+.madd-sec { display: flex; align-items: center; gap: 6px; margin: 12px 0 4px; font-size: 12.5px; font-weight: 600; }
+.madd-note { font-size: 12px; line-height: 1.6; color: var(--text-3); margin: 0 0 6px; }
+.madd-none { font-size: 12px; color: var(--text-3); padding: 2px 0 4px; }
+.madd-err { margin: 6px 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.madd-q { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); margin-bottom: 6px; }
+.madd-group { margin-bottom: 6px; }
+.madd-prov { font-size: 11.5px; color: var(--text-3); margin: 6px 0 3px; display: flex; align-items: center; gap: 6px; }
+.madd-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--bg); margin-bottom: 5px; }
+.madd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.madd-name { font-weight: 500; overflow-wrap: anywhere; }
+.madd-sub { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.madd-sub.wrap { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+.madd-here { align-self: center; white-space: nowrap; }
+
+.mdock { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 14px; padding-left: 8px; border-left: 1px solid var(--border); max-height: 40vh; overflow-y: auto; }
+.mdock-err { font-size: 12px; padding: 4px 6px; overflow-wrap: anywhere; }
+.side-nav > .side-empty { padding: 4px 10px 8px 22px; }
+.mc { border-radius: 8px; }
+.mc.open { background: var(--hover); }
+.mc-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border-radius: 8px; text-align: left; }
+.mc-row:hover { background: var(--hover); }
+.mc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mc-name { display: flex; align-items: center; gap: 5px; font-size: 13.5px; font-weight: 500; }
+.mc-sub { font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-model-chip { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; }
+.mc-warn-ico { color: var(--warn, #b45309); flex: none; }
+.mc-chev { color: var(--text-3); flex: none; transition: transform .12s; }
+.mc-chev.open { transform: rotate(90deg); }
+.mc-detail { padding: 2px 8px 10px 38px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.mc-line { display: flex; align-items: center; gap: 6px; line-height: 1.5; overflow-wrap: anywhere; }
+.mc-line select { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
+.mc-k { color: var(--text-3); flex: none; }
+.mc-now em { font-style: normal; color: var(--text-3); }
+.mc-warn { display: flex; align-items: flex-start; gap: 4px; color: var(--warn, #b45309); line-height: 1.5; }
+.mc-warn svg { flex: none; margin-top: 2px; }
+.mc-err { font-size: 12px; overflow-wrap: anywhere; }
+.mc-acts { display: flex; gap: 6px; flex-wrap: wrap; }

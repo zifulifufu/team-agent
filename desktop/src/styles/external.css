@@ -1,0 +1,39 @@
+/* 外部智能体(WorkBuddy):添加/设置窗口、设置页、聊天里的提示 */
+.ext-dlg { display: flex; flex-direction: column; gap: 12px; }
+.ext-intro { margin: 0; font-size: 13px; line-height: 1.7; color: var(--text-2); }
+.ext-foot { margin: 0; line-height: 1.7; }
+.ext-box { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.65; border: 1px solid var(--border); background: var(--bg-sub); }
+.ext-box > svg { flex: none; margin-top: 2px; }
+.ext-box.warn { border-color: color-mix(in srgb, #b64a00 45%, var(--border)); background: color-mix(in srgb, #b64a00 7%, var(--card)); }
+.ext-box.warn > svg { color: #b64a00; }
+.ext-box.ok { border-color: color-mix(in srgb, #2e8b57 45%, var(--border)); background: color-mix(in srgb, #2e8b57 7%, var(--card)); }
+.ext-box.ok > svg { color: #2e8b57; }
+.ext-box .btn { margin-top: 6px; }
+.ext-status, .ext-engine { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.ext-engine { padding: 12px 14px; flex-direction: column; align-items: stretch; }
+.ext-ok, .ext-bad { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; line-height: 1.6; min-width: 0; flex: 1; }
+.ext-ok { color: #2e8b57; }
+.ext-ok small { color: var(--text-3); overflow-wrap: anywhere; flex-basis: 100%; }
+.ext-bad { color: #b64a00; }
+.ext-status-btns { display: flex; gap: 6px; flex: none; }
+.ext-levels { display: flex; flex-direction: column; gap: 8px; }
+.ext-level { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); cursor: pointer; }
+.ext-level:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.ext-level.on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, var(--card)); }
+.ext-level.danger.on { border-color: #c0392b; background: color-mix(in srgb, #c0392b 6%, var(--card)); }
+.ext-level input[type="radio"] { width: auto; height: auto; flex: none; margin-top: 3px; padding: 0; box-shadow: none; }
+.ext-level > span { flex: 1; min-width: 0; }
+.ext-level b { font-weight: 600; }
+.ext-level em { font-style: normal; font-size: 11px; margin-left: 6px; padding: 1px 7px; border-radius: 10px; color: var(--primary); border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.ext-level small { display: block; margin-top: 3px; font-size: 12px; line-height: 1.6; color: var(--text-3); }
+.ext-ack, .ext-web { margin-top: 8px; font-size: 12.5px; line-height: 1.6; }
+.ext-dir { display: flex; gap: 6px; align-items: center; }
+.ext-dir input { flex: 1; min-width: 0; }
+.ext-adv > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); margin-bottom: 8px; }
+.ext-notes { margin: 0; padding-left: 20px; list-style: disc; background: none; font-size: 12.5px; line-height: 1.8; color: var(--text-2); }
+.ext-none { padding: 12px 14px; }
+.ext-page .ext-box { margin-top: 10px; }
+/* 聊天气泡下面:被挡下的操作 */
+.ext-denied { margin-top: 6px; font-size: 12px; line-height: 1.6; color: #b64a00; }
+.chip.ext-lv { color: var(--text-2); }
+.mc-path { min-width: 0; overflow-wrap: anywhere; }

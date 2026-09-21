@@ -1,0 +1,293 @@
+"""Skills(文本技能)与插件(Python 工具)。MCP 见 mcp_client.py,统一调度见 toolhub.py。
+
+  * Skills —— 数据目录 skills/<名称>/SKILL.md。可以给成员勾选(注入该成员的提示词),
+              也可以挂到整个群(scope: group 的「群聊规则」类技能,全员都遵守)。纯文本,对所有模型通用。
+  * 插件   —— 数据目录 plugins/*.py,里面写 register(registry) 注册若干工具。
+              插件是在本进程里运行的 Python 代码,没有沙箱:只装你读过、信得过的。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import inspect
+import re
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+# ------------------------------------------------------------------- skills
+EXAMPLE_SKILLS: dict[str, dict] = {
+    "公文写作规范": {
+        "description": "办公文档写作的结构与措辞要求", "scope": "member",
+        "body": "写办公文档(通知、汇报、方案)时遵循:\n"
+                "1. 开头一句话交代目的和结论;\n2. 正文分点,每点一个信息;\n"
+                "3. 数据要带口径和时间;\n4. 结尾写明下一步动作、负责人和时间节点;\n5. 语气正式、克制,不用口语和夸张修辞。",
+    },
+    "短视频分镜规范": {
+        "description": "短视频脚本与分镜的输出格式", "scope": "member",
+        "body": "输出短视频脚本时:\n1. 先给一句话主题和目标受众;\n"
+                "2. 前 3 秒必须有钩子;\n3. 分镜表列:镜号 | 画面 | 旁白/台词 | 时长 | 镜头 | 音效;\n"
+                "4. 总时长控制在用户要求内,并在末尾给出总时长核算。",
+    },
+    "头脑风暴规则": {
+        "description": "群聊提示词:先发散再收敛的讨论规则", "scope": "group",
+        "body": "本群进入头脑风暴模式:\n"
+                "1. 发散阶段:每人至少提出 2 个不同方向,先不评判,不重复别人已经说过的点子;\n"
+                "2. 收敛阶段:主持人带大家按「可行性 / 价值 / 成本」筛出 1~2 个方向;\n"
+                "3. 每个点子一句话说清楚「谁、做什么、为什么有效」;\n4. 最后由记录员整理:方向、理由、下一步。",
+    },
+    "评审会规则": {
+        "description": "群聊提示词:评审会的流程与输出格式", "scope": "group",
+        "body": "本群进入评审会模式:\n"
+                "1. 主持人先复述评审对象与评审标准;\n"
+                "2. 评审成员各自从自己的专业角度给出意见,按「严重 / 一般 / 建议」分级,并给出改进办法;\n"
+                "3. 不要泛泛表扬,不要人身评价;有分歧时各自给依据;\n"
+                "4. 最后由主持人给出结论(通过 / 修改后通过 / 不通过)和待办清单(负责人 + 时间)。",
+    },
+    "接力创作规则": {
+        "description": "群聊提示词:多人接力写作的衔接规则", "scope": "group",
+        "body": "本群进入接力创作模式:\n"
+                "1. 后一位必须承接前一位的人物、设定和语气,不推翻已有设定;\n"
+                "2. 每人只写自己负责的那一段,写完用一句话交代给下一位需要注意的伏笔;\n"
+                "3. 最后由校对统一文风、时间线和人名。",
+    },
+    "辩论规则": {
+        "description": "群聊提示词:正反方辩论与裁判总结", "scope": "group",
+        "body": "本群进入辩论模式:\n"
+                "1. 主持人先界定辩题;正方、反方各陈述 3 个论点并给出论据;\n"
+                "2. 交叉质询:只针对对方论点的漏洞,不重复自己的立场;\n"
+                "3. 裁判总结:双方最强的论点、各自的漏洞、最终倾向及理由。",
+    },
+}
+
+
+@dataclass
+class Skill:
+    name: str
+    description: str
+    body: str
+    path: str
+    scope: str = "member"   # member = 给成员勾选 | group = 群聊规则,挂到群
+    version: str = ""
+
+    def summary(self) -> dict:
+        return {"name": self.name, "description": self.description, "path": self.path,
+                "scope": self.scope, "version": self.version}
+
+
+def safe_skill_name(name: str) -> str:
+    n = re.sub(r"[\\/:*?\"<>|\n\r\t]+", " ", name).strip().strip(".")
+    return n[:60]
+
+
+def parse_skill_text(text: str, default_name: str, path: str = "") -> Skill:
+    name, desc, body, scope, version = default_name, "", text, "member", ""
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.S)
+    if m:
+        for line in m.group(1).splitlines():
+            k, _, v = line.partition(":")
+            k, v = k.strip(), v.strip().strip("\"'")
+            if k == "name" and v:
+                name = v
+            elif k == "description":
+                desc = v
+            elif k == "scope" and v in ("member", "group"):
+                scope = v
+            elif k == "version":
+                version = v
+        body = m.group(2)
+    return Skill(name=name, description=desc, body=body.strip(), path=path, scope=scope, version=version)
+
+
+def _parse_skill(path: Path) -> Skill | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return parse_skill_text(text, path.parent.name, str(path))
+
+
+def render_skill(name: str, description: str, body: str, scope: str = "member", version: str = "") -> str:
+    head = f"---\nname: {name}\ndescription: {description.strip()}\nscope: {scope}\n"
+    if version:
+        head += f"version: {version}\n"
+    return head + f"---\n{body.strip()}\n"
+
+
+def write_skill(skills_dir: Path, name: str, description: str, body: str, scope: str = "member",
+                version: str = "", old_name: str | None = None) -> Skill:
+    folder = safe_skill_name(name)
+    if not folder:
+        raise ValueError("技能名称不合法")
+    d = skills_dir / folder
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        render_skill(folder, description, body, scope if scope in ("member", "group") else "member", version),
+        encoding="utf-8",
+    )
+    if old_name and safe_skill_name(old_name) != folder:
+        delete_skill(skills_dir, old_name)
+    return _parse_skill(d / "SKILL.md")  # type: ignore[return-value]
+
+
+def delete_skill(skills_dir: Path, name: str) -> bool:
+    d = skills_dir / safe_skill_name(name)
+    if d.is_dir() and d.parent == skills_dir:
+        shutil.rmtree(d)
+        return True
+    return False
+
+
+def ensure_example_skills(skills_dir: Path, flag: Callable[[str], bool] | None = None) -> None:
+    """首次运行时写入示例技能。flag(key) 返回「以前是否已经写过」并同时打上标记,
+    这样用户删掉某个示例后,它不会在下次启动时又被写回来;新增的示例技能能补给老用户。"""
+    was_empty = not any(skills_dir.iterdir())
+    for name, ex in EXAMPLE_SKILLS.items():
+        if flag is not None:
+            if flag(f"seed_skill:{name}"):
+                continue
+        elif not was_empty:
+            return
+        d = skills_dir / name
+        if d.exists():
+            continue
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(render_skill(name, ex["description"], ex["body"], ex["scope"]), encoding="utf-8")
+
+
+def list_skills(skills_dir: Path) -> list[Skill]:
+    out = []
+    for p in sorted(skills_dir.glob("*/SKILL.md")):
+        s = _parse_skill(p)
+        if s:
+            out.append(s)
+    return out
+
+
+def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, group: bool = False) -> str:
+    """把勾选的 skills 拼成一段提示词。group=True 时标题写成「群聊规则」。"""
+    by_name = {s.name: s for s in list_skills(skills_dir)}
+    parts, used = [], 0
+    for n in names:
+        s = by_name.get(n)
+        if not s:
+            continue
+        chunk = f"【{'群聊规则' if group or s.scope == 'group' else '技能'}:{s.name}】\n{s.body}"
+        if used + len(chunk) > max_chars:
+            break
+        parts.append(chunk)
+        used += len(chunk)
+    return "\n\n".join(parts)
+
+
+# ------------------------------------------------------------------ plugins
+ToolFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
+
+
+@dataclass
+class Tool:
+    name: str
+    description: str
+    parameters: dict  # JSON Schema
+    fn: ToolFn
+    source: str = "builtin"      # builtin | plugin | mcp
+    plugin: str = ""             # 插件 ID(文件名,不含 .py)
+
+    def spec(self) -> dict:
+        return {"name": self.name, "description": self.description, "parameters": self.parameters,
+                "source": self.source, "plugin": self.plugin}
+
+
+@dataclass
+class PluginInfo:
+    id: str
+    file: str
+    name: str = ""
+    description: str = ""
+    version: str = ""
+    tools: list[str] = field(default_factory=list)
+    error: str = ""
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "file": self.file, "name": self.name or self.id, "description": self.description,
+                "version": self.version, "tools": self.tools, "error": self.error}
+
+
+class _PluginScope:
+    """交给插件的 registry:登记的工具会记在该插件名下。"""
+
+    def __init__(self, reg: "ToolRegistry", plugin: str):
+        self._reg, self._plugin = reg, plugin
+
+    def register(self, name: str, description: str, parameters: dict | None, fn: ToolFn) -> None:
+        old = self._reg._tools.get(name)
+        if old is not None:
+            # 以前是后登记的悄悄顶掉先登记的:被顶掉的插件在权限页里仍显示有这个工具,却调不到,还没有任何提示
+            raise ValueError(f"工具名「{name}」已被{('插件 ' + old.plugin) if old.plugin else '内置工具'}占用,请换个名字")
+        self._reg._add(Tool(name, description, parameters or {"type": "object", "properties": {}}, fn, "plugin", self._plugin))
+
+
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools: dict[str, Tool] = {}
+        self.plugins: dict[str, PluginInfo] = {}
+
+    @property
+    def errors(self) -> list[str]:
+        return [f"{p.file}: {p.error}" for p in self.plugins.values() if p.error]
+
+    def _add(self, tool: Tool) -> None:
+        self._tools[tool.name] = tool
+        if tool.plugin and tool.plugin in self.plugins:
+            self.plugins[tool.plugin].tools.append(tool.name)
+
+    def register(self, name: str, description: str, parameters: dict | None, fn: ToolFn,
+                 source: str = "builtin") -> None:
+        self._add(Tool(name, description, parameters or {"type": "object", "properties": {}}, fn, source))
+
+    def list(self) -> list[dict]:
+        return [t.spec() for t in self._tools.values()]
+
+    def plugin_tools(self, plugin_ids: list[str]) -> list[Tool]:
+        return [t for t in self._tools.values() if t.plugin in plugin_ids]
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        tool = self._tools[name]
+        if inspect.iscoroutinefunction(tool.fn):
+            return await tool.fn(args)
+        res = await asyncio.to_thread(tool.fn, args)   # 普通函数放到线程里跑,慢插件不会卡住整个后端
+        if hasattr(res, "__await__"):
+            res = await res  # type: ignore[misc]
+        return res
+
+    def load_plugins(self, plugins_dir: Path) -> None:
+        """插件文件示例:
+            PLUGIN = {"name": "问候", "description": "打招呼", "version": "1.0"}   # 可选
+            def register(registry): registry.register("hello", "说你好", None, lambda a: "hi")"""
+        for name in [n for n, t in self._tools.items() if t.source == "plugin"]:
+            del self._tools[name]
+        self.plugins = {}
+        for f in sorted(plugins_dir.glob("*.py")):
+            info = PluginInfo(id=f.stem, file=f.name)
+            self.plugins[f.stem] = info
+            try:
+                spec = importlib.util.spec_from_file_location(f"team_agent_plugin_{f.stem}", f)
+                assert spec and spec.loader
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                meta = getattr(mod, "PLUGIN", None)
+                if isinstance(meta, dict):
+                    info.name = str(meta.get("name", ""))
+                    info.description = str(meta.get("description", ""))
+                    info.version = str(meta.get("version", ""))
+                mod.register(_PluginScope(self, f.stem))
+            except Exception as e:  # noqa: BLE001
+                info.error = f"{type(e).__name__}: {e}"[:300]
+
+
+def build_registry(plugins_dir: Path) -> ToolRegistry:
+    reg = ToolRegistry()
+    reg.load_plugins(plugins_dir)
+    return reg

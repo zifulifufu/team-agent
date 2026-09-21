@@ -1,0 +1,14 @@
+.apv-wrap { display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; }
+.apv { border: 1px solid color-mix(in srgb, #e0a100 55%, var(--border)); background: color-mix(in srgb, #e0a100 8%, var(--card)); border-radius: 12px; padding: 10px 12px; }
+.apv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13px; }
+.apv-head > svg { color: #c98a00; flex: none; }
+.apv-risk { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-2); }
+.apv-risk.exec { color: #b64a00; border-color: color-mix(in srgb, #b64a00 45%, var(--border)); }
+.apv-src { font-size: 11px; color: var(--text-3); }
+.apv-left { margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.apv-args { margin: 8px 0 0; display: grid; gap: 3px; font-size: 12px; }
+.apv-args div { display: flex; gap: 8px; min-width: 0; }
+.apv-args dt { color: var(--text-3); flex: none; }
+.apv-args dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
+.apv-acts { display: flex; gap: 8px; margin-top: 10px; }
+.apv-err { margin-top: 2px; }

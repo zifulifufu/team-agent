@@ -1,0 +1,34 @@
+/* 模型连通指示灯 + 带灯的模型下拉 */
+.hd { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.hd-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-sizing: border-box; flex: none; }
+.hd-text { font-size: 11.5px; color: var(--muted, #888); }
+.hd-ok .hd-dot { background: #22a35a; box-shadow: 0 0 0 2px color-mix(in srgb, #22a35a 22%, transparent); }
+.hd-limited .hd-dot { background: #e0a100; box-shadow: 0 0 0 2px color-mix(in srgb, #e0a100 22%, transparent); }
+.hd-bad .hd-dot { background: #d64545; box-shadow: 0 0 0 2px color-mix(in srgb, #d64545 22%, transparent); }
+.hd-unknown .hd-dot { background: transparent; border: 1.5px solid var(--muted, #999); }
+.hd-off .hd-dot { background: color-mix(in srgb, var(--muted, #999) 55%, transparent); }
+.hd.stale .hd-dot { opacity: .55; }
+
+.msel { position: relative; min-width: 0; }
+.msel-btn { width: 100%; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid var(--border, #ddd); border-radius: 8px; background: var(--bg-elev, var(--bg, #fff)); color: inherit; font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.msel-btn:hover:not(:disabled) { border-color: var(--accent, #4a7cff); }
+.msel-btn:disabled { opacity: .6; cursor: default; }
+.msel-cur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msel-pop { position: fixed; z-index: 200; overflow: auto; border: 1px solid var(--border, #ddd); border-radius: 10px; background: var(--bg-elev, var(--bg, #fff)); box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 4px; }
+.msel-grp + .msel-grp { margin-top: 2px; }
+.msel-prov { padding: 6px 8px 3px; font-size: 11px; color: var(--muted, #888); display: flex; align-items: center; gap: 6px; }
+.msel-opt { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.msel-opt:hover, .msel-opt:focus-visible { background: color-mix(in srgb, var(--accent, #4a7cff) 10%, transparent); outline: none; }
+.msel-opt.sel { background: color-mix(in srgb, var(--accent, #4a7cff) 14%, transparent); }
+.msel-opt.dim .msel-name { color: var(--muted, #888); }
+.msel-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.msel-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.msel-note { font-size: 11px; color: var(--muted, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msel-ms { font-size: 11px; color: var(--muted, #888); flex: none; }
+.msel-empty { padding: 12px; font-size: 12.5px; color: var(--muted, #888); }
+.msel-foot { position: sticky; bottom: 0; margin-top: 4px; padding: 7px 8px 5px; border-top: 1px solid var(--border, #ddd); background: var(--bg-elev, var(--bg, #fff)); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
+.msel-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; }
+.msel-legend .hd-text { font-size: 10.5px; }
+
+.sec-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sec-row .sec { margin-bottom: 0; }

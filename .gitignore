@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+desktop/dist/
+*.db
+
+# --- 本机产物 ---
+.DS_Store
+*.log
+desktop/.vite/
+desktop/index.html.bak
+
+# --- 备份与同步产物(源文件都在仓库里,这些是压缩包/清单/日志) ---
+_backup-before-0.4.0/
+_sync/*.tar.gz
+_sync/*.sha
+_sync/pytest_*.txt
+Claude outputs/
+
+# --- 探针的运行输出(探针脚本本身要提交) ---
+_probe/out/
+_probe/__pycache__/
+
+# --- Agent 工作笔记(绝对路径/环境信息,默认不进仓库;想提交就删掉这一行) ---
+.workbuddy/

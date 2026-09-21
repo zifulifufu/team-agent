@@ -1,0 +1,18 @@
+/* 强项标签:全应用共用 */
+.str-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.str-chip { display: inline-flex; align-items: center; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 4px; background: var(--primary-soft); color: var(--ok); white-space: nowrap; }
+.str-chip.local { background: var(--hover); color: var(--text-2); }
+.str-chip.more { background: var(--hover); color: var(--text-3); }
+.str-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+.str-chip.pick { font-size: 12.5px; line-height: 20px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); color: var(--text-2); cursor: pointer; }
+.str-chip.pick:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
+.str-chip.pick.on { border-color: var(--primary); background: var(--primary-soft); color: var(--ok); }
+.count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10.5px; line-height: 1; font-weight: 600; }
+.tag.danger { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.tag.new { background: var(--primary); color: var(--on-primary); }
+
+/* 兜底错误提示 */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 400; max-width: min(560px, 90vw);
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; background: var(--danger, #c0392b); color: #fff;
+  font-size: 13px; line-height: 1.5; box-shadow: 0 8px 24px rgba(0, 0, 0, .22); }
+.toast .icon-btn { color: #fff; }

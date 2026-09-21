@@ -1,0 +1,158 @@
+{
+  "version": "2026-09-20",
+  "note": "型号与大小取自 ollama.com/library 各模型的标签页(2026-09-20 查阅);DeepSeek-V4 的数据来自其 Hugging Face 页面与 Unsloth 文档。大小是默认量化(通常 4 位)的下载体积;强项是根据型号系列与官方标注推断的标签,不是评测成绩。",
+  "watch": {
+    "github_orgs": ["QwenLM", "deepseek-ai", "openai", "google-deepmind", "zai-org", "MoonshotAI", "MiniMax-AI", "ibm-granite", "mistralai", "allenai", "LiquidAI", "CohereLabs"],
+    "hf_authors": ["Qwen", "deepseek-ai", "openai", "google", "zai-org", "moonshotai", "MiniMaxAI", "ibm-granite", "mistralai", "allenai", "LiquidAI", "nvidia", "meta-llama", "microsoft"]
+  },
+  "families": [
+    {
+      "id": "qwen", "vendor": "阿里 · 通义千问", "name": "Qwen 3.8 / 3.6 / 3.5", "runtime": "ollama", "track": ["qwen3.8", "qwen3.6", "qwen3.5"],
+      "desc": "3.8 与 3.6 是最新两代(编程与专业工作更强),目前只有大尺寸;小尺寸(0.8B~9B)在 3.5 里。全系支持文本+图像输入。",
+      "license": "", "strengths": ["代码", "推理", "多模态", "工具调用", "长文本", "中文"],
+      "models": [
+        {"tag": "qwen3.8:27b", "size_gb": 18, "ctx": "256K", "note": "最新一代,编程与专业工作"},
+        {"tag": "qwen3.6:27b", "size_gb": 18, "ctx": "256K", "note": "智能体编程与思考"},
+        {"tag": "qwen3.6:35b", "size_gb": 23, "ctx": "256K", "note": "MoE(激活约 3B),速度快"},
+        {"tag": "qwen3.5:0.8b", "size_gb": 1.0, "ctx": "256K", "note": "最省资源,适合低配电脑或仅做兜底"},
+        {"tag": "qwen3.5:2b", "size_gb": 2.7, "ctx": "256K", "note": ""},
+        {"tag": "qwen3.5:4b", "size_gb": 3.4, "ctx": "256K", "note": "轻薄本可用"},
+        {"tag": "qwen3.5:9b", "size_gb": 6.6, "ctx": "256K", "note": "质量与速度的平衡点"},
+        {"tag": "qwen3.5:27b", "size_gb": 17, "ctx": "256K", "note": ""},
+        {"tag": "qwen3.5:35b", "size_gb": 24, "ctx": "256K", "note": ""},
+        {"tag": "qwen3.5:122b", "size_gb": 81, "ctx": "256K", "note": "工作站级"}
+      ]
+    },
+    {
+      "id": "gemma4", "vendor": "Google", "name": "Gemma 4", "runtime": "ollama", "track": ["gemma4"],
+      "desc": "推理与多模态(文本/图像)。e2b/e4b 是面向端侧的小型号。",
+      "license": "", "strengths": ["多模态", "推理", "工具调用", "长文本", "速度"],
+      "models": [
+        {"tag": "gemma4:e2b", "size_gb": 7.2, "ctx": "128K", "note": "端侧小型号"},
+        {"tag": "gemma4:e4b", "size_gb": 9.6, "ctx": "128K", "note": "端侧小型号(Ollama 默认)"},
+        {"tag": "gemma4:12b", "size_gb": 7.6, "ctx": "256K", "note": ""},
+        {"tag": "gemma4:26b", "size_gb": 19, "ctx": "256K", "note": ""},
+        {"tag": "gemma4:31b", "size_gb": 20, "ctx": "256K", "note": "系列最大"}
+      ]
+    },
+    {
+      "id": "gpt-oss", "vendor": "OpenAI", "name": "gpt-oss", "runtime": "ollama", "track": ["gpt-oss"],
+      "desc": "OpenAI 的开放权重推理模型,擅长推理与智能体任务。",
+      "license": "Apache-2.0", "strengths": ["推理", "工具调用", "代码"],
+      "models": [
+        {"tag": "gpt-oss:20b", "size_gb": 14, "ctx": "128K", "note": "16GB 内存即可尝试"},
+        {"tag": "gpt-oss:120b", "size_gb": 65, "ctx": "128K", "note": "需要 80GB 以上内存/显存"}
+      ]
+    },
+    {
+      "id": "muse-glimmer", "vendor": "Meta", "name": "Muse Glimmer", "runtime": "ollama", "track": ["muse-glimmer"],
+      "desc": "Meta 面向「常驻本地智能体」的最新开放模型:工具调用、长任务、失败后恢复。文本+图像输入。",
+      "license": "Apache-2.0", "strengths": ["工具调用", "多模态", "推理"],
+      "models": [{"tag": "muse-glimmer:30b", "size_gb": 18, "ctx": "128K", "note": ""}]
+    },
+    {
+      "id": "deepseek", "vendor": "DeepSeek(深度求索)", "name": "DeepSeek V3.1 / R1 蒸馏", "runtime": "ollama", "track": ["deepseek-v3.1", "deepseek-r1"],
+      "desc": "Ollama 上可本地运行的 DeepSeek:V3.1(V3 的后续版本,思考/非思考混合,671B)和 R1 蒸馏小模型(基于 Qwen/Llama,不是 V3 本身)。最新的 V4 在 Ollama 只有云端版,本地请用下面的「自建 DeepSeek 服务」。",
+      "license": "", "strengths": ["推理", "中文", "代码", "写作"],
+      "models": [
+        {"tag": "deepseek-r1:1.5b", "size_gb": 1.1, "ctx": "", "note": "R1 蒸馏(Qwen 1.5B)"},
+        {"tag": "deepseek-r1:7b", "size_gb": 4.7, "ctx": "", "note": "R1 蒸馏(Qwen 7B)"},
+        {"tag": "deepseek-r1:8b", "size_gb": 5.2, "ctx": "", "note": "R1 蒸馏(Llama 8B,Ollama 默认)"},
+        {"tag": "deepseek-r1:14b", "size_gb": 9.0, "ctx": "", "note": "R1 蒸馏(Qwen 14B)"},
+        {"tag": "deepseek-r1:32b", "size_gb": 20, "ctx": "", "note": "R1 蒸馏(Qwen 32B)"},
+        {"tag": "deepseek-r1:70b", "size_gb": 43, "ctx": "", "note": "R1 蒸馏(Llama 70B)"},
+        {"tag": "deepseek-v3.1:671b", "size_gb": 404, "ctx": "160K", "note": "完整 671B MoE,服务器级硬件"}
+      ]
+    },
+    {
+      "id": "glm", "vendor": "智谱 · Z.ai", "name": "GLM 4.7 Flash", "runtime": "ollama", "track": ["glm-4.7-flash"],
+      "desc": "30B 级里综合最强的一档,兼顾性能与效率。更新的 GLM-5.x 在 Ollama 目前只有云端版。",
+      "license": "", "strengths": ["工具调用", "推理", "代码", "中文", "速度"],
+      "models": [{"tag": "glm-4.7-flash", "size_gb": 19, "ctx": "198K", "note": ""}]
+    },
+    {
+      "id": "nemotron", "vendor": "NVIDIA", "name": "Nemotron 3.5 / 3", "runtime": "ollama", "track": ["nemotron-3.5-lightning", "nemotron-3-nano", "nemotron-3-super"],
+      "desc": "开放的 MoE 智能体模型,长上下文(最高 1M)。",
+      "license": "", "strengths": ["长文本", "工具调用", "推理", "速度"],
+      "models": [
+        {"tag": "nemotron-3-nano:4b", "size_gb": 2.8, "ctx": "256K", "note": ""},
+        {"tag": "nemotron-3.5-lightning:30b", "size_gb": 25, "ctx": "1M", "note": "30B MoE,激活约 3B"},
+        {"tag": "nemotron-3-nano:30b", "size_gb": 24, "ctx": "1M", "note": ""},
+        {"tag": "nemotron-3-super:120b", "size_gb": 87, "ctx": "256K", "note": "120B MoE,激活约 12B"}
+      ]
+    },
+    {
+      "id": "granite", "vendor": "IBM", "name": "Granite 4.2", "runtime": "ollama", "track": ["granite4.2"],
+      "desc": "企业级开放模型:多语言、编程、RAG、工具调用、结构化 JSON 输出。",
+      "license": "Apache-2.0", "strengths": ["工具调用", "推理", "代码", "低成本"],
+      "models": [
+        {"tag": "granite4.2:3b", "size_gb": 2.2, "ctx": "128K", "note": ""},
+        {"tag": "granite4.2:8b", "size_gb": 5.3, "ctx": "128K", "note": ""},
+        {"tag": "granite4.2:30b", "size_gb": 18, "ctx": "128K", "note": ""}
+      ]
+    },
+    {
+      "id": "mistral", "vendor": "Mistral AI", "name": "Mistral Medium 3.5 / Ministral 3", "runtime": "ollama", "track": ["mistral-medium-3.5", "ministral-3"],
+      "desc": "Medium 3.5 是 Mistral 的旗舰(指令/推理/编程合一);Ministral 3 面向端侧。均支持图像输入。",
+      "license": "", "strengths": ["多模态", "工具调用", "推理", "代码", "长文本"],
+      "models": [
+        {"tag": "ministral-3:3b", "size_gb": 3.0, "ctx": "256K", "note": ""},
+        {"tag": "ministral-3:8b", "size_gb": 6.0, "ctx": "256K", "note": ""},
+        {"tag": "ministral-3:14b", "size_gb": 9.1, "ctx": "256K", "note": ""},
+        {"tag": "mistral-small3.2:24b", "size_gb": 15, "ctx": "128K", "note": "上一代 Small,函数调用较好"},
+        {"tag": "mistral-medium-3.5", "size_gb": 80, "ctx": "256K", "note": "128B 旗舰"}
+      ]
+    },
+    {
+      "id": "phi", "vendor": "微软", "name": "Phi-4", "runtime": "ollama", "track": ["phi4"],
+      "desc": "14B 的推理型小模型;上下文只有 16K,不适合长文本。",
+      "license": "", "strengths": ["推理", "低成本"],
+      "models": [{"tag": "phi4:14b", "size_gb": 9.1, "ctx": "16K", "note": ""}]
+    },
+    {
+      "id": "lfm", "vendor": "Liquid AI", "name": "LFM 2.5", "runtime": "ollama", "track": ["lfm2.5"],
+      "desc": "端侧快速工具调用的混合架构模型(8B,激活约 1B)。",
+      "license": "", "strengths": ["速度", "工具调用", "低成本"],
+      "models": [{"tag": "lfm2.5", "size_gb": 5.2, "ctx": "125K", "note": ""}]
+    },
+    {
+      "id": "olmo", "vendor": "Allen AI", "name": "OLMo 3.1", "runtime": "ollama", "track": ["olmo-3.1"],
+      "desc": "全开放(数据、代码、权重)的语言模型,有指令版和思考版。",
+      "license": "", "strengths": ["推理", "写作"],
+      "models": [
+        {"tag": "olmo-3.1:32b-instruct", "size_gb": 19, "ctx": "64K", "note": "指令版"},
+        {"tag": "olmo-3.1:32b-think", "size_gb": 19, "ctx": "64K", "note": "思考版"}
+      ]
+    },
+    {
+      "id": "coding-agents", "vendor": "编程智能体", "name": "Laguna / North / Ornith", "runtime": "ollama", "track": ["laguna-xs-2.1", "north-mini-code-1.0", "ornith-1.5"],
+      "desc": "面向代码与长任务的模型:Poolside 的 Laguna XS 2.1(33B MoE,激活 3B)、Cohere 的 North Mini Code(30B MoE)、Ornith 1.5(厂商信息以 Ollama 页面为准)。",
+      "license": "", "strengths": ["代码", "工具调用", "推理", "长文本"],
+      "models": [
+        {"tag": "laguna-xs-2.1", "size_gb": 20, "ctx": "256K", "note": "Poolside · OpenMDW-1.1 许可;约需 36GB 内存"},
+        {"tag": "north-mini-code-1.0", "size_gb": 19, "ctx": "488K", "note": "Cohere Labs · 30B MoE;19GB 为最小量化,Apache-2.0 加使用政策"},
+        {"tag": "ornith-1.5:9b", "size_gb": 6.6, "ctx": "256K", "note": ""},
+        {"tag": "ornith-1.5:35b", "size_gb": 23, "ctx": "256K", "note": ""},
+        {"tag": "ornith-1.5:397b", "size_gb": 242, "ctx": "256K", "note": "服务器级"}
+      ]
+    }
+  ],
+  "selfhost": [
+    {
+      "id": "deepseek-v4", "vendor": "DeepSeek(深度求索)", "name": "DeepSeek-V4", "license": "MIT",
+      "desc": "DeepSeek 目前最新的开放权重模型(权重在 Hugging Face,GitHub 上没有对应的模型仓库)。1M 上下文,混合注意力。Ollama 只提供它的云端版本,本地运行需要自建服务。",
+      "strengths": ["推理", "长文本", "代码", "中文", "工具调用"],
+      "models": [
+        {"id": "deepseek-ai/DeepSeek-V4-Flash", "params": "284B(激活 13B)", "size_gb": 155, "note": "4 位量化约 155GB(Unsloth 文档);官方权重为 FP4+FP8 混合"},
+        {"id": "deepseek-ai/DeepSeek-V4-Pro", "params": "1.6T(激活 49B)", "size_gb": 0, "note": "官方权重需要多机多卡;单机请看社区量化版"},
+        {"id": "deepseek-ai/DeepSeek-V3", "params": "671B(激活 37B)", "size_gb": 0, "note": "上一代(github.com/deepseek-ai/DeepSeek-V3);仅提供 FP8 权重,需要多卡 GPU"}
+      ]
+    }
+  ],
+  "cloud_only": [
+    {"name": "kimi-k3", "vendor": "月之暗面 Moonshot", "note": "开放权重的多模态智能体模型,Ollama 目前只有云端版"},
+    {"name": "glm-5.3", "vendor": "智谱 · Z.ai", "note": "GLM 旗舰,Ollama 目前只有云端版"},
+    {"name": "deepseek-v4-flash", "vendor": "DeepSeek", "note": "Ollama 上只有云端版;本地请自建服务"},
+    {"name": "minimax-m3", "vendor": "MiniMax", "note": "Ollama 目前只有云端版"}
+  ]
+}

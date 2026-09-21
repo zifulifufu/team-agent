@@ -1,0 +1,143 @@
+/* 扩展(技能 / 插件 / MCP)与更新与发现:类名统一 ext- 前缀 */
+
+@keyframes ext-spin { to { transform: rotate(360deg); } }
+.ext-spin { animation: ext-spin 0.9s linear infinite; flex: none; }
+@media (prefers-reduced-motion: reduce) { .ext-spin { animation-duration: 3s; } }
+
+.sp-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.sp-head { flex-wrap: wrap; }
+.count-badge-plain { font-size: 11px; background: var(--hover); border-radius: 9px; padding: 0 7px; margin-left: 6px; color: var(--text-2); font-weight: 500; }
+
+/* 提示框 */
+.ext-callout { display: flex; gap: 10px; align-items: flex-start; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-sub); color: var(--text-2); font-size: 13px; line-height: 1.7; margin: 0 0 14px; }
+.ext-callout > svg { flex: none; margin-top: 3px; color: var(--text-3); }
+.ext-callout.warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 40%, transparent); color: var(--text); }
+.ext-callout.warn > svg { color: var(--warn); }
+.ext-callout-title { font-weight: 600; color: var(--text); margin-bottom: 1px; }
+.ext-callout.warn .ext-callout-title { color: var(--warn); }
+
+/* 列表项(可展开) */
+.ext-item + .ext-item { border-top: 1px solid var(--border); }
+.ext-item > .model-row { align-items: flex-start; }
+.ext-item .mr-name { flex-wrap: wrap; row-gap: 3px; }
+.ext-item-desc { font-size: 12.5px; color: var(--text-2); margin-top: 3px; line-height: 1.6; overflow-wrap: anywhere; }
+.ext-item-sub { font-size: 12px; color: var(--text-3); margin-top: 3px; line-height: 1.6; overflow-wrap: anywhere; }
+.ext-item-actions { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; max-width: 300px; }
+.ext-item-detail { padding: 0 14px 12px 38px; }
+.ext-item.err-state { background: color-mix(in srgb, var(--danger) 5%, transparent); }
+.ext-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ext-tool-chip { display: inline-flex; align-items: center; gap: 4px; font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; padding: 1px 8px; border-radius: 6px; background: var(--hover); color: var(--text-2); }
+.ext-gh { text-decoration: none; gap: 4px; }
+.ext-gh:hover { color: var(--text); background: var(--active); }
+.ext-toggle { flex: none; margin-top: 1px; }
+.ext-toggle svg { transition: transform 0.12s; }
+.ext-toggle.open svg { transform: rotate(90deg); }
+
+.ext-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); flex: none; margin-top: 6px; }
+.ext-dot.ready { background: var(--ok); }
+.ext-dot.connecting { background: var(--warn); }
+.ext-dot.error { background: var(--danger); }
+.ext-dot.idle { background: var(--text-3); opacity: 0.6; }
+.ext-status-text { font-size: 12px; }
+.ext-status-text.ready { color: var(--ok); }
+.ext-status-text.connecting { color: var(--warn); }
+.ext-status-text.error { color: var(--danger); }
+
+.ext-errline { color: var(--danger); font-size: 12.5px; margin-top: 4px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.ext-errbox { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 9px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 6%, transparent); margin: 8px 0; }
+.ext-errbox .err { overflow-wrap: anywhere; white-space: pre-wrap; }
+.ext-tool-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.ext-tool { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; flex-wrap: wrap; }
+.ext-tool code { flex: none; }
+.ext-tool .muted { flex: 1; min-width: 160px; }
+
+/* 代码块 / 源码 */
+.ext-src { margin: 8px 0 0; padding: 12px 14px; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 10px; font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text); overflow: auto; max-height: min(44vh, 460px); white-space: pre; tab-size: 4; }
+.ext-src.ext-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ext-sample { margin: 8px 0 0; white-space: pre; max-height: none; }
+.ext-hash { font-size: 11.5px; word-break: break-all; }
+.ext-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 8px 0; font-size: 13px; }
+.ext-act-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.ext-act-col .ext-errbox { margin: 0; }
+.ext-act-btns { display: flex; justify-content: flex-end; gap: 8px; }
+.ext-ack { padding: 9px 12px; font-size: 13.5px; }
+.ext-ack.on { border-color: var(--primary); }
+.ext-xl { min-width: 0; }
+.modal.wide:has(.ext-xl) { width: 860px; }
+.ext-details > summary { cursor: pointer; font-size: 13px; color: var(--text-2); padding: 2px 0; user-select: none; }
+.ext-details > summary:hover { color: var(--text); }
+.ext-details[open] > summary { margin-bottom: 4px; }
+
+/* GitHub 发现 */
+.ext-search { display: flex; gap: 8px; margin-bottom: 4px; }
+.ext-sub { font-size: 12.5px; font-weight: 600; color: var(--text-2); margin: 16px 0 8px; display: flex; align-items: center; }
+.ext-repo { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: var(--card); }
+.ext-repo:hover { border-color: var(--border-strong); }
+.ext-repo-main { flex: 1; min-width: 0; }
+.ext-repo-name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.ext-repo-desc { font-size: 12.5px; color: var(--text-2); margin-top: 3px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ext-repo-meta { display: flex; gap: 12px; margin-top: 4px; }
+.ext-repo-meta span { display: inline-flex; align-items: center; gap: 3px; }
+.ext-repo-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.ext-readme { padding: 4px 4px 0; overflow-wrap: anywhere; font-size: 13.5px; }
+.ext-readme pre { max-width: 100%; }
+.ext-readme a { color: var(--ok); text-decoration: underline; }
+
+/* 表单里的键值行 */
+.ext-kv { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 6px; margin-bottom: 6px; align-items: center; }
+.ext-kv input { font-size: 13px; }
+.ext-kv input.masked::placeholder { color: var(--text-2); font-style: italic; }
+.ext-field-note { font-size: 12px; color: var(--text-3); line-height: 1.6; }
+.ext-field-note.warn { color: var(--warn); font-weight: 500; }
+.ext-mono-area { font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.ext-mono-area.warn { border-color: var(--warn); }
+.ext-radio-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ext-act-err { margin-right: auto; text-align: left; min-width: 0; overflow-wrap: anywhere; max-height: 4.5em; overflow: auto; }
+.ext-radio-row .check { align-items: flex-start; }
+.ext-radio-row .check small { display: block; color: var(--text-3); font-size: 12px; line-height: 1.5; }
+.ext-radio-row .check input { margin-top: 3px; }
+.ext-count { text-align: right; font-size: 12px; color: var(--text-3); }
+
+/* MCP 模板 */
+.ext-tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.ext-tpl { text-align: left; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--card); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ext-tpl:hover { border-color: var(--primary); background: var(--primary-soft); }
+.ext-tpl-cmd { font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text-2); overflow-wrap: anywhere; }
+.ext-tpl-note { font-size: 12px; color: var(--text-3); line-height: 1.6; }
+.ext-ph { background: var(--warn-bg); color: var(--warn); border-radius: 4px; padding: 0 3px; font-weight: 600; }
+
+/* 更新与发现 */
+.ext-upd { display: flex; gap: 12px; padding: 14px 16px; align-items: flex-start; }
+.ext-upd + .ext-upd { border-top: 1px solid var(--border); }
+.ext-upd-ico { width: 32px; height: 32px; border-radius: 9px; background: var(--primary-soft); color: var(--ok); display: flex; align-items: center; justify-content: center; flex: none; }
+.ext-upd-main { flex: 1; min-width: 0; }
+.ext-upd-title { font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.ext-upd-body { font-size: 13px; color: var(--text-2); margin-top: 4px; line-height: 1.7; }
+.ext-upd-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+.ext-notes { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; padding: 10px 12px; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; max-height: 240px; overflow: auto; }
+.ext-assets { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; font-size: 12.5px; }
+.ext-check-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ext-cards3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ext-entry { text-align: left; border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--card); display: flex; flex-direction: column; gap: 6px; }
+.ext-entry:hover { border-color: var(--primary); background: var(--primary-soft); }
+.ext-entry b { display: flex; align-items: center; gap: 6px; }
+.ext-entry span { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+.ext-src-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 14px; font-size: 13px; }
+.ext-src-row + .ext-src-row { border-top: 1px solid var(--border); }
+.ext-foot { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-3); line-height: 1.8; }
+.ext-form-row { padding: 14px 16px; }
+.ext-form-row + .ext-form-row { border-top: 1px solid var(--border); }
+.ext-form-row .sr-title { margin-bottom: 6px; }
+.ext-inline-input { display: flex; gap: 8px; align-items: center; }
+.ext-select { width: auto; min-width: 120px; }
+.ext-plan-select { width: auto; min-width: 130px; flex: none; }
+
+@media (max-width: 900px) {
+  .ext-radio-row { grid-template-columns: 1fr; }
+  .ext-cards3 { grid-template-columns: 1fr; }
+  .ext-item-actions { max-width: none; }
+  .ext-item > .model-row { flex-wrap: wrap; }
+  .modal.wide:has(.ext-xl) { width: 100%; }
+}
+
+.ext-sticky-err { position: sticky; top: 8px; z-index: 3; background: var(--bg); box-shadow: var(--shadow); }
