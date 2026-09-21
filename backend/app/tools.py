@@ -338,7 +338,7 @@ def write_skill(skills_dir: Path, name: str, description: str, body: str, scope:
                 version: str = "", old_name: str | None = None) -> Skill:
     folder = safe_skill_name(name)
     if not folder:
-        raise ValueError("技能名称不合法")
+        raise ValueError(i18n.pick_now("That skill name is not valid", "技能名称不合法"))
     d = skills_dir / folder
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(
@@ -409,7 +409,7 @@ def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, gro
         is_group = group or s.scope == "group"
         head = i18n.pick(lang, "Group rule" if is_group else "Skill",
                          "群聊规则" if is_group else "技能")
-        chunk = (f"【{head}:{s.name}】\n{s.body}" if lang == "zh"
+        chunk = (f"【{head}:{s.name}】\n{s.body}" if lang == "zh"  # i18n-keep: already bilingual: 【Head: name】 vs [Head: name]
                  else f"[{head}: {s.name}]\n{s.body}")
         if used + len(chunk) > max_chars:
             break
@@ -461,7 +461,7 @@ class _PluginScope:
         old = self._reg._tools.get(name)
         if old is not None:
             # 以前是后登记的悄悄顶掉先登记的:被顶掉的插件在权限页里仍显示有这个工具,却调不到,还没有任何提示
-            raise ValueError(f"工具名「{name}」已被{('插件 ' + old.plugin) if old.plugin else '内置工具'}占用,请换个名字")
+            raise ValueError(i18n.pick_now(f"Tool name \"{name}\" is already taken by {('plugin ' + old.plugin) if old.plugin else 'a built-in tool'} — pick another name", f"工具名「{name}」已被{('插件 ' + old.plugin) if old.plugin else '内置工具'}占用,请换个名字"))
         self._reg._add(Tool(name, description, parameters or {"type": "object", "properties": {}}, fn, "plugin", self._plugin))
 
 

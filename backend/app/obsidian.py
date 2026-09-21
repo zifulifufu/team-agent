@@ -316,7 +316,7 @@ class ObsidianSync:
     def sync(self, force: bool = False) -> dict:
         rep = Report(at=time.time())
         if not self._lock.acquire(blocking=False):
-            rep.ok, rep.error = False, "已经有一次同步正在进行,稍后再试"
+            rep.ok, rep.error = False, i18n.pick_now("A sync is already running — try again in a moment", "已经有一次同步正在进行,稍后再试")
             return rep.to_dict()
         try:
             self._sync(rep, force)

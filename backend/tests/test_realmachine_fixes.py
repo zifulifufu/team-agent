@@ -144,7 +144,7 @@ def test_duplicate_plugin_tool_name_is_reported(tmp_path):
     reg = ToolRegistry()
     reg.load_plugins(d)
     assert reg.plugins["a"].error == "" and reg.plugins["a"].tools == ["dup"]
-    assert "已被" in reg.plugins["b"].error and reg.plugins["b"].tools == []
+    assert "already taken" in reg.plugins["b"].error and reg.plugins["b"].tools == []
     assert [t.plugin for t in reg.plugin_tools(["a", "b"])] == ["a"]
 
 

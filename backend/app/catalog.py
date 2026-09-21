@@ -29,16 +29,16 @@ def _load(path: Path) -> dict | None:
 def validate(data: object) -> str | None:
     """返回错误说明;合法则返回 None。用于校验从网络下载的目录。"""
     if not isinstance(data, dict) or not isinstance(data.get("version"), str):
-        return "缺少 version"
+        return i18n.pick_now("version is missing", "缺少 version")
     provs = data.get("providers")
     if not isinstance(provs, dict) or not provs:
-        return "缺少 providers"
+        return i18n.pick_now("providers is missing", "缺少 providers")
     for pid, p in provs.items():
         if not isinstance(p, dict) or not isinstance(p.get("models"), list):
-            return f"{pid}: models 格式不对"
+            return i18n.pick_now(f"{pid}: models has the wrong shape", f"{pid}: models 格式不对")
         for m in p["models"]:
             if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"]:
-                return f"{pid}: 模型条目缺少 id"
+                return i18n.pick_now(f"{pid}: a model entry is missing its id", f"{pid}: 模型条目缺少 id")
     return None
 
 
