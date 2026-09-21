@@ -1021,6 +1021,8 @@ const ZH: Record<string, string> = {
   "the directory does not exist yet; create one if you need it": "目录还不存在,需要就自己建一个",
   // ---------------------------------------------------------------- 模板中心页(续)
   "), and contain no files or data from any third-party project.": "),不包含任何第三方项目的文件或数据。",
+  // ---------------------------------------------------------------- 本地模型页(补)
+  "When the cloud is unavailable or outbound calls are off, routing falls back to the local models here and your data stays on this machine. Below, the latest open-source LLMs are listed by vendor, with a guess at which ones this machine can run based on its memory and disk (a guess, not a guarantee).": "云端不可用、被禁用外呼时,路由层会自动回退到这里的本地模型,数据不出本机。下面按厂商列出各家最新的开源大语言模型,并按这台电脑的内存和磁盘估算哪些跑得动(估算不是保证)。",
 };
 
 let current: Lang = DEFAULT_LANG;

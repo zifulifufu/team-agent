@@ -132,8 +132,7 @@ export default function LocalPage({ onTab }: PageProps) {
     <div className="sp lp">
       <h2 className="sp-title">{t("Local models")}</h2>
       <p className="sp-desc">
-        When the cloud is unavailable or outbound calls are off, routing falls back to the local models here and your data stays on this machine. Below, the latest open-source LLMs are listed by vendor,
-        with a guess at which ones this machine can run based on its memory and disk (a guess, not a guarantee).
+        {t("When the cloud is unavailable or outbound calls are off, routing falls back to the local models here and your data stays on this machine. Below, the latest open-source LLMs are listed by vendor, with a guess at which ones this machine can run based on its memory and disk (a guess, not a guarantee).")}
       </p>
 
       <div className="card">
