@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import os
 from typing import Any
 
@@ -31,7 +33,7 @@ def _key(provider: dict) -> str:
 def _ids_from_openai_like(data: Any) -> list[str]:
     rows = data.get("data") if isinstance(data, dict) else data
     if not isinstance(rows, list):
-        raise DiscoveryError("返回格式不是模型列表")
+        raise DiscoveryError(i18n.pick_now("The response is not a list of models", "返回格式不是模型列表"))
     out = []
     for r in rows:
         mid = r.get("id") if isinstance(r, dict) else r
@@ -62,13 +64,13 @@ async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.A
         headers = {"Authorization": f"Bearer {key}"}
     else:  # openai_compatible
         if not base:
-            raise DiscoveryError("请先填写 API 地址")
+            raise DiscoveryError(i18n.pick_now("Fill in the API address first", "请先填写 API 地址"))
         url = base + "/models"
         if key:
             headers = {"Authorization": f"Bearer {key}"}
 
     if kind in ("anthropic", "gemini", "deepseek") and not key:
-        raise DiscoveryError("请先填写 API Key")
+        raise DiscoveryError(i18n.pick_now("Fill in the API key first", "请先填写 API Key"))
 
     own = client is None
     # 本机 / 局域网地址直连,云端地址仍走系统代理
@@ -76,18 +78,18 @@ async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.A
     try:
         r = await c.get(url, headers=headers, params=params)
     except httpx.HTTPError as e:
-        raise DiscoveryError(f"无法连接 {url.split('?')[0]}:{type(e).__name__}") from None
+        raise DiscoveryError(i18n.pick_now(f"Could not connect to {url.split('?')[0]}: {type(e).__name__}", f"无法连接 {url.split('?')[0]}:{type(e).__name__}")) from None
     finally:
         if own:
             await c.aclose()
     if r.status_code in (401, 403):
-        raise DiscoveryError("鉴权失败:API Key 不正确或没有权限")
+        raise DiscoveryError(i18n.pick_now("Authentication failed: the API key is wrong, or it lacks permission", "鉴权失败:API Key 不正确或没有权限"))
     if r.status_code >= 400:
-        raise DiscoveryError(f"服务商返回 HTTP {r.status_code}")
+        raise DiscoveryError(i18n.pick_now(f"The provider answered HTTP {r.status_code}", f"服务商返回 HTTP {r.status_code}"))
     try:
         data = r.json()
     except ValueError:
-        raise DiscoveryError("返回内容不是 JSON,请检查 API 地址是否以 /v1 结尾") from None
+        raise DiscoveryError(i18n.pick_now("The response is not JSON; check whether the API address ends with /v1", "返回内容不是 JSON,请检查 API 地址是否以 /v1 结尾")) from None
 
     if kind == "ollama":
         ids = [m["name"] for m in data.get("models", []) if isinstance(m, dict) and m.get("name")]

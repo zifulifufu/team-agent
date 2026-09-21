@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import asyncio
 import time
 from typing import Any
@@ -61,11 +63,11 @@ class HealthBoard:
                                 "source": rec["source"] if rec else "", "stale": False}
                 continue
             if self.router.circuit_open(m["id"]):
-                out[m["id"]] = {"state": "limited", "detail": "连续失败,暂时熔断,稍后自动重试", "latency_ms": 0,
+                out[m["id"]] = {"state": "limited", "detail": i18n.pick_now("Failed repeatedly, so it is temporarily tripped; it retries automatically", "连续失败,暂时熔断,稍后自动重试"), "latency_ms": 0,
                                 "checked_at": rec["checked_at"] if rec else 0, "source": rec["source"] if rec else "", "stale": False}
                 continue
             if not rec:
-                out[m["id"]] = {"state": "unknown", "detail": "还没检测过", "latency_ms": 0, "checked_at": 0, "source": "", "stale": False}
+                out[m["id"]] = {"state": "unknown", "detail": i18n.pick_now("Not checked yet", "还没检测过"), "latency_ms": 0, "checked_at": 0, "source": "", "stale": False}
                 continue
             out[m["id"]] = {"state": rec["status"], "detail": rec["detail"], "latency_ms": rec["latency_ms"],
                             "checked_at": rec["checked_at"], "source": rec["source"],
@@ -98,7 +100,7 @@ class HealthBoard:
                         r.raise_for_status()
                         installed = None
                 except Exception as e:  # noqa: BLE001
-                    why = "Ollama 没有在运行(或地址不对)" if p["kind"] == "ollama" else f"连不上 {base}"
+                    why = i18n.pick_now("Ollama is not running (or the address is wrong)", "Ollama 没有在运行(或地址不对)") if p["kind"] == "ollama" else i18n.pick_now(f"Could not reach {base}", f"连不上 {base}")
                     for m in models:
                         self.store.set_health(m["id"], "bad", f"{why}:{type(e).__name__}", 0, "probe")
                         n += 1
@@ -106,9 +108,9 @@ class HealthBoard:
                 ms = int((time.time() - t0) * 1000)
                 for m in models:
                     if installed is not None and not _installed(m["model_name"], installed):
-                        self.store.set_health(m["id"], "bad", f"Ollama 里还没有这个模型,先下载:ollama pull {m['model_name']}", ms, "probe")
+                        self.store.set_health(m["id"], "bad", i18n.pick_now(f"Ollama does not have this model yet; pull it first: ollama pull {m['model_name']}", f"Ollama 里还没有这个模型,先下载:ollama pull {m['model_name']}"), ms, "probe")
                     else:
-                        note = "Ollama 在运行,模型已下载(没有实际调用,首次回复要加载进内存)" if installed is not None else "服务可连接"
+                        note = i18n.pick_now("Ollama is running and the model is downloaded (nothing was actually called; the first reply loads it into memory)", "Ollama 在运行,模型已下载(没有实际调用,首次回复要加载进内存)") if installed is not None else i18n.pick_now("The service is reachable", "服务可连接")
                         self.store.set_health(m["id"], "ok", note, ms, "probe")
                     n += 1
         return n

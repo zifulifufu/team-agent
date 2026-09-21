@@ -53,7 +53,7 @@ def test_fetch_models_bad_key_message_has_no_secret(client):
                                             "base_url": srv.url + "/v1", "api_key": "wrong-key-9999"})
         pid = next(p["id"] for p in client.get("/api/providers").json() if p["name"] == "gw")
         r = client.post(f"/api/providers/{pid}/fetch-models")
-        assert r.status_code == 502 and "鉴权失败" in r.json()["detail"]
+        assert r.status_code == 502 and "Authentication failed" in r.json()["detail"]
         assert "wrong-key-9999" not in r.text
 
 
@@ -63,11 +63,11 @@ def test_fetch_models_unreachable_and_missing_config(client):
     client.post("/api/providers", json={"name": "nobase", "kind": "openai_compatible"})
     by = {p["name"]: p["id"] for p in client.get("/api/providers").json()}
     r = client.post(f"/api/providers/{by['dead']}/fetch-models")
-    assert r.status_code == 502 and "无法连接" in r.json()["detail"]
+    assert r.status_code == 502 and "Could not connect" in r.json()["detail"]
     r = client.post(f"/api/providers/{by['nobase']}/fetch-models")
-    assert r.status_code == 502 and "API 地址" in r.json()["detail"]
+    assert r.status_code == 502 and "API address" in r.json()["detail"]
     r = client.post("/api/providers/deepseek/fetch-models")  # 没填 Key(且环境变量未设置)
-    assert r.status_code == 502 and "API Key" in r.json()["detail"]
+    assert r.status_code == 502 and "API key" in r.json()["detail"]
 
 
 def test_fetch_models_ollama_and_local_still_allowed_offline(client):

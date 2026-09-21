@@ -55,21 +55,22 @@ CREATE TABLE IF NOT EXISTS model_seen (provider_id TEXT PRIMARY KEY, ids TEXT NO
 CREATE TABLE IF NOT EXISTS model_live (provider_id TEXT PRIMARY KEY, ids TEXT NOT NULL, fetched_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS obsidian_map (
     memory_id TEXT PRIMARY KEY,
-    rel_path TEXT NOT NULL,                    -- 相对于所选文件夹
-    hash TEXT NOT NULL                         -- 上次同步完成时这条记忆的内容指纹,用来判断哪一边改过
+    rel_path TEXT NOT NULL,                    -- relative to the chosen folder
+    hash TEXT NOT NULL                         -- content fingerprint taken when the last sync finished,
+                                               -- used to tell which side changed
 );
 CREATE TABLE IF NOT EXISTS model_health (
     model_id TEXT PRIMARY KEY,
     status TEXT NOT NULL,                      -- ok | limited | bad
     detail TEXT NOT NULL DEFAULT '',
     latency_ms INTEGER NOT NULL DEFAULT 0,
-    source TEXT NOT NULL DEFAULT 'test',       -- test(手动检测) | chat(聊天时顺带记录) | probe(本地服务探测)
+    source TEXT NOT NULL DEFAULT 'test',       -- test (manual check) | chat (recorded during a chat) | probe (local service scan)
     checked_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS updates (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,                        -- app | skill | plugin | model | catalog
-    ref TEXT NOT NULL DEFAULT '',              -- 去重用:同一 kind+ref 只保留一条未处理的提醒
+    ref TEXT NOT NULL DEFAULT '',              -- for de-duplication: one unhandled notice per kind+ref
     title TEXT NOT NULL,
     detail TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'new',        -- new | dismissed | done
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS sources (
     repo TEXT NOT NULL,
     path TEXT NOT NULL,
     ref TEXT NOT NULL DEFAULT '',
-    sha TEXT NOT NULL DEFAULT '',              -- 安装时 GitHub 文件的 blob sha,用来判断是否有新版本
+    sha TEXT NOT NULL DEFAULT '',              -- blob sha of the GitHub file when installed, used to detect a newer version
     installed_at REAL NOT NULL,
     PRIMARY KEY (kind, name)
 );

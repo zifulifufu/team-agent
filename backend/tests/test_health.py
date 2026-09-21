@@ -105,7 +105,7 @@ def test_local_probe_ollama(tmp_path, monkeypatch):
     real = httpx.AsyncClient
     monkeypatch.setattr("app.health.httpx.AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     h = c.post("/api/models-health/check", json={"cloud": False}).json()["health"]
-    assert h[ol["id"]]["state"] == "ok" and "已下载" in h[ol["id"]]["detail"]
+    assert h[ol["id"]]["state"] == "ok" and "is downloaded" in h[ol["id"]]["detail"]
 
     def handler2(req):
         return httpx.Response(200, json={"models": []})
@@ -119,7 +119,7 @@ def test_local_probe_ollama(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.health.httpx.AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler3), **kw))
     h = c.post("/api/models-health/check", json={"cloud": False}).json()["health"]
-    assert h[ol["id"]]["state"] == "bad" and "没有在运行" in h[ol["id"]]["detail"]
+    assert h[ol["id"]]["state"] == "bad" and "is not running" in h[ol["id"]]["detail"]
 
 
 def test_changing_key_or_deleting_clears_stale_health(tmp_path):

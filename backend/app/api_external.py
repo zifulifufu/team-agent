@@ -37,7 +37,7 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
 
     def need_enabled() -> None:
         if not store.get_settings()["external_agents_enabled"]:
-            raise HTTPException(403, "外部智能体总开关还没打开:到「设置 → 外部智能体」里打开后再试")
+            raise HTTPException(403, i18n.pick_now("The external-agent master switch is still off: turn it on under Settings → External agents, then try again", "外部智能体总开关还没打开:到「设置 → 外部智能体」里打开后再试"))
 
     def cfg_of(agent: dict) -> dict:
         return {**external.DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
@@ -68,23 +68,23 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         need_enabled()
         eng = external.ENGINES.get(body.engine)
         if not eng:
-            raise HTTPException(400, "不支持的外部智能体类型")
+            raise HTTPException(400, i18n.pick_now("Unsupported external agent type", "不支持的外部智能体类型"))
         try:
             cfg = external.clean_cfg(body.cfg)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         name = (body.name or eng["name"]).strip()
         if not name or len(name) > 30 or NAME_BAD.search(name):
-            raise HTTPException(400, "名字不能包含空格或 @,最长 30 字")
+            raise HTTPException(400, i18n.pick_now("A name cannot contain spaces or @, and is at most 30 characters long", "名字不能包含空格或 @,最长 30 字"))
         if any(a["name"] == name for a in store.list_agents()):
             if body.name:
-                raise HTTPException(409, "已有同名成员")
+                raise HTTPException(409, i18n.pick_now("A member with this name already exists", "已有同名成员"))
             n = 2
             while any(a["name"] == f"{name}{n}" for a in store.list_agents()):
                 n += 1
             name = f"{name}{n}"
         if body.group_id and not store.get_group(body.group_id):
-            raise HTTPException(404, "群聊不存在")
+            raise HTTPException(404, i18n.pick_now("That group chat does not exist", "群聊不存在"))
         # The member is created in the language it was added from, so a Chinese install gets
         # a Chinese role prompt and an English one gets the English text.
         shown = i18n.localize(eng)
@@ -98,7 +98,7 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
     async def patch(aid: str, body: ExternalPatch) -> dict:
         agent = store.get_agent(aid)
         if not agent or not agent.get("engine"):
-            raise HTTPException(404, "外部智能体成员不存在")
+            raise HTTPException(404, i18n.pick_now("That external agent member does not exist", "外部智能体成员不存在"))
         try:
             cfg = external.clean_cfg(body.cfg, cfg_of(agent))
         except ValueError as e:
@@ -111,7 +111,7 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         if body.agent_id:
             agent = store.get_agent(body.agent_id)
             if not agent or not agent.get("engine"):
-                raise HTTPException(404, "外部智能体成员不存在")
+                raise HTTPException(404, i18n.pick_now("That external agent member does not exist", "外部智能体成员不存在"))
             cfg = cfg_of(agent)
         try:
             cfg = external.clean_cfg(cfg)
@@ -120,7 +120,7 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         need_enabled()   # 检测会真的启动一次命令行(读版本),所以总开关没开时也不做
         if body.live:
             if not store.get_settings()["external_calls_enabled"]:
-                raise HTTPException(403, "「禁止外呼」正开着:外部智能体要连接云端模型,先在「路由」里放开")
+                raise HTTPException(403, i18n.pick_now("Outbound calls are switched off: an external agent needs a cloud model, so allow outbound calls under Routing first", "「禁止外呼」正开着:外部智能体要连接云端模型,先在「路由」里放开"))
         return await runner.probe(cfg, live=body.live)
 
     return r
