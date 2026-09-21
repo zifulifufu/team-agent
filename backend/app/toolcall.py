@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import json
 import re
 from dataclasses import dataclass, field
@@ -34,8 +36,8 @@ def _param_line(name: str, spec: dict, required: bool) -> str:
         typ = "|".join(str(t) for t in typ)
     desc = (spec.get("description") or "").replace("\n", " ")[:80]
     enum = spec.get("enum")
-    extra = f",可选值 {enum}" if enum else ""
-    return f"{name}: {typ}{'' if required else '(可选)'}{extra}" + (f" — {desc}" if desc else "")
+    extra = i18n.pick_now(f", one of {enum}", f",可选值 {enum}") if enum else ""
+    return i18n.pick_now(f"{name}: {typ}{'' if required else ' (optional)'}{extra}", f"{name}: {typ}{'' if required else '(可选)'}{extra}") + (f" — {desc}" if desc else "")
 
 
 def tool_signature(t: dict) -> str:
@@ -51,14 +53,23 @@ def tools_prompt(tools: list[dict], max_calls: int = 3, limit: int = 40) -> str:
         return ""
     shown = tools[:limit]
     lines = "\n".join(tool_signature(t) for t in shown)
-    more = f"\n(还有 {len(tools) - limit} 个工具未列出)" if len(tools) > limit else ""
+    more = i18n.pick_now(f"\\n({len(tools) - limit} more tools are not listed)", f"\n(还有 {len(tools) - limit} 个工具未列出)") if len(tools) > limit else ""
     return (
-        "【可用工具】\n"
-        "需要查资料、算东西或操作外部系统时,先调用工具,别凭空猜。调用格式(严格 JSON,放在标签里):\n"
-        '<tool_call>{"name": "工具名", "arguments": {"参数名": "值"}}</tool_call>\n'
-        f"规则:一次回复最多调用 {max_calls} 个工具;调用之后立刻停止输出,等系统返回 <tool_result> 再继续;"
-        "不要编造工具结果;工具报错时换个参数重试或如实告知;不需要工具时直接回答。\n"
-        f"工具列表:\n{lines}{more}"
+        i18n.pick_now((
+            "[Available tools]\\n"
+            "When you need to look something up, do a calculation, or act on an external system, call a tool instead of guessing. The call format (strict JSON, inside the tag):\\n"
+            "<tool_call>{\"name\": \"tool name\", \"arguments\": {\"argument name\": \"value\"}}</tool_call>\n"
+            f"Rules: at most {max_calls} tool calls per reply; stop as soon as you call one and wait for the system to return <tool_result> before continuing;"
+            "do not invent tool results; if a tool fails, retry with different arguments or say so honestly; if no tool is needed, just answer.\\n"
+            f"Tools:\\n{lines}{more}"
+        ), (
+            "【可用工具】\n"
+            "需要查资料、算东西或操作外部系统时,先调用工具,别凭空猜。调用格式(严格 JSON,放在标签里):\n"
+            '<tool_call>{"name": "工具名", "arguments": {"参数名": "值"}}</tool_call>\n'
+            f"规则:一次回复最多调用 {max_calls} 个工具;调用之后立刻停止输出,等系统返回 <tool_result> 再继续;"
+            "不要编造工具结果;工具报错时换个参数重试或如实告知;不需要工具时直接回答。\n"
+            f"工具列表:\n{lines}{more}"
+        ))
     )
 
 
@@ -89,13 +100,13 @@ def parse_tool_calls(text: str, max_calls: int = 3) -> tuple[str, list[ToolCall]
         raw = m.group(2)
         obj = _loads_lenient(raw)
         if not isinstance(obj, dict) or not (obj.get("name") or obj.get("tool")):
-            calls.append(ToolCall("", {}, "格式不对:需要 {\"name\": ..., \"arguments\": {...}}", raw.strip()[:200]))
+            calls.append(ToolCall("", {}, i18n.pick_now("Wrong shape: expected {\"name\": ..., \"arguments\": {...}}", "格式不对:需要 {\"name\": ..., \"arguments\": {...}}"), raw.strip()[:200]))
             continue
         args = obj.get("arguments", obj.get("args", obj.get("parameters", {})))
         if isinstance(args, str):
             args = _loads_lenient(args) or {}
         if not isinstance(args, dict):
-            calls.append(ToolCall(str(obj.get("name") or obj.get("tool")), {}, "arguments 必须是 JSON 对象", raw.strip()[:200]))
+            calls.append(ToolCall(str(obj.get("name") or obj.get("tool")), {}, i18n.pick_now("arguments has to be a JSON object", "arguments 必须是 JSON 对象"), raw.strip()[:200]))
             continue
         calls.append(ToolCall(str(obj.get("name") or obj.get("tool")), args, "", raw.strip()[:200]))
     visible = _BLOCK.sub("", text).strip()
@@ -103,7 +114,7 @@ def parse_tool_calls(text: str, max_calls: int = 3) -> tuple[str, list[ToolCall]
 
 
 def format_result(name: str, ok: bool, text: str, limit: int = 6000) -> str:
-    body = text if len(text) <= limit else text[:limit] + f"\n…(已截断,共 {len(text)} 字)"
+    body = text if len(text) <= limit else text[:limit] + i18n.pick_now(f"\\n… (truncated; {len(text)} characters in total)", f"\n…(已截断,共 {len(text)} 字)")
     return f'<tool_result name="{name}" ok="{str(ok).lower()}">\n{body}\n</tool_result>'
 
 

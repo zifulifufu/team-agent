@@ -388,7 +388,7 @@ async def test_dead_mcp_connection_is_marked_and_reconnectable(store, make_route
     conn = _Conn({"id": "x", "name": "x"})
     conn.session, conn.state.status = Sess(), "ready"
     mgr._conns["x"] = conn
-    with pytest.raises(RuntimeError, match="断开"):
+    with pytest.raises(RuntimeError, match="connection dropped"):
         await mgr.call_tool("x", "t", {}, 5)
     assert mgr.state("x").status == "error"
 

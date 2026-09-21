@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import asyncio
 import json
 import re
@@ -36,44 +38,44 @@ def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
     只解析、不保存、不运行任何东西。返回 (服务器列表, 提示)。"""
     warnings: list[str] = []
     if len(text) > 200_000:
-        raise ValueError("内容太长(超过 200KB)")
+        raise ValueError(i18n.pick_now("The content is too long (over 200KB)", "内容太长(超过 200KB)"))
     try:
         data = json.loads(text)
     except ValueError as e:
-        raise ValueError(f"不是合法的 JSON:{e}") from None
+        raise ValueError(i18n.pick_now(f"Not valid JSON: {e}", f"不是合法的 JSON:{e}")) from None
     if not isinstance(data, dict):
-        raise ValueError("顶层应该是一个对象,如 {\"mcpServers\": {...}}")
+        raise ValueError(i18n.pick_now("the top level should be an object, such as {\"mcpServers\": {...}}", "顶层应该是一个对象,如 {\"mcpServers\": {...}}"))
     servers = data["mcpServers"] if "mcpServers" in data else data.get("servers")
     if servers is None:
         # 兼容三种简写:{名字: 配置} / 单个配置(带 command 或 url)
         servers = {"": data} if ("command" in data or "url" in data) else data
     if not isinstance(servers, dict) or not servers:
-        raise ValueError("没有找到 mcpServers")
+        raise ValueError(i18n.pick_now("No mcpServers found", "没有找到 mcpServers"))
     out: list[dict] = []
     for name, cfg in list(servers.items())[:50]:
-        label = name or "未命名"
+        label = name or i18n.pick_now("Untitled", "未命名")
         if not isinstance(cfg, dict):
-            warnings.append(f"「{label}」的配置不是对象,已跳过")
+            warnings.append(i18n.pick_now(f"the configuration for \"{label}\" is not an object, so it was skipped", f"「{label}」的配置不是对象,已跳过"))
             continue
         command = cfg.get("command") or ""
         url = cfg.get("url") or cfg.get("serverUrl") or cfg.get("baseUrl") or ""
         if not (isinstance(command, str) and isinstance(url, str)) or not (command or url):
-            warnings.append(f"「{label}」既没有 command 也没有 url,已跳过")
+            warnings.append(i18n.pick_now(f"\"{label}\" has neither a command nor a url, so it was skipped", f"「{label}」既没有 command 也没有 url,已跳过"))
             continue
         args = cfg.get("args") or []
         if not isinstance(args, list) or not all(isinstance(a, (str, int, float)) for a in args):
-            warnings.append(f"「{label}」的 args 格式不对,已跳过")
+            warnings.append(i18n.pick_now(f"the args of \"{label}\" have the wrong shape, so it was skipped", f"「{label}」的 args 格式不对,已跳过"))
             continue
         env, headers = cfg.get("env") or {}, cfg.get("headers") or {}
         if not (isinstance(env, dict) and isinstance(headers, dict)):
-            warnings.append(f"「{label}」的 env/headers 格式不对,已跳过")
+            warnings.append(i18n.pick_now(f"the env/headers of \"{label}\" have the wrong shape, so it was skipped", f"「{label}」的 env/headers 格式不对,已跳过"))
             continue
         t = str(cfg.get("type") or cfg.get("transport") or "").lower().replace("_", "-")
         transport = {"stdio": "stdio", "sse": "sse", "http": "http", "streamable-http": "http", "streamablehttp": "http"}.get(t, "")
         if t and not transport:
-            warnings.append(f"「{label}」的类型 {t} 不认识,已按地址自动判断")
+            warnings.append(i18n.pick_now(f"the type {t} of \"{label}\" is not recognised, so it was inferred from the address", f"「{label}」的类型 {t} 不认识,已按地址自动判断"))
         if url and not re.match(r"^https?://", url):
-            warnings.append(f"「{label}」的地址不是 http(s),已跳过")
+            warnings.append(i18n.pick_now(f"the address of \"{label}\" is not http(s), so it was skipped", f"「{label}」的地址不是 http(s),已跳过"))
             continue
         out.append({
             "name": (name or (command or url))[:60], "command": command.strip(), "args": [str(a) for a in args],
@@ -83,9 +85,9 @@ def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
             "enabled": not (cfg.get("disabled") is True or cfg.get("isActive") is False),
         })
     if not out:
-        raise ValueError("没有可导入的服务器" + (":" + ";".join(warnings) if warnings else ""))
+        raise ValueError(i18n.pick_now("There are no servers to import", "没有可导入的服务器") + (":" + ";".join(warnings) if warnings else ""))
     if len(servers) > 50:
-        warnings.append("只处理前 50 个")
+        warnings.append(i18n.pick_now("Only the first 50 are handled", "只处理前 50 个"))
     return out, warnings
 
 
@@ -119,7 +121,7 @@ class _Conn:
         try:
             await asyncio.wait_for(self._ready.wait(), timeout)
         except asyncio.TimeoutError:
-            self.state.status, self.state.error = "error", f"连接超时({int(timeout)} 秒)"
+            self.state.status, self.state.error = "error", i18n.pick_now(f"Connection timed out ({int(timeout)}s)", f"连接超时({int(timeout)} 秒)")
             await self.stop()
 
     async def _run(self) -> None:
@@ -133,7 +135,7 @@ class _Conn:
                     from mcp.client.stdio import stdio_client
 
                     if not cfg.get("command"):
-                        raise RuntimeError("stdio 方式需要填写启动命令")
+                        raise RuntimeError(i18n.pick_now("The stdio transport needs a start command", "stdio 方式需要填写启动命令"))
                     params = StdioServerParameters(
                         command=cfg["command"], args=list(cfg.get("args") or []), env=dict(cfg.get("env") or {}) or None
                     )
@@ -214,18 +216,18 @@ def flatten_result(result: Any) -> tuple[str, bool]:
         if t == "text":
             parts.append(c.text)
         elif t == "image":
-            parts.append("[图片内容,已省略]")
+            parts.append(i18n.pick_now("[image content omitted]", "[图片内容,已省略]"))
         elif t == "resource":
             res = getattr(c, "resource", None)
-            parts.append(getattr(res, "text", None) or f"[资源 {getattr(res, 'uri', '')}]")
+            parts.append(getattr(res, "text", None) or i18n.pick_now(f"[resource {getattr(res, 'uri', '')}]", f"[资源 {getattr(res, 'uri', '')}]"))
         else:
-            parts.append(f"[{t or '未知'}内容]")
+            parts.append(i18n.pick_now(f"[{t or 'unknown'} content]", f"[{t or '未知'}内容]"))
     text = "\n".join(p for p in parts if p).strip()
     if not text and getattr(result, "structuredContent", None):
         import json
 
         text = json.dumps(result.structuredContent, ensure_ascii=False)
-    return text or "(无输出)", bool(getattr(result, "isError", False))
+    return text or i18n.pick_now("(no output)", "(无输出)"), bool(getattr(result, "isError", False))
 
 
 class McpManager:
@@ -258,7 +260,7 @@ class McpManager:
     async def call_tool(self, sid: str, tool: str, args: dict, timeout: float) -> tuple[str, bool]:
         c = self._conns.get(sid)
         if not c or not c.session:
-            raise RuntimeError("MCP 服务器未连接")
+            raise RuntimeError(i18n.pick_now("The MCP server is not connected", "MCP 服务器未连接"))
         try:
             res = await asyncio.wait_for(c.session.call_tool(tool, args), timeout)
         except Exception as e:  # noqa: BLE001
@@ -266,7 +268,7 @@ class McpManager:
                 # 服务器进程没了:标成断开,下一次使用时会自动重连,而不是一直显示「已连接」
                 c.state.status, c.state.error = "error", "服务器进程已退出或连接断开"
                 await c.stop()
-                raise RuntimeError("MCP 服务器连接已断开,下次调用会自动重连") from None
+                raise RuntimeError(i18n.pick_now("The MCP server connection dropped; the next call will reconnect automatically", "MCP 服务器连接已断开,下次调用会自动重连")) from None
             raise
         text, is_error = flatten_result(res)
         return text, not is_error

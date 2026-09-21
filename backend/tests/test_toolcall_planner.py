@@ -25,7 +25,7 @@ def test_parse_tool_call_unterminated_and_invalid():
     _, bad = parse_tool_calls("<tool_call>这不是 JSON</tool_call>")
     assert bad[0].error and not bad[0].name
     _, bad2 = parse_tool_calls('<tool_call>{"name": "a", "arguments": [1]}</tool_call>')
-    assert "对象" in bad2[0].error
+    assert "JSON object" in bad2[0].error
 
 
 def test_parse_limits_number_of_calls():
@@ -51,7 +51,7 @@ def test_tag_filter_passes_lookalikes_and_drops_unterminated_tail():
 
 def test_strip_hidden_and_format_result_truncates():
     assert strip_hidden('a<plan>{}</plan>b<tool_call>{}') == "ab"
-    assert "已截断" in format_result("t", True, "x" * 7000)
+    assert "truncated" in format_result("t", True, "x" * 7000)
     assert 'ok="false"' in format_result("t", False, "err")
 
 
@@ -59,7 +59,7 @@ def test_tools_prompt_lists_signature_and_required():
     p = tools_prompt([{"name": "s", "description": "搜", "parameters": {
         "type": "object", "properties": {"q": {"type": "string", "description": "词"}, "k": {"type": "integer"}},
         "required": ["q"]}}])
-    assert "s(q: string — 词; k: integer(可选))" in p and "<tool_call>" in p
+    assert "s(q: string — 词; k: integer (optional))" in p and "<tool_call>" in p
     assert tools_prompt([]) == ""
 
 

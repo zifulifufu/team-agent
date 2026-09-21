@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import io
 import json
 import re
@@ -63,7 +65,7 @@ def extract_text(filename: str, data: bytes) -> tuple[str, str]:
     """返回 (类型, 文本)。"""
     ext = Path(filename).suffix.lower()
     if len(data) > MAX_BYTES:
-        raise LibraryError(f"文件太大(上限 {MAX_BYTES // 1024 // 1024} MB)")
+        raise LibraryError(i18n.pick_now(f"File is too large (limit {MAX_BYTES // 1024 // 1024} MB)", f"文件太大(上限 {MAX_BYTES // 1024 // 1024} MB)"))
     if ext in TEXT_EXT or not ext:
         text = _decode(data)
         if ext == ".json":
@@ -80,31 +82,31 @@ def extract_text(filename: str, data: bytes) -> tuple[str, str]:
         try:
             from pypdf import PdfReader
         except ImportError:
-            raise LibraryError("读取 PDF 需要安装 pypdf:pip install pypdf") from None
+            raise LibraryError(i18n.pick_now("Reading PDF files needs pypdf: pip install pypdf", "读取 PDF 需要安装 pypdf:pip install pypdf")) from None
         try:
             reader = PdfReader(io.BytesIO(data))
             pages = [(p.extract_text() or "") for p in reader.pages]
         except Exception as e:  # noqa: BLE001
-            raise LibraryError(f"PDF 解析失败:{e}") from None
+            raise LibraryError(i18n.pick_now(f"Could not parse the PDF: {e}", f"PDF 解析失败:{e}")) from None
         text = "\n\n".join(pages).strip()
         if not text:
-            raise LibraryError("这个 PDF 没有可提取的文字(可能是扫描件,暂不支持 OCR)")
+            raise LibraryError(i18n.pick_now("This PDF has no extractable text (it may be a scan; OCR is not supported yet)", "这个 PDF 没有可提取的文字(可能是扫描件,暂不支持 OCR)"))
         return "pdf", text
     if ext == ".docx":
         try:
             import docx
         except ImportError:
-            raise LibraryError("读取 docx 需要安装 python-docx:pip install python-docx") from None
+            raise LibraryError(i18n.pick_now("Reading docx files needs python-docx: pip install python-docx", "读取 docx 需要安装 python-docx:pip install python-docx")) from None
         try:
             d = docx.Document(io.BytesIO(data))
         except Exception as e:  # noqa: BLE001
-            raise LibraryError(f"docx 解析失败:{e}") from None
+            raise LibraryError(i18n.pick_now(f"Could not parse the docx: {e}", f"docx 解析失败:{e}")) from None
         parts = [p.text for p in d.paragraphs if p.text.strip()]
         for t in d.tables:
             for row in t.rows:
                 parts.append(" | ".join(c.text.strip() for c in row.cells))
         return "docx", "\n".join(parts)
-    raise LibraryError(f"暂不支持 {ext} 格式(可以先转成 txt / md / pdf / docx)")
+    raise LibraryError(i18n.pick_now(f"{ext} files are not supported yet (convert to txt / md / pdf / docx first)", f"暂不支持 {ext} 格式(可以先转成 txt / md / pdf / docx)"))
 
 
 DIR_EXT = TEXT_EXT | {".html", ".htm", ".pdf", ".docx"}
@@ -116,7 +118,7 @@ def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str, bytes]:
     """下载一个网页/文档 → (最终地址, content-type, 内容)。只允许 http(s),最多 3 次跳转,最大 5MB。"""
     u = urlparse(url.strip())
     if u.scheme not in ("http", "https") or not u.netloc:
-        raise LibraryError("链接需要以 http:// 或 https:// 开头")
+        raise LibraryError(i18n.pick_now("A link has to start with http:// or https://", "链接需要以 http:// 或 https:// 开头"))
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True, max_redirects=3,
                           headers={"User-Agent": "Mozilla/5.0 TeamAgent"}) as c:
@@ -126,12 +128,12 @@ def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str, bytes]:
                 for part in r.iter_bytes():
                     buf += part
                     if len(buf) > MAX_URL_BYTES:
-                        raise LibraryError(f"页面太大(超过 {MAX_URL_BYTES // 1024 // 1024} MB)")
+                        raise LibraryError(i18n.pick_now(f"The page is too large (over {MAX_URL_BYTES // 1024 // 1024} MB)", f"页面太大(超过 {MAX_URL_BYTES // 1024 // 1024} MB)"))
                 return str(r.url), r.headers.get("content-type", "").split(";")[0].strip().lower(), bytes(buf)
     except httpx.HTTPStatusError as e:
-        raise LibraryError(f"对方返回了 {e.response.status_code}") from None
+        raise LibraryError(i18n.pick_now(f"The server answered {e.response.status_code}", f"对方返回了 {e.response.status_code}")) from None
     except httpx.HTTPError as e:
-        raise LibraryError(f"打不开这个链接:{type(e).__name__}") from None
+        raise LibraryError(i18n.pick_now(f"Could not open this link: {type(e).__name__}", f"打不开这个链接:{type(e).__name__}")) from None
 
 
 class Library:
@@ -162,11 +164,11 @@ class Library:
                  did: str | None = None) -> dict:
         text = text.strip()
         if not text:
-            raise LibraryError("没有可用的文本内容")
+            raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))
         if len(text) > MAX_CHARS:
-            raise LibraryError(f"文本太长(上限 {MAX_CHARS // 10000} 万字),请拆分后再导入")
+            raise LibraryError(i18n.pick_now(f"The text is too long (limit {MAX_CHARS} characters); split it before importing", f"文本太长(上限 {MAX_CHARS // 10000} 万字),请拆分后再导入"))
         chunks = chunk_text(text)
-        doc = self.store.add_doc(title.strip() or filename or "未命名", filename, kind,
+        doc = self.store.add_doc(title.strip() or filename or i18n.pick_now("Untitled", "未命名"), filename, kind,
                                  size if size is not None else len(text.encode()), chunks, did)
         self.invalidate()
         return doc
@@ -189,14 +191,14 @@ class Library:
             text = _decode(data)
             title = Path(urlparse(final).path).name or urlparse(final).netloc
         else:
-            raise LibraryError(f"暂不支持这种内容类型:{ctype or '未知'}")
+            raise LibraryError(i18n.pick_now(f"This content type is not supported yet: {ctype or 'unknown'}", f"暂不支持这种内容类型:{ctype or '未知'}"))
         return self.add_text(title[:120], text, final, "link", len(data))
 
     def add_dir(self, path: str, recursive: bool = True) -> dict:
         """把文件夹里的文档批量导入。再次导入同一个文件夹:没变的跳过,大小变了的替换成新版。"""
         root = Path(path.strip()).expanduser()
         if not root.is_absolute() or not root.is_dir():
-            raise LibraryError("请填写一个存在的文件夹的完整路径")
+            raise LibraryError(i18n.pick_now("Give the full path of a folder that exists", "请填写一个存在的文件夹的完整路径"))
         root = root.resolve()
         by_name = {d["filename"]: d for d in self.store.list_docs() if d["filename"]}
         added: list[dict] = []
@@ -209,20 +211,21 @@ class Library:
                 continue
             seen += 1
             if seen > MAX_DIR_FILES:
-                skipped.append({"name": "…", "reason": f"文件太多,只处理前 {MAX_DIR_FILES} 个"})
+                skipped.append({"name": "…", "reason": i18n.pick_now(f"Too many files; only the first {MAX_DIR_FILES} were processed",  # i18n-keep: placeholder row name; U+2026 is not Chinese
+                                       f"文件太多,只处理前 {MAX_DIR_FILES} 个")})
                 break
             rel = str(p.relative_to(root))
             try:
                 size = p.stat().st_size
                 old = by_name.get(str(p))
                 if old and old["size"] == size:
-                    skipped.append({"name": rel, "reason": "已是最新"})
+                    skipped.append({"name": rel, "reason": i18n.pick_now("Already up to date", "已是最新")})
                     continue
                 if size > MAX_BYTES:
-                    raise LibraryError(f"文件太大(上限 {MAX_BYTES // 1024 // 1024} MB)")
+                    raise LibraryError(i18n.pick_now(f"File is too large (limit {MAX_BYTES // 1024 // 1024} MB)", f"文件太大(上限 {MAX_BYTES // 1024 // 1024} MB)"))
                 kind, text = extract_text(p.name, p.read_bytes())
                 if not text.strip():
-                    raise LibraryError("没有可用的文本内容")   # 先检查再动旧版本:新版是空的就保留旧版
+                    raise LibraryError(i18n.pick_now("There is no usable text content", "没有可用的文本内容"))   # 先检查再动旧版本:新版是空的就保留旧版
                 if old:   # 变了的文件:原地换成新内容,文档 ID、标题、启用状态都保持,群里已选的文档不会掉
                     self.delete(old["id"])
                     doc = self.add_text(old["title"], text, str(p), kind, size, did=old["id"])
@@ -265,7 +268,7 @@ class Library:
     def read(self, did: str, start: int = 0, limit: int = 3000) -> dict:
         doc = self.store.get_doc(did)
         if not doc:
-            raise LibraryError("文档不存在")
+            raise LibraryError(i18n.pick_now("That document does not exist", "文档不存在"))
         text = join_chunks([c["text"] for c in self.store.doc_chunks(did)])
         return {"doc": doc, "start": start, "end": min(start + limit, len(text)),
                 "total": len(text), "text": text[start:start + limit]}

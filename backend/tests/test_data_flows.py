@@ -179,7 +179,7 @@ def test_library_directory_import_recursion_and_reimport(tmp_path):
     r = a.post("/api/library/dir", json={"path": str(root)}).json()
     assert sorted(d["title"] for d in r["added"]) == ["a", "b"]
     again = a.post("/api/library/dir", json={"path": str(root)}).json()
-    assert again["added"] == [] and all(s["reason"] == "已是最新" for s in again["skipped"])
+    assert again["added"] == [] and all(s["reason"] == "Already up to date" for s in again["skipped"])
     assert a.post("/api/library/dir", json={"path": "相对路径"}).status_code == 400
     assert a.post("/api/library/dir", json={"path": str(tmp_path / "不存在")}).status_code == 400
 

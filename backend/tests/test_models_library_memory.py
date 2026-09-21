@@ -166,7 +166,7 @@ def test_library_file_formats_and_errors(store):
     doc.save(buf)
     d4 = lib.add_file("合同.docx", buf.getvalue())
     assert "甲乙双方" in lib.read(d4["id"])["text"]
-    with pytest.raises(LibraryError, match="不支持"):
+    with pytest.raises(LibraryError, match="not supported"):
         lib.add_file("a.exe", b"MZ")
     with pytest.raises(LibraryError):
         lib.add_text("空", "   ")
