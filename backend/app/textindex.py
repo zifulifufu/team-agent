@@ -10,9 +10,9 @@ import math
 import re
 from collections import Counter, defaultdict
 
-_WORD = re.compile(r"[A-Za-z0-9_]+|[一-鿿]+")
-_CJK = re.compile(r"[一-鿿]+")
-STOP = set("的了是在和与及或就都而也很把被对为这那有你我他她它们吗呢吧啊呀请帮要能会") | {"the", "a", "an", "of", "to", "in", "on", "at", "is", "are", "and", "or", "for", "with"}
+_WORD = re.compile(r"[A-Za-z0-9_]+|[一-鿿]+")  # i18n-keep: Chinese-aware tokenizer: the ranges and stop words are the algorithm, not copy
+_CJK = re.compile(r"[一-鿿]+")  # i18n-keep: Chinese-aware tokenizer: the ranges and stop words are the algorithm, not copy
+STOP = set("的了是在和与及或就都而也很把被对为这那有你我他她它们吗呢吧啊呀请帮要能会") | {"the", "a", "an", "of", "to", "in", "on", "at", "is", "are", "and", "or", "for", "with"}  # i18n-keep: Chinese-aware tokenizer: the ranges and stop words are the algorithm, not copy
 
 
 def tokenize(text: str) -> list[str]:
@@ -43,7 +43,7 @@ def chunk_text(text: str, size: int = 600, overlap: int = 80) -> list[str]:
             pieces.append(para)
             continue
         buf = ""
-        for sent in re.split(r"(?<=[。!?!?;;\n.])", para):
+        for sent in re.split(r"(?<=[。!?!?;;\n.])", para):  # i18n-keep: Chinese-aware tokenizer: the ranges and stop words are the algorithm, not copy
             if len(buf) + len(sent) > size and buf:
                 pieces.append(buf)
                 buf = ""

@@ -12,11 +12,24 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from . import i18n
 from .store import Store
 
 Emit = Callable[[dict], Awaitable[None]]
 
-RISK_LABEL = {"read": "只读", "write": "写入本地数据", "exec": "执行/有副作用"}
+# id -> (English label, Chinese label). Pairs rather than a `pick_now` call: a
+# module-level call would be evaluated once at import and freeze the language.
+RISK_LABELS = {
+    "read": ("Read-only", "只读"),
+    "write": ("Writes local data", "写入本地数据"),
+    "exec": ("Runs things / has side effects", "执行/有副作用"),
+}
+
+
+def risk_label(risk: str) -> str:
+    """The risk level of a tool call, in the request language."""
+    pair = RISK_LABELS.get(risk)
+    return i18n.pick_now(*pair) if pair else risk
 
 
 def risk_of(spec: dict) -> str:
@@ -66,7 +79,7 @@ class Pending:
     def public(self) -> dict:
         return {"id": self.id, "group_id": self.group_id, "message_id": self.message_id, "agent": self.agent,
                 "tool": self.tool, "source": self.source, "server": self.server, "risk": self.risk,
-                "risk_label": RISK_LABEL[self.risk], "args": self.args, "expires_at": self.expires}
+                "risk_label": risk_label(self.risk), "args": self.args, "expires_at": self.expires}
 
 
 class Approvals:

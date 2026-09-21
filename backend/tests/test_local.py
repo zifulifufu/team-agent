@@ -146,7 +146,7 @@ def test_validate_rejects_bad_catalogs():
     assert lm.validate({}) and lm.validate({"version": "1"}) and lm.validate({"version": "1", "families": []})
     bad = json.loads(json.dumps(good))
     bad["families"][0]["models"][0]["tag"] = "rm -rf /;x"
-    assert "标签" in lm.validate(bad)
+    assert "label" in lm.validate(bad)
     bad = json.loads(json.dumps(good))
     bad["families"][0]["models"][0]["size_gb"] = "18"
     assert "size_gb" in lm.validate(bad)

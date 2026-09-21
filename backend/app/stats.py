@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -58,7 +60,7 @@ def compute_stats(store: Store, days: int = 14, now: float | None = None) -> dic
         (
             {
                 "model_id": mid,
-                "label": labels.get(mid) or (f"{mid[4:].capitalize()}(外部)" if mid.startswith("ext:") else mid),
+                "label": labels.get(mid) or (i18n.pick_now(f"{mid[4:].capitalize()} (external)", f"{mid[4:].capitalize()}(外部)") if mid.startswith("ext:") else mid),
                 "is_local": mid in local_ids,
                 "count": v["count"],
                 "avg_latency_ms": round(v["lat_sum"] / v["lat_n"]) if v["lat_n"] else None,

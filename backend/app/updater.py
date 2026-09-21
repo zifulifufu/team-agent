@@ -314,7 +314,10 @@ class Updater:
                 item["applied"] = True
             elif changed:
                 label = i18n.pick_now("Skill", "技能") if kind == "skill" else i18n.pick_now("Plugin", "插件")
-                self.store.upsert_update(kind, src["name"], i18n.pick_now(f"{label} “{src['name']}” has an update on GitHub", f"{label}《{src['name']}》在 GitHub 上有更新"),
+                name = src["name"]
+                self.store.upsert_update(kind, name, i18n.pick_now(
+                    f'{label} "{name}" has an update on GitHub',
+                    f"{label}《{name}》在 GitHub 上有更新"),
                                          {"name": src["name"], "repo": src["repo"], "path": src["path"], "ref": src["ref"],
                                           "sha": f["sha"], "current_sha": src["sha"]})
             out.append(item)

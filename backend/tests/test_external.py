@@ -443,7 +443,7 @@ def test_stats_label_for_external_model(store, make_router, fake_env):
     orch, g, a = group_with_external(store, make_router, FakeLLM(default="x"), handoff=False)
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 读文件", Collector()))
     rows = compute_stats(store)["by_model"]
-    assert {"model_id": "ext:workbuddy", "label": "Workbuddy(外部)"}.items() <= next(r for r in rows if r["model_id"] == "ext:workbuddy").items()
+    assert {"model_id": "ext:workbuddy", "label": "Workbuddy (external)"}.items() <= next(r for r in rows if r["model_id"] == "ext:workbuddy").items()
 
 
 def test_parser_on_real_codebuddy_2_137_1_capture():

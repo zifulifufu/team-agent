@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -34,7 +36,7 @@ def build_gallery_router(store: Store) -> APIRouter:
     async def detail(item_id: str) -> dict:
         it = gallery.find(store, item_id)
         if it is None:
-            raise HTTPException(404, "模板不存在")
+            raise HTTPException(404, i18n.pick_now("That template does not exist", "模板不存在"))
         return it
 
     @r.post("/api/gallery/{item_id}/apply")

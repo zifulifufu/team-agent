@@ -116,21 +116,21 @@ def assess(size_gb: float, hw: dict[str, Any]) -> dict[str, Any]:
 def validate(data: object) -> str | None:
     """返回错误说明;合法则返回 None。用于校验从网络下载的目录(不可信输入)。"""
     if not isinstance(data, dict) or not isinstance(data.get("version"), str) or not data["version"]:
-        return "缺少 version"
+        return i18n.pick_now("version is missing", "缺少 version")
     fams = data.get("families")
     if not isinstance(fams, list) or not fams:
-        return "缺少 families"
+        return i18n.pick_now("families is missing", "缺少 families")
     for f in fams:
         if not isinstance(f, dict) or not isinstance(f.get("id"), str) or not isinstance(f.get("models"), list):
-            return "型号系列格式不对"
+            return i18n.pick_now("the model families have the wrong shape", "型号系列格式不对")
         for m in f["models"]:
             if not isinstance(m, dict) or not valid_tag(m.get("tag", "")):
-                return f"{f.get('id')}: 型号标签不合法"
+                return i18n.pick_now(f"{f.get('id')}: a model label is not valid", f"{f.get('id')}: 型号标签不合法")
             if not isinstance(m.get("size_gb"), (int, float)) or isinstance(m.get("size_gb"), bool) or m["size_gb"] < 0:
-                return f"{m['tag']}: size_gb 不合法"
+                return i18n.pick_now(f"{m['tag']}: size_gb is not valid", f"{m['tag']}: size_gb 不合法")
     for key in ("selfhost", "cloud_only"):
         if key in data and not isinstance(data[key], list):
-            return f"{key} 格式不对"
+            return i18n.pick_now(f"{key} has the wrong shape", f"{key} 格式不对")
     return None
 
 
@@ -179,7 +179,7 @@ class LocalCatalog:
 
     def add_extra(self, tag: str, size_gb: float, note: str = "", source: str = "manual") -> dict:
         if not valid_tag(tag):
-            raise ValueError("型号标签不合法")
+            raise ValueError(i18n.pick_now("That model label is not valid", "型号标签不合法"))
         items = [e for e in self.extras() if e["tag"] != tag]
         entry = {"tag": tag, "size_gb": round(float(size_gb), 1), "note": note[:200], "source": source, "added_at": time.time()}
         items.append(entry)

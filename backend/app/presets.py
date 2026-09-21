@@ -456,7 +456,7 @@ MODEL_MEMBER_PROMPT_ZH = (
 MODEL_MEMBER_ROLE = "Model member · {kind}"
 MODEL_MEMBER_ROLE_ZH = "模型成员 · {kind}"
 MODEL_ROLE_PREFIXES = ("Model member · ", "模型成员 · ")
-KIND_LABELS = {"本地": "Local", "云端": "Cloud"}
+KIND_LABELS = {"本地": "Local", "云端": "Cloud"}  # i18n-keep: mapping table: the Chinese kind words are the keys, looked up by value
 KIND_LABELS_ZH = {en: zh for zh, en in KIND_LABELS.items()}
 
 

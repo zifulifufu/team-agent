@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from . import i18n, modelopts, strengths as strength_lib
-from .approvals import RISK_LABEL, Approvals, risk_of
+from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
 from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug
@@ -452,7 +452,7 @@ def build_router(c: Ctx) -> APIRouter:
         tools: list[dict] = []
 
         def row(spec: dict, group: str) -> None:
-            tools.append({"name": spec["name"], "group": group, "risk": risk_of(spec), "risk_label": RISK_LABEL[risk_of(spec)],
+            tools.append({"name": spec["name"], "group": group, "risk": risk_of(spec), "risk_label": risk_label(risk_of(spec)),
                           "policy": c.toolhub.policy(spec)})
 
         for n in BUILTIN_TOOL_NAMES:
