@@ -187,6 +187,19 @@ def builtin_specs() -> dict[str, dict]:
     return i18n.localize(BUILTIN_SPECS)
 
 
+def read_only_tools(tools: dict[str, dict]) -> tuple[dict[str, dict], list[str]]:
+    """Split a tool map into what a network-triggered round may use, and what it may not.
+
+    The test is `risk == "read"` rather than "not exec and not write" on purpose: a tool whose
+    risk word this code does not recognize has to disappear, not pass through — the same
+    reasoning as `approvals.risk_of`. MCP tools fall into that group too, since the MCP branch
+    stores no `risk` at all: a server advertising its own tool as read-only is repeating the
+    server's claim, not something this app has verified, so those are withheld as well.
+    """
+    kept = {n: s for n, s in tools.items() if s.get("risk") == "read"}
+    return kept, [n for n in tools if n not in kept]
+
+
 def timeout_budget(cfg: dict, spec: dict) -> float:
     """How long this tool may run for.
 
@@ -210,7 +223,8 @@ class ToolHub:
         taken.add(name)
         return name
 
-    async def context(self, group: dict, agent: dict, connect: bool = True) -> ToolContext:
+    async def context(self, group: dict, agent: dict, connect: bool = True,
+                      read_only: bool = False) -> ToolContext:
         cfg = self.store.get_settings()
         ctx = ToolContext(group, agent)
         if int(cfg["tool_rounds"]) <= 0:
@@ -270,6 +284,12 @@ class ToolHub:
                 ctx.tools[name] = {"name": name, "description": f"[{server['name']}] {t['description']}",
                                    "parameters": t["parameters"], "source": "mcp", "server_id": sid,
                                    "tool": t["name"], "read_only": t.get("read_only", False)}
+        if read_only:
+            ctx.tools, withheld = read_only_tools(ctx.tools)
+            if withheld:
+                ctx.problems.append(i18n.pick_now(
+                    f"This round came from WhatsApp, so only read-only tools are available — {len(withheld)} tool(s) were withheld.",
+                    f"这一轮来自 WhatsApp,因此只开放只读工具——已停用 {len(withheld)} 个工具。"))
         return ctx
 
     # ----------------------------------------------------------- calls

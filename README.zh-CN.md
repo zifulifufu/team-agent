@@ -99,6 +99,29 @@ TEAM_AGENT_KEYCHAIN_TEST=1 ../.venv/bin/python -m pytest tests/test_compliance.p
 - 「禁止调用云端模型」开关会拦住所有云端请求,包括更新检查与远程 MCP。
 - 插件与 MCP 服务器以你的权限运行代码,请只启用信任的。
 
+## WhatsApp 通道
+
+群聊也可以从 WhatsApp 那边够到:别人给你的 WhatsApp 号码发消息,这里的群作答,回复再发回去。
+默认关闭,并且需要在本应用之外准备三件事。
+
+**1. 一个公网 HTTPS 地址。** Meta 的 Cloud API 会把每个事件推到回调地址,而它拒收 `localhost`、
+内网地址和纯 HTTP。常规做法是用隧道:`cloudflared tunnel --url http://127.0.0.1:8765`,或
+`ngrok http 8765`,把它打印出的域名填进 *设置 → WhatsApp 通道 → 公网域名*。那个域名是「API 只监听
+回环」的唯一例外;走到它上面的请求靠 Meta 的签名鉴权,而不是靠应用令牌。改完需要重启应用。
+
+**2. 一个开通了 WhatsApp 产品的 Meta 应用**:phone number id、访问令牌、App Secret,再加上一个
+你自己编的 verify token。把 `<你的域名>/hooks/whatsapp` 和那个 verify token 填进
+*WhatsApp → Configuration → Webhook*,并订阅 `messages` 字段。请用永久访问令牌,临时令牌 24 小时就过期。
+
+**3. 在中国大陆还需要一个代理。** 那里访问不到 `graph.facebook.com`,所以发送回复要配代理
+(本机 Clash 是 `http://127.0.0.1:7890`)。点「检查连通性」只发一个请求就能同时验证令牌、number id
+与代理是否都通,而且不会给任何人发消息。
+
+只有文本消息会进来,而且只有白名单里的号码能说话——其他人一律丢弃,只在设置页里计数,不会得到回复。
+由这条通道触发的一轮**只能使用只读工具**:可以检索资料库和记忆,但永远不能运行代码或写文件,
+因为这台机器前没有人能替你点确认。回复会按设定长度截断;若 WhatsApp 拒收(最常见的原因是超过
+24 小时会话窗口、必须改用预审模板),原因会显示在那一页上,而不是无声消失。
+
 ## 许可
 
 **[Apache License 2.0](LICENSE)**,Copyright 2026 **zifulifufu**。

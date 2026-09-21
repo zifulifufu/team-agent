@@ -402,20 +402,33 @@ something the user deleted is not seeded again."""
             # normalized so they stay language-neutral. See app/strengths.ALIASES.
             self._normalize_stored_tags()
 
-    # ----------------------------------------------------------------- settings
+    # ------------------------------------------------- settings
+    # Settings whose value belongs in the keychain rather than the database: the stored
+    # form is a `keychain:` reference, and only `get_settings()` resolves it. Keeping the
+    # list here (rather than special-casing one key) means a new secret cannot be added
+    # half-way — forgetting to register it here is the difference between "stored safely"
+    # and "written in plaintext into a database that ends up in backups".
+    SECRET_SETTINGS: dict[str, tuple[str, str]] = {
+        "github_token": ("github-token", "default"),
+        "whatsapp_token": ("whatsapp", "access-token"),
+        "whatsapp_app_secret": ("whatsapp", "app-secret"),
+        "whatsapp_verify_token": ("whatsapp", "verify-token"),
+    }
+
     def get_settings(self) -> dict[str, Any]:
         out = dict(DEFAULT_SETTINGS)
         for r in self._q("SELECT key,value FROM settings"):
             out[r["key"]] = json.loads(r["value"])
-        out["github_token"] = self._secret_off(out["github_token"])      # reference -> real value
+        for k in self.SECRET_SETTINGS:                                   # reference -> real value
+            out[k] = self._secret_off(out[k])
         return out
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         for k, v in patch.items():
             if k not in DEFAULT_SETTINGS:
                 continue
-            if k == "github_token" and isinstance(v, str):
-                v = self._secret_on("github-token", "default", v)        # the token goes into the keychain, only the reference stays in the database
+            if k in self.SECRET_SETTINGS and isinstance(v, str):
+                v = self._secret_on(*self.SECRET_SETTINGS[k], v)         # the real value goes to the keychain, only the reference stays in the database
             self._x(
                 "INSERT INTO settings(key,value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

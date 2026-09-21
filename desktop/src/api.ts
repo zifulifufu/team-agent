@@ -342,6 +342,38 @@ export interface Settings {
   code_workdir: string;            // Empty = <data dir>/workspace
   vision_cloud: boolean;           // May attached images reach a cloud model? Separate from external_calls_enabled
   vision_max_mb: number;           // Per-image size cap, checked before anything is written to disk
+  whatsapp_enabled: boolean;        // Let WhatsApp drive a group chat; off by default
+  whatsapp_group_id: string;        // Which group chat answers; empty = the channel does nothing
+  whatsapp_phone_number_id: string; // Cloud API phone number id, used when sending
+  whatsapp_allowed: string[];       // Who may talk to it, as phone numbers; empty = nobody
+  whatsapp_public_host: string;     // Public hostname of the tunnel/VPS in front of this app
+  whatsapp_proxy: string;           // graph.facebook.com is unreachable from mainland China
+  whatsapp_max_chars: number;       // Reply length sent back (WhatsApp's own limit is 4096)
+  whatsapp_prefix: string;          // Text put in front of every reply
+  whatsapp_token: string;           // Write-only: reads back empty, like github_token
+  whatsapp_app_secret: string;      // Write-only
+  whatsapp_verify_token: string;    // Write-only
+  whatsapp_token_set: boolean;
+  whatsapp_app_secret_set: boolean;
+  whatsapp_verify_token_set: boolean;
+}
+/** State of the inbound WhatsApp channel, in the shape the settings page shows it.
+ *  A webhook is invisible by nature, so without this the only symptom of a
+ *  misconfiguration is silence. */
+export interface WhatsAppStatus {
+  enabled: boolean;
+  webhook_path: string;
+  public_url: string;
+  group_id: string;
+  allowed: string[];
+  counters: {
+    accepted: number;
+    rejected: number;   // refused before any work: bad signature, unconfigured, body too large
+    ignored: number;    // authenticated but dropped: not allowlisted, duplicate, rate limited
+    last_inbound: { at?: number; wa_id?: string; name?: string; text?: string };
+    last_reply: { at?: number; ok?: boolean; detail?: string; chars?: number };
+    last_error: string;
+  };
 }
 /** One image attached to a message. `bytes` is the stored size, `mime` what the server sniffed. */
 export interface Attachment {
@@ -852,6 +884,8 @@ export const api = {
     post<{ ok: boolean; provider: { id: string; name: string; base_url: string } | null; detail: string }>("/api/video/test", { provider_id }),
   settings: () => get<Settings>("/api/settings"),
   putSettings: (b: Partial<Settings>) => put<Settings>("/api/settings", b),
+  whatsappStatus: () => get<WhatsAppStatus>("/api/whatsapp/status"),
+  whatsappProbe: () => post<{ ok: boolean; detail: string }>("/api/whatsapp/probe", {}),
   routePreview: (preferred?: string | null) =>
     get<RoutePreview>("/api/route/preview" + (preferred ? `?preferred=${encodeURIComponent(preferred)}` : "")),
   localStatus: () => get<LocalStatus>("/api/local/status"),

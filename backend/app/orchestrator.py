@@ -129,6 +129,11 @@ class RunState:
     final_text: str = ""
     refs_block: str = ""
     warned: set[str] = field(default_factory=set)
+    # Set for rounds whose trigger came from outside this machine (the WhatsApp channel).
+    # It restricts the tool list to read-risk tools only: such a message can ask questions
+    # but never reaches exec/write tools, and nobody local is watching the approval prompt
+    # that those tools would otherwise raise.
+    read_only: bool = False
 
 
 @dataclass
@@ -276,7 +281,8 @@ straight into the context."""
     # ------------------------------------------------------------- entrypoint
     async def handle_user_message(self, gid: str, text: str, emit: Emit,
                                sender_name: str | None = None,
-                               images: list[dict] | None = None) -> None:
+                               images: list[dict] | None = None,
+                               read_only: bool = False) -> None:
         # The name the user is labelled with in the transcript; resolved per request
         # rather than as a default argument, which is evaluated once at import time.
         sender_name = sender_name or i18n.pick_now("me", "我")
@@ -295,7 +301,7 @@ straight into the context."""
             group = self.store.get_group(gid) or group
             if self.store.has_later_user_message(gid, user_msg["id"]):
                 return
-            run = RunState(gid, text)
+            run = RunState(gid, text, read_only=read_only)
             run.refs_block = self._refs_block(group, text)
             await self._run_turns(group, text, emit, run)
             self._after_run(group, run)
@@ -398,7 +404,11 @@ protocol and should not decide what the others do."""
             return out
         # the owner already connected MCP this round; unknown tool names in the plan are simply
 # ignored rather than treated as an error
-        known = {t["name"] for t in (await self.toolhub.context(group, host, connect=False)).specs()}
+        # The same restriction the members' own tool lists get: on a read-only round the host
+        # must not plan work that needs run_code or another exec tool, or it would hand out
+        # tasks whose tool has already been withheld.
+        known = {t["name"] for t in (await self.toolhub.context(group, host, connect=False,
+                                                               read_only=run.read_only)).specs()}
         try:
             plan = planner.build_plan(obj, members, int(cfg["plan_max_tasks"]), known)
         except planner.PlanError as e:
@@ -539,7 +549,7 @@ protocol and should not decide what the others do."""
             last_emit = time.monotonic()
 
         try:
-            ctx = await self.toolhub.context(group, agent)
+            ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
             for p in ctx.problems:
                 if p not in run.warned:
                     run.warned.add(p)

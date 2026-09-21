@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from .api_ext import Ctx, build_router
 from .api_external import build_external_router
 from .api_gallery import build_gallery_router
+from .api_whatsapp import build_whatsapp_router
 from .approvals import Approvals
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
@@ -279,7 +280,15 @@ def create_app(
                   openapi_url="/openapi.json" if expose_docs else None)
     # Resolves the request language (?lang= or Accept-Language) for built-in content.
     app.add_middleware(i18n.LanguageMiddleware)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+    # The API is loopback-only on purpose. The single exception is the WhatsApp webhook:
+    # Meta posts to whatever public hostname sits in front of this app (a tunnel or a VPS),
+    # so that host has to be accepted here. It is the only path reachable from outside, and
+    # it authenticates every request by HMAC signature rather than by token, so allowing the
+    # host does not widen the API surface.
+    _hook_host = str(store.get_settings().get("whatsapp_public_host") or "").strip()
+    _hook_host = _hook_host.split("://")[-1].split("/")[0].split(":")[0]
+    app.add_middleware(TrustedHostMiddleware,
+                       allowed_hosts=["127.0.0.1", "localhost"] + ([_hook_host] if _hook_host else []))
     if token:  # the Electron renderer's Origin may be file:// (i.e. "null"), so authenticate by token
 # rather than by origin
         app.add_middleware(
@@ -340,8 +349,9 @@ def create_app(
 
     def public_settings() -> dict:
         s = store.get_settings()
-        s["github_token_set"] = bool(s.get("github_token"))
-        s["github_token"] = ""   # the token can be written but never read back
+        for k in store.SECRET_SETTINGS:      # secrets can be written but never read back
+            s[k + "_set"] = bool(s.get(k))
+            s[k] = ""
         return s
 
     ENUMS = {"plan_mode": ("auto", "on", "off"), "perm_mode": ("ask_risky", "ask_all", "allow_all")}
@@ -350,7 +360,9 @@ def create_app(
               "perm_timeout": (10, 600), "request_timeout": (5, 600), "circuit_threshold": (1, 10), "circuit_cooldown": (5, 600),
               "code_timeout": (5, 600), "vision_max_mb": (1, 64),
               # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
-              "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096)}
+              "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
+              # whatsapp: WhatsApp refuses a single text body over 4096 characters
+              "whatsapp_max_chars": (100, 4096)}
     # obsidian_dir can only be set through /api/obsidian (which validates the path); it is not
 # accepted here
     READONLY = {"obsidian_dir"}
@@ -770,5 +782,9 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
     app.include_router(build_external_router(store, orch.external))
     app.include_router(build_gallery_router(store))
+    # The WhatsApp webhook lives outside /api on purpose: token middleware does not cover it,
+    # because the caller is Meta rather than the app's own front end, and a webhook has to
+    # authenticate by signature. It is the only route here reachable from outside the machine.
+    app.include_router(build_whatsapp_router(store, orch, hub))
 
     return app
