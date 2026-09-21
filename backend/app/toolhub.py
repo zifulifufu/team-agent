@@ -38,6 +38,9 @@ class ToolContext:
     agent: dict
     tools: dict[str, dict] = field(default_factory=dict)   # 名称 -> spec(含 source / server_id)
     problems: list[str] = field(default_factory=list)      # 连接失败等,提示给用户看
+    # 至少有一个 MCP 服务器只是「还没第一次连上」,不是真的出错。界面据此多显示一句说明;
+    # 用标志而不是文案匹配 —— problems 里的文字跟着请求语言走。
+    mcp_deferred: bool = False
 
     def specs(self) -> list[dict]:
         return list(self.tools.values())
@@ -150,6 +153,8 @@ class ToolHub:
             if (not st or st.status != "ready") and connect:
                 st = await self.mcp.connect(server, timeout=30)
             if not st or st.status != "ready":
+                if not (st and st.error):                              # 只是还没连过,不是报错
+                    ctx.mcp_deferred = True
                 ctx.problems.append(i18n.pick_now(f"MCP \"{server['name']}\" is not connected: {(st.error if st else '') or 'not connected yet'}", f"MCP「{server['name']}」未连接:{(st.error if st else '') or '尚未连接'}"))
                 continue
             for t in st.tools:

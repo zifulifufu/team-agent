@@ -187,7 +187,9 @@ async def test_plugin_requires_matching_hash_and_never_auto_updates(up, gh, stor
     with pytest.raises(GitHubError) as e:                              # 预览之后内容被换了
         gh.put("o/pl", "plugins/hello.py", PLUGIN + "\nimport os\n")
         await up.install_plugin("o/pl", "plugins/hello.py", "", pv["sha256"])
-    assert e.value.status == 409 and not (store.data_dir / "plugins" / "hello.py").exists()
+    # 412 = the preview is stale; a duplicate name is a 409 instead, so the client can pick
+    # between "preview again" and "overwrite?" without reading the (localized) message.
+    assert e.value.status == 412 and not (store.data_dir / "plugins" / "hello.py").exists()
     gh.put("o/pl", "plugins/hello.py", PLUGIN)
     assert await up.install_plugin("o/pl", "plugins/hello.py", "", pv["sha256"]) == "hello"
     assert (store.data_dir / "plugins" / "hello.py").read_text(encoding="utf-8") == PLUGIN
@@ -274,11 +276,19 @@ def test_api_plugin_install_flow_and_status_codes(api, gh):
     gh.put("o/pl", "plugins/hello.py", PLUGIN)
     body = {"repo": "o/pl", "path": "plugins/hello.py"}
     assert api.post("/api/updates/plugin/install", json=body).status_code == 400         # 没带 sha256
-    assert api.post("/api/updates/plugin/install", json={**body, "sha256": "0" * 64}).status_code == 409
+    # 412 = the hash does not match the preview; the client tells it apart from the duplicate-name
+    # 409 without reading the message, which is worded per interface language.
+    assert api.post("/api/updates/plugin/install", json={**body, "sha256": "0" * 64}).status_code == 412
     pv = api.post("/api/updates/preview", json=body).json()
     r = api.post("/api/updates/plugin/install", json={**body, "sha256": pv["sha256"]})
     assert r.status_code == 200 and r.json()["id"] == "hello"
     assert any(p["id"] == "hello" and "hi" in p["tools"] for p in api.get("/api/plugins").json())
+    # The other 409: a plugin of the same name from a different repo, which the UI answers by
+    # offering Overwrite. Both codes have to stay distinct for that branch to work.
+    gh.put("o/other", "plugins/hello.py", PLUGIN)
+    obody = {"repo": "o/other", "path": "plugins/hello.py"}
+    opv = api.post("/api/updates/preview", json=obody).json()
+    assert api.post("/api/updates/plugin/install", json={**obody, "sha256": opv["sha256"]}).status_code == 409
 
 
 def test_api_skill_install_update_and_bad_repo(api, gh):

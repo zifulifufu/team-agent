@@ -2,16 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Settings2, TerminalSquare } from "lucide-react";
 import { api, type ExternalOverview, type ExternalProbe } from "../api";
 import { useData } from "../data";
+import { levelLabel } from "../lib";
+import { useI18n } from "../i18n";
 import { Switch } from "../ui";
 import ExternalDialog from "../components/ExternalDialog";
 import { Row, useSettingsSaver } from "./rows";
 import type { PageProps } from "./SettingsModal";
 import "../styles/external.css";
 
-const LEVEL_TEXT: Record<string, string> = { read: "只读", edit: "可改文件", full: "完全权限" };
-
-/** 设置 → 外部智能体:总开关、WorkBuddy 命令行引擎的检测/连通性测试、已加入的外部成员。 */
+/** Settings → External agents: the master switch, detection and the connectivity test for WorkBuddy's command-line engine, and the external members that have been added. */
 export default function ExternalPage(_: PageProps) {
+  const { t } = useI18n();
   const { settings, agents } = useData();
   const { set, err: saveErr, saving } = useSettingsSaver();
   const [ov, setOv] = useState<ExternalOverview | null>(null);
@@ -23,7 +24,7 @@ export default function ExternalPage(_: PageProps) {
   const load = useCallback(() => { api.externalOverview().then((o) => { setOv(o); setErr(""); }).catch((e) => setErr((e as Error).message)); }, []);
   useEffect(load, [load, settings?.external_agents_enabled, settings?.external_calls_enabled, agents.length]);
 
-  if (!settings) return <div className="empty big">加载中…</div>;
+  if (!settings) return <div className="empty big">{t("Loading…")}</div>;
   const on = settings.external_agents_enabled;
   const eng = ov?.engines[0];
   const members = agents.filter((a) => !!a.engine);
@@ -37,63 +38,63 @@ export default function ExternalPage(_: PageProps) {
 
   return (
     <div className="sp ext-page">
-      <h2 className="sp-title"><TerminalSquare size={20} aria-hidden /> 外部智能体</h2>
-      <p className="sp-desc">让 WorkBuddy 作为群成员参与讨论。本程序调用 WorkBuddy 应用里自带的命令行引擎(无界面模式),不会操控它的窗口,也不读它的账号、会话或密钥。</p>
+      <h2 className="sp-title"><TerminalSquare size={20} aria-hidden /> {t("External agents")}</h2>
+      <p className="sp-desc">{t("Let WorkBuddy take part in a discussion as a member of the group. This app calls the command-line engine bundled with the WorkBuddy application (headless), and never drives its window or reads its account, sessions or keys.")}</p>
       {(saveErr || err) && <div className="err" role="alert">{saveErr || err}</div>}
 
       <div className="card flush">
-        <Row title="允许使用外部智能体" desc="总开关,默认关闭。它们自带读写文件等工具,打开前请先想清楚给什么权限;关闭后已加入的外部成员不会发言。">
-          <Switch checked={on} disabled={saving} onChange={(v) => void set({ external_agents_enabled: v })} label="允许使用外部智能体" />
+        <Row title={t("Allow external agents")} desc={t("The master switch, off by default. They come with their own tools for reading and writing files, so decide what permissions you want before turning it on; with it off, external members already in a group stay silent.")}>
+          <Switch checked={on} disabled={saving} onChange={(v) => void set({ external_agents_enabled: v })} label={t("Allow external agents")} />
         </Row>
       </div>
       {on && !settings.external_calls_enabled && (
-        <div className="ext-box warn" role="status"><AlertTriangle size={15} /><div>「禁止外呼」正开着:外部智能体要连接云端模型,这时不会运行。到「路由与回退」里放开后才能用。</div></div>
+        <div className="ext-box warn" role="status"><AlertTriangle size={15} /><div>{t("Outbound calls are switched off: an external agent needs a cloud model, so it will not run. Allow outbound calls under Routing & fallback first.")}</div></div>
       )}
 
-      <div className="sec">WorkBuddy 命令行引擎</div>
+      <div className="sec">{t("WorkBuddy's command-line engine")}</div>
       <div className="card ext-engine">
-        {!eng ? <span className="muted small">检测中…</span> : eng.found ? (
-          <div className="ext-ok"><CheckCircle2 size={14} /> 已找到{probe?.version ? ` · 版本 ${probe.version}` : ""}<small title={eng.path}>{eng.path}</small></div>
+        {!eng ? <span className="muted small">{t("Detecting…")}</span> : eng.found ? (
+          <div className="ext-ok"><CheckCircle2 size={14} /> {t("Found")}{probe?.version ? t(" · version {v}", { v: probe.version }) : ""}<small title={eng.path}>{eng.path}</small></div>
         ) : (
           <div className="ext-bad"><AlertTriangle size={14} /> {eng.hint}</div>
         )}
         <div className="ext-status-btns">
-          <button className="btn small" disabled={!on || !!testing} onClick={() => void test(false)}>{testing === "quick" ? <Loader2 size={12} className="spin" /> : null} 检测</button>
-          <button className="btn small" disabled={!on || !!testing || !settings.external_calls_enabled} onClick={() => void test(true)} title="真的发一句话试试,会调用云端模型(消耗极少量额度)">
-            {testing === "live" ? <Loader2 size={12} className="spin" /> : null} 测试连接
+          <button className="btn small" disabled={!on || !!testing} onClick={() => void test(false)}>{testing === "quick" ? <Loader2 size={12} className="spin" /> : null} {t("Detect")}</button>
+          <button className="btn small" disabled={!on || !!testing || !settings.external_calls_enabled} onClick={() => void test(true)} title={t("Send one real line to try it; this calls a cloud model (a tiny amount of quota)")}>
+            {testing === "live" ? <Loader2 size={12} className="spin" /> : null} {t("Test the connection")}
           </button>
         </div>
-        {!on && <div className="muted small">先打开上面的总开关,才能检测(检测会真的启动一次命令行)。</div>}
+        {!on && <div className="muted small">{t("Turn the master switch on first; detecting really does start the command line once.")}</div>}
         {probe?.live && (probe.live.ok
-          ? <div className="ext-box ok" role="status"><CheckCircle2 size={15} /><div>连接正常:引擎回复「{probe.live.reply}」,用时 {probe.live.seconds} 秒{probe.live.model ? `,模型 ${probe.live.model}` : ""}。</div></div>
-          : <div className="ext-box warn" role="alert"><AlertTriangle size={15} /><div>测试没通过:{probe.live.error}</div></div>)}
+          ? <div className="ext-box ok" role="status"><CheckCircle2 size={15} /><div>{t("Connected: the engine answered \"{reply}\", in {seconds}s{model}.", { reply: probe.live.reply ?? "", seconds: probe.live.seconds, model: probe.live.model ? t(", model {m}", { m: probe.live.model }) : "" })}</div></div>
+          : <div className="ext-box warn" role="alert"><AlertTriangle size={15} /><div>{t("The test did not pass:")} {probe.live.error}</div></div>)}
         {probe && !probe.live && probe.hint && <div className="ext-box warn"><AlertTriangle size={15} /><div>{probe.hint}</div></div>}
       </div>
 
-      <div className="sec">已添加的外部成员</div>
+      <div className="sec">{t("External members that have been added")}</div>
       {members.length === 0 ? (
-        <div className="card muted small ext-none">还没有。在群聊里点「添加成员」→「外部智能体」→ WorkBuddy 即可加入。</div>
+        <div className="card muted small ext-none">{t("None yet. In a group chat, click Add member → External agent → WorkBuddy to add one.")}</div>
       ) : (
         <div className="card flush">
           {members.map((a) => (
             <div key={a.id} className="setting-row pad">
               <div>
                 <div className="sr-title">{a.avatar} {a.name}</div>
-                <div className="sr-desc">权限:{LEVEL_TEXT[a.engine_cfg?.level ?? "read"]}{a.engine_cfg?.web ? " · 可上网" : ""} · 工作目录:{a.engine_cfg?.cwd || "专属空文件夹"}</div>
+                <div className="sr-desc">{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")}</div>
               </div>
-              <button className="btn small" onClick={() => setEditId(a.id)}><Settings2 size={12} /> 设置</button>
+              <button className="btn small" onClick={() => setEditId(a.id)}><Settings2 size={12} /> {t("Settings")}</button>
             </div>
           ))}
         </div>
       )}
 
-      <div className="sec">使用须知</div>
+      <div className="sec">{t("Good to know")}</div>
       <ul className="ext-notes">
-        <li>每次发言是一个独立的命令行进程,没有跨轮记忆(上下文靠群聊记录);第一次通常要等几十秒,之后会快一些。</li>
-        <li>外部智能体不能当群主,它的回复只当聊天文字,不会被当作分工计划或工具调用来执行。</li>
-        <li>「只读」的工作目录只是起点,不是围栏;要限制读取范围,请不要给它读不该读的东西的账户权限。</li>
-        <li>它读到的文件、网页内容都可能包含试图指挥它的文字(提示词注入),越高的权限风险越大。</li>
-        <li>本程序不会改动 WorkBuddy 应用本身的任何设置(包括它自己的「允许完全访问」)。</li>
+        <li>{t("Every reply is a separate command-line process with no memory across turns (the context comes from the chat log). The first one usually takes tens of seconds; later ones are quicker.")}</li>
+        <li>{t("An external agent cannot be the group host, and its reply is only chat text — it is never executed as a plan or a tool call.")}</li>
+        <li>{t("A read-only working directory is a starting point, not a fence. To limit what it can read, do not give it an account that can read what it should not.")}</li>
+        <li>{t("Files and web pages it reads can contain text trying to tell it what to do (prompt injection). The higher the permission, the bigger the risk.")}</li>
+        <li>{t("This app never changes any setting of the WorkBuddy application itself, including its own \"allow full access\".")}</li>
       </ul>
       {editing && <ExternalDialog mode="edit" agent={editing} onClose={() => setEditId(null)} onDone={() => { setEditId(null); load(); }} />}
     </div>

@@ -300,6 +300,7 @@ def build_router(c: Ctx) -> APIRouter:
             "members": rows,
             "tools": [{"name": t["name"], "description": t["description"], "source": t["source"]} for t in (ctx.specs() if ctx else [])],
             "problems": ctx.problems if ctx else [],
+            "mcp_deferred": bool(ctx.mcp_deferred) if ctx else False,
             "ext": group["ext"],
             "docs": len([d for d in store.list_docs() if d["enabled"]]),
         }

@@ -334,6 +334,8 @@ export interface ObsidianReport {
   files: number;
   warnings: string[];
   error: string;
+  /** Almost every mapped file vanished at once, so deletions were held back */
+  mass_missing?: boolean;
 }
 export interface ObsidianStatus {
   dir: string;
@@ -582,6 +584,8 @@ export interface Capabilities {
   }[];
   tools: { name: string; description: string; source: string }[];
   problems: string[];
+  /** An MCP server that has simply never been connected yet (not a real error) */
+  mcp_deferred: boolean;
   ext: GroupExt;
   docs: number;
 }

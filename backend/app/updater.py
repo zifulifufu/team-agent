@@ -217,7 +217,10 @@ class Updater:
         if not path.endswith(".py"):
             raise GitHubError(i18n.pick_now("A plugin has to be a .py file", "插件必须是 .py 文件"), 400)
         if sha256_hex(f["content"]) != sha256:
-            raise GitHubError(i18n.pick_now("The file content no longer matches what you previewed (it may have changed); preview it again before installing", "文件内容与你预览的不一致(可能已被修改),请重新预览后再安装"), 409)
+            # 412 rather than 409: the duplicate-name conflict below is also a 409, and the client
+            # has to tell the two apart to decide between "re-preview" and "overwrite?". It cannot
+            # do that from the message, which is worded per request language.
+            raise GitHubError(i18n.pick_now("The file content no longer matches what you previewed (it may have changed); preview it again before installing", "文件内容与你预览的不一致(可能已被修改),请重新预览后再安装"), 412)
         stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(path).stem)
         dest = self.store.data_dir / "plugins" / f"{stem}.py"
         src = self.store.get_source("plugin", stem)

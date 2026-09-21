@@ -319,7 +319,9 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
               {caps.problems.map((p, i) => (
                 <div key={i}>{p}</div>
               ))}
-              {caps.problems.some((p) => p.includes("尚未连接") || p.includes("not connected yet")) && (
+              {/* `mcp_deferred` is a flag from the backend: the problem text follows the request
+                  language, so matching on it would stop working once the language changes. */}
+              {caps.mcp_deferred && (
                 <div className="gp-problem-note">{t("An MCP server is only connected the first time it is used, so \"not connected yet\" is not an error.")}</div>
               )}
             </div>
@@ -331,10 +333,11 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
         {toolGroups.map((g) => (
           <div key={g.src} className="gp-toolgroup">
             <div className="gp-sub">{t(SOURCE_LABEL[g.src] ?? "Other")} · {g.list.length}</div>
-            {g.list.map((t) => (
-              <div key={t.name} className="gp-tool" title={t.description}>
-                <code>{t.name}</code>
-                <span>{t.description}</span>
+            {/* `tool`, not `t`: a callback parameter named `t` would shadow the translate function */}
+            {g.list.map((tool) => (
+              <div key={tool.name} className="gp-tool" title={tool.description}>
+                <code>{tool.name}</code>
+                <span>{tool.description}</span>
               </div>
             ))}
           </div>

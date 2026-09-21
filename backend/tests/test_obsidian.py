@@ -136,7 +136,9 @@ def test_delete_in_obsidian_deletes_memory_but_mass_delete_is_refused(env):
     for f in md(vault)[:7]:                                         # 一次少了一大半:多半是文件夹被移走
         f.unlink()
     r = ob.sync()
-    assert r["deleted_memories"] == 0 and len(st.list_memories()) == 9 and any("Nothing was deleted" in w for w in r["warnings"])
+    assert r["deleted_memories"] == 0 and len(st.list_memories()) == 9
+    # `mass_missing` is the flag the UI branches on; the warning text is localized.
+    assert r["mass_missing"] is True and any("Nothing was deleted" in w for w in r["warnings"])
     r = ob.sync(force=True)
     assert r["deleted_memories"] == 7 and len(st.list_memories()) == 2
     assert len(ids) == 10

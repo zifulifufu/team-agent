@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { api, type FilePreview } from "../api";
+import { api, ApiError, type FilePreview } from "../api";
+import { useI18n } from "../i18n";
 import { Modal, useConfirm } from "../ui";
 import { Callout, dupMessage, fmtBytes, githubUrl, Spin } from "./ExtBits";
 import "../styles/ext.css";
 
 /**
- * 插件安装:只有这一条路径。必须先把完整源码展示给用户,勾选「我已阅读…」后才能安装,
- * 安装请求带上预览时得到的 sha256,服务器重新下载并比对,内容变了就拒绝。
+ * Installing a plugin: this is the only path. The full source is shown to the user first and
+ * installation stays disabled until "I have read the source" is ticked. The install request
+ * carries the sha256 from the preview; the server downloads again and compares, refusing if
+ * the content changed.
  */
 export default function PluginInstallModal({
   repo,
@@ -20,10 +23,11 @@ export default function PluginInstallModal({
   repo: string;
   path: string;
   gitRef?: string;
-  overwrite?: boolean;      // 「重新安装」时为 true(用户明确要替换已装的同名插件)
+  overwrite?: boolean;      // true for "reinstall" (the user explicitly wants to replace the installed plugin of the same name)
   onClose: () => void;
   onInstalled: (id: string) => void;
 }) {
+  const { t } = useI18n();
   const confirm = useConfirm();
   const [pv, setPv] = useState<FilePreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,11 +63,14 @@ export default function PluginInstallModal({
       onInstalled(r.id);
     } catch (e) {
       const msg = (e as Error).message;
-      if (/不一致|已被修改|重新预览/.test(msg)) {
+      // Branch on the HTTP status, never on the message: the server words it per request
+      // language. 412 = the preview went stale, 409 = a duplicate name.
+      const status = e instanceof ApiError ? e.status : 0;
+      if (status === 412) {
         setStale(true);
-        setErr("文件在你预览后变了,请重新预览。为安全起见不会安装没看过的内容。");
-      } else if (/已有同名/.test(msg) && !over) {
-        const ok = await confirm(`${dupMessage(msg)}。覆盖会用你刚才预览的这份代码替换本机上的同名插件。要覆盖吗?`, { okText: "覆盖安装" });
+        setErr(t("The file changed after you previewed it. Preview it again — for safety, nothing you have not read is ever installed."));
+      } else if (status === 409 && !over) {
+        const ok = await confirm(t("{msg}. Overwriting replaces the local plugin of the same name with the code you just previewed. Overwrite it?", { msg: dupMessage(msg) }), { okText: t("Overwrite and install") });
         if (ok) {
           setBusy(false);
           return install(true);
@@ -79,7 +86,7 @@ export default function PluginInstallModal({
   const lines = pv ? pv.content.split("\n").length : 0;
   return (
     <Modal
-      title={overwrite ? "查看并重新安装插件" : "预览并安装插件"}
+      title={overwrite ? t("Review and reinstall a plugin") : t("Preview and install a plugin")}
       onClose={onClose}
       wide
       actions={
@@ -87,47 +94,47 @@ export default function PluginInstallModal({
           {pv && (
             <label className={"check ext-ack" + (ack ? " on" : "")}>
               <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} disabled={stale} />
-              我已阅读以上源码,知道它会在本机以我的权限运行
+              {t("I have read the source above and know it will run on this machine with my permissions")}
             </label>
           )}
           {err && (
             <div className="ext-errbox" role="alert">
               <div className="err">{err}</div>
-              {stale && <button className="btn small" onClick={() => void load()}><RefreshCw size={13} /> 重新预览</button>}
+              {stale && <button className="btn small" onClick={() => void load()}><RefreshCw size={13} /> {t("Preview again")}</button>}
             </div>
           )}
           <div className="ext-act-btns">
-            <button className="btn" onClick={onClose}>取消</button>
+            <button className="btn" onClick={onClose}>{t("Cancel")}</button>
             <button className="btn primary" disabled={!pv || !ack || busy || stale || loading} onClick={() => void install(overwrite)}>
-              {busy ? <><Spin /> 安装中…</> : overwrite ? "覆盖安装" : "安装"}
+              {busy ? <><Spin /> {t("Installing…")}</> : overwrite ? t("Overwrite and install") : t("Install")}
             </button>
           </div>
         </div>
       }
     >
       <div className="ext-xl">
-        <Callout tone="warn" title="插件是 Python 代码">
-          它会在本程序的进程里运行,没有沙箱,能访问你的文件和网络。下面是文件的完整源码,请从头读到尾再决定。
+        <Callout tone="warn" title={t("A plugin is Python code")}>
+          {t("It runs inside this app's process, with no sandbox, and can reach your files and network. The complete source is below — read it from top to bottom before you decide.")}
         </Callout>
         <div className="ext-meta">
           <a href={githubUrl(repo)} target="_blank" rel="noreferrer" className="link">{repo}</a>
           <span className="mono">/ {path}{gitRef ? ` @ ${gitRef}` : ""}</span>
         </div>
-        {loading && <div className="empty"><Spin /> 正在从 GitHub 下载源码…</div>}
+        {loading && <div className="empty"><Spin /> {t("Downloading the source from GitHub…")}</div>}
         {loadErr && (
           <div className="ext-errbox">
             <div className="err">{loadErr}</div>
-            <button className="btn small" onClick={() => void load()}><RefreshCw size={13} /> 重试</button>
+            <button className="btn small" onClick={() => void load()}><RefreshCw size={13} /> {t("Retry")}</button>
           </div>
         )}
         {pv && (
           <>
             <div className="ext-meta">
-              <span className="muted small">大小 {fmtBytes(pv.size)} · {lines} 行</span>
+              <span className="muted small">{t("Size {size} · {lines} lines", { size: fmtBytes(pv.size), lines })}</span>
               <span className="muted small">SHA-256</span>
-              <code className="ext-hash" title="安装时服务器会重新下载并核对这个值">{pv.sha256}</code>
+              <code className="ext-hash" title={t("The server downloads the file again at install time and checks this value")}>{pv.sha256}</code>
             </div>
-            <pre className="ext-src" tabIndex={0} aria-label="插件完整源码">{pv.content}</pre>
+            <pre className="ext-src" tabIndex={0} aria-label={t("Complete plugin source")}>{pv.content}</pre>
           </>
         )}
       </div>

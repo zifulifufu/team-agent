@@ -123,6 +123,9 @@ class Report:
     files: int = 0
     warnings: list[str] = field(default_factory=list)
     error: str = ""
+    # Almost every mapped file vanished at once, so the deletion was held back. A flag rather
+    # than a phrase the client has to match on: the warning text follows the request language.
+    mass_missing: bool = False
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -422,6 +425,7 @@ class ObsidianSync:
             or (len(gone) >= 2 and len(gone) >= live)         # 全部都不见了(空文件夹 / 没挂载)
             or not files                                      # 文件夹里一篇笔记都没有了
         ):
+            rep.mass_missing = True
             rep.warnings.append(i18n.pick_now(f"{len(gone)} of the matching files are missing (almost all of them); the folder was probably moved, emptied or unmounted. Nothing was deleted, for safety. Once you have checked, click Force sync.", f"有 {len(gone)} 个对应的文件不见了(几乎是全部),很可能是文件夹被移走、清空或没挂载,为安全起见没有删除任何记忆。确认无误可点「强制同步」。"))
             gone = []
         for mid in gone:

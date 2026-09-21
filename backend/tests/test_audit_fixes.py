@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app import i18n
 from app.obsidian import ObsidianSync
 from app.orchestrator import find_mentions, mentions_all, clip_middle
 from app.planner import PlanError, build_plan
@@ -238,6 +239,29 @@ async def test_remote_mcp_is_not_used_when_offline(store, make_router):
     store.update_group(g["id"], {"ext": {"mcp": [m["id"]]}})
     ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
     assert not any(t["source"] == "mcp" for t in ctx.tools.values()) and any("remote service" in p for p in ctx.problems)
+    # 这条是「被外呼开关拦下」,不是「还没连过」,界面不该多显示那句说明
+    assert ctx.mcp_deferred is False
+
+
+async def test_never_connected_mcp_sets_a_flag_not_a_phrase(store, make_router):
+    """界面要区分「MCP 只是还没第一次连上」和真的连不上。文案跟着请求语言走,所以给标志。"""
+    orch, g = setup(store, make_router, FakeLLM(default="好"))
+    m = store.add_mcp("本地工具", command="definitely-not-a-real-binary")
+    store.update_group(g["id"], {"ext": {"mcp": [m["id"]]}})
+    group = store.get_group(g["id"])
+    # connect=False 就是能力页的取法:只看已有状态,不真的去连
+    ctx = await orch.toolhub.context(group, store.list_agents()[0], connect=False)
+    assert ctx.mcp_deferred is True and any("not connected" in p for p in ctx.problems)
+    # In Chinese the problem text changes but the flag does not — that is the whole point of it
+    try:
+        i18n.set_current("zh")
+        ctx_zh = await orch.toolhub.context(group, store.list_agents()[0], connect=False)
+    finally:
+        i18n.set_current("en")
+    assert ctx_zh.mcp_deferred is True and any("未连接" in p for p in ctx_zh.problems)
+    # 真的去连、真的失败:这次是错误,不是「还没连过」,标志不该亮
+    ctx_tried = await orch.toolhub.context(group, store.list_agents()[0])
+    assert ctx_tried.mcp_deferred is False and any("FileNotFoundError" in p for p in ctx_tried.problems)
 
 
 # ============================================================ 编排

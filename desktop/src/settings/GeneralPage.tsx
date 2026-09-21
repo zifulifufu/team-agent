@@ -1,56 +1,62 @@
 import type { Settings } from "../api";
 import { useData } from "../data";
+import { useI18n } from "../i18n";
 import { Switch } from "../ui";
 import { NumInput, Row, useSettingsSaver } from "./rows";
 
 type NumKey = "history_clip" | "tool_output_limit" | "history_limit" | "request_timeout" | "circuit_threshold" | "circuit_cooldown" | "memory_top_k" | "library_top_k";
-interface NumRow { key: NumKey; title: string; desc: string; min: number; max: number; unit?: string }
+/** Bilingual pairs, not `t()` calls: these tables are evaluated at module level, before the i18n provider mounts. */
+interface NumRow { key: NumKey; title: string; titleZh: string; desc: string; descZh: string; min: number; max: number; unit: string; unitZh: string }
 
 const BASE_ROWS: NumRow[] = [
-  { key: "request_timeout", title: "单次请求超时", desc: "超过这个时间还没响应,就视为失败并回退到下一个模型。", min: 5, max: 600, unit: "秒" },
-  { key: "circuit_threshold", title: "熔断:连续失败次数", desc: "某个模型连续失败达到这个次数后,暂时不再尝试它。", min: 1, max: 10, unit: "次" },
-  { key: "circuit_cooldown", title: "熔断:冷却时间", desc: "熔断后隔多久再给这个模型一次机会。", min: 5, max: 600, unit: "秒" },
+  { key: "request_timeout", title: "Timeout per request", titleZh: "单次请求超时", desc: "Past this time a request counts as failed and falls back to the next model.", descZh: "超过这个时间还没响应,就视为失败并回退到下一个模型。", min: 5, max: 600, unit: "s", unitZh: "秒" },
+  { key: "circuit_threshold", title: "Circuit breaker: failures in a row", titleZh: "熔断:连续失败次数", desc: "Once a model fails this many times in a row, it is left alone for a while.", descZh: "某个模型连续失败达到这个次数后,暂时不再尝试它。", min: 1, max: 10, unit: "", unitZh: "次" },
+  { key: "circuit_cooldown", title: "Circuit breaker: cooldown", titleZh: "熔断:冷却时间", desc: "How long to wait before giving that model another chance.", descZh: "熔断后隔多久再给这个模型一次机会。", min: 5, max: 600, unit: "s", unitZh: "秒" },
 ];
 const CTX_ROWS: NumRow[] = [
-  { key: "history_limit", title: "带入的历史消息条数", desc: "每次调用模型时附带的最近群聊消息数量。越多越连贯,也越耗 token。", min: 4, max: 100, unit: "条" },
-  { key: "history_clip", title: "单条历史消息最多带入", desc: "过去的某条消息太长时,只保留开头和结尾、省掉中间,防止一篇长文占满上下文。最新的一条不受影响。", min: 200, max: 20000, unit: "字" },
-  { key: "tool_output_limit", title: "工具结果最多回填", desc: "工具(检索、抓取网页等)返回的内容太长时,回填给模型前截到这么多字。", min: 500, max: 50000, unit: "字" },
+  { key: "history_limit", title: "History messages to include", titleZh: "带入的历史消息条数", desc: "How many of the most recent group-chat messages accompany each model call. More flows better and costs more tokens.", descZh: "每次调用模型时附带的最近群聊消息数量。越多越连贯,也越耗 token。", min: 4, max: 100, unit: "", unitZh: "条" },
+  { key: "history_clip", title: "Most kept of one history message", titleZh: "单条历史消息最多带入", desc: "When an older message is too long, keep its beginning and end and drop the middle, so one long text cannot fill the context. The newest message is untouched.", descZh: "过去的某条消息太长时,只保留开头和结尾、省掉中间,防止一篇长文占满上下文。最新的一条不受影响。", min: 200, max: 20000, unit: "chars", unitZh: "字" },
+  { key: "tool_output_limit", title: "Most tool output fed back", titleZh: "工具结果最多回填", desc: "When a tool (search, web fetch, …) returns too much, cut it to this many characters before feeding it back to the model.", descZh: "工具(检索、抓取网页等)返回的内容太长时,回填给模型前截到这么多字。", min: 500, max: 50000, unit: "chars", unitZh: "字" },
 ];
 const MEM_ROWS: NumRow[] = [
-  { key: "memory_top_k", title: "每次带入的记忆条数", desc: "回复前按相关度取最多这么多条记忆放进提示词。0 表示不带入。", min: 0, max: 20, unit: "条" },
-  { key: "library_top_k", title: "资料库每次检索返回的片段数", desc: "成员检索资料库时最多返回几段。", min: 1, max: 10, unit: "段" },
+  { key: "memory_top_k", title: "Memories to include each time", titleZh: "每次带入的记忆条数", desc: "Before replying, take up to this many of the most relevant memories into the prompt. 0 means none.", descZh: "回复前按相关度取最多这么多条记忆放进提示词。0 表示不带入。", min: 0, max: 20, unit: "", unitZh: "条" },
+  { key: "library_top_k", title: "Library passages returned per search", titleZh: "资料库每次检索返回的片段数", desc: "How many passages a member gets back at most when searching the library.", descZh: "成员检索资料库时最多返回几段。", min: 1, max: 10, unit: "", unitZh: "段" },
 ];
 
 export default function GeneralPage() {
+  const { t, pick } = useI18n();
   const { settings } = useData();
   const { set, err } = useSettingsSaver();
-  if (!settings) return <div className="empty big">加载中…</div>;
+  if (!settings) return <div className="empty big">{t("Loading…")}</div>;
 
   const numRows = (rows: NumRow[]) =>
-    rows.map((r) => (
-      <Row key={r.key} title={r.title} desc={r.desc}>
-        <NumInput v={settings[r.key]} min={r.min} max={r.max} unit={r.unit} onCommit={(n) => set({ [r.key]: n } as Partial<Settings>)} label={r.title} />
-      </Row>
-    ));
+    rows.map((r) => {
+      const title = pick(r.title, r.titleZh);
+      return (
+        <Row key={r.key} title={title} desc={pick(r.desc, r.descZh)}>
+          <NumInput v={settings[r.key]} min={r.min} max={r.max} unit={pick(r.unit, r.unitZh)} onCommit={(n) => set({ [r.key]: n } as Partial<Settings>)} label={title} />
+        </Row>
+      );
+    });
 
   return (
     <div className="sp">
-      <h2 className="sp-title">通用</h2>
-      <p className="sp-desc">协作与路由的运行参数。修改后即时生效。</p>
-      {err && <div className="ext-errbox ext-sticky-err" role="alert"><div className="err">保存失败:{err}</div></div>}
+      <h2 className="sp-title">{t("General")}</h2>
+      <p className="sp-desc">{t("Operating parameters for collaboration and routing. Changes take effect immediately.")}</p>
+      {err && <div className="ext-errbox ext-sticky-err" role="alert"><div className="err">{t("Failed to save: {error}", { error: err })}</div></div>}
 
       <div className="card flush">{numRows(BASE_ROWS)}</div>
 
-      <div className="sec">上下文管理</div>
+      <div className="sec">{t("Context management")}</div>
       <div className="card flush">{numRows(CTX_ROWS)}</div>
 
-      <div className="sec">记忆与资料库</div>
+      <div className="sec">{t("Memory & library")}</div>
       <div className="card flush">
-        <Row title="启用记忆" desc="成员回复前会带入相关的偏好、决定和教训。每个群可以单独关闭。">
-          <Switch checked={settings.memory_enabled} label="启用记忆" onChange={(v) => void set({ memory_enabled: v })} />
+        <Row title={t("Enable memory")} desc={t("Members pull in relevant preferences, decisions and lessons before replying. Each group chat can turn this off on its own.")}>
+          <Switch checked={settings.memory_enabled} label={t("Enable memory")} onChange={(v) => void set({ memory_enabled: v })} />
         </Row>
-        <Row title="群聊后自动整理记忆" desc="一轮群聊结束后,把这次的请求和最终答复交给一个又快又省的模型(按路由选,可能是云端服务商)提炼偏好、决定和教训存为记忆。会额外调用一次模型;程序会过滤明显的密码、密钥,但不保证万无一失,请不要在群里发送密钥。">
-          <Switch checked={settings.memory_auto_extract} label="群聊后自动整理记忆" onChange={(v) => void set({ memory_auto_extract: v })} />
+        <Row title={t("Tidy up memories after a group chat")} desc={t("When a round of group chat ends, the request and the final answer go to a fast, cheap model (picked by routing, possibly a cloud provider) to distil preferences, decisions and lessons into memories. This costs one extra model call. Obvious passwords and keys are filtered out, but that is not a guarantee — please do not send secrets in a group chat.")}>
+          <Switch checked={settings.memory_auto_extract} label={t("Tidy up memories after a group chat")} onChange={(v) => void set({ memory_auto_extract: v })} />
         </Row>
         {numRows(MEM_ROWS)}
       </div>
