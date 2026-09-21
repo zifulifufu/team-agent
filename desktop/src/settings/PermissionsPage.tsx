@@ -29,14 +29,31 @@ type Override = "default" | "allow" | "deny";
 
 export default function PermissionsPage({ onTab }: PageProps) {
   const { t } = useI18n();
-  const { settings } = useData();
+  const { settings, providers } = useData();
   const { set, err: saveErr, saving } = useSettingsSaver();
   const [perm, setPerm] = useState<Permissions | null>(null);
   const [loadErr, setLoadErr] = useState("");
   // The workspace path is edited locally and committed on blur: saving every keystroke would
   // fire a request per character, and a half-typed path is not a value worth storing.
   const [workdir, setWorkdir] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [videoCheck, setVideoCheck] = useState("");
   const err = saveErr || loadErr;
+  // Video providers only: a chat provider has no /v1/videos.
+  const videoProviders = useMemo(() => providers.filter((p) => p.kind === "minimax_video"), [providers]);
+
+  const checkVideo = async () => {
+    setChecking(true);
+    setVideoCheck("");
+    try {
+      const r = await api.testVideo(settings?.video_provider_id ?? "");
+      setVideoCheck((r.ok ? "✓ " + t("Reachable") : "✗ " + t("Not reachable")) + (r.detail ? " · " + r.detail : ""));
+    } catch (e) {
+      setVideoCheck("✗ " + (e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const load = useCallback(() => api.permissions().then(setPerm).catch((e) => setLoadErr((e as Error).message)), []);
   useEffect(() => { void load(); }, [load, settings?.perm_mode, settings?.perm_allow, settings?.perm_deny, settings?.tool_rounds]);
@@ -161,6 +178,42 @@ export default function PermissionsPage({ onTab }: PageProps) {
               <input className="pm-text" value={workdir ?? settings.code_workdir} placeholder={acc.code_default_dir ?? ""} spellCheck={false} aria-label={t("Workspace")}
                 onChange={(e) => setWorkdir(e.target.value)}
                 onBlur={() => { const v = workdir; setWorkdir(null); if (v !== null && v !== settings.code_workdir) void set({ code_workdir: v.trim() }); }} />
+            </Row>
+          </>
+        )}
+      </div>
+
+      <div className="sec">{t("Video generation")}</div>
+      <div className="card flush">
+        <Row title={t("Let members generate video")} desc={t("Off by default. When on, members get a generate_video tool that renders a few seconds of video with sound and saves it into the group's own workspace. It is not a chat model: the video server is a separate MiniMax H3 deployment you run yourself with SGLang or vLLM (tens of GB of weights, and the official example uses 4 GPUs). Only 768p is available — 2K and the official prompt shaper are not open source.")}>
+          <Switch checked={settings.video_enabled} label={t("Let members generate video")} onChange={(v) => void set({ video_enabled: v })} />
+        </Row>
+        {settings.video_enabled && (
+          <>
+            <Row title={t("Video server")} desc={t("Which video provider to render with. Add \"MiniMax H3 (self-hosted video)\" under Model providers and point it at your server; a rented cloud GPU should be marked non-local there, so the offline switch governs it too.")}>
+              <select className="pm-text" value={settings.video_provider_id} aria-label={t("Video server")} onChange={(e) => void set({ video_provider_id: e.target.value })}>
+                <option value="">{t("The first enabled one")}</option>
+                {videoProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </Row>
+            {videoProviders.length === 0 && <div className="pm-note">{t("No video provider has been added yet, so the tool stays hidden from members. Add one under Model providers first.")}</div>}
+            <Row title={t("Longest clip")} desc={t("The longest clip a member may ask for. H3 itself accepts 4-15 seconds; a longer request is shortened rather than refused, and the member is told it was.")}>
+              <NumInput v={settings.video_max_seconds} min={1} max={15} unit={t("sec")} label={t("Longest clip")} onCommit={(n) => set({ video_max_seconds: n })} />
+            </Row>
+            <Row title={t("Render timeout")} desc={t("How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.")}>
+              <NumInput v={settings.video_timeout} min={30} max={7200} unit={t("sec")} label={t("Render timeout")} onCommit={(n) => set({ video_timeout: n })} />
+            </Row>
+            <Row title={t("Output short edge")} desc={t("In pixels. H3 is natively 768; anything larger needs H3-Regenerate-2K, which is not part of the open release.")}>
+              <NumInput v={settings.video_short_edge} min={128} max={2048} unit="px" label={t("Output short edge")} onCommit={(n) => set({ video_short_edge: n })} />
+            </Row>
+            <Row title={t("Largest clip to keep")} desc={t("A downloaded clip bigger than this is refused instead of saved, so one runaway render cannot fill the disk.")}>
+              <NumInput v={settings.video_max_mb} min={1} max={4096} unit="MB" label={t("Largest clip to keep")} onCommit={(n) => set({ video_max_mb: n })} />
+            </Row>
+            <Row title={t("Is the server reachable?")} desc={t("Asks the video server for a task id that cannot exist, so it renders nothing and costs no GPU time. A live server answers 404, which is enough to know it is up.")}>
+              <div className="row">
+                <button className="btn small" disabled={checking} onClick={checkVideo}>{checking ? t("Checking…") : t("Test the video server")}</button>
+                {videoCheck && <span className={videoCheck.startsWith("✓") ? "ok-text small" : "err small"}>{videoCheck}</span>}
+              </div>
             </Row>
           </>
         )}

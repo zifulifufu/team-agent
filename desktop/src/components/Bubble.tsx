@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import MessageImage from "./MessageImage";
+import MessageVideo from "./MessageVideo";
 import remarkGfm from "remark-gfm";
 import { Check, ChevronDown, ChevronRight, CornerUpLeft, Lock, LoaderCircle, Megaphone, ShieldAlert, ShieldOff, Wrench, X } from "lucide-react";
 import { modelLabel, type Agent, type Message, type Model, type ToolCall } from "../api";
@@ -45,11 +46,14 @@ function fmtVal(v: unknown): string {
   return typeof v === "string" ? v : JSON.stringify(v);
 }
 
-function ToolPill({ call, sources }: { call: ToolCall; sources?: Map<string, string> }) {
+function ToolPill({ call, sources, gid }: { call: ToolCall; sources?: Map<string, string>; gid?: string }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const { label, source } = toolDisplay(call.name, sources);
   const args = Object.entries(call.args ?? {});
+  // Shown without unfolding the pill: a generated clip is the point of the call, and hiding it
+  // behind a click makes the result look like a log line.
+  const clips = (call.files ?? []).filter((f) => f.kind === "video");
   const stateText = {
     running: t("Running"), waiting: t("Waiting for you"), ok: t("Succeeded"), failed: t("Failed"), denied: t("Denied"),
   }[call.status];
@@ -75,6 +79,11 @@ function ToolPill({ call, sources }: { call: ToolCall; sources?: Map<string, str
         {call.status !== "running" && call.status !== "waiting" && typeof call.ms === "number" && <span className="tp-ms">{call.ms} ms</span>}
         {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
       </button>
+      {gid && clips.length > 0 && (
+        <div className="tool-pill-files">
+          {clips.map((f) => <MessageVideo key={f.name} gid={gid} name={f.name} bytes={f.bytes} />)}
+        </div>
+      )}
       {open && (
         <div className="tool-pill-body">
           <div className="tp-sec">{t("Arguments")}</div>
@@ -188,7 +197,7 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
         )}
         {!mine && tools.length > 0 && (
           <div className="tool-pills">
-            {tools.map((c, i) => (c ? <ToolPill key={i} call={c} sources={toolSources} /> : null))}
+            {tools.map((c, i) => (c ? <ToolPill key={i} call={c} sources={toolSources} gid={m.group_id} /> : null))}
           </div>
         )}
         {!mine && m.model_id && (

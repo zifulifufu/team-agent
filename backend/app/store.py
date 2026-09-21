@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import strengths as strength_lib
+from . import video
 from .catalog import Catalog
 from .local_models import LocalCatalog
 from . import i18n
@@ -573,30 +574,50 @@ plaintext (non-macOS / keychain unavailable)."""
         self._x("DELETE FROM providers WHERE id=?", (pid,))
 
     # ------------------------------------------------------------------- models
+    MODEL_SELECT = (
+        "SELECT m.*, p.name AS provider_name, p.kind, p.is_local, p.enabled AS provider_enabled, "
+        "p.base_url AS provider_base_url FROM models m JOIN providers p ON p.id=m.provider_id "
+    )
+
+    def _model_row(self, r: dict) -> dict:
+        r["enabled"] = bool(r["enabled"])
+        r["is_local"] = bool(r["is_local"])
+        r["provider_enabled"] = bool(r["provider_enabled"])
+        prov = {"id": r["provider_id"], "base_url": r.pop("provider_base_url"), "is_local": r["is_local"]}
+        custom = json.loads(r["strengths"]) if r["strengths"] else None
+        auto = self.catalog.strengths_for(prov, r["model_name"])
+        r["strengths_auto"] = auto
+        r["strengths_custom"] = custom is not None
+        r["strengths"] = custom if custom is not None else auto
+        r.update(self.catalog.describe(prov, r["model_name"]))
+        return r
+
     def list_models(self) -> list[dict]:
+        """The chat models, i.e. everything a member can be pointed at.
+
+        Media providers (MiniMax H3 and friends) are generation services with no model string at
+        all, so their rows are filtered out here. This is the single place "the models" are
+        enumerated, which is what keeps a media row out of the model picker, the routing chain and
+        the health probe at once. Anything that needs a specific row rather than the roster must
+        use `get_model`, which is a plain lookup and deliberately knows nothing about this.
+        """
+        marks = ",".join("?" * len(video.MEDIA_KINDS))
         rows = self._q(
-            "SELECT m.*, p.name AS provider_name, p.kind, p.is_local, p.enabled AS provider_enabled, "
-            "p.base_url AS provider_base_url FROM models m JOIN providers p ON p.id=m.provider_id "
-            "ORDER BY p.sort, m.rowid"
+            self.MODEL_SELECT + f"WHERE p.kind NOT IN ({marks}) ORDER BY p.sort, m.rowid",
+            tuple(video.MEDIA_KINDS),
         )
-        for r in rows:
-            r["enabled"] = bool(r["enabled"])
-            r["is_local"] = bool(r["is_local"])
-            r["provider_enabled"] = bool(r["provider_enabled"])
-            prov = {"id": r["provider_id"], "base_url": r.pop("provider_base_url"), "is_local": r["is_local"]}
-            custom = json.loads(r["strengths"]) if r["strengths"] else None
-            auto = self.catalog.strengths_for(prov, r["model_name"])
-            r["strengths_auto"] = auto
-            r["strengths_custom"] = custom is not None
-            r["strengths"] = custom if custom is not None else auto
-            r.update(self.catalog.describe(prov, r["model_name"]))
-        return rows
+        return [self._model_row(r) for r in rows]
 
     def get_model(self, model_id: str) -> dict | None:
-        for m in self.list_models():
-            if m["id"] == model_id:
-                return m
-        return None
+        """One row, whatever kind of provider it hangs off.
+
+        A direct query rather than a scan of `list_models()`: that list is the *chat* roster and
+        filters media providers out, so building this on top of it would make a storage lookup
+        fail for rows that exist — which is exactly what happened when the filter went in
+        (`add_model` returned None and the API answered with a validation error).
+        """
+        r = self._one(self.MODEL_SELECT + "WHERE m.id=?", (model_id,))
+        return self._model_row(r) if r else None
 
     def add_model(self, provider_id: str, model_name: str, display_name: str | None = None) -> dict:
         mid = f"{provider_id}/{model_name}"
@@ -663,8 +684,8 @@ plaintext (non-macOS / keychain unavailable)."""
         """Turn "a model I added" into a member that can be pulled into a group: reuse it when it
 already exists, otherwise create it (name and strengths are both taken from the model)."""
         m = self.get_model(model_id)
-        if not m:
-            return None
+        if not m or m.get("kind") in video.MEDIA_KINDS:
+            return None                 # a video provider has no chat model to turn into a member
         for a in self.list_agents():
             if a.get("origin") == "model" and a["model_id"] == model_id:
                 return a

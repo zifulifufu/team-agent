@@ -15,11 +15,16 @@ const KIND_LABEL: Record<string, string> = {
   anthropic: "Anthropic",
   gemini: "Gemini",
   ollama: "Ollama",
+  minimax_video: "Video generation",
 };
+/** Providers that generate media instead of chatting: no model list, no chat endpoint. The
+ *  backend keeps them out of the model roster too (`store.list_models`). */
+const MEDIA_KINDS = new Set(["minimax_video"]);
+const isMedia = (kind: string) => MEDIA_KINDS.has(kind);
 // Only the kinds whose wording actually differs need a Chinese entry; the rest are proper
 // nouns. Read through a plain function (`currentLang()`), not a hook, because AddProvider
 // renders it inside a callback.
-const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容" };  // i18n-keep: the Chinese half of the pair table above
+const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容", minimax_video: "视频生成" };  // i18n-keep: the Chinese half of the pair table above
 
 const kindLabel = (kind: string): string =>
   pickLang(KIND_LABEL[kind] ?? kind, KIND_LABEL_ZH[kind], currentLang());
@@ -37,6 +42,7 @@ function endpointPreview(kind: string, base: string): string {
   if (kind === "openai_compatible" || kind === "deepseek") return `${b}/chat/completions`;
   if (kind === "anthropic") return `${b}/v1/messages`;
   if (kind === "ollama") return `${b}/api/chat`;
+  if (kind === "minimax_video") return `${b}/v1/videos`;
   return b;
 }
 
@@ -206,6 +212,19 @@ function ProviderDetail({
   };
   const preview = endpointPreview(p.kind, base);
   const keyOptional = p.is_local || p.kind === "ollama";
+  /** Ask the video server whether it is awake. Renders nothing, so it costs one request. */
+  const checkVideo = async () => {
+    setBusy(true);
+    setCheck("");
+    try {
+      const r = await api.testVideo(p.id);
+      setCheck((r.ok ? `✓ ${t("Connected")}` : `✗ ${t("Not reachable")}`) + (r.detail ? ` · ${r.detail}` : ""));
+    } catch (e) {
+      setCheck(`✗ ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="prov-inner">
@@ -254,6 +273,19 @@ function ProviderDetail({
         {saved && <div className="fb-note ok-text">{t("Saved")}</div>}
       </div>
 
+      {isMedia(p.kind) ? (
+        <div className="field-block">
+          <div className="fb-label">{t("Video generation")}</div>
+          <div className="fb-note muted">
+            {t("This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.")}
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn small" disabled={busy} onClick={checkVideo}>{busy ? t("Checking…") : t("Test the video server")}</button>
+          </div>
+          {check && <div className={"fb-note " + (check.startsWith("✓") ? "ok-text" : "err")}>{check}</div>}
+        </div>
+      ) : (
+      <>
       <div className="fb-label models-head">
         <span>{t("Models")} <span className="chip">{p.models.length}</span></span>
         <span className="row">
@@ -291,6 +323,8 @@ function ProviderDetail({
         ))}
         {p.models.length === 0 && <div className="empty">{t("No models yet — click Add models and tick them from this provider's full list")}</div>}
       </div>
+      </>
+      )}
 
       <div className="danger-zone">
         <button

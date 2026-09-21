@@ -16,7 +16,7 @@ database change and needs no code change.
 
 from __future__ import annotations
 
-from . import i18n
+from . import i18n, video
 
 import asyncio
 import os
@@ -302,6 +302,11 @@ spending extra tokens."""
             p = self.store.get_provider(m["provider_id"]) if m else None
             if not m or not p:
                 raise AllRoutesFailed([Attempt(only, "failed", i18n.pick_now("Model not found", "模型不存在"))])
+            if m.get("kind") in video.MEDIA_KINDS:
+                # `list_models()` already hides these, so this only triggers on an id typed in by
+                # hand. Saying so beats a confusing adapter error from the request itself.
+                raise AllRoutesFailed([Attempt(only, "skipped", i18n.pick_now(
+                    "This provider generates video, it has no chat endpoint", "这个服务商是生成视频的,没有对话接口"))])
             if not p["is_local"] and not cfg["external_calls_enabled"]:   # a manual check cannot bypass "outbound calls disabled" either
                 raise AllRoutesFailed([Attempt(only, "skipped", i18n.pick_now("Outbound calls are disabled (Allow outbound calls is off in Settings), so no request was sent", "外呼已禁用(设置里的「允许外呼」是关的),没有发出请求"))])
             if not has_credentials(p):

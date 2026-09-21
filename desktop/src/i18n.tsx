@@ -1480,6 +1480,32 @@ const ZH: Record<string, string> = {
   "Delete \"{name}\"": "删除「{name}」",
   "Delete the knowledge base \"{name}\" and all {n} documents in it? Groups that use it will simply stop seeing it.": "删除知识库「{name}」以及其中的 {n} 份文档?用了它的群会直接看不到这些资料。",
   "Delete the collection \"{name}\"? The knowledge bases themselves are kept.": "删除合集「{name}」?合集里的知识库本身会保留。",
+  // ---------------------------------------------------------------- 视频生成
+  "Video generation": "视频生成",
+  "Video server": "视频服务",
+  "Let members generate video": "允许成员生成视频",
+  "Off by default. When on, members get a generate_video tool that renders a few seconds of video with sound and saves it into the group's own workspace. It is not a chat model: the video server is a separate MiniMax H3 deployment you run yourself with SGLang or vLLM (tens of GB of weights, and the official example uses 4 GPUs). Only 768p is available — 2K and the official prompt shaper are not open source.": "默认关闭。打开后成员会得到一个 generate_video 工具:生成几秒钟带声音的视频,并保存到本群自己的工作目录里。它不是对话模型 —— 视频服务是你自己用 SGLang 或 vLLM 另外部署的 MiniMax H3(权重几十 GB,官方示例用 4 张卡)。开源的只有 768p;2K 与官方的提示词预处理未开源。",
+  "Which video provider to render with. Add \"MiniMax H3 (self-hosted video)\" under Model providers and point it at your server; a rented cloud GPU should be marked non-local there, so the offline switch governs it too.": "用哪个视频服务商来生成。请在「模型服务商」里添加「MiniMax H3(自建视频生成)」并填上你的服务地址;如果是租来的云 GPU,记得在那里把它标为非本地,这样「允许外呼」也能管住它。",
+  "The first enabled one": "第一个已启用的",
+  "No video provider has been added yet, so the tool stays hidden from members. Add one under Model providers first.": "还没有添加视频服务商,所以这个工具不会出现在成员那里。请先在「模型服务商」里添加一个。",
+  "Longest clip": "最长时长",
+  "The longest clip a member may ask for. H3 itself accepts 4-15 seconds; a longer request is shortened rather than refused, and the member is told it was.": "成员可以要求的最长时长。H3 本身支持 4-15 秒;要求更长时会被缩短而不是拒绝,并会如实告知成员。",
+  "Render timeout": "生成时限",
+  "How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.": "一次生成最多等多久,超时就放弃。渲染是按分钟计的,所以这一项和工具调用超时是分开的。",
+  "Output short edge": "输出短边",
+  "In pixels. H3 is natively 768; anything larger needs H3-Regenerate-2K, which is not part of the open release.": "单位是像素。H3 原生就是 768;更大的需要 H3-Regenerate-2K,而它不在开源范围里。",
+  "Largest clip to keep": "保留的最大体积",
+  "A downloaded clip bigger than this is refused instead of saved, so one runaway render cannot fill the disk.": "下载下来的视频超过这个大小就不保存,免得一次失控的渲染把磁盘塞满。",
+  "Is the server reachable?": "服务能连通吗?",
+  "Asks the video server for a task id that cannot exist, so it renders nothing and costs no GPU time. A live server answers 404, which is enough to know it is up.": "向视频服务索要一个不可能存在的任务 id,因此不会真的渲染,也不占用显卡时间。活着的服务会返回 404,足以判断它在运行。",
+  "Test the video server": "测试视频服务",
+  "Reachable": "可以连通",
+  "Not reachable": "连不上",
+  "This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.": "这不是对话模型:它生成带声音的视频,成员通过 generate_video 工具使用它。这里没有模型列表要填 —— 请到「权限与操控」里打开这个工具,然后回到这里测一下地址。",
+  "The clip could not be loaded": "视频没能加载出来",
+  "Loading the clip…": "正在加载视频…",
+  // ---------------------------------------------------------------- 视频生成
+  "MiniMax H3 and other video-generation models are not on this list: they are diffusion pipelines with no chat endpoint, so nothing here could run them. Add one under Model providers (its kind is Video generation, served by SGLang or vLLM) and switch it on under Permissions & control → Video generation.": "MiniMax H3 之类的视频生成模型不在这个列表里:它们是 diffusion 生成管线,没有对话接口,这里的东西也跑不动它们。请在「模型服务商」里添加(类型是「视频生成」,由 SGLang 或 vLLM 提供服务),再到「权限与操控 → 视频生成」里打开。",
 };
 
 let current: Lang = DEFAULT_LANG;

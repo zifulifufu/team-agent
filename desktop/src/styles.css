@@ -234,6 +234,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .msg-img { max-width: 320px; max-height: 320px; border-radius: 10px; border: 1px solid var(--border); display: block; cursor: zoom-in; }
 .msg-img-loading { display: block; width: 160px; height: 100px; border-radius: 10px; background: var(--hover); }
 .msg-img-broken { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); border: 1px dashed var(--border-strong); border-radius: 8px; padding: 6px 10px; }
+/* A clip a member generated: shown in the tool trace without the pill being unfolded */
+.tool-pill-files { padding: 8px 10px 10px; }
+.msg-video { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.msg-video video { width: 100%; max-width: 420px; border-radius: 10px; border: 1px solid var(--border); background: #000; display: block; }
+.msg-video figcaption { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); }
+.msg-video-loading { font-size: 12px; color: var(--text-3); }
+
 
 .composer-box textarea { border: 0; box-shadow: none !important; padding: 2px 0; resize: none; background: transparent; line-height: 1.6; max-height: 260px; }
 .composer-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }

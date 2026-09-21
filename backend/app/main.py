@@ -316,7 +316,9 @@ def create_app(
     RANGES = {"tool_rounds": (0, 10), "tool_timeout": (5, 600), "plan_max_tasks": (2, 12), "memory_top_k": (0, 20),
               "library_top_k": (1, 10), "max_hops": (1, 30), "history_limit": (1, 200), "history_clip": (200, 20000), "tool_output_limit": (500, 50000), "update_interval_hours": (1, 168),
               "perm_timeout": (10, 600), "request_timeout": (5, 600), "circuit_threshold": (1, 10), "circuit_cooldown": (5, 600),
-              "code_timeout": (5, 600), "vision_max_mb": (1, 64)}
+              "code_timeout": (5, 600), "vision_max_mb": (1, 64),
+              # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
+              "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096)}
     # obsidian_dir can only be set through /api/obsidian (which validates the path); it is not
 # accepted here
     READONLY = {"obsidian_dir"}

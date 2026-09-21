@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, images, modelopts, strengths as strength_lib
+from . import coderun, i18n, images, modelopts, strengths as strength_lib, video
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -334,8 +334,18 @@ def build_router(c: Ctx) -> APIRouter:
                 "model_problem": problem,  # why the requested model cannot be used right now (no key set / disabled / circuit broken...); requests fall back to another model
             })
         ctx = await c.toolhub.context(group, host, connect=False) if host else None
+        cfg = store.get_settings()
+        vprov, vwhy = video.pick_provider(store, cfg)
         return {
             "members": rows,
+            # Whether members can generate video right now, and if not, why not — the panel shows
+            # the reason instead of leaving the user to guess where the tool went.
+            "video": {
+                "enabled": bool(cfg["video_enabled"]),
+                "provider": ({"id": vprov["id"], "name": vprov["name"], "base_url": vprov["base_url"]}
+                             if vprov else None),
+                "problem": vwhy or (video.blocked_by_offline(vprov, cfg) if vprov else ""),
+            },
             "tools": [{"name": t["name"], "description": t["description"], "source": t["source"]} for t in (ctx.specs() if ctx else [])],
             "problems": ctx.problems if ctx else [],
             "mcp_deferred": bool(ctx.mcp_deferred) if ctx else False,
@@ -372,6 +382,10 @@ def build_router(c: Ctx) -> APIRouter:
         model = _need(store.get_model(body.model_id), i18n.pick_now("Model", "模型"))
         if not model["enabled"] or not model["provider_enabled"]:
             raise HTTPException(400, i18n.pick_now("This model, or its provider, is disabled — enable it under Model providers first", "这个模型或它的服务商已停用,先在「模型服务」里启用"))
+        if model.get("kind") in video.MEDIA_KINDS:
+            raise HTTPException(400, i18n.pick_now(
+                "That is a video-generation provider, so it cannot join the group as a member. Members are driven through the generate_video tool instead.",
+                "那是视频生成服务商,不能作为成员入群。成员是通过 generate_video 工具使用它的。"))
         agent = _need(store.ensure_model_agent(body.model_id), i18n.pick_now("Model", "模型"))
         store.add_member(gid, agent["id"])
         return group_view(store.get_group(gid))  # type: ignore[arg-type]
@@ -530,6 +544,54 @@ def build_router(c: Ctx) -> APIRouter:
                 "code_default_dir": str(coderun.base_dir(Path(store.data_dir), cfg)),
             },
         }
+
+    # ============================================================ video generation
+    class VideoProbeIn(BaseModel):
+        provider_id: str = ""      # empty = the one that would actually be used
+
+    @r.post("/api/video/test")
+    async def video_test(body: VideoProbeIn | None = None) -> dict:
+        """Is the video server awake? Renders nothing.
+
+        It asks for a task id that cannot exist, so a live server answers 404 — which still proves
+        it is up and speaking the video API. Checking this before a member tries to generate
+        something costs one request instead of several minutes of GPU time.
+        """
+        cfg = store.get_settings()
+        want = (body.provider_id if body else "") or str(cfg.get("video_provider_id") or "")
+        if want:
+            prov = next((p for p in video.media_providers(store) if p["id"] == want), None)
+            if prov is None:
+                raise HTTPException(404, i18n.pick_now("No video provider with that id", "没有这个 id 的视频服务商"))
+        else:
+            prov, why = video.pick_provider(store, cfg)
+            if prov is None:
+                return {"ok": False, "provider": None, "detail": why}
+        blocked = video.blocked_by_offline(prov, cfg)
+        if blocked:
+            return {"ok": False, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]},
+                    "detail": blocked}
+        ok, detail = await video.probe(prov)
+        return {"ok": ok, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]}, "detail": detail}
+
+    @r.get("/api/groups/{gid}/video/{name}")
+    async def group_video(gid: str, name: str) -> Response:
+        """Serve a clip a member generated, out of this group's own workspace.
+
+        `name` is treated as a plain filename — a separator, a parent reference or anything but
+        `.mp4` is refused before the filesystem is touched, so this cannot become a way to read
+        arbitrary files. Only this group's workspace is ever consulted.
+        """
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.mp4", name):
+            raise HTTPException(400, i18n.pick_now("That is not a video file name", "这不是一个视频文件名"))
+        # `workspace_path`, not `workspace_dir`: a GET must not create directories as a side effect
+        ws = coderun.workspace_path(Path(store.data_dir), store.get_settings(), gid)
+        path = (ws / "video" / name).resolve()
+        if not path.is_file():
+            raise HTTPException(404, i18n.pick_now("That video is not there any more", "这个视频已经不在了"))
+        return Response(path.read_bytes(), media_type="video/mp4",
+                        headers={"Cache-Control": "private, max-age=3600"})
 
     # ============================================================ plugins
     def plugin_view(p: dict) -> dict:

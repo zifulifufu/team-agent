@@ -6,6 +6,11 @@ kind decides how it maps onto the LiteLLM model string:
   anthropic          -> anthropic/<model>
   gemini             -> gemini/<model>
   ollama             -> ollama_chat/<model> + api_base
+  minimax_video      -> not a chat provider at all: no model string, no model list. It is a
+                        video-generation server (MiniMax H3 via SGLang / vLLM) and this app
+                        reaches it only through `app/video.py`. `video.MEDIA_KINDS` is the one
+                        list of such kinds, and `store.list_models()` keeps them out of the
+                        chat model list.
 """
 
 from __future__ import annotations
@@ -186,6 +191,20 @@ PRESETS: list[dict] = [
         "models": [],
         "hint": "Any local OpenAI-compatible server can be added here.", "hint_zh": "任何本地 OpenAI 兼容服务都可以在这里接入。",
     },
+    {
+        # A media provider, not a chat provider: it has no /chat/completions and no model list,
+        # and this app only ever reaches it through the video API (`app/video.py`). It is
+        # offered as a preset rather than seeded, because an endpoint nobody runs would just be
+        # a dead row in everyone's provider list.
+        "preset": "minimax-h3",
+        "name": "MiniMax H3 (self-hosted video)", "name_zh": "MiniMax H3(自建视频生成)",
+        "kind": "minimax_video",
+        "base_url": "http://127.0.0.1:30010",
+        "is_local": True,
+        "models": [],
+        "hint": "Not a chat model: H3 generates video with stereo audio (4-15s, 768p). Serve it with SGLang or vLLM and point this at that server — port 30010 for the FL2VA checkpoint, 30011 for Ref2VA. Members can then use the generate_video tool. The weights are tens of GB (about 42.5 GB even pruned) and the official example uses 4 GPUs; 2K output and the H3-Context-IR prompt shaper are not open source. On a rented cloud GPU, turn Local off below so the offline switch gates it too.",
+        "hint_zh": "不是对话模型:H3 生成带立体声的视频(4-15 秒、768p)。用 SGLang 或 vLLM 跑起来后,这里填那个服务地址 —— FL2VA 检查点用 30010,Ref2VA 用 30011。之后成员就能用 generate_video 工具。权重几十 GB(精简版也要约 42.5 GB),官方示例用 4 张卡;2K 输出与 H3-Context-IR 提示词预处理未开源。如果跑在租来的云 GPU 上,请把下面的「本地」关掉,让「允许外呼」也能管住它。",
+    },
 ]
 
 PRESET_BY_ID = {p["preset"]: p for p in PRESETS}
@@ -269,6 +288,16 @@ DEFAULT_SETTINGS: dict = {
     # never affected by it.
     "vision_cloud": False,
     "vision_max_mb": 8,        # per-image cap, checked before anything is written to disk
+    # ---- video generation (MiniMax H3 and anything else speaking the same video API), off by
+    # default. Not a chat model: it is reached through its own video endpoints and is gated like
+    # any other outbound call, which is why a rented GPU box has to be marked non-local at the
+    # provider rather than here.
+    "video_enabled": False,
+    "video_provider_id": "",   # which video provider to use; empty = the first enabled one
+    "video_short_edge": 768,   # output short edge in pixels (H3 is natively 768; 2K needs a module that is not open source)
+    "video_max_seconds": 15,   # longest clip a member may ask for (H3 itself accepts 4-15)
+    "video_timeout": 900,      # how long one generation may take before giving up, in seconds
+    "video_max_mb": 512,       # cap on the downloaded file, checked before it is saved
     # ---- memory <-> Obsidian: one folder in the vault to sync with (empty = disabled)
     "obsidian_dir": "",
     "obsidian_auto": False,    # when enabled, sync automatically every 30 seconds

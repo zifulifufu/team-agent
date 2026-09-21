@@ -589,11 +589,13 @@ protocol and should not decide what the others do."""
 
                     denied = False
                     if call.error:
-                        text, ok, ms = call.error, False, 0
+                        text, ok, ms, files = call.error, False, 0, []
                     else:
                         oc = await self.toolhub.call(ctx, call.name, call.arguments, approve)
-                        text, ok, ms, denied = oc.text, oc.ok, oc.ms, oc.denied
+                        text, ok, ms, denied, files = oc.text, oc.ok, oc.ms, oc.denied, oc.files
                     entry.update(status="denied" if denied else "ok" if ok else "failed", ms=ms, preview=text[:300])
+                    if files:
+                        entry["files"] = files      # what the call produced, so the bubble can offer it
                     await emit({"type": "tool", "message_id": mid, "index": len(trace) - 1, "call": dict(entry)})
                     results.append(format_result(call.name or "error", ok, text, int(cfg["tool_output_limit"])))
                 messages.append({"role": "assistant", "content": res.text})

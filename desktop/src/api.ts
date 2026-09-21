@@ -243,6 +243,8 @@ export interface ToolCall {
   status: "running" | "waiting" | "ok" | "failed" | "denied";   // waiting = waiting for you to confirm in the chat; denied = refused, timed out, or blocked, so it never ran
   ms?: number;
   preview?: string;
+  /** Files the call produced (a generated clip); they live in the group's workspace */
+  files?: { kind: string; name: string; bytes?: number; seconds?: number }[];
 }
 export type PlanTaskStatus = "pending" | "running" | "done" | "failed" | "stopped" | "skipped";
 interface PlanTaskView {
@@ -324,6 +326,12 @@ export interface Settings {
   perm_timeout: number;            // Seconds to wait for your confirmation; a timeout counts as a refusal
   perm_allow: string[];            // Tool names set to Always allow
   perm_deny: string[];             // Tool names set to Always block
+  video_enabled: boolean;          // Let members generate video; off by default. The endpoint is not a chat model
+  video_provider_id: string;       // Which video provider to use; empty = the first enabled one
+  video_short_edge: number;        // Output short edge in pixels (H3 is natively 768)
+  video_max_seconds: number;       // Longest clip a member may ask for (H3 itself accepts 4-15)
+  video_timeout: number;           // How long one generation may take before giving up, in seconds
+  video_max_mb: number;            // Cap on the downloaded clip, checked before it is saved
   code_enabled: boolean;           // Let members write and run code in a workspace; off by default
   code_timeout: number;            // Seconds one run may take before it is killed
   code_workdir: string;            // Empty = <data dir>/workspace
@@ -623,6 +631,8 @@ export interface Capabilities {
   problems: string[];
   /** An MCP server that has simply never been connected yet (not a real error) */
   mcp_deferred: boolean;
+  /** Whether members can generate video here, and if not, why not (the panel shows the reason) */
+  video: { enabled: boolean; provider: { id: string; name: string; base_url: string } | null; problem: string };
   ext: GroupExt;
   docs: number;
 }
@@ -832,6 +842,9 @@ export const api = {
     post<{ checked: number; health: Record<string, ModelHealth> }>("/api/models-health/check", { model_ids, cloud }),
   testModel: (model_id: string) =>
     post<{ ok: boolean; latency_ms?: number; reply?: string; error?: string }>("/api/test-model", { model_id }),
+  /** Is the video server awake? Renders nothing, so it costs one request rather than GPU minutes. */
+  testVideo: (provider_id = "") =>
+    post<{ ok: boolean; provider: { id: string; name: string; base_url: string } | null; detail: string }>("/api/video/test", { provider_id }),
   settings: () => get<Settings>("/api/settings"),
   putSettings: (b: Partial<Settings>) => put<Settings>("/api/settings", b),
   routePreview: (preferred?: string | null) =>
@@ -929,6 +942,9 @@ export const api = {
   dropImage: (id: string) => del<{ ok: boolean }>(`/api/attachments/${id}`),
   /** The bytes, fetched with the token in a header — see `getBlob` for why an <img src> will not do. */
   imageBytes: (id: string) => getBlob(`/api/attachments/${id}`),
+  /** A clip a member generated, out of that group's own workspace. Same header problem, so the
+   *  bytes come through the API and are turned into an object URL (`MessageVideo`). */
+  videoBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/video/${encodeURIComponent(name)}`),
   addDocUrl: (url: string, scope: { kb?: string; group?: string } = {}) =>
     post<LibraryDoc>("/api/library/url", { url, kb_id: scope.kb ?? "", group_id: scope.group ?? "" }),
   addDocDir: (path: string, recursive = true, scope: { kb?: string; group?: string } = {}) =>
