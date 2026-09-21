@@ -12,7 +12,7 @@ interface ThemeCtx {
 }
 const Ctx = createContext<ThemeCtx | null>(null);
 
-// localStorage 在隐私窗口/被禁用时会抛异常,一律 try/catch,读不到就用默认值
+// localStorage throws in a private window or when disabled, so every access is wrapped; fall back to the default when it cannot be read
 const read = (k: string): string | null => {
   try {
     return localStorage.getItem(k);
@@ -31,7 +31,7 @@ export const prefs = { read, write };
 
 export const isHex = (s: string) => /^#[0-9a-fA-F]{6}$/.test(s);
 
-/** 主色上的文字用黑还是白(按相对亮度选,保证按钮文字看得清)。 */
+/** Whether text on the accent colour should be black or white (chosen by relative luminance so button labels stay readable). */
 function onColor(hex: string): string {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
   const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);

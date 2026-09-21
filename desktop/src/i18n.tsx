@@ -1100,6 +1100,13 @@ const ZH: Record<string, string> = {
   "Updated": "最近更新",
   "[image{alt}]": "[图片{alt}]",
   "{msg}. Overwriting replaces the content of the local skill with the same name, and anything you changed locally is lost. Overwrite it?": "{msg}。覆盖会替换本地同名技能的内容,你在本地做过的修改会丢失。要覆盖吗?",
+  // ---------------------------------------------------------------- 通用组件与外壳
+  "Close": "关闭",
+  "Dismiss the notice": "关闭提示",
+  "Expand the sidebar": "展开侧边栏",
+  "OK": "确定",
+  "Please confirm": "请确认",
+  "The backend is not connected; retrying… (the first start needs a few seconds to load LiteLLM)": "后端未连接,正在重试…(首次启动需要几秒加载 LiteLLM)",
 };
 
 let current: Lang = DEFAULT_LANG;

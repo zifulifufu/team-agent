@@ -3,7 +3,7 @@ import { api, type RoutePreview } from "./api";
 import { useData } from "./data";
 import { routeText } from "./lib";
 
-/** 当前生效的路由链(随设置/模型变化刷新),供输入框上的状态胶囊使用。 */
+/** The route chain in effect (refreshed when settings or models change), used by the status pill above the composer. */
 export function useRoute() {
   const { settings, models, providers, reload } = useData();
   const [preview, setPreview] = useState<RoutePreview | null>(null);

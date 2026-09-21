@@ -1,6 +1,7 @@
 import { useEffect, useState, type ComponentType } from "react";
 import { PanelLeftOpen } from "lucide-react";
 import { useData } from "./data";
+import { useI18n } from "./i18n";
 import { prefs } from "./theme";
 import { APP_VERSION } from "./lib";
 import { Toaster } from "./ui";
@@ -19,6 +20,7 @@ import SettingsModal, { type PageProps, type SettingsTab } from "./settings/Sett
 const TOOL_PAGES: Record<"skills" | "plugins" | "mcp", ComponentType<PageProps>> = { skills: SkillsPage, plugins: PluginsPage, mcp: McpPage };
 
 export default function App() {
+  const { t } = useI18n();
   const { online, groups, epoch } = useData();
   const [view, setView] = useState<View>({ kind: "home" });
   const [settings, setSettings] = useState<SettingsTab | null>(null);
@@ -29,18 +31,18 @@ export default function App() {
     prefs.write("ta.sidebar", c ? "0" : "1");
   };
 
-  // 当前群聊被删除后回到首页
+  // Go back to the home view when the open group is deleted
   useEffect(() => {
     if (view.kind === "chat" && online && !groups.some((g) => g.id === view.gid)) setView({ kind: "home" });
   }, [groups, view]);
 
-  // 工具页里的「去别的页面」:技能/插件/MCP 直接在主区切换,其余打开设置
+  // "Go to another page" from the tools page: skills / plugins / MCP switch in the main area, everything else opens Settings
   const goTab = (t: SettingsTab) => {
     if (t === "skills" || t === "plugins" || t === "mcp") setView({ kind: t });
     else setSettings(t);
   };
   const ToolPage = view.kind === "skills" || view.kind === "plugins" || view.kind === "mcp" ? TOOL_PAGES[view.kind] : null;
-  // 模板中心里建好群聊后直接进去:关掉设置,切到那个群
+  // After a group is created from the template gallery, go straight into it: close Settings and switch to that group
   const openGroup = (gid: string) => {
     setSettings(null);
     setView({ kind: "chat", gid, autoSend: "" });
@@ -51,11 +53,11 @@ export default function App() {
       {!collapsed && <Sidebar view={view} onView={setView} onSettings={setSettings} onCollapse={() => setSide(true)} version={APP_VERSION} />}
       <main className="main" key={epoch}>
         {collapsed && (
-          <button className="icon-btn expand-btn" title="展开侧边栏" aria-label="展开侧边栏" onClick={() => setSide(false)}>
+          <button className="icon-btn expand-btn" title={t("Expand the sidebar")} aria-label={t("Expand the sidebar")} onClick={() => setSide(false)}>
             <PanelLeftOpen size={17} />
           </button>
         )}
-        {!online && <div className="banner">后端未连接,正在重试…(首次启动需要几秒加载 LiteLLM)</div>}
+        {!online && <div className="banner">{t("The backend is not connected; retrying… (the first start needs a few seconds to load LiteLLM)")}</div>}
         {view.kind === "home" && <HomePage onOpen={(gid, autoSend) => setView({ kind: "chat", gid, autoSend })} onSettings={setSettings} />}
         {view.kind === "chat" && (
           <ChatView

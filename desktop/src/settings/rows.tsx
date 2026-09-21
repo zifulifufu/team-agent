@@ -3,8 +3,8 @@ import { api, type Settings } from "../api";
 import { useData } from "../data";
 import "../styles/ext.css";
 
-/** 保存设置:同一页里的多次保存排队按顺序执行(不会互相覆盖),不管成败都重新读取设置,让界面回到真实值。
- *  saving 为真时,依赖「当前列表」来算新值的控件(上移/下移、允许/禁止)应禁用,避免连点算出过期的结果。 */
+/** Saving settings: several saves on one page are queued and run in order (they do not overwrite each other); the settings are re-read afterwards either way, so the UI shows the real values.
+ *  While `saving` is true, controls that compute a new value from the current list (move up/down, allow/deny) should be disabled: a second click would work from a stale list. */
 export function useSettingsSaver(): { set: (patch: Partial<Settings>) => Promise<boolean>; err: string; saving: boolean } {
   const { reload } = useData();
   const [err, setErr] = useState("");
@@ -50,9 +50,9 @@ export function NumInput({ v, min, max, unit, onCommit, label }: { v: number; mi
   useEffect(() => setX(String(v)), [v]);
   const commit = () => {
     const raw = Number(x);
-    const n = x.trim() === "" || Number.isNaN(raw) ? v : Math.min(max, Math.max(min, Math.round(raw)));   // 范围钳制;0 是合法值
+    const n = x.trim() === "" || Number.isNaN(raw) ? v : Math.min(max, Math.max(min, Math.round(raw)));   // Clamp to range; 0 is a legal value
     setX(String(n));
-    if (n !== v) void onCommit(n).then((ok) => { if (!ok) setX(String(v)); });   // 保存失败:输入框退回原值
+    if (n !== v) void onCommit(n).then((ok) => { if (!ok) setX(String(v)); });   // Save failed: put the previous value back in the field
   };
   return (
     <span className="num-input">

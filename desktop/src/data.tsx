@@ -9,18 +9,18 @@ interface Data {
   models: Model[];
   settings: Settings | null;
   reload: () => Promise<void>;
-  /** 整库被替换(恢复备份)后用:重新读取全部数据,并让主区里的页面重新加载,不留旧内容 */
+  /** After the whole database is replaced (restoring a backup): re-read everything and let the pages in the main area reload, rather than leaving stale content behind */
   refreshAll: () => Promise<void>;
-  /** 每次 refreshAll 加一;App 用它给主区换 key */
+  /** Incremented by every refreshAll; App uses it as the key of the main area */
   epoch: number;
   reloadGroups: () => Promise<void>;
-  /** 待处理的更新提醒数(程序 / 模型目录 / 技能 / 插件 / 新模型),用于侧边栏红点 */
+  /** Number of unhandled update notices (app / model catalog / skills / plugins / new models), for the sidebar badge */
   updateCount: number;
   reloadUpdates: () => Promise<void>;
-  /** 模型连通指示灯:model_id → 状态 */
+  /** Model connectivity lights: model_id → status */
   health: Record<string, ModelHealth>;
   reloadHealth: () => Promise<void>;
-  /** 主动检测:不传 ids = 全部;cloud=false 只探测本地服务(不花 token) */
+  /** Run a check now: no ids means all of them; cloud=false probes only local services (no tokens spent) */
   checkHealth: (ids?: string[], cloud?: boolean) => Promise<void>;
 }
 
@@ -40,7 +40,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     try {
       const [a, g, p, s, h] = await Promise.all([
         api.agents(), api.groups(), api.providers(), api.settings(),
-        api.modelsHealth().catch(() => null), // 改了密钥/启用状态后灯要跟着变
+        api.modelsHealth().catch(() => null), // Changing a key or an enabled flag has to move the lights too
       ]);
       if (h) setHealth(h.health);
       setAgents(a);
@@ -90,7 +90,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     void reload();
   }, [reload]);
 
-  // 指示灯:上线后读一次,并静默探测本地服务(不花 token);之后每 2 分钟读一次库(聊天和检测会顺带更新它)
+  // Connectivity lights: read once on startup and probe local services silently (no tokens spent); after that read the table every 2 minutes (chats and manual checks update it as a side effect)
   useEffect(() => {
     if (!online) return;
     void reloadHealth();
@@ -99,7 +99,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(t);
   }, [online, reloadHealth]);
 
-  // 更新提醒:上线后查一次,之后每 10 分钟刷新(后端自己按设置的间隔去 GitHub 检查)
+  // Update notices: fetch once on startup, then refresh every 10 minutes (the backend checks GitHub on its own configured interval)
   useEffect(() => {
     if (!online) return;
     void reloadUpdates();
@@ -107,7 +107,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(t);
   }, [online, reloadUpdates]);
 
-  // 心跳:后端中途退出了要能发现(连续两次失败才算),界面才会显示「重连中」并自动重试
+  // Heartbeat: notice when the backend exits mid-session (two failures in a row count), so the UI can show Reconnecting and retry
   useEffect(() => {
     if (!online) return;
     let fails = 0;
@@ -120,7 +120,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(t);
   }, [online]);
 
-  // 后端还没起来时自动重试
+  // Retry automatically while the backend is still starting up
   useEffect(() => {
     if (online) return;
     const t = window.setInterval(() => void reload(), 2000);
