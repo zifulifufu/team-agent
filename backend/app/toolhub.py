@@ -66,6 +66,7 @@ BUILTIN_SPECS: dict[str, dict] = {
     "current_time": {
         "description": "Get the current local date and time",
         "description_zh": "获取当前本地日期和时间",
+        "risk": "read",
         "parameters": {"type": "object", "properties": {}},
     },
     "library_search": {
@@ -74,6 +75,7 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "cite a fact, a figure or a rule.",
         "description_zh": "在资料库里检索与问题相关的片段(返回文档标题和原文)。需要引用事实、数据、"
                           "规定时先用它。",
+        "risk": "read",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Keywords or a question to search for",
                       "description_zh": "检索关键词或问题"},
@@ -83,6 +85,7 @@ BUILTIN_SPECS: dict[str, dict] = {
     "library_read": {
         "description": "Read a document from the library by title, one chunk at a time.",
         "description_zh": "按标题读取资料库中某份文档的原文(分段读取)。",
+        "risk": "read",
         "parameters": {"type": "object", "properties": {
             "doc": {"type": "string", "description": "Document title or ID",
                     "description_zh": "文档标题或 ID"},
@@ -92,6 +95,7 @@ BUILTIN_SPECS: dict[str, dict] = {
     "memory_search": {
         "description": "Search long-term memory (user preferences, earlier decisions, past practice).",
         "description_zh": "检索长期记忆(用户偏好、以往决定、过往做法)。",
+        "risk": "read",
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
                        "required": ["query"]},
     },

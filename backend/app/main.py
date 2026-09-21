@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from importlib import metadata
@@ -173,6 +174,28 @@ class Hub:
 DEV_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
 
+# How long to wait before paying the slow imports, so the window's opening requests (settings,
+# groups, models) are served first. Measured on this machine: `import litellm` takes ~3.1 s, i.e.
+# an order of magnitude more than the entire request handling of a normal turn.
+WARM_UP_DELAY = 2.0
+
+
+def _warm_model_stack() -> None:
+    """Import the model SDK while the user is still looking at the window.
+
+    `router._default_completion` imports litellm lazily on purpose — importing it at module level
+    would add three seconds to every start, including the tests. But that only moves the cost to
+    whoever sends the first message of a session, where it is far more annoying. Doing it once,
+    in a daemon thread, after the UI has made its opening requests gets both: a fast start and a
+    fast first reply.
+    """
+    time.sleep(WARM_UP_DELAY)
+    try:
+        import litellm  # noqa: F401
+    except Exception as e:  # noqa: BLE001 — a warm-up that fails must not affect anything
+        print("model stack warm-up skipped:", e)
+
+
 def ensure_loopback_no_proxy() -> None:
     """With a proxy such as Clash running (HTTP_PROXY set in the shell), httpx by default sends
     requests to 127.0.0.1 through the proxy as well, so local Ollama, self-hosted services and
@@ -236,6 +259,7 @@ def create_app(
                 images.sweep(store, store.data_dir)
             except Exception as e:  # noqa: BLE001 — housekeeping must never stop startup
                 print("attachment sweep failed:", e)
+            threading.Thread(target=_warm_model_stack, daemon=True).start()
         try:
             yield
         finally:

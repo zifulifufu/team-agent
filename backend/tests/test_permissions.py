@@ -124,10 +124,13 @@ def test_policy_matrix():
     plug = {"name": "p", "source": "plugin"}
     mcp_ro = {"name": "m1", "source": "mcp", "read_only": True}
     mcp_rw = {"name": "m2", "source": "mcp", "read_only": False}
-    mem = {"name": "memory_save", "source": "builtin"}
-    lib = {"name": "library_search", "source": "builtin"}
-    now = {"name": "current_time", "source": "builtin"}
+    # Built-ins carry their tier with them now, so the specs here look like the real ones
+    mem = {"name": "memory_save", "source": "builtin", "risk": "write"}
+    lib = {"name": "library_search", "source": "builtin", "risk": "read"}
+    now = {"name": "current_time", "source": "builtin", "risk": "read"}
     assert [risk_of(s) for s in (plug, mcp_ro, mcp_rw, mem, lib)] == ["exec", "read", "exec", "write", "read"]
+    # …and a spec that somehow arrives without one counts as exec, never as read
+    assert risk_of({"name": "memory_save", "source": "builtin"}) == "exec"
     assert [policy_for(base, s) for s in (plug, mcp_ro, mcp_rw, mem, lib, now)] == ["ask", "allow", "ask", "allow", "allow", "allow"]
     ask_all = {**base, "perm_mode": "ask_all"}
     assert [policy_for(ask_all, s) for s in (plug, mcp_ro, mem, lib, now)] == ["ask", "ask", "ask", "ask", "allow"]
@@ -150,8 +153,24 @@ def test_builtin_risk_comes_from_the_spec_not_the_name():
     assert risk_of({**specs["run_code"], "name": "run_code", "source": "builtin"}) == "exec"
     assert risk_of({**specs["memory_save"], "name": "memory_save", "source": "builtin"}) == "write"
     assert risk_of({**specs["library_search"], "name": "library_search", "source": "builtin"}) == "read"
-    # The fallback still exists for specs built without the field (MCP, plugin, older shapes)
-    assert risk_of({"name": "run_code", "source": "builtin"}) == "read"
+    # A spec built without the field (MCP, plugin, anything hand-made) fails *closed*: guessing
+    # "read" would mean a tool that runs something gets allowed without asking.
+    assert risk_of({"name": "something_new", "source": "builtin"}) == "exec"
+    assert risk_of({"name": "run_code", "source": "plugin"}) == "exec"
+
+
+def test_every_builtin_declares_its_own_risk_level():
+    """The tier must never be inferred from a tool's name.
+
+    It used to be "everything is read-only except memory_save", so adding a built-in that runs
+    a program silently gave it the read-only tier — allowed without asking under the default
+    permission mode. Every built-in now states its own tier, and this fails when one is added
+    without it (which is the moment to decide, not later).
+    """
+    from app.toolhub import BUILTIN_SPECS
+
+    missing = [name for name, spec in BUILTIN_SPECS.items() if spec.get("risk") not in ("read", "write", "exec")]
+    assert missing == [], f"built-in tools without an explicit risk tier: {missing}"
 
 
 def test_every_setting_can_actually_be_written(tmp_path):

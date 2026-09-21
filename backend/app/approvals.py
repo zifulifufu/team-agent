@@ -39,15 +39,17 @@ def risk_of(spec: dict) -> str:
     """read is read-only · write only modifies this app's own data (memory) · exec runs
 code or has external effects (plugins, non-read-only MCP tools).
 
-A spec may carry its own `risk`; that always wins. The name-based rules below are the
-fallback for built-ins that predate the field, and their shape ("read unless memory_save")
-means a new built-in that runs something would silently be treated as read-only.
+A spec may carry its own `risk`, and every built-in now does (a test fails if one is added
+without it). The rules below are the fallback for a spec built by hand somewhere else, and they
+fail *closed*: an unnamed tier counts as `exec`, not as read-only. The earlier shape ("read
+unless memory_save") meant a new tool that runs something would be allowed without asking —
+the one direction this must never fail in.
 """
     if spec.get("risk"):
         return str(spec["risk"])
     src = spec.get("source")
     if src == "builtin":
-        return "write" if spec["name"] == "memory_save" else "read"
+        return "exec"
     if src == "mcp":
         return "read" if spec.get("read_only") else "exec"
     return "exec"
