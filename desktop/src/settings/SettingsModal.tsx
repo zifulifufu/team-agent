@@ -27,10 +27,10 @@ export type SettingsTab =
   | "skills" | "plugins" | "mcp" | "external" | "gallery" | "prompts" | "library" | "memory"
   | "general" | "permissions" | "updates" | "appearance" | "data" | "stats" | "deps" | "about";
 
-/** 设置页里的每个页面都可以选择接收 onTab,用来跳到别的设置标签。 */
+/** Each settings page may take an `onTab` so it can jump to another settings tab. */
 export interface PageProps {
   onTab: (t: SettingsTab) => void;
-  /** 模板中心里建好群聊后直接跳进那个群(其它页面用不到,所以是可选的)。 */
+  /** Jump straight into a group after creating it from the template gallery (only that page needs it, hence optional). */
   onOpenGroup?: (gid: string) => void;
 }
 
@@ -74,7 +74,7 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
 export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { tab: SettingsTab; onTab: (t: SettingsTab) => void; onClose: () => void; onOpenGroup?: (gid: string) => void }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      // 有弹窗(添加服务商等)打开时,Esc 先关弹窗
+      // With a dialog open (adding a provider, say), Esc closes the dialog first
       if (e.key === "Escape" && !document.querySelector(".modal-mask")) onClose();
     };
     window.addEventListener("keydown", h);
