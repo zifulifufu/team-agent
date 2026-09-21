@@ -83,4 +83,4 @@ async def test_429_is_retried_once_not_hammered_then_falls_back(store):
         r = await ModelRouter(store).complete(MSG)
         assert r.text == "来自本地" and r.model_id == "ollama/qwen2.5:7b"
         assert cloud.server.config.app.state.hits == 2
-        assert "RateLimit" in r.attempts[0].detail and "限速" in r.attempts[0].detail
+        assert "RateLimit" in r.attempts[0].detail and "rate-limiting" in r.attempts[0].detail

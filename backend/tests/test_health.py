@@ -92,7 +92,7 @@ def test_reasoning_only_counts_as_connected(tmp_path):
     store.update_provider("deepseek", {"api_key": "sk-abcdef123456"})
     r = c.post("/api/models-health/check", json={"model_ids": ["deepseek/deepseek-v4-pro"]}).json()
     assert r["health"]["deepseek/deepseek-v4-pro"]["state"] == "ok"
-    assert "思考" in r["health"]["deepseek/deepseek-v4-pro"]["detail"]
+    assert "reasoning" in r["health"]["deepseek/deepseek-v4-pro"]["detail"]
 
 
 def test_local_probe_ollama(tmp_path, monkeypatch):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import re
 
 from fastapi import APIRouter, HTTPException
@@ -45,12 +47,14 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         s = store.get_settings()
         engines = []
         for eid, e in external.ENGINES.items():
-            engines.append({"id": eid, "name": e["name"], "avatar": e["avatar"], "role": e["role"], **runner.describe()})
+            shown = i18n.localize(e)
+            engines.append({"id": eid, "name": shown["name"], "avatar": shown["avatar"],
+                            "role": shown["role"], **runner.describe()})
         return {
             "enabled": bool(s["external_agents_enabled"]),
             "external_calls_enabled": bool(s["external_calls_enabled"]),
             "engines": engines,
-            "levels": [{"id": k, **v} for k, v in external.LEVELS.items()],
+            "levels": [{"id": k, **external.level_view(k)} for k in external.LEVELS],
             "defaults": external.DEFAULT_CFG,
             "members": [
                 {"id": a["id"], "name": a["name"], "engine": a["engine"], "cfg": cfg_of(a),
@@ -81,7 +85,10 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
             name = f"{name}{n}"
         if body.group_id and not store.get_group(body.group_id):
             raise HTTPException(404, "群聊不存在")
-        agent = store.create_agent(name, eng["avatar"], eng["role"], eng["prompt"], None, [], eng["tags"],
+        # The member is created in the language it was added from, so a Chinese install gets
+        # a Chinese role prompt and an English one gets the English text.
+        shown = i18n.localize(eng)
+        agent = store.create_agent(name, shown["avatar"], shown["role"], shown["prompt"], None, [], shown["tags"],
                                    engine=body.engine, engine_cfg=cfg)
         if body.group_id:
             store.add_member(body.group_id, agent["id"])

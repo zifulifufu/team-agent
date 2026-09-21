@@ -42,7 +42,7 @@ async def test_external_calls_disabled_never_touches_cloud(store, make_router):
     r = await make_router(fake).complete([{"role": "user", "content": "hi"}])
     assert r.model_id == "ollama/qwen2.5:7b"
     assert all(not m.startswith("deepseek/") for m, _ in fake.calls)
-    assert r.attempts[0].detail == "外呼已禁用"
+    assert r.attempts[0].detail == "outbound calls are disabled"
 
 
 async def test_local_safety_net_appended_when_chain_has_no_local(store, make_router):
@@ -100,7 +100,7 @@ async def test_circuit_breaker_skips_failing_model(store, make_router):
     assert n == 2
     r = await router.complete([{"role": "user", "content": "hi"}])
     assert sum(1 for m, _ in fake.calls if m.startswith("deepseek/")) == 2  # 未再调用
-    assert r.attempts[0].detail.startswith("熔断")
+    assert r.attempts[0].detail.startswith("Tripped")
 
 
 async def test_all_fail_raises_with_attempts(store, make_router):
@@ -123,7 +123,7 @@ async def test_disabled_model_and_provider_are_skipped(store, make_router):
     store.update_model("deepseek/deepseek-flash", {"enabled": False})
     r = await make_router(FakeLLM()).complete([{"role": "user", "content": "hi"}])
     assert r.model_id == "ollama/qwen2.5:7b"
-    assert r.attempts[0].detail == "已停用"
+    assert r.attempts[0].detail == "disabled"
 
 
 async def test_test_model_reports(store, make_router):
@@ -147,7 +147,7 @@ def test_short_redacts_secrets_and_adds_hint():
     out = _short(e)
     assert "org-…" in out and "ak-…" in out and "fcr1mr8784" not in out and "29169032" not in out
     assert out.startswith("RateLimitError: Your account") and "litellm" not in out and "OpenAIException" not in out
-    assert "限速" in out                                                  # 附一句中文解释
+    assert "rate-limiting" in out                                                  # 附一句中文解释
     assert redact("Authorization: Bearer abc123def456") == "Authorization: Bearer …"
     assert redact("bad key sk-abcdef1234567890") == "bad key sk-…"
 
@@ -213,8 +213,8 @@ async def test_reasoning_only_reply_is_reported_clearly(store, make_router):
     router = make_router(_thinking_llm(True))
     with pytest.raises(Exception) as e:
         await router.complete([{"role": "user", "content": "hi"}], only="ollama/qwen2.5:7b")
-    assert "ReasoningOnlyError" in e.value.attempts[-1].detail and "思考过程" in e.value.attempts[-1].detail
+    assert "ReasoningOnlyError" in e.value.attempts[-1].detail and "produced only its reasoning" in e.value.attempts[-1].detail
     # 测试按钮:连接、密钥都没问题,不应显示成失败
     t = await router.test_model("ollama/qwen2.5:7b")
-    assert t["ok"] is True and "思考型" in t["reply"]
+    assert t["ok"] is True and "reasoning model" in t["reply"]
     assert (await make_router(_thinking_llm(False)).test_model("ollama/qwen2.5:7b"))["reply"] == "OK"

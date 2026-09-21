@@ -32,7 +32,7 @@ from .prompting import VARIABLES, PromptBuilder, estimate_tokens, render_vars
 from .router import ModelRouter, has_credentials
 from .store import Store
 from .templates import create_group_from_template, ensure_agent_from_key
-from .toolhub import BUILTIN_SPECS, ToolHub
+from .toolhub import BUILTIN_TOOL_NAMES, ToolHub, builtin_specs
 from .tools import (
     ToolRegistry,
     delete_skill,
@@ -455,7 +455,7 @@ def build_router(c: Ctx) -> APIRouter:
             tools.append({"name": spec["name"], "group": group, "risk": risk_of(spec), "risk_label": RISK_LABEL[risk_of(spec)],
                           "policy": c.toolhub.policy(spec)})
 
-        for n in BUILTIN_SPECS:
+        for n in BUILTIN_TOOL_NAMES:
             row({"name": n, "source": "builtin"}, i18n.pick_now("built-in", "内置"))
         for p in c.registry.plugins.values():
             for t in c.registry.plugin_tools([p.id]):
@@ -516,10 +516,8 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/tools")
     async def tools() -> dict:
-        from .toolhub import BUILTIN_SPECS
-
         builtin = [{"name": n, "description": s["description"], "parameters": s["parameters"], "source": "builtin"}
-                   for n, s in BUILTIN_SPECS.items()]
+                   for n, s in builtin_specs().items()]
         return {"tools": builtin + c.registry.list(), "errors": c.registry.errors}
 
     # ================================================================ mcp

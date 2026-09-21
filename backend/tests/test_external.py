@@ -42,7 +42,7 @@ def test_clean_cfg_defaults_and_validation(tmp_path):
     assert c["level"] == "read" and c["web"] is False and c["handoff"] is True and c["risk_ack"] is False
     with pytest.raises(ValueError):
         clean_cfg({"level": "root"})
-    with pytest.raises(ValueError, match="确认风险"):
+    with pytest.raises(ValueError, match="risk has to be acknowledged"):
         clean_cfg({"level": "full"})
     assert clean_cfg({"level": "full", "risk_ack": True, "cwd": str(tmp_path)})["risk_ack"] is True
     # 从 full 改回别的级别,确认标记清掉;再改回 full 又要重新确认
@@ -62,7 +62,7 @@ def test_clean_cfg_defaults_and_validation(tmp_path):
 
 
 def test_edit_and_full_refuse_root_or_home_as_workdir():
-    with pytest.raises(ValueError, match="主目录"):
+    with pytest.raises(ValueError, match="home directory"):
         clean_cfg({"level": "edit", "cwd": str(Path.home())})
     with pytest.raises(ValueError):
         clean_cfg({"level": "edit", "cwd": "/"})
@@ -190,8 +190,8 @@ def test_parser_error_result_unknown_events_and_non_json_fallback():
 
 def test_explain_failure_adds_login_hint():
     assert "codebuddy" in external.explain_failure(1, "Error: not logged in", "")
-    assert "登录" not in external.explain_failure(2, "segfault", "")
-    assert "退出码 2" in external.explain_failure(2, "segfault", "")
+    assert "not signed in" not in external.explain_failure(2, "segfault", "")
+    assert "exit code 2" in external.explain_failure(2, "segfault", "")
 
 
 # ---------------------------------------------------------------- 运行(假命令行)
@@ -237,7 +237,7 @@ def test_run_timeout_kills_process(store, fake_env, monkeypatch):
     a = make_agent(store)
     a["engine_cfg"]["timeout"] = 1
     t0 = time.time()
-    with pytest.raises(ExternalError, match="超过 1 秒"):
+    with pytest.raises(ExternalError, match="did not finish within 1"):
         run(store, a)
     assert time.time() - t0 < 20
 
@@ -304,10 +304,10 @@ def test_external_turn_replies_in_group_and_hands_off(store, make_router, fake_e
     # 它 @ 了「文案」,被点名的成员接着发言(用的是模型)
     assert [m["sender_name"] for m in ends][-1] == "Copywriter" and fake.calls
     log = json.loads(fake_env.read_text())
-    assert "帮我读一下文件" in log["stdin"] and "【群聊记录】" in log["stdin"]
+    assert "帮我读一下文件" in log["stdin"] and "[Chat transcript]" in log["stdin"]
     sysprompt = opt(log["argv"], "--append-system-prompt")
     # 「须知」是外部智能体自己的提示词(仍为中文);分工表里的模型一栏按界面语言走
-    assert "外部智能体须知" in sysprompt and "只读" in sysprompt
+    assert "[Notes for external agents]" in sysprompt and "Read-only" in sysprompt
     assert "external agent (WorkBuddy)" in sysprompt
     assert "<tool_call>" not in log["stdin"]                     # 不把本程序的文本工具协议塞给它
     deltas = "".join(e["text"] for e in col.events if e["type"] == "delta" and e["message_id"] == wb["id"])
@@ -347,7 +347,7 @@ def test_external_failure_shows_system_notice_and_no_bubble(store, make_router, 
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
     assert not col.ends() and any(e["type"] == "message_discard" for e in col.events)
     notes = [e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system"]
-    assert any("WorkBuddy" in t and "could not reply" in t and "登录" in t for t in notes)
+    assert any("WorkBuddy" in t and "could not reply" in t and "not signed in" in t for t in notes)
 
 
 def test_tampered_settings_are_rejected_at_run_time(store, make_router, fake_env):

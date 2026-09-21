@@ -268,7 +268,7 @@ async def test_tool_errors_unknown_and_disabled_are_reported_to_model(store, mak
     await orch.handle_user_message(g["id"], "@Copywriter 试试", c)
     text = seen[0]
     assert 'name="boom" ok="false"' in text and "ZeroDivisionError" in text
-    assert 'name="nope" ok="false"' in text and "没有名为 nope" in text
+    assert 'name="nope" ok="false"' in text and "There is no tool called nope" in text
     assert 'name="shout" ok="true"' in text
     assert len(c.ends()[0]["meta"]["tools"]) == 3                           # 单次最多 3 个调用,第 4 个(坏格式)被丢弃
 
@@ -346,7 +346,7 @@ async def test_library_tool_and_refs_and_scope(store, make_router):
     c = Collector()
     await orch.handle_user_message(g["id"], "@Copywriter 出差住宿标准是多少", c)
     assert c.ends()[0]["content"] == "依据资料:600" and c.ends()[0]["meta"]["tools"][0]["name"] == "library_search"
-    assert "《差旅制度》" in fake.calls[1][1][-1]["content"]
+    assert "[差旅制度" in fake.calls[1][1][-1]["content"]
     # 限定只用「食堂」→ 搜不到差旅制度
     lib_ids = [d["id"] for d in store.list_docs() if d["title"] == "食堂"]
     store.update_group(g["id"], {"ext": {"library": {"mode": "selected", "ids": lib_ids}}})
@@ -463,7 +463,7 @@ async def test_unreachable_mcp_server_is_reported_once_and_does_not_block(store,
         c = Collector()
         await orch.handle_user_message(g["id"], "@所有人 报到", c)
         notes = [m["content"] for m in store.list_messages(g["id"]) if m["sender_type"] == "system"]
-        assert sum("MCP「broken」未连接" in n for n in notes) == 1          # 同一次协作里只提醒一次
+        assert sum('MCP "broken" is not connected' in n for n in notes) == 1          # 同一次协作里只提醒一次
         assert len(c.ends()) == 4
     finally:
         await orch.mcp.shutdown()

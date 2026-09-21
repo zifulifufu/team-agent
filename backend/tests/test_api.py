@@ -32,7 +32,7 @@ def test_api_key_is_masked_and_route_preview(client):
     client.put("/api/settings", json={"external_calls_enabled": False})
     prev = client.get("/api/route/preview").json()
     assert prev["chain"] == ["ollama/qwen2.5:7b"]
-    assert prev["skipped"][0]["detail"] == "外呼已禁用"
+    assert prev["skipped"][0]["detail"] == "outbound calls are disabled"
 
 
 def test_add_and_remove_models_and_providers(client):

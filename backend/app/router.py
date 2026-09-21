@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import asyncio
 import os
 import re
@@ -35,7 +37,7 @@ ResetCb = Callable[[], Awaitable[None]]
 class AllRoutesFailed(Exception):
     def __init__(self, attempts: list["Attempt"]):
         self.attempts = attempts
-        super().__init__("所有模型均不可用: " + "; ".join(f"{a.model_id}: {a.detail}" for a in attempts))
+        super().__init__(i18n.pick_now("No model is available: ", "所有模型均不可用: ") + "; ".join(f"{a.model_id}: {a.detail}" for a in attempts))
 
 
 @dataclass
@@ -169,15 +171,15 @@ class ModelRouter:
         def consider(mid: str) -> None:
             m = models.get(mid)
             if not m:
-                skipped.append(Attempt(mid, "skipped", "模型不存在"))
+                skipped.append(Attempt(mid, "skipped", i18n.pick_now("Model not found", "模型不存在")))
                 return
             p = providers[m["provider_id"]]
             if not m["enabled"] or not p["enabled"]:
-                skipped.append(Attempt(mid, "skipped", "已停用"))
+                skipped.append(Attempt(mid, "skipped", i18n.pick_now("disabled", "已停用")))
             elif not p["is_local"] and not external_ok:
-                skipped.append(Attempt(mid, "skipped", "外呼已禁用"))
+                skipped.append(Attempt(mid, "skipped", i18n.pick_now("outbound calls are disabled", "外呼已禁用")))
             elif not has_credentials(p):
-                skipped.append(Attempt(mid, "skipped", "未配置 API Key"))
+                skipped.append(Attempt(mid, "skipped", i18n.pick_now("no API key configured", "未配置 API Key")))
             else:
                 candidates.append({**m, "_provider": p})
 
@@ -262,8 +264,8 @@ class ModelRouter:
         if not text:
             if thinking:
                 # 思考型模型(Kimi K2.x、DeepSeek-R1 等)把 token 都花在思考上、没来得及写正文
-                raise ReasoningOnlyError("模型只输出了思考过程,没有正文(可能被 max_tokens 截断)")
-            raise RuntimeError("模型返回了空内容")
+                raise ReasoningOnlyError(i18n.pick_now("The model produced only its reasoning and no answer (it may have been cut off by max_tokens)", "模型只输出了思考过程,没有正文(可能被 max_tokens 截断)"))
+            raise RuntimeError(i18n.pick_now("The model returned nothing", "模型返回了空内容"))
         return text
 
     async def complete(
@@ -278,11 +280,11 @@ class ModelRouter:
             m = self.store.get_model(only)
             p = self.store.get_provider(m["provider_id"]) if m else None
             if not m or not p:
-                raise AllRoutesFailed([Attempt(only, "failed", "模型不存在")])
+                raise AllRoutesFailed([Attempt(only, "failed", i18n.pick_now("Model not found", "模型不存在"))])
             if not p["is_local"] and not cfg["external_calls_enabled"]:   # 手动检测也不能绕过「禁止外呼」
-                raise AllRoutesFailed([Attempt(only, "skipped", "外呼已禁用(设置里的「允许外呼」是关的),没有发出请求")])
+                raise AllRoutesFailed([Attempt(only, "skipped", i18n.pick_now("Outbound calls are disabled (Allow outbound calls is off in Settings), so no request was sent", "外呼已禁用(设置里的「允许外呼」是关的),没有发出请求"))])
             if not has_credentials(p):
-                raise AllRoutesFailed([Attempt(only, "skipped", "未配置 API Key")])
+                raise AllRoutesFailed([Attempt(only, "skipped", i18n.pick_now("no API key configured", "未配置 API Key"))])
             candidates, attempts = [{**m, "_provider": p}], []
         else:
             candidates, attempts = self.build_chain(preferred, tags)
@@ -293,7 +295,7 @@ class ModelRouter:
             mid = cand["id"]
             is_last = i == len(candidates) - 1
             if not only and not is_last and self._is_open(mid):
-                attempts.append(Attempt(mid, "skipped", "熔断中,稍后重试"))
+                attempts.append(Attempt(mid, "skipped", i18n.pick_now("Tripped and cooling down; retry shortly", "熔断中,稍后重试")))
                 continue
 
             emitted = False
@@ -325,7 +327,7 @@ class ModelRouter:
                 detail = _short(e)
                 attempts.append(Attempt(mid, "failed", detail, int((time.time() - t0) * 1000)))
                 if isinstance(e, ReasoningOnlyError):  # 连得通,只是思考型模型没写出正文
-                    self._note_health(mid, "ok", "连接正常(思考型模型,额度内只返回了思考过程)", attempts[-1].latency_ms, source)
+                    self._note_health(mid, "ok", i18n.pick_now("Connected (a reasoning model; within the quota it returned only its reasoning)", "连接正常(思考型模型,额度内只返回了思考过程)"), attempts[-1].latency_ms, source)
                 elif source != "chat" or not is_request_problem(e):
                     self._note_health(mid, classify_failure(e), detail, attempts[-1].latency_ms, source)
                 if emitted and on_reset:
@@ -341,15 +343,15 @@ class ModelRouter:
     async def test_model(self, model_id: str) -> dict:
         try:
             r = await self.complete(
-                [{"role": "user", "content": "只回复 OK 两个字母。"}], only=model_id, max_tokens=256, source="test"
+                [{"role": "user", "content": i18n.pick_now("Reply with exactly the two letters: OK.", "只回复 OK 两个字母。")}], only=model_id, max_tokens=256, source="test"
             )
             return {"ok": True, "latency_ms": r.attempts[-1].latency_ms, "reply": r.text[:80]}
         except AllRoutesFailed as e:
             last = e.attempts[-1] if e.attempts else None
             if last and last.detail.startswith("ReasoningOnlyError"):
                 # 连接、密钥、模型 ID 都没问题;只是思考型模型在测试用的小额度里没写出正文
-                return {"ok": True, "latency_ms": last.latency_ms, "reply": "(思考型模型:只返回了思考过程,连接正常)"}
-            return {"ok": False, "error": last.detail if last else "未知错误"}
+                return {"ok": True, "latency_ms": last.latency_ms, "reply": i18n.pick_now("(reasoning model: it returned only its reasoning; the connection is fine)", "(思考型模型:只返回了思考过程,连接正常)")}
+            return {"ok": False, "error": last.detail if last else i18n.pick_now("unknown error", "未知错误")}
 
 
 class ReasoningOnlyError(RuntimeError):
@@ -400,12 +402,12 @@ _SECRET_RES = [
     (re.compile(r"(api[_-]?key[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_\-]{6,}", re.I), r"\1…"),
 ]
 _HINTS = [
-    ("RateLimit", " —— 服务商限速了:多半是账号的每分钟请求数/额度太低(新账号或免费档常见),稍等几秒再试,或到服务商后台提高额度。"),
-    ("Authentication", " —— 密钥无效、过期,或没有权限。"),
-    ("PermissionDenied", " —— 这个密钥没有权限使用该模型。"),
-    ("NotFound", " —— 服务商那边没有这个模型 ID,或你的账号无权使用。"),
-    ("Timeout", " —— 请求超时。"),
-    ("APIConnection", " —— 连接不上服务商,检查网络和 API 地址。"),
+    ("RateLimit", " — the provider is rate-limiting you: most likely the account's per-minute request quota is too low (common on new or free plans). Wait a few seconds and retry, or raise the quota in the provider's console.", " —— 服务商限速了:多半是账号的每分钟请求数/额度太低(新账号或免费档常见),稍等几秒再试,或到服务商后台提高额度。"),
+    ("Authentication", " — the key is invalid, expired, or lacks permission.", " —— 密钥无效、过期,或没有权限。"),
+    ("PermissionDenied", " — this key is not allowed to use that model.", " —— 这个密钥没有权限使用该模型。"),
+    ("NotFound", " — the provider has no such model ID, or your account cannot use it.", " —— 服务商那边没有这个模型 ID,或你的账号无权使用。"),
+    ("Timeout", " — the request timed out.", " —— 请求超时。"),
+    ("APIConnection", " — cannot reach the provider; check the network and the API base URL.", " —— 连接不上服务商,检查网络和 API 地址。"),
 ]
 
 
@@ -420,5 +422,5 @@ def _short(e: BaseException) -> str:
     name = type(e).__name__
     msg = re.sub(r"litellm\.\w+: |\w*Exception - ", "", str(e)).replace("\n", " ")
     msg = re.sub(rf"^(?:{re.escape(name)}: )+", "", msg)
-    hint = next((h for k, h in _HINTS if k in name), "")
+    hint = next((i18n.pick_now(en, zh) for k, en, zh in _HINTS if k in name), "")
     return (redact(f"{name}: {msg}")[:300] + hint)

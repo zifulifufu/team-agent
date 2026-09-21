@@ -68,7 +68,7 @@ async def test_denied_call_is_not_executed_and_model_is_told(store, make_router)
     await task
     tr = c.ends()[0]["meta"]["tools"][0]
     assert tr["status"] == "denied" and "HI" not in tr["preview"]
-    assert "没有批准" in last_user(fake.calls[1][1]) and 'ok="false"' in last_user(fake.calls[1][1])
+    assert "did not approve this call" in last_user(fake.calls[1][1]) and 'ok="false"' in last_user(fake.calls[1][1])
 
 
 async def test_timeout_counts_as_deny(store, make_router):
@@ -190,10 +190,11 @@ def test_history_clip_and_tool_output_limit(store, make_router):
     orch = Orchestrator(store, make_router(FakeLLM(default="ok")))
     g = store.list_groups()[0]
     agent = store.list_agents()[0]
-    store.add_message(g["id"], "user", None, "我", "开头" + "很长" * 3000 + "结尾")
-    store.add_message(g["id"], "user", None, "我", "最新一条:" + "全文" * 800)
+    # 用户发言的署名跟着界面语言走(orchestrator 用 i18n.pick_now("me", "我"))
+    store.add_message(g["id"], "user", None, "me", "开头" + "很长" * 3000 + "结尾")
+    store.add_message(g["id"], "user", None, "me", "最新一条:" + "全文" * 800)
     store.update_settings({"history_clip": 500})
     msgs = orch.build_messages(g, agent, [agent])
     body = msgs[-1]["content"]
     assert "omitted in the middle" in body and body.count("全文") == 800           # 旧消息被截,最新一条原样
-    assert body.startswith("[我] 开头")
+    assert body.startswith("[me] 开头")

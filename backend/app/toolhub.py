@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import asyncio
 import json
 import time
@@ -42,33 +44,63 @@ class ToolContext:
 
 
 BUILTIN_SPECS: dict[str, dict] = {
+    # English is the canonical text and `<field>_zh` the Chinese wording; the specs are run
+    # through `i18n.localize()` where they are turned into a tool list, so the description the
+    # model and the UI see follows the request language. (Calling pick_now in here would be
+    # evaluated once at import and freeze whichever language was current then.)
     "current_time": {
-        "description": "获取当前本地日期和时间",
+        "description": "Get the current local date and time",
+        "description_zh": "获取当前本地日期和时间",
         "parameters": {"type": "object", "properties": {}},
     },
     "library_search": {
-        "description": "在资料库里检索与问题相关的片段(返回文档标题和原文)。需要引用事实、数据、规定时先用它。",
+        "description": "Search the library for passages relevant to a question (returns document "
+                       "titles and the original text). Reach for this first whenever you need to "
+                       "cite a fact, a figure or a rule.",
+        "description_zh": "在资料库里检索与问题相关的片段(返回文档标题和原文)。需要引用事实、数据、"
+                          "规定时先用它。",
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "检索关键词或问题"},
-            "top_k": {"type": "integer", "description": "返回片段数,默认 5"}}, "required": ["query"]},
+            "query": {"type": "string", "description": "Keywords or a question to search for",
+                      "description_zh": "检索关键词或问题"},
+            "top_k": {"type": "integer", "description": "How many passages to return; 5 by default",
+                      "description_zh": "返回片段数,默认 5"}}, "required": ["query"]},
     },
     "library_read": {
-        "description": "按标题读取资料库中某份文档的原文(分段读取)。",
+        "description": "Read a document from the library by title, one chunk at a time.",
+        "description_zh": "按标题读取资料库中某份文档的原文(分段读取)。",
         "parameters": {"type": "object", "properties": {
-            "doc": {"type": "string", "description": "文档标题或 ID"},
-            "start": {"type": "integer", "description": "从第几个字符开始,默认 0"}}, "required": ["doc"]},
+            "doc": {"type": "string", "description": "Document title or ID",
+                    "description_zh": "文档标题或 ID"},
+            "start": {"type": "integer", "description": "Character offset to start from; 0 by default",
+                      "description_zh": "从第几个字符开始,默认 0"}}, "required": ["doc"]},
     },
     "memory_search": {
-        "description": "检索长期记忆(用户偏好、以往决定、过往做法)。",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        "description": "Search long-term memory (user preferences, earlier decisions, past practice).",
+        "description_zh": "检索长期记忆(用户偏好、以往决定、过往做法)。",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+                       "required": ["query"]},
     },
     "memory_save": {
-        "description": "把一条长期有用的信息记入本群记忆(偏好、决定、教训)。不要记密钥、密码和个人隐私。",
+        "description": "Record one durably useful piece of information in this group's memory (a "
+                       "preference, a decision, a lesson). Never record keys, passwords or personal "
+                       "data.",
+        "description_zh": "把一条长期有用的信息记入本群记忆(偏好、决定、教训)。不要记密钥、密码和个人隐私。",
         "parameters": {"type": "object", "properties": {
-            "content": {"type": "string", "description": "一句话,不超过 120 字"},
-            "kind": {"type": "string", "enum": ["preference", "fact", "decision", "lesson"]}}, "required": ["content"]},
+            "content": {"type": "string", "description": "One sentence, at most 120 characters",
+                        "description_zh": "一句话,不超过 120 字"},
+            "kind": {"type": "string", "enum": ["preference", "fact", "decision", "lesson"]}},
+            "required": ["content"]},
     },
 }
+
+# Every spec is handed out through here so the descriptions follow the request language.
+BUILTIN_TOOL_NAMES: tuple[str, ...] = tuple(BUILTIN_SPECS)
+
+
+def builtin_specs() -> dict[str, dict]:
+    """The built-in tool specs, described in the request language."""
+    return i18n.localize(BUILTIN_SPECS)
+
 
 
 class ToolHub:
@@ -89,19 +121,21 @@ class ToolHub:
             return ctx
         ext = group["ext"]
 
+        specs = builtin_specs()          # descriptions in the request language
+
         def add(name: str, spec: dict, **extra: Any) -> None:
             ctx.tools[name] = {"name": name, "description": spec["description"], "parameters": spec["parameters"], **extra}
 
-        add("current_time", BUILTIN_SPECS["current_time"], source="builtin")
+        add("current_time", specs["current_time"], source="builtin")
         if ext["library"]["mode"] != "off" and self.store.list_docs():
-            add("library_search", BUILTIN_SPECS["library_search"], source="builtin")
-            add("library_read", BUILTIN_SPECS["library_read"], source="builtin")
+            add("library_search", specs["library_search"], source="builtin")
+            add("library_read", specs["library_read"], source="builtin")
         if cfg["memory_enabled"] and ext["memory"]:
-            add("memory_search", BUILTIN_SPECS["memory_search"], source="builtin")
-            add("memory_save", BUILTIN_SPECS["memory_save"], source="builtin")
+            add("memory_search", specs["memory_search"], source="builtin")
+            add("memory_save", specs["memory_save"], source="builtin")
         for t in self.registry.plugin_tools(ext["plugins"]):
-            if t.name in ctx.tools or t.name in BUILTIN_SPECS:   # 插件不能顶替内置工具(权限判断按名字走)
-                ctx.problems.append(f"插件工具「{t.name}」和内置工具重名,已忽略。")
+            if t.name in ctx.tools or t.name in BUILTIN_TOOL_NAMES:   # 插件不能顶替内置工具(权限判断按名字走)
+                ctx.problems.append(i18n.pick_now(f"The plugin tool \"{t.name}\" has the same name as a built-in tool, so it was ignored.", f"插件工具「{t.name}」和内置工具重名,已忽略。"))
                 continue
             ctx.tools[t.name] = {**t.spec(), "source": "plugin"}
         taken = set(ctx.tools)
@@ -110,13 +144,13 @@ class ToolHub:
             if not server or not server["enabled"]:
                 continue
             if pick_transport(server) != "stdio" and not cfg["external_calls_enabled"]:   # 远程 MCP 也算对外通信
-                ctx.problems.append(f"MCP「{server['name']}」是远程服务,而「允许外呼」是关的,本次没有使用。")
+                ctx.problems.append(i18n.pick_now(f"MCP \"{server['name']}\" is a remote service and outbound calls are switched off, so it was not used this time.", f"MCP「{server['name']}」是远程服务,而「允许外呼」是关的,本次没有使用。"))
                 continue
             st = self.mcp.state(sid)
             if (not st or st.status != "ready") and connect:
                 st = await self.mcp.connect(server, timeout=30)
             if not st or st.status != "ready":
-                ctx.problems.append(f"MCP「{server['name']}」未连接:{(st.error if st else '') or '尚未连接'}")
+                ctx.problems.append(i18n.pick_now(f"MCP \"{server['name']}\" is not connected: {(st.error if st else '') or 'not connected yet'}", f"MCP「{server['name']}」未连接:{(st.error if st else '') or '尚未连接'}"))
                 continue
             for t in st.tools:
                 name = self._mcp_name(server, t["name"], taken)
@@ -137,31 +171,31 @@ class ToolHub:
         t0 = time.time()
         spec = ctx.tools.get(name)
         if not spec:
-            return ToolOutcome(f"没有名为 {name} 的工具(或本群未启用)。可用工具:{', '.join(ctx.tools) or '无'}", False)
+            return ToolOutcome(i18n.pick_now(f"There is no tool called {name} (or it is not enabled for this group). Available tools: {', '.join(ctx.tools) or 'none'}", f"没有名为 {name} 的工具(或本群未启用)。可用工具:{', '.join(ctx.tools) or '无'}"), False)
         req = (spec["parameters"] or {}).get("required") or []
         missing = [r for r in req if r not in args]
         if missing:
-            return ToolOutcome(f"缺少必填参数:{', '.join(missing)}", False)
+            return ToolOutcome(i18n.pick_now(f"Missing required arguments: {', '.join(missing)}", f"缺少必填参数:{', '.join(missing)}"), False)
         pol = self.policy(spec)
         if pol == "deny":
-            return ToolOutcome(f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。不要重试,请换个办法或直接告诉用户。", False, 0, True)
+            return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run. Do not retry — find another way, or tell the user directly.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。不要重试,请换个办法或直接告诉用户。"), False, 0, True)
         if pol == "ask" and not (approve and await approve(spec, args)):
             return ToolOutcome(
-                f"用户没有批准这次调用({name}:拒绝或超时未确认),没有执行。不要重试同一操作,请换个办法,或直接告诉用户你需要做什么、为什么。",
+                i18n.pick_now(f"The user did not approve this call ({name}: denied, or no confirmation before the timeout), so it was not run. Do not retry the same operation — find another way, or tell the user what you need and why.", f"用户没有批准这次调用({name}:拒绝或超时未确认),没有执行。不要重试同一操作,请换个办法,或直接告诉用户你需要做什么、为什么。"),
                 False, int((time.time() - t0) * 1000), True,
             )
         if pol == "ask" and self.policy(spec) == "deny":   # 等确认的这段时间里用户又把它设成了「禁止」
-            return ToolOutcome(f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。", False, 0, True)
+            return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。"), False, 0, True)
         t0 = time.time()  # 耗时不含等用户确认的时间
         timeout = float(self.store.get_settings()["tool_timeout"])
         try:
             text, ok = await asyncio.wait_for(self._dispatch(ctx, spec, args, timeout), timeout + 5)
         except asyncio.TimeoutError:
-            text, ok = f"工具执行超时({int(timeout)} 秒)", False
+            text, ok = i18n.pick_now(f"Tool execution timed out ({int(timeout)} seconds)", f"工具执行超时({int(timeout)} 秒)"), False
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            text, ok = f"工具执行出错:{type(e).__name__}: {e}"[:500], False
+            text, ok = i18n.pick_now(f"Tool execution failed: {type(e).__name__}: {e}", f"工具执行出错:{type(e).__name__}: {e}")[:500], False
         return ToolOutcome(text, ok, int((time.time() - t0) * 1000))
 
     async def _dispatch(self, ctx: ToolContext, spec: dict, args: dict, timeout: float) -> tuple[str, bool]:
@@ -184,28 +218,28 @@ class ToolHub:
                 self.library.search, str(args["query"]), k, self.library.scope_ids(group["ext"]["library"])
             )
             if not hits:
-                return "资料库里没有找到相关内容。", True
-            return "\n\n".join(f"[《{h['title']}》第 {h['idx'] + 1} 段]\n{h['text'][:900]}" for h in hits), True
+                return i18n.pick_now("Nothing relevant was found in the library.", "资料库里没有找到相关内容。"), True
+            return "\n\n".join(i18n.pick_now(f"[{h['title']} · passage {h['idx'] + 1}]\n{h['text'][:900]}", f"[《{h['title']}》第 {h['idx'] + 1} 段]\n{h['text'][:900]}") for h in hits), True
         if name == "library_read":
             doc = self.library.find_by_title(str(args["doc"]))
             if not doc or not doc["enabled"]:
-                return f"资料库里没有《{args['doc']}》。", False
+                return i18n.pick_now(f"The library has no document called {args['doc']}.", f"资料库里没有《{args['doc']}》。"), False
             allowed = self.library.scope_ids(group["ext"]["library"])
             if allowed is not None and doc["id"] not in allowed:
-                return "本群没有启用这份文档。", False
+                return i18n.pick_now("This document is not enabled for this group.", "本群没有启用这份文档。"), False
             r = await asyncio.to_thread(self.library.read, doc["id"], max(0, int(args.get("start") or 0)), 3000)
-            tail = f"\n(已读到第 {r['end']} 字,共 {r['total']} 字;继续读请用 start={r['end']})" if r["end"] < r["total"] else ""
-            return f"《{doc['title']}》\n{r['text']}{tail}", True
+            tail = i18n.pick_now(f"\n(read up to character {r['end']} of {r['total']}; pass start={r['end']} to carry on)", f"\n(已读到第 {r['end']} 字,共 {r['total']} 字;继续读请用 start={r['end']})") if r["end"] < r["total"] else ""
+            return i18n.pick_now(f"{doc['title']}\n{r['text']}{tail}", f"《{doc['title']}》\n{r['text']}{tail}"), True
         if name == "memory_search":
             mems = self.memory.recall(group["id"], agent["id"], str(args["query"]), 8)
-            return (self.memory.block(mems) or "没有相关记忆。"), True
+            return (self.memory.block(mems) or i18n.pick_now("No relevant memories.", "没有相关记忆。")), True
         if name == "memory_save":
             content = str(args["content"]).strip()
             if not content or len(content) > 120:
-                return "内容为空或超过 120 字。", False
+                return i18n.pick_now("The content is empty, or longer than 120 characters.", "内容为空或超过 120 字。"), False
             if looks_sensitive(content):
-                return "内容像是密钥/密码/长数字串,出于安全没有保存。", False
+                return i18n.pick_now("The content looks like a key, a password or a long digit string, so it was not saved.", "内容像是密钥/密码/长数字串,出于安全没有保存。"), False
             kind = args.get("kind") if args.get("kind") in ("preference", "fact", "decision", "lesson") else "fact"
             self.memory.save_manual(content, "group", group["id"], kind, "auto")
-            return "已记入本群记忆。", True
-        return f"未实现的内置工具 {name}", False
+            return i18n.pick_now("Saved to this group's memory.", "已记入本群记忆。"), True
+        return i18n.pick_now(f"Built-in tool {name} is not implemented", f"未实现的内置工具 {name}"), False

@@ -228,7 +228,7 @@ async def test_manual_test_respects_offline_switch(tmp_path):
     st.update_settings({"external_calls_enabled": False})
     mid = next(m["id"] for m in st.list_models() if m["provider_id"] == "deepseek")
     r = c.post("/api/test-model", json={"model_id": mid}).json()
-    assert r["ok"] is False and "外呼" in r["error"] and fake.calls == []
+    assert r["ok"] is False and "Outbound calls are disabled" in r["error"] and fake.calls == []
 
 
 async def test_remote_mcp_is_not_used_when_offline(store, make_router):
@@ -237,7 +237,7 @@ async def test_remote_mcp_is_not_used_when_offline(store, make_router):
     m = store.add_mcp("远程", url="https://x.example/mcp")
     store.update_group(g["id"], {"ext": {"mcp": [m["id"]]}})
     ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
-    assert not any(t["source"] == "mcp" for t in ctx.tools.values()) and any("远程" in p for p in ctx.problems)
+    assert not any(t["source"] == "mcp" for t in ctx.tools.values()) and any("remote service" in p for p in ctx.problems)
 
 
 # ============================================================ 编排
@@ -332,7 +332,7 @@ async def test_plugin_cannot_shadow_builtin_tool(store, make_router, tmp_path):
     orch.registry.load_plugins(store.data_dir / "plugins")
     store.update_group(g["id"], {"ext": {"plugins": ["evil"]}})
     ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
-    assert ctx.tools["current_time"]["source"] == "builtin" and any("重名" in p for p in ctx.problems)
+    assert ctx.tools["current_time"]["source"] == "builtin" and any("same name as a built-in tool" in p for p in ctx.problems)
 
 
 async def test_deny_added_while_waiting_wins(store, make_router):

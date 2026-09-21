@@ -99,7 +99,14 @@ def mentions_all(text: str) -> bool:
     return bool(_ALL_RE.search(text))
 
 
-PLAN_FALLBACK = i18n.pick_now("The work is split — see the task board.", "已做好分工,见任务板。")
+# The host says this when it produced a plan but no prose. Kept as a pair so the value
+# follows the request language instead of freezing at import time.
+PLAN_FALLBACK = ("The work is split — see the task board.", "已做好分工,见任务板。")
+
+
+def plan_fallback() -> str:
+    """The stand-in line for a host turn that only produced a plan."""
+    return i18n.pick_now(*PLAN_FALLBACK)
 
 
 @dataclass
@@ -306,7 +313,7 @@ class Orchestrator:
         instruction = planner.planning_instruction(int(cfg["plan_max_tasks"]), mode, past)
         out = await self._agent_turn(
             group, host, members, emit, run, extra_user=instruction,
-            empty_fallback=PLAN_FALLBACK,
+            empty_fallback=plan_fallback(),
         )
         if out is None:
             return None
@@ -600,9 +607,9 @@ class Orchestrator:
             group, agent, members, memory_block=memory_block, extra_system=run.refs_block,
             extra_user=extra_user, exclude_plan_id=exclude_plan_id,
         )
-        system = messages[0]["content"] + "\n\n" + external.ADDENDUM.format(
-            name=name, group=group["name"], level=external.LEVELS[ecfg["level"]]["label"],
-            cwd=str(self.external.workspace(agent)),
+        system = messages[0]["content"] + "\n\n" + external.addendum(
+            name, group["name"], external.level_view(ecfg["level"])["label"],
+            str(self.external.workspace(agent)),
         )
         prompt = external.flatten_convo(messages[1:])
         trace: list[dict] = []
@@ -669,7 +676,7 @@ class Orchestrator:
 
     async def _plan_failed(self, gid: str, out: "TurnOut", note: str, emit: Emit) -> None:
         """计划没能执行时,把群主那条只有「已做好分工,见任务板」的消息改掉,免得和下面的系统提示互相矛盾。"""
-        if out.text == PLAN_FALLBACK:
+        if out.text in PLAN_FALLBACK:
             try:
                 fixed = self.store.update_message(out.message["id"], content=i18n.pick_now("(the plan did not take effect — see the system notice below)", "(分工计划没能生效,见下方系统提示)"))
                 if fixed:
