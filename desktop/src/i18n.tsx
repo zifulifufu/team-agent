@@ -1530,6 +1530,11 @@ const ZH: Record<string, string> = {
   "Not set": "未设置",
   "Add {name} as a member": "把 {name} 加为成员",
   "None yet. In a group chat, click Add member → External agents and pick one: WorkBuddy's command-line engine, or a chat gateway such as Cherry Studio or MetaChat.": "还没有。在群聊里点「添加成员 → 外部智能体」挑一个:WorkBuddy 的命令行引擎,或 Cherry Studio、MetaChat 这样的对话网关。",
+  // ---------------------------------------------------------------- 专家
+  "Experts": "专家",
+  "Domain specialists: each one states how it works and where its competence stops. Add one and it takes part like any other member.": "领域专家:每一位都写明它怎么做事、以及能力的边界在哪里。加进群后和普通成员一样参与协作。",
+  "All experts have already been created": "所有专家都已经创建过了",
+  "Add {name} to the group": "把 {name} 加进群",
 };
 
 let current: Lang = DEFAULT_LANG;

@@ -210,6 +210,7 @@ export interface AgentPreset {
   role: string;
   tags: Tag[];
   prompt: string;
+  kind: "role" | "expert";         // general roles and domain experts are listed separately
   exists: boolean;                 // A member with this name already exists (adding reuses it)
 }
 export type LibraryMode = "all" | "selected" | "off";

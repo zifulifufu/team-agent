@@ -43,6 +43,23 @@ export default function MemberAdder({ group }: { group: Group }) {
   const others = agents.filter((a) => !group.member_ids.includes(a.id) && a.origin !== "model" && !a.engine);
   const extOthers = agents.filter((a) => !!a.engine && !group.member_ids.includes(a.id));
   const freshPresets = (presets ?? []).filter((p) => !p.exists);
+  const freshExperts = freshPresets.filter((p) => p.kind === "expert");
+  const freshRoles = freshPresets.filter((p) => p.kind !== "expert");
+
+  // One row shape for both sections: an expert is an ordinary member with a sharper remit.
+  const presetRow = (p: AgentPreset) => (
+    <div key={p.key} className="madd-item">
+      <span className="avatar sm">{p.avatar}</span>
+      <div className="madd-main">
+        <div className="madd-name">{p.name}</div>
+        <div className="madd-sub wrap">{p.role}</div>
+        {p.tags.length > 0 && <StrengthChips tags={p.tags} max={3} />}
+      </div>
+      <button className="btn small" disabled={!!busy} onClick={() => run("preset:" + p.key, () => api.addMemberFromPreset(gid, p.key), true).then(loadPresets)} aria-label={t("Add {name} to the group", { name: p.name })}>
+        <Plus size={12} /> {t("Add")}
+      </button>
+    </div>
+  );
 
   const run = async (key: string, fn: () => Promise<unknown>, full = false) => {
     setBusy(key);
@@ -147,23 +164,16 @@ export default function MemberAdder({ group }: { group: Group }) {
         ))
       )}
 
-      <div className="madd-sec">{t("Role presets")}</div>
+      <div className="madd-sec">{t("Experts")}</div>
+      <div className="madd-note">{t("Domain specialists: each one states how it works and where its competence stops. Add one and it takes part like any other member.")}</div>
       {presetErr && <div className="err madd-err">{presetErr}</div>}
       {presets === null && !presetErr && <div className="madd-none">{t("Loading…")}</div>}
-      {presets !== null && freshPresets.length === 0 && <div className="madd-none">{t("All role presets have already been created")}</div>}
-      {freshPresets.map((p) => (
-        <div key={p.key} className="madd-item">
-          <span className="avatar sm">{p.avatar}</span>
-          <div className="madd-main">
-            <div className="madd-name">{p.name}</div>
-            <div className="madd-sub wrap">{p.role}</div>
-            {p.tags.length > 0 && <StrengthChips tags={p.tags} max={3} />}
-          </div>
-          <button className="btn small" disabled={!!busy} onClick={() => run("preset:" + p.key, () => api.addMemberFromPreset(gid, p.key), true).then(loadPresets)} aria-label={t("Add the {name} role preset", { name: p.name })}>
-            <Plus size={12} /> {t("Add")}
-          </button>
-        </div>
-      ))}
+      {presets !== null && freshExperts.length === 0 && <div className="madd-none">{t("All experts have already been created")}</div>}
+      {freshExperts.map(presetRow)}
+
+      <div className="madd-sec">{t("Role presets")}</div>
+      {presets !== null && freshRoles.length === 0 && <div className="madd-none">{t("All role presets have already been created")}</div>}
+      {freshRoles.map(presetRow)}
     </div>
   );
 }
