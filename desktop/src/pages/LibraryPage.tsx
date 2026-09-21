@@ -98,10 +98,19 @@ interface UpItem {
 let upSeq = 1;
 
 // --------------------------------------------------------------------- page
-export default function LibraryPage() {
+/**
+ * The document library.
+ *
+ * With `groupId` it is that group chat's own library: the list, the uploads and the search are
+ * all scoped to it, and everything the page shows is what its members can actually reach. No
+ * group -> the whole library, which is the overview: every document, with the group each one
+ * belongs to (or "Shared").
+ */
+export default function LibraryPage({ groupId, onBack }: { groupId?: string; onBack?: () => void } = {}) {
   const { t } = useI18n();
   const confirm = useConfirm();
-  const { reloadGroups } = useData();
+  const { reloadGroups, groups } = useData();
+  const group = groups.find((g) => g.id === groupId) ?? null;
   const [docs, setDocs] = useState<LibraryDoc[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -127,7 +136,7 @@ export default function LibraryPage() {
 
   const load = useCallback(async () => {
     try {
-      const r = await api.library();
+      const r = await api.library(groupId);
       setDocs(r.docs);
       setTotal(r.total_chars);
       setLoadErr("");
@@ -136,7 +145,7 @@ export default function LibraryPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [groupId]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => window.clearTimeout(openTimer.current), []);
 
@@ -150,7 +159,7 @@ export default function LibraryPage() {
       const it = items[i];
       patchUp(it.key, { state: "up" });
       try {
-        await api.uploadDoc(files[i]);
+        await api.uploadDoc(files[i], groupId);
         patchUp(it.key, { state: "ok" });
         window.setTimeout(() => setUps((l) => l.filter((u) => u.key !== it.key)), 6000);
         await load();
@@ -186,7 +195,7 @@ export default function LibraryPage() {
     let alive = true;
     const t = window.setTimeout(async () => {
       try {
-        const r = await api.searchLibrary(key, 8);
+        const r = await api.searchLibrary(key, 8, groupId);
         if (!alive) return;
         setHits(r);
         setSearchErr("");
@@ -260,9 +269,20 @@ export default function LibraryPage() {
       <div className="kn-inner">
         <div className="kn-head">
           <div className="kn-head-main">
-            <h1>{t("Library")}</h1>
+            {group ? (
+              <h1 className="kn-title-row">
+                <button className="link" onClick={onBack}>{t("Library")}</button>
+                <ChevronRight size={15} aria-hidden />
+                <span>{group.name}</span>
+              </h1>
+            ) : (
+              <h1>{t("Library")}</h1>
+            )}
             <p className="kn-desc">
-              {t("Uploaded documents are split into chunks and indexed. Members search them automatically when they need material (each group can use all documents, only selected ones, or none under Extensions); you can also write")} <code>#document title</code> {t("in a message to cite a whole document.")}
+              {group
+                ? t("This is {name}'s own library. Its members search these documents plus the shared ones; no other group can see them. You can also write", { name: group.name })
+                : t("Every document, with the group it belongs to. A document marked Shared is visible to every group. Open a group chat and use its library to add material scoped to that project.")}{" "}
+              <code>#document title</code> {t("in a message to cite a whole document.")}
             </p>
           </div>
           <div className="kn-head-actions">
@@ -416,6 +436,11 @@ export default function LibraryPage() {
                     )}
                     <div className="kn-doc-sub">
                       <span className="tag">{kindLabel(d.kind)}</span>
+                      {!groupId && (
+                        <span className={"tag" + (d.group_id ? "" : " shared")}>
+                          {d.group_id ? (groups.find((g) => g.id === d.group_id)?.name ?? t("Unknown group")) : t("Shared")}
+                        </span>
+                      )}
                       <span className="kn-doc-file">{d.filename ? d.filename : t("Manual note")}</span>
                       {!d.enabled && <span className="tag warn">{t("Disabled — not searched")}</span>}
                     </div>
@@ -434,15 +459,15 @@ export default function LibraryPage() {
         )}
       </div>
 
-      {source && <SourceModal kind={source} onClose={() => setSource(null)} onDone={() => void load()} />}
-      {noteOpen && <NoteModal onClose={() => setNoteOpen(false)} onSaved={() => { setNoteOpen(false); void load(); }} />}
+      {source && <SourceModal kind={source} groupId={groupId} onClose={() => setSource(null)} onDone={() => void load()} />}
+      {noteOpen && <NoteModal groupId={groupId} onClose={() => setNoteOpen(false)} onSaved={() => { setNoteOpen(false); void load(); }} />}
       {reading && <Reader doc={reading} onClose={() => setReading(null)} />}
     </div>
   );
 }
 
 // --------------------------------------------------------------- new note
-function NoteModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function NoteModal({ groupId, onClose, onSaved }: { groupId?: string; onClose: () => void; onSaved: () => void }) {
   const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -454,7 +479,7 @@ function NoteModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => v
     setBusy(true);
     setErr("");
     try {
-      await api.addNote(title.trim(), content);
+      await api.addNote(title.trim(), content, groupId);
       onSaved();
     } catch (e) {
       setErr((e as Error).message);
@@ -549,7 +574,7 @@ function Reader({ doc, onClose }: { doc: { id: string; title: string; q: string 
 }
 
 /** Import from a link or a folder: links are fetched over the network (subject to the hosted-calls switch), folders are read locally and a second import only updates what changed. */
-function SourceModal({ kind, onClose, onDone }: { kind: "url" | "dir"; onClose: () => void; onDone: () => void }) {
+function SourceModal({ kind, groupId, onClose, onDone }: { kind: "url" | "dir"; groupId?: string; onClose: () => void; onDone: () => void }) {
   const { t } = useI18n();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -563,10 +588,10 @@ function SourceModal({ kind, onClose, onDone }: { kind: "url" | "dir"; onClose: 
     setRes(null);
     try {
       if (kind === "url") {
-        await api.addDocUrl(value.trim());
+        await api.addDocUrl(value.trim(), groupId);
         setRes({ added: 1, skipped: [] });
       } else {
-        const r = await api.addDocDir(value.trim());
+        const r = await api.addDocDir(value.trim(), true, groupId);
         setRes({ added: r.added.length, skipped: r.skipped });
       }
       onDone();

@@ -18,6 +18,8 @@ interface Props {
   refreshCaps: () => void;
   active: boolean;
   onSettings: (t: SettingsTab) => void;
+  /** Open this group's own library (App switches the main area to it) */
+  onOpenLibrary: () => void;
 }
 
 const PLAN_OPTIONS: { v: PlanMode; label: string }[] = [
@@ -53,7 +55,7 @@ function Section({ title, note, children, right }: { title: string; note?: React
   );
 }
 
-export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSettings }: Props) {
+export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSettings, onOpenLibrary }: Props) {
   const { t } = useI18n();
   const { reloadGroups, reloadUpdates, settings } = useData();
   const reloadUpdatesSafe = () => { void reloadUpdates(); };
@@ -87,7 +89,8 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
     api.skills().then((v) => { setSkills(v); ok("skills"); }).catch(fail("skills"));
     api.plugins().then((v) => { setPlugins(v); ok("plugins"); }).catch(fail("plugins"));
     api.mcp().then((v) => { setMcp(v); ok("mcp"); }).catch(fail("mcp"));
-    api.library().then((v) => { setDocs(v.docs); ok("docs"); }).catch(fail("docs"));
+    // Only what this group can actually choose from: its own documents plus the shared ones
+    api.library(group.id).then((v) => { setDocs(v.docs); ok("docs"); }).catch(fail("docs"));
     api.mcpTemplates().then(setTemplates).catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -254,7 +257,8 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
         })}
       </Section>
 
-      <Section title={t("Library")} note={caps ? t("{n} searchable documents. Members search them when they need to; the whole library is never stuffed into the prompt.", { n: caps.docs }) : undefined}>
+      <Section title={t("Library")} note={caps ? t("{n} searchable documents in this group's library. Members search them when they need to; the whole library is never stuffed into the prompt.", { n: caps.docs }) : undefined}
+        right={<button className="link-btn" onClick={onOpenLibrary}>{t("Manage documents")}</button>}>
         <div className="seg gp-seg" role="group" aria-label={t("Library scope")}>
           {(
             [

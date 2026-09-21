@@ -55,9 +55,11 @@ interface Props {
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
   onSettings: (t: SettingsTab) => void;
+  /** Open this group's own library in the main area */
+  onOpenLibrary: () => void;
 }
 
-export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onTab, onSettings }: Props) {
+export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onTab, onSettings, onOpenLibrary }: Props) {
   const { t, pick } = useI18n();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const onKey = (e: React.KeyboardEvent, i: number) => {
@@ -88,7 +90,7 @@ export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onT
         ))}
       </div>
       <div className="gp-pane" role="tabpanel" id="gp-pane-ext" aria-labelledby="gp-tab-ext" hidden={tab !== "ext"}>
-        <ExtTab group={group} caps={caps} capsErr={capsErr} refreshCaps={refreshCaps} active={tab === "ext"} onSettings={onSettings} />
+        <ExtTab group={group} caps={caps} capsErr={capsErr} refreshCaps={refreshCaps} active={tab === "ext"} onSettings={onSettings} onOpenLibrary={onOpenLibrary} />
       </div>
       <div className="gp-pane" role="tabpanel" id="gp-pane-prompt" aria-labelledby="gp-tab-prompt" hidden={tab !== "prompt"}>
         <PromptTab group={group} active={tab === "prompt"} />

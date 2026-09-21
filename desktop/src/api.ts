@@ -543,6 +543,8 @@ export interface LibraryDoc {
   chars: number;
   chunks: number;
   enabled: boolean;
+  /** Owning group chat; empty = shared, visible to every group */
+  group_id: string;
   created_at: number;
 }
 export interface LibraryHit {
@@ -882,21 +884,22 @@ export const api = {
   delMcp: (id: string) => del(`/api/mcp/${id}`),
   connectMcp: (id: string) => post<McpServer>(`/api/mcp/${id}/connect`),
   disconnectMcp: (id: string) => post<McpServer>(`/api/mcp/${id}/disconnect`),
-  // ---- Library
-  library: () => get<{ docs: LibraryDoc[]; total_chars: number; count: number }>("/api/library"),
-  addNote: (title: string, content: string) => post<LibraryDoc>("/api/library/note", { title, content }),
+  // ---- Library. `group` scopes everything to one group chat's library (its own documents plus
+  // the shared ones); omitted means the whole library, which is what the overview page shows.
+  library: (group?: string) => get<{ docs: LibraryDoc[]; total_chars: number; count: number }>(`/api/library${qs({ group_id: group })}`),
+  addNote: (title: string, content: string, group?: string) => post<LibraryDoc>("/api/library/note", { title, content, group_id: group ?? "" }),
   /** The request body is the file's raw bytes (txt/md/csv/json/html/pdf/docx) */
-  uploadDoc: (file: File) => postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name })}`, file),
+  uploadDoc: (file: File, group?: string) => postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name, group_id: group })}`, file),
   // ---- Images attached to a message
   /** Raw bytes, like the library upload. The server decides the type from the bytes, not the name. */
   uploadImage: (gid: string, file: File) => postRaw<Attachment>(`/api/groups/${gid}/attachments${qs({ filename: file.name })}`, file),
   dropImage: (id: string) => del<{ ok: boolean }>(`/api/attachments/${id}`),
   /** The bytes, fetched with the token in a header — see `getBlob` for why an <img src> will not do. */
   imageBytes: (id: string) => getBlob(`/api/attachments/${id}`),
-  addDocUrl: (url: string) => post<LibraryDoc>("/api/library/url", { url }),
-  addDocDir: (path: string, recursive = true) =>
-    post<{ added: LibraryDoc[]; skipped: { name: string; reason: string }[] }>("/api/library/dir", { path, recursive }),
-  searchLibrary: (q: string, top_k = 5) => get<LibraryHit[]>(`/api/library/search${qs({ q, top_k })}`),
+  addDocUrl: (url: string, group?: string) => post<LibraryDoc>("/api/library/url", { url, group_id: group ?? "" }),
+  addDocDir: (path: string, recursive = true, group?: string) =>
+    post<{ added: LibraryDoc[]; skipped: { name: string; reason: string }[] }>("/api/library/dir", { path, recursive, group_id: group ?? "" }),
+  searchLibrary: (q: string, top_k = 5, group?: string) => get<LibraryHit[]>(`/api/library/search${qs({ q, top_k, group_id: group })}`),
   readDoc: (id: string, start = 0) =>
     get<{ doc: LibraryDoc; start: number; end: number; total: number; text: string }>(`/api/library/${id}${qs({ start })}`),
   patchDoc: (id: string, b: { title?: string; enabled?: boolean }) => patch<LibraryDoc>(`/api/library/${id}`, b),

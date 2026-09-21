@@ -19,9 +19,11 @@ interface Props {
   autoSend?: string;
   onAutoSent: () => void;
   onSettings: (tab: SettingsTab) => void;
+  /** Open this group's own library in the main area */
+  onOpenLibrary: () => void;
 }
 
-export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Props) {
+export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpenLibrary }: Props) {
   const { t } = useI18n();
   const { groups, agents, models, reloadGroups } = useData();
   const confirm = useConfirm();
@@ -297,6 +299,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings }: Prop
           tab={panelTab}
           onTab={setPanelTab}
           onSettings={onSettings}
+          onOpenLibrary={onOpenLibrary}
         />
       )}
     </div>

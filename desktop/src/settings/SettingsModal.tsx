@@ -1,22 +1,15 @@
 import { useEffect, type ComponentType } from "react";
-import { ArrowLeft, BarChart3, type LucideIcon, BookOpen, Boxes, Brain, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Palette, Plug, Puzzle, Server, ShieldCheck, SlidersHorizontal, Sparkles, TerminalSquare } from "lucide-react";
+import { ArrowLeft, BarChart3, type LucideIcon, Boxes, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, Server, ShieldCheck, SlidersHorizontal, TerminalSquare } from "lucide-react";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import ProvidersPage from "./ProvidersPage";
 import RoutingPage from "./RoutingPage";
 import LocalPage from "./LocalPage";
-import SkillsPage from "./SkillsPage";
-import PluginsPage from "./PluginsPage";
-import McpPage from "./McpPage";
 import ExternalPage from "./ExternalPage";
 import GalleryPage from "./GalleryPage";
-import PromptsPage from "../pages/PromptsPage";
-import LibraryPage from "../pages/LibraryPage";
-import MemoryPage from "../pages/MemoryPage";
 import UpdatesPage from "./UpdatesPage";
 import GeneralPage from "./GeneralPage";
 import PermissionsPage from "./PermissionsPage";
-import AppearancePage from "./AppearancePage";
 import DataPage from "./DataPage";
 import StatsPage from "./StatsPage";
 import DepsPage from "./DepsPage";
@@ -44,16 +37,15 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
     ],
   },
   {
+    // Skills, plugins, MCP, prompts, the library, memory and appearance are not listed here:
+    // each already has its own entry in the sidebar's Tools column (or under the account menu
+    // for appearance), and repeating them in Settings meant two doors to the same room. The
+    // pages themselves are unchanged — App routes those ids to the main area, so a link from
+    // inside Settings (Permissions -> Manage plugins) still lands in the right place.
     title: "Tools",
     items: [
-      { id: "skills", label: "Skills", icon: Sparkles, page: SkillsPage },
-      { id: "plugins", label: "Plugins", icon: Puzzle, page: PluginsPage },
-      { id: "mcp", label: "MCP", icon: Plug, page: McpPage },
       { id: "external", label: "External agents", icon: TerminalSquare, page: ExternalPage },
       { id: "gallery", label: "Template gallery", icon: LayoutTemplate, page: GalleryPage },
-      { id: "prompts", label: "Prompts", icon: MessageSquareText, page: PromptsPage },
-      { id: "library", label: "Library", icon: BookOpen, page: LibraryPage },
-      { id: "memory", label: "Memory", icon: Brain, page: MemoryPage },
     ],
   },
   {
@@ -62,7 +54,6 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
       { id: "general", label: "General", icon: SlidersHorizontal, page: GeneralPage },
       { id: "permissions", label: "Permissions & control", icon: ShieldCheck, page: PermissionsPage },
       { id: "updates", label: "Updates & discovery", icon: Download, page: UpdatesPage },
-      { id: "appearance", label: "Appearance", icon: Palette, page: AppearancePage },
       { id: "data", label: "Data", icon: Database, page: DataPage },
       { id: "stats", label: "Usage stats", icon: BarChart3, page: StatsPage },
       { id: "deps", label: "Dependencies", icon: Cpu, page: DepsPage },
@@ -83,7 +74,11 @@ export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { ta
 
   const { updateCount } = useData();
   const { t } = useI18n();
-  const Page = GROUPS.flatMap((g) => g.items).find((i) => i.id === tab)?.page ?? ProvidersPage;
+  // A tab that is not in the nav means it belongs to the main area (see App.goTab). Falling back
+  // to the first item keeps this from rendering a page with no highlighted nav entry.
+  const items = GROUPS.flatMap((g) => g.items);
+  const active = items.find((i) => i.id === tab) ?? items[0];
+  const Page = active.page;
   return (
     <div className="settings" role="dialog" aria-label={t("Settings")}>
       <div className="settings-top drag">
@@ -96,7 +91,7 @@ export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { ta
             <div key={g.title} className="nav-group">
               <div className="nav-group-title">{t(g.title)}</div>
               {g.items.map((i) => (
-                <button key={i.id} className={"nav-item" + (tab === i.id ? " on" : "")} onClick={() => onTab(i.id)}>
+                <button key={i.id} className={"nav-item" + (active.id === i.id ? " on" : "")} onClick={() => onTab(i.id)}>
                   <i.icon size={16} /> {t(i.label)}
                   {i.id === "updates" && updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}
                 </button>

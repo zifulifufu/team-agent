@@ -1443,6 +1443,13 @@ const ZH: Record<string, string> = {
   "Image unavailable": "图片不可用",
   "Attached image": "附带的图片",
   "image": "图片",
+  // ---------------------------------------------------------------- 资料库 · 按群归属
+  "Manage documents": "管理文档",
+  "Shared": "共享",
+  "Unknown group": "未知群聊",
+  "Every document, with the group it belongs to. A document marked Shared is visible to every group. Open a group chat and use its library to add material scoped to that project.": "这里是全部文档,并标出各自所属的群聊。标为「共享」的文档所有群都能看到。要按项目放资料,进群聊用它自己的资料库。",
+  "This is {name}'s own library. Its members search these documents plus the shared ones; no other group can see them. You can also write": "这是「{name}」自己的资料库。该群成员检索这些文档以及共享文档,别的群看不到。你还可以在消息里写",
+  "{n} searchable documents in this group's library. Members search them when they need to; the whole library is never stuffed into the prompt.": "本群资料库里有 {n} 份可检索文档。成员需要时会自己检索;整库永远不会被塞进提示词。",
 };
 
 let current: Lang = DEFAULT_LANG;

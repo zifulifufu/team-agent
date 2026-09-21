@@ -17,8 +17,11 @@ export type View =
   | { kind: "plugins" }
   | { kind: "mcp" }
   | { kind: "prompts" }
-  | { kind: "library" }
-  | { kind: "memory" };
+  // `gid` opens that group chat's own library; without it the view is the overview of every
+  // document, which is what the sidebar entry gives.
+  | { kind: "library"; gid?: string }
+  | { kind: "memory" }
+  | { kind: "appearance" };
 
 /** The Tools section of the sidebar: each entry is its own page (Settings → Tools reaches the same ones) */
 const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "prompts" | "library" | "memory"; label: string; icon: typeof Sparkles }[] = [
@@ -137,7 +140,7 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
         {menu && (
           <div className="user-menu" role="menu">
             <button role="menuitem" onClick={() => { setMenu(false); onSettings("providers"); }}><Settings size={15} /> {t("Settings")}</button>
-            <button role="menuitem" onClick={() => { setMenu(false); onSettings("appearance"); }}><Palette size={15} /> {t("Appearance")}</button>
+            <button role="menuitem" onClick={() => { setMenu(false); onView({ kind: "appearance" }); }}><Palette size={15} /> {t("Appearance")}</button>
             <div className="menu-row">
               <WifiOff size={15} /> <span>{t("Offline mode")}</span>
               <Switch

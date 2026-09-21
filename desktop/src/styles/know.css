@@ -179,3 +179,9 @@ textarea.kn-mono[rows="9"] { resize: vertical; overflow: auto; min-height: 0; }
 .kn-obs-last.bad { color: var(--danger); }
 .kn-obs-warn { margin: 4px 0 0; padding-left: 18px; color: #b64a00; }
 .kn-obs-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* The group's library header (Library > group name) and the Shared / group tag on each row */
+.kn-title-row { display: flex; align-items: center; gap: 8px; }
+.kn-title-row .link { font-size: inherit; font-weight: inherit; }
+.kn-title-row span { color: var(--text-2); }
+.kn-doc-sub .tag.shared { color: var(--text-3); border-style: dashed; }
