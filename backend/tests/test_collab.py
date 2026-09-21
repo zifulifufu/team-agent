@@ -9,7 +9,18 @@ from pathlib import Path
 import pytest
 
 from app.orchestrator import Orchestrator
-from tests.conftest import ASSIGNMENT, INTEGRATE, PLAN_MODE, TASK_HEAD, UPSTREAM, FakeLLM, chunk, has
+from tests.conftest import (
+    ASSIGNMENT,
+    EXTRACT_PROMPT,
+    INTEGRATE,
+    MEMORY_HEAD,
+    PLAN_MODE,
+    TASK_HEAD,
+    UPSTREAM,
+    FakeLLM,
+    chunk,
+    has,
+)
 
 
 def role(messages):
@@ -382,11 +393,11 @@ async def test_memory_injected_scoped_and_toggleable_and_saved_by_tool(store, ma
     store.add_memory("别的群的事", "group", "other", "fact")
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     s = fake.calls[0][1][0]["content"]
-    assert "【记忆】" in s and "永远用中文回复" in s and "别的群的事" not in s
+    assert has(s, MEMORY_HEAD) and "永远用中文回复" in s and "别的群的事" not in s
     store.update_group(g["id"], {"ext": {"memory": False}})                  # 本群关闭记忆
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
-    assert "【记忆】" not in fake.calls[0][1][0]["content"] and "memory_save" not in fake.calls[0][1][0]["content"]
+    assert not has(fake.calls[0][1][0]["content"], MEMORY_HEAD) and "memory_save" not in fake.calls[0][1][0]["content"]
     store.update_group(g["id"], {"ext": {"memory": True}})
     await orch.handle_user_message(g["id"], "@Copywriter 记住:主持人是小王", Collector())
     assert any("小王" in m["content"] and m["source"] == "auto" for m in store.list_memories("group", g["id"]))
@@ -404,7 +415,7 @@ async def test_auto_extract_runs_in_background_after_reply(store, make_router):
     reply = json.dumps([{"scope": "global", "kind": "preference", "content": "汇报先给结论"}], ensure_ascii=False)
 
     def script(messages):
-        return reply if "记忆整理员" in last_user(messages) else "这是结论:通过"
+        return reply if has(last_user(messages), EXTRACT_PROMPT) else "这是结论:通过"
 
     fake = FakeLLM(default=script)
     orch, g = setup(store, make_router, fake, memory_auto_extract=True)

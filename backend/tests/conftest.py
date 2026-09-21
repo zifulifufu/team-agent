@@ -28,6 +28,9 @@ INTEGRATE = ("[Integration]", "【整合】")
 HOST_MARK = ("(host)", "〔群主〕")
 UPSTREAM = ("<- you", "← 你")
 TURN_NOW = ("it is now your turn", "现在轮到你")
+MEMORY_HEAD = ("[Memory]", "【记忆】")          # memory block injected into the prompt
+FELLBACK = ("fell back", "回退")                # behavioural log: model fallback happened
+EXTRACT_PROMPT = ("You are a memory editor", "你是记忆整理员")   # background memory extraction
 
 
 def has(text: str, marker: tuple[str, ...]) -> bool:

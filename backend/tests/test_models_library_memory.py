@@ -9,7 +9,7 @@ from app.library import Library, LibraryError
 from app.memory import MemoryService, looks_sensitive
 from app.router import ModelRouter
 from app.textindex import chunk_text, tokenize
-from tests.conftest import FakeLLM
+from tests.conftest import FakeLLM, FELLBACK, MEMORY_HEAD, has
 
 
 # -------------------------------------------------------------- strengths
@@ -196,7 +196,7 @@ def test_recall_prefers_relevant_pinned_and_preferences(store):
     texts = [m["content"] for m in got]
     assert texts[0] == pin["content"]                                     # 置顶优先
     assert "发布会定在 10 月 12 日" in texts and "别的群的事" not in texts
-    assert "记忆" in mem.block(got) and mem.block([]) == ""
+    assert has(mem.block(got), MEMORY_HEAD) and mem.block([]) == ""
     assert store.list_memories("group", g)[0]["hits"] >= 0
     assert store.get_memory(got[1]["id"])["hits"] == 1                    # 被取回的记忆记录命中次数
 
@@ -238,7 +238,8 @@ def test_record_action_summarises_and_trims(store):
     steps = [{"agent": "Copywriter", "model": "deepseek/deepseek-flash", "tools": ["library_search"], "ok": True},
              {"agent": "Proofreader", "model": "ollama/qwen2.5:7b", "fallback": True, "ok": True}]
     m = mem.record_action(g, "写发布会通知", steps, 12.4)
-    assert m["kind"] == "action" and "Copywriter" in m["content"] and "library_search" in m["content"] and "回退" in m["content"]
+    assert m["kind"] == "action" and "Copywriter" in m["content"] and "library_search" in m["content"]
+    assert has(m["content"], FELLBACK)
     for i in range(50):
         mem.record_action(g, f"任务{i}", steps, 1)
     assert len(store.list_memories("group", g["id"], "action")) == 40

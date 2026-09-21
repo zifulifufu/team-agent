@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from . import i18n
+
 import json
 import re
 import time
@@ -18,7 +20,21 @@ from .router import AllRoutesFailed, ModelRouter
 from .store import Store
 from .textindex import BM25, tokenize
 
-KIND_LABEL = {"preference": "偏好", "fact": "事实", "decision": "决定", "lesson": "教训", "action": "过往做法"}
+# id -> (English label, Chinese label). Pairs rather than a `pick_now` call: a module-level
+# call would be evaluated once at import and freeze whichever language was current then.
+KIND_LABEL = {
+    "preference": ("Preference", "偏好"),
+    "fact": ("Fact", "事实"),
+    "decision": ("Decision", "决定"),
+    "lesson": ("Lesson", "教训"),
+    "action": ("Past action", "过往做法"),
+}
+
+
+def kind_label(kind: str) -> str:
+    """The memory kind as it should read in the request language."""
+    pair = KIND_LABEL.get(kind)
+    return i18n.pick_now(*pair) if pair else kind
 _SECRETish = re.compile(r"(sk-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{12,}|\d{11,}|[A-Za-z0-9_\-]{32,}|password|密码|口令|secret|api[_ -]?key)", re.I)
 
 
@@ -66,8 +82,13 @@ class MemoryService:
     def block(mems: list[dict]) -> str:
         if not mems:
             return ""
-        lines = [f"- [{KIND_LABEL.get(m['kind'], m['kind'])}] {m['content']}" for m in mems]
-        return "【记忆】(来自以往协作,与当前任务无关的可以忽略,不要向用户复述)\n" + "\n".join(lines)
+        lines = [f"- [{kind_label(m['kind'])}] {m['content']}" for m in mems]
+        head = i18n.pick_now(
+            "[Memory] (from earlier collaboration; ignore anything unrelated to the current "
+            "task, and do not repeat it back to the user)\n",
+            "【记忆】(来自以往协作,与当前任务无关的可以忽略,不要向用户复述)\n",
+        )
+        return head + "\n".join(lines)
 
     # ---------------------------------------------------------------- record
     def record_action(self, group: dict, task_text: str, steps: list[dict], elapsed_s: float) -> dict | None:
@@ -80,13 +101,20 @@ class MemoryService:
             if s.get("model"):
                 bits.append(f"({s['model'].split('/', 1)[-1]})")
             if s.get("tools"):
-                bits.append("用了 " + "、".join(dict.fromkeys(s["tools"])))
+                bits.append(i18n.pick_now(
+                    "used " + ", ".join(dict.fromkeys(s["tools"])),
+                    "用了 " + "、".join(dict.fromkeys(s["tools"])),
+                ))
             if s.get("fallback"):
-                bits.append("发生过回退")
+                bits.append(i18n.pick_now("fell back to another model", "发生过回退"))
             if not s.get("ok", True):
-                bits.append("失败")
+                bits.append(i18n.pick_now("failed", "失败"))
             parts.append("".join(bits[:2]) + (" " + " ".join(bits[2:]) if len(bits) > 2 else ""))
-        text = f"任务「{task_text.strip()[:60]}」→ " + ";".join(parts) + f";共 {elapsed_s:.0f} 秒"
+        text = (
+            i18n.pick_now(f'Task "{task_text.strip()[:60]}" -> ', f"任务「{task_text.strip()[:60]}」→ ")
+            + ";".join(parts)
+            + i18n.pick_now(f"; {elapsed_s:.0f}s total", f";共 {elapsed_s:.0f} 秒")
+        )
         m = self.store.add_memory(text, "group", group["id"], "action", "auto")
         self.store.trim_memories("group", group["id"], 40, "action")
         return m
@@ -99,14 +127,34 @@ class MemoryService:
         cfg = self.store.get_settings()
         if not (cfg["memory_enabled"] and cfg["memory_auto_extract"]):
             return []
-        prompt = (
-            "你是记忆整理员。下面是用户的一次请求和团队的最终答复。请只提炼「以后还会用到」的长期信息:"
-            "用户的偏好和习惯、已经做出的决定、踩过的坑/教训、稳定的事实(项目名、受众、口径等)。\n"
-            "严格规则:不要记临时性的内容(具体某天的安排、一次性的问题答案);不要记密钥、密码、证件号、银行卡号、"
-            "手机号或其它个人隐私;每条一句话、不超过 60 字;最多 3 条;没有值得记的就输出空数组。\n"
-            '只输出 JSON 数组,例:[{"scope":"global","kind":"preference","content":"周报喜欢先给结论再列数据"}]。'
-            "scope 只能是 global(对所有群通用)或 group(只对本群),kind 只能是 preference/fact/decision/lesson。\n\n"
-            f"【用户请求】\n{user_text[:1500]}\n\n【团队答复】\n{final_text[:2500]}"
+        prompt = i18n.pick_now(
+            # English side: stays a plain string because of the `{` in the JSON example.
+            (
+                "You are a memory editor. Below are one user request and the team's final answer. "
+                "Extract only the long-term information that will still be useful later: the user's "
+                "preferences and habits, decisions already made, pitfalls and lessons, and stable "
+                "facts (project name, audience, house style, and so on).\n"
+                "Strict rules: do not record anything temporary (arrangements for one particular day, "
+                "a one-off answer); do not record keys, passwords, ID numbers, bank card numbers, "
+                "phone numbers or any other personal data; one sentence each, at most 60 characters; "
+                "at most 3 items; if nothing is worth keeping, output an empty array.\n"
+                'Output only a JSON array, for example: '
+                '[{"scope":"global","kind":"preference","content":"prefers the conclusion first, then the data"}]. '
+                "scope may only be global (applies to every group) or group (this group only); "
+                "kind may only be preference/fact/decision/lesson.\n\n"
+                "[User request]\n"
+            )
+            + f"{user_text[:1500]}\n\n[Team answer]\n{final_text[:2500]}",
+            # Chinese side: the original wording, with its own f-string pieces.
+            (
+                "你是记忆整理员。下面是用户的一次请求和团队的最终答复。请只提炼「以后还会用到」的长期信息:"
+                "用户的偏好和习惯、已经做出的决定、踩过的坑/教训、稳定的事实(项目名、受众、口径等)。\n"
+                "严格规则:不要记临时性的内容(具体某天的安排、一次性的问题答案);不要记密钥、密码、证件号、银行卡号、"
+                "手机号或其它个人隐私;每条一句话、不超过 60 字;最多 3 条;没有值得记的就输出空数组。\n"
+                '只输出 JSON 数组,例:[{"scope":"global","kind":"preference","content":"周报喜欢先给结论再列数据"}]。'
+                "scope 只能是 global(对所有群通用)或 group(只对本群),kind 只能是 preference/fact/decision/lesson。\n\n"
+            )
+            + f"【用户请求】\n{user_text[:1500]}\n\n【团队答复】\n{final_text[:2500]}",
         )
         try:
             res = await self.router.complete(
