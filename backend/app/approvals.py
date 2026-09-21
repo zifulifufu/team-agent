@@ -22,6 +22,9 @@ Emit = Callable[[dict], Awaitable[None]]
 
 # id -> (English label, Chinese label). Pairs rather than a `pick_now` call: a
 # module-level call would be evaluated once at import and freeze the language.
+# The tiers a spec may declare. Anything else counts as `exec` — see `risk_of`.
+KNOWN_RISKS = ("read", "write", "exec")
+
 RISK_LABELS = {
     "read": ("Read-only", "只读"),
     "write": ("Writes local data", "写入本地数据"),
@@ -45,8 +48,13 @@ fail *closed*: an unnamed tier counts as `exec`, not as read-only. The earlier s
 unless memory_save") meant a new tool that runs something would be allowed without asking —
 the one direction this must never fail in.
 """
-    if spec.get("risk"):
-        return str(spec["risk"])
+    declared = spec.get("risk")
+    if declared:
+        # Only the three known words count. `policy_for` asks for approval by comparing against
+        # "exec", so any other spelling — a typo, a plugin inventing `"execute"` or `"safe"` —
+        # would fall through to "allow". Unknown must mean exec, never read.
+        text = str(declared)
+        return text if text in KNOWN_RISKS else "exec"
     src = spec.get("source")
     if src == "builtin":
         return "exec"

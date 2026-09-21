@@ -281,6 +281,81 @@ async def test_a_frame_that_is_not_there_is_refused(video_env, fake):
     assert not out.ok and "no file at" in out.text and srv.payloads == []
 
 
+async def test_a_file_url_outside_the_workspace_is_refused(video_env, fake):
+    """`file://` is resolved by the *server*, so passing one through unvalidated let a member
+    point that server at any file on this machine."""
+    orch, store, g, prov = video_env
+    srv = fake()
+
+    for bad in ("file:///etc/passwd", "file://localhost/etc/passwd", "file://../../outside.png"):
+        out = await generate(orch, store, g, {"first_frame": bad})
+        assert not out.ok and "outside this group's workspace" in out.text, bad
+    assert srv.payloads == []
+
+
+async def test_a_file_url_inside_the_workspace_still_works(video_env, fake):
+    orch, store, g, prov = video_env
+    ws = Path(store.data_dir) / "workspaces" / g["id"]
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "p.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    srv = fake()
+
+    out = await generate(orch, store, g, {"first_frame": f"file://{ws / 'p.png'}"})
+
+    assert out.ok and srv.payloads[0]["conditions"][0]["uri"] == f"file://{(ws / 'p.png').resolve()}"
+
+
+async def test_a_symlinked_output_directory_is_refused(video_env, fake, tmp_path):
+    """A member can create `video/` as a link with `run_code`; the clip must not be written
+    through it."""
+    orch, store, g, prov = video_env
+    ws = Path(store.data_dir) / "workspaces" / g["id"]
+    ws.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (ws / "video").symlink_to(outside, target_is_directory=True)
+    fake()
+
+    out = await generate(orch, store, g)
+
+    assert not out.ok and "symlink" in out.text
+    assert list(outside.iterdir()) == []
+
+
+def test_saving_never_overwrites_or_publishes_half_a_file(tmp_path):
+    """Publishing uses `link`, which fails when the name is taken, so a file that appears while
+    the clip is downloading is never replaced — and the final name only exists once complete."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    taken = ws / "video"
+    taken.mkdir()
+    first = video.save(b"AAAA", ws, "a cat", "vid-1")
+    assert first.read_bytes() == b"AAAA"
+    # A name that already exists is not reused, and nothing is left staged
+    victim = ws / "video" / first.name
+    video.save(b"BBBB", ws, "a cat", "vid-2")
+    assert victim.read_bytes() == b"AAAA"
+    assert [p.name for p in (ws / "video").iterdir() if p.suffix == ".part"] == []
+    assert not list((ws / "video").glob("*.part"))
+
+
+def test_a_planted_link_at_the_staging_name_is_not_followed(tmp_path, monkeypatch):
+    """The staging file is created with O_EXCL|O_NOFOLLOW: a link planted at that exact name
+    makes the save fail instead of truncating whatever it points at."""
+    ws = tmp_path / "ws"
+    (ws / "video").mkdir(parents=True)
+    monkeypatch.setattr(video.time, "strftime", lambda *_: "20260101-000000")
+    monkeypatch.setattr(video.os, "getpid", lambda: 4242)
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"precious")
+    (ws / "video" / ".20260101-000000-a-cat.4242.part").symlink_to(victim)
+
+    with pytest.raises(video.VideoError) as e:
+        video.save(b"NEW", ws, "a cat", "vid")
+
+    assert victim.read_bytes() == b"precious" and "staging" in str(e.value)
+
+
 async def test_a_bad_aspect_ratio_is_refused_with_the_list(video_env, fake):
     orch, store, g, prov = video_env
     srv = fake()

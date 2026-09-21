@@ -159,6 +159,24 @@ def test_builtin_risk_comes_from_the_spec_not_the_name():
     assert risk_of({"name": "run_code", "source": "plugin"}) == "exec"
 
 
+def test_an_unknown_risk_word_is_treated_as_exec():
+    """`policy_for` asks for approval by comparing the tier against "exec".
+
+    So a tier spelled any other way — a typo, a plugin declaring `"execute"`, `"safe"` or
+    `"medium"` — used to fall through to "allow" and run without asking, in the default mode,
+    while the docstring claimed the opposite. Anything unrecognised must mean exec.
+    """
+    cfg = {"perm_mode": "ask_risky", "perm_allow": [], "perm_deny": []}
+    for declared in ("execute", "EXEC", "safe", "medium", "ex", 1, True):
+        spec = {"name": "p", "source": "plugin", "risk": declared}
+        assert risk_of(spec) == "exec", declared
+        assert policy_for(cfg, spec) == "ask", declared
+    # …and the three real tiers keep working
+    for declared, want in (("read", "allow"), ("write", "allow"), ("exec", "ask")):
+        spec = {"name": "p", "source": "plugin", "risk": declared}
+        assert policy_for(cfg, spec) == want, declared
+
+
 def test_every_builtin_declares_its_own_risk_level():
     """The tier must never be inferred from a tool's name.
 

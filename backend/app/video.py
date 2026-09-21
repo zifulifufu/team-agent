@@ -24,14 +24,18 @@ and the approval flow), because only it knows the group and the settings.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
+import os
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 import httpx
 
 from . import i18n
+from .coderun import inside as _inside     # one implementation of "is this still inside the workspace"
 
 # Provider kinds that are media generators rather than chat models. `store.list_models()` filters
 # these out of the model list, so a member can never be pointed at one.
@@ -193,23 +197,35 @@ def build_payload(
 def frame_uri(value: str, workspace: Path) -> str:
     """An image reference for `conditions[].uri`.
 
-    A URL is passed through. A path is resolved against the group's workspace and refused when
-    it escapes it — the workspace is a boundary here too, and a stray absolute path would
-    otherwise hand the server a reading of any file on this machine. Anything else the caller
-    wants to reference can be written as an explicit `file://` URL.
+    Either an http(s) URL — the server fetches it, nothing local is read — or a path inside this
+    group's workspace. A `file://` URL is resolved here and confined to the workspace as well:
+    it is the *server* that resolves a file URL, so allowing an arbitrary one would let a member
+    point that server at any file on this machine. To reference anything else, copy it into the
+    workspace first.
     """
     v = (value or "").strip()
     if not v:
         return ""
-    if re.match(r"^(https?|file)://", v, re.I):
+    if re.match(r"^https?://", v, re.I):
         return v
     root = workspace.resolve()
-    target = (root / v.lstrip("/")).resolve()
-    if target != root and root not in target.parents:
+    if v.lower().startswith("file://"):
+        raw = urllib.parse.unquote(v[7:])
+        if raw.startswith("localhost/"):
+            raw = raw[len("localhost"):]
+        target = Path(raw)
+        if not target.is_absolute():
+            target = root / target
+    else:
+        target = root / v.lstrip("/")
+    target = target.resolve()
+    if not _inside(root, target):
         raise VideoError(i18n.pick_now(
             f"\"{v}\" is outside this group's workspace. Put the image in the workspace and "
-            "refer to it by a path inside it, or pass an http(s) / file:// URL.",
-            f"「{v}」在本群工作目录之外。请把图片放进工作目录并用目录内的路径引用,或改用 http(s) / file:// 地址。",
+            "refer to it by a path inside it (a file:// URL is checked the same way), or pass an "
+            "http(s) URL the server can fetch.",
+            f"「{v}」在本群工作目录之外。请把图片放进工作目录并用目录内的路径引用(file:// 地址同样按这个规矩检查),"
+            "或改用服务器能取到的 http(s) 地址。",
         ))
     if not target.is_file():
         raise VideoError(i18n.pick_now(
@@ -381,24 +397,54 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
 
 
 def save(data: bytes, workspace: Path, prompt: str, vid: str) -> Path:
-    """Write the mp4 into the group's workspace. Never partially: a `.part` file is renamed into
-    place only once it is complete, so a crashed download cannot leave something that looks like
-    a finished clip."""
+    """Write the mp4 into the group's workspace, and nowhere else.
+
+    Three properties, each for a concrete failure:
+
+    * the directory is checked, not assumed — a member can create `video` as a symlink to
+      somewhere else with `run_code`, and `mkdir(exist_ok=True)` would happily write through it;
+    * the staging file is created with O_EXCL|O_NOFOLLOW, so a symlink planted at that name
+      cannot make this truncate something outside the workspace, and two simultaneous saves
+      cannot share one staging file;
+    * publishing uses `link`, which fails if the destination already exists, so a clip never
+      overwrites a file that appeared while it was downloading, and never appears partially —
+      the name only comes into existence when the bytes are complete.
+    """
+    root = workspace.resolve()
     out_dir = workspace / "video"
+    if out_dir.is_symlink():
+        raise VideoError(i18n.pick_now(
+            f"\"{out_dir}\" is a symlink, so the clip was not saved. Runs keep their output in a "
+            "real directory inside the workspace.",
+            f"「{out_dir}」是一个符号链接,所以视频没有保存。产物必须放在工作目录里的真实目录中。",
+        ))
     out_dir.mkdir(parents=True, exist_ok=True)
+    if not _inside(root, out_dir):
+        raise VideoError(i18n.pick_now(
+            f"\"{out_dir}\" resolves outside the workspace, so the clip was not saved.",
+            f"「{out_dir}」解析后在工作目录之外,视频没有保存。",
+        ))
     stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug(prompt) or slug(vid) or 'clip'}"
-    path = out_dir / f"{stem}.mp4"
-    n = 2
-    while path.exists():                      # two clips in the same second
-        path = out_dir / f"{stem}-{n}.mp4"
-        n += 1
-    tmp = path.with_suffix(".mp4.part")
+    staging = out_dir / f".{stem}.{os.getpid()}.part"
     try:
-        tmp.write_bytes(data)
-        tmp.replace(path)
+        fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        raise VideoError(i18n.pick_now(
+            f"Could not create the staging file in {out_dir}: {e}",
+            f"无法在 {out_dir} 里创建临时文件:{e}",
+        )) from None
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        for n in itertools.count(1):
+            path = out_dir / (f"{stem}.mp4" if n == 1 else f"{stem}-{n}.mp4")
+            try:
+                os.link(staging, path)        # atomic, and fails rather than overwriting
+            except FileExistsError:
+                continue
+            return path
     finally:
-        tmp.unlink(missing_ok=True)
-    return path
+        staging.unlink(missing_ok=True)
 
 
 async def generate(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import time
 
 import pytest
@@ -138,6 +139,89 @@ async def test_timeout_kills_the_whole_process_tree(code_env):
     out = await call(orch, store, g, {"language": "python", "code": child}, _yes)
     assert not out.ok and "was killed" in out.text
     assert time.time() - t0 < 8, "the timeout has to actually fire"
+
+
+async def test_a_symlinked_scratch_directory_is_refused(code_env, tmp_path):
+    """A member can create symlinks with `run_code`, so the app must not write *through* one.
+
+    `.runs` and `.tmp` are where this module puts its own files. If a member replaces either with
+    a link to somewhere else, `mkdir(exist_ok=True)` used to succeed and the script would be
+    written outside the workspace — an escape that the cwd check never sees, because it is our
+    write, not the model's.
+    """
+    orch, store, g = code_env
+    ws = pathlib.Path(store.data_dir) / "workspaces" / g["id"]
+
+    for name in (".runs", ".tmp"):
+        outside = tmp_path / f"outside-{name.strip('.')}"
+        outside.mkdir(parents=True, exist_ok=True)
+        ws.mkdir(parents=True, exist_ok=True)
+        link = ws / name
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(outside, target_is_directory=True)
+        try:
+            out = await call(orch, store, g, {"language": "python", "code": "print('hello')"}, _yes)
+            assert not out.ok, name
+            assert "symlink" in out.text, (name, out.text)
+            assert list(outside.iterdir()) == [], f"nothing may be written through {name}"
+        finally:
+            link.unlink()
+
+
+async def test_a_planted_link_cannot_truncate_a_file_outside(code_env, tmp_path):
+    """The script file is opened with O_EXCL|O_NOFOLLOW, so a link at the name we pick is an
+    error rather than a way to truncate whatever it points at."""
+    orch, store, g = code_env
+    ws = pathlib.Path(store.data_dir) / "workspaces" / g["id"]
+    runs = ws / ".runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious")
+
+    # Fill the run directory with a link for every name the next run could choose: `run<pid>_<n>`
+    for i in range(len(list(runs.iterdir())), len(list(runs.iterdir())) + 40):
+        link = runs / f"run{__import__('os').getpid()}_{i}.py"
+        if not link.exists():
+            link.symlink_to(victim)
+
+    out = await call(orch, store, g, {"language": "python", "code": "print('x')"}, _yes)
+    assert victim.read_text() == "precious", "the file outside must be untouched"
+    assert out.ok, out.text          # the run still works: it picks a free name
+
+
+async def test_a_run_leaves_nothing_behind_after_it_finishes(code_env):
+    """The tool promises the run is over when it returns.
+
+    A program that starts a detached child and exits used to leave that child running for as long
+    as it liked; the group is now reaped on every path, not only on the timeout one. The child
+    here redirects its own output, which is what lets it outlive the parent at all — a child that
+    keeps our stdout open is waited for instead (the call cannot end before its output does).
+    """
+    orch, store, g = code_env
+    ws = pathlib.Path(store.data_dir) / "workspaces" / g["id"]
+    code = "(sleep 2; echo late > late.txt) >/dev/null 2>&1 & echo started"
+    out = await call(orch, store, g, {"language": "shell", "code": code}, _yes)
+    assert out.ok and "started" in out.text
+    time.sleep(3)
+    assert not (ws / "late.txt").exists(), "the detached child outlived the run"
+
+
+def test_a_group_id_cannot_walk_out_of_the_base(tmp_path):
+    """Group ids are generated, but a restored backup can carry any string; `base / gid` with
+    "../.." would otherwise point the whole workspace outside."""
+    from app import coderun
+
+    cfg = {"code_workdir": ""}
+    for bad in ("../../etc", "..", "a/b", "x" * 65, ""):
+        if bad == "":
+            assert coderun.workspace_path(tmp_path, cfg, bad) == tmp_path / "workspaces"
+            continue
+        try:
+            coderun.workspace_path(tmp_path, cfg, bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad!r} should have been refused")
 
 
 async def test_long_output_is_cut(code_env):
