@@ -280,7 +280,7 @@ async def test_plan_execution_error_marks_plan_failed(store, make_router, monkey
 def test_plan_with_scalar_fields_is_a_plan_not_a_crash():
     members = [{"id": "1", "name": "文案"}, {"id": "2", "name": "校对"}]
     plan = build_plan({"tasks": [
-        {"id": "t1", "owner": "文案", "instruction": "写", "needs": [], "tools": "library_search", "strengths": "写作"},
+        {"id": "t1", "owner": "文案", "instruction": "写", "needs": [], "tools": "library_search", "strengths": "writing"},
         {"id": "t2", "owner": "校对", "instruction": "审", "needs": 1},
     ]}, members)
     assert [t.id for t in plan.tasks] == ["t1", "t2"]

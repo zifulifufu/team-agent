@@ -110,7 +110,7 @@ class MemoryService:
         )
         try:
             res = await self.router.complete(
-                [{"role": "user", "content": prompt}], tags=["速度", "低成本"], max_tokens=400, temperature=0
+                [{"role": "user", "content": prompt}], tags=["speed", "low-cost"], max_tokens=400, temperature=0
             )
         except (AllRoutesFailed, Exception):  # noqa: BLE001
             return []

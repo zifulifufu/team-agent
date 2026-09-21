@@ -134,7 +134,7 @@ def test_shipped_catalog_is_valid_broad_and_honest():
         assert set(f["strengths"]) <= set(strengths.TAG_IDS), f["id"]
         assert f["runtime"] == "ollama" and f["track"], f["id"]
     ds = next(f for f in data["families"] if f["id"] == "deepseek")
-    assert "不是 V3" in ds["desc"] and "云端" in ds["desc"]                                   # 蒸馏版要讲清楚,V4 只有云端版
+    assert "not V3 itself" in ds["desc"] and "cloud-only" in ds["desc"]                        # 蒸馏版要讲清楚,V4 只有云端版
     v4 = data["selfhost"][0]
     assert v4["license"] == "MIT" and v4["models"][0]["id"] == "deepseek-ai/DeepSeek-V4-Flash"
     assert "deepseek-ai/DeepSeek-V3" in {m["id"] for m in v4["models"]}                      # V3 仍可自建接入
@@ -321,7 +321,7 @@ def test_deepseek_selfhost_preset_is_local_openai_compatible(api):
     added = api.post("/api/providers", json={"preset": "deepseek-selfhost"}).json()
     assert added["id"] == "deepseek-selfhost" and added["is_local"] is True
     assert [m["model_name"] for m in added["models"]] == ["deepseek-ai/DeepSeek-V4-Flash"]
-    assert "本地" in added["models"][0]["strengths"]                                        # 自建服务算本地:外呼关闭时也能用
+    assert "local" in added["models"][0]["strengths"]                                        # 自建服务算本地:外呼关闭时也能用
 
 
 def test_selfhost_params_and_offline_use(store, make_router):

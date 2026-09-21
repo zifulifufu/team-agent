@@ -196,7 +196,7 @@ export function ModelPicker({
               const on = want.includes(t.id);
               return (
                 <button key={t.id} type="button" className={"str-chip pick" + (on ? " on" : "")} aria-pressed={on} title={t.desc} onClick={() => setWant(on ? want.filter((x) => x !== t.id) : [...want, t.id])}>
-                  {t.id}
+                  {t.label ?? t.id}
                 </button>
               );
             })}

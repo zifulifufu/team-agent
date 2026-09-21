@@ -59,10 +59,11 @@ def test_group_ext_merge_and_create_with_ext(client):
 
 def test_capabilities_roster_and_tools(client, tmp_path):
     g = gid(client)
+    # 用中文标签名提交(旧版口径)仍要被接受,并规范成 ASCII id
     client.patch(f"/api/agents/{client.get('/api/agents').json()[1]['id']}", json={"tags": ["代码"]})
     cap = client.get(f"/api/groups/{g}/capabilities").json()
     assert len(cap["members"]) == 4 and sum(m["is_host"] for m in cap["members"]) == 1
-    assert any("代码" in m["strengths"] for m in cap["members"])
+    assert any("coding" in m["strengths"] for m in cap["members"])
     assert all(m["model"] for m in cap["members"])
     names = {t["name"] for t in cap["tools"]}
     assert {"current_time", "memory_search"} <= names and "library_search" not in names   # 资料库为空时不提供检索工具
@@ -124,18 +125,21 @@ def test_model_options_recommend_and_strengths(client):
     m = opts["models"][0]
     assert isinstance(m["strengths"], list) and m["summary"] is not None
     assert client.get("/api/providers/nope/model-options").status_code == 404
-    assert client.get("/api/models/recommend", params={"tags": "代码"}).json()["models"] == []   # 没填 Key、也没有本地模型 → 没有可用模型
+    assert client.get("/api/models/recommend", params={"tags": "代码"}).json()["models"] == []   # 中文标签名仍要被接受(见 strengths.ALIASES)
     client.patch("/api/providers/deepseek", json={"api_key": "sk-test-1234"})
     rec = client.get("/api/models/recommend", params={"tags": "代码,推理"}).json()
-    assert rec["tags"] == ["代码", "推理"] and rec["models"]
+    assert rec["tags"] == ["coding", "reasoning"] and rec["models"]      # 返回的是规范的 ASCII id
     # 手动改强项 → 生效;传 null 恢复自动
     mid = "deepseek/deepseek-flash"
     r = client.patch(f"/api/models/{mid}", json={"strengths": ["写作"]}).json()
-    assert r["strengths"] == ["写作"] and r["strengths_custom"] is True
+    assert r["strengths"] == ["writing"] and r["strengths_custom"] is True   # 写入时规范成 ASCII id
     r = client.patch(f"/api/models/{mid}", json={"strengths": None}).json()
     assert r["strengths_custom"] is False and r["strengths"]
     tags = client.get("/api/strengths").json()["tags"]
-    assert "写作" in [t["id"] for t in tags]
+    assert "writing" in [t["id"] for t in tags]
+    assert {t["label"] for t in tags} >= {"Writing"} and tags[0]["desc"]        # 英文界面下的标签名与说明
+    zh = client.get("/api/strengths?lang=zh").json()["tags"]
+    assert "写作" in [t["label"] for t in zh]                                  # 中文界面下同一份 id 显示中文
 
 
 def test_refresh_model_options_respects_offline_switch(client):

@@ -172,7 +172,7 @@ def planning_instruction(max_tasks: int, mode: str, past_actions: str = "") -> s
         "需要分工时:先用一两句话向用户说明你的思路,然后输出计划(严格 JSON,放在 <plan> 标签里):\n"
         '<plan>{"goal": "一句话总目标", "conventions": "全组必须统一的口径、术语、格式、受众、篇幅等(没有就留空)", '
         '"tasks": [{"id": "t1", "owner": "成员名", "title": "任务名", "instruction": "具体做什么、做到什么程度", '
-        '"needs": [], "strengths": ["写作"], "tools": ["library_search"], "deliverable": "交付物形式"}]}</plan>\n'
+        '"needs": [], "strengths": ["writing"], "tools": ["library_search"], "deliverable": "交付物形式"}]}</plan>\n'
         "分工原则:\n"
         "1. 严格按上面「群成员与分工」里的强项、技能和可用工具来分配;不要把任务派给明显不擅长的人;\n"
         "2. 用 needs 写清依赖(下游成员会拿到上游的完整成果);没有依赖的任务可以并列;不要循环依赖;\n"

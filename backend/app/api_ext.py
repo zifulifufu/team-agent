@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import modelopts, strengths as strength_lib
+from . import i18n, modelopts, strengths as strength_lib
 from .approvals import RISK_LABEL, Approvals, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -222,7 +222,11 @@ def build_router(c: Ctx) -> APIRouter:
     # =================================================== strengths / catalog
     @r.get("/api/strengths")
     async def strengths_list() -> dict:
-        return {"tags": [{"id": t, "desc": d} for t, d in strength_lib.TAGS]}
+        """Strength tags. The id is a stable ASCII key (stored in the database, never
+        translated); label and desc follow the request language."""
+        lang = i18n.current()
+        return {"tags": [{"id": t, "label": strength_lib.label(t, lang),
+                          "desc": strength_lib.description(t, lang)} for t, _ in strength_lib.TAGS]}
 
     @r.get("/api/catalog")
     async def catalog_info() -> dict:

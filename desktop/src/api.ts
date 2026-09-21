@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { currentLang } from "./i18n";
 
 declare global {
   interface Window {
@@ -12,10 +13,18 @@ const TOKEN: string = window.teamAgent?.token ?? "";
 const authHeaders = (json = false): Record<string, string> => ({
   ...(json ? { "Content-Type": "application/json" } : {}),
   ...(TOKEN ? { "X-Team-Agent-Token": TOKEN } : {}),
+  // Built-in content (model catalog, local model list, strength tags) is served in
+  // the UI language; English is the backend default, so only zh needs sending.
+  "Accept-Language": currentLang() === "zh" ? "zh-CN" : "en",
 });
 
 // ------------------------------------------------------------------ types
-/** 强项标签(后端 /api/strengths 给出完整清单):写作 代码 推理 长文本 多模态 速度 低成本 中文 工具调用 本地 */
+/**
+ * Strength tag id. Ids are stable ASCII keys stored in the database and never
+ * translated (writing / coding / reasoning / long-context / multimodal / speed /
+ * low-cost / chinese / tool-use / local); /api/strengths also returns the label
+ * and description for the current UI language.
+ */
 export type Tag = string;
 
 /** ok 连通 / limited 限速或熔断 / bad 连不通 / unknown 没检测过 / off 现在不会被调用 */
@@ -735,7 +744,7 @@ export const api = {
   patchModel: (id: string, b: { enabled?: boolean; display_name?: string; strengths?: Tag[] | null }) => patch<Model>(`/api/models/${id}`, b),
   delModel: (id: string) => del(`/api/models/${id}`),
   addModels: (pid: string, model_names: string[]) => post<Model[]>(`/api/providers/${pid}/models/batch`, { model_names }),
-  strengthTags: () => get<{ tags: { id: Tag; desc: string }[] }>("/api/strengths"),
+  strengthTags: () => get<{ tags: { id: Tag; label?: string; desc: string }[] }>("/api/strengths"),
   modelOptions: (pid: string) => get<ModelOptions>(`/api/providers/${pid}/model-options`),
   /** 向服务商查询实时清单并返回合并后的选项(联网,外呼关闭时云端服务商返回 403) */
   refreshModelOptions: (pid: string) => post<ModelOptions>(`/api/providers/${pid}/model-options/refresh`),

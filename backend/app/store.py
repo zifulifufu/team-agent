@@ -255,6 +255,12 @@ class Store(ExtStore):
             # 从旧版本升级:以前 API Key / GitHub 令牌是明文存在库里的,搬进系统钥匙串(搬不动就留着明文)
             self._move_keys_to_keychain()
 
+        if not self._flag("tags_to_ascii_ids"):
+            # Older builds stored the Chinese label itself as the strength-tag id
+            # ("代码" instead of "coding"). The values are unchanged, only the ids are
+            # normalized so they stay language-neutral. See app/strengths.ALIASES.
+            self._normalize_stored_tags()
+
     # ----------------------------------------------------------------- settings
     def get_settings(self) -> dict[str, Any]:
         out = dict(DEFAULT_SETTINGS)
@@ -297,6 +303,33 @@ class Store(ExtStore):
     def secret_backend(self) -> str:
         """密钥存在哪里:`keychain` = 系统钥匙串,`plaintext` = 回退成明文(非 macOS / 钥匙串不可用)。"""
         return "keychain" if secrets_store.backend_available() else "plaintext"
+
+    def _normalize_stored_tags(self) -> int:
+        """把存量里以中文标签名当 id 的强项标签换成 ASCII id(见 strengths.ALIASES)。
+
+        只改 id,不改语义:老值 "代码" → 新值 "coding",界面上该显示什么由语言决定。
+        未知标签会被丢掉(和用户提交标签时的口径一致)。返回改动的行数。
+        """
+        changed = 0
+        for r in self._q("SELECT id, strengths FROM models WHERE strengths IS NOT NULL AND strengths<>''"):
+            try:
+                old = json.loads(r["strengths"])
+            except ValueError:
+                continue
+            new = strength_lib.clean_tags(old)
+            if new != old:
+                self._x("UPDATE models SET strengths=? WHERE id=?", (json.dumps(new, ensure_ascii=False), r["id"]))
+                changed += 1
+        for r in self._q("SELECT id, tags FROM agents WHERE tags IS NOT NULL AND tags<>''"):
+            try:
+                old = json.loads(r["tags"])
+            except ValueError:
+                continue
+            new = strength_lib.clean_tags(old)
+            if new != old:
+                self._x("UPDATE agents SET tags=? WHERE id=?", (json.dumps(new, ensure_ascii=False), r["id"]))
+                changed += 1
+        return changed
 
     def _move_keys_to_keychain(self) -> int:
         """把老库里明文存的 API Key / GitHub 令牌搬进钥匙串。**先读回校验,成功才改写**;

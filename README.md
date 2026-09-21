@@ -15,6 +15,8 @@ documents, video production, writing and research.
 - **Stays on your machine.** The backend only listens on loopback; API keys live in the system keychain.
 
 Interface language: **English by default**, switchable to Chinese in *Settings → Appearance → Language*.
+Built-in content — the model catalog, the local-model list, strength tags and the template gallery — is
+bilingual too and follows that setting. Every API accepts `?lang=zh` or an `Accept-Language` header.
 
 ## How it works
 

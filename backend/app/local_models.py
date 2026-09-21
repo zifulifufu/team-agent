@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import strengths
+from . import i18n, strengths
 from .versions import is_newer
 
 SHIPPED = Path(__file__).parent / "data" / "local_models.json"
@@ -221,6 +221,8 @@ class LocalCatalog:
 
     # ---- 给界面的完整视图
     def view(self, installed: set[str] | None = None, hw: dict[str, Any] | None = None) -> dict[str, Any]:
+        lang = i18n.current()
+        data = i18n.localize(self.data, lang)      # English by default, Chinese for the zh UI
         hw = hw or hardware()
         have = installed or set()
 
@@ -231,7 +233,7 @@ class LocalCatalog:
             return {**m, **assess(float(m["size_gb"]), hw), "installed": is_installed(m["tag"])}
 
         fams = []
-        for f in self.data.get("families", []):
+        for f in data.get("families", []):
             fams.append({
                 "id": f["id"], "vendor": f.get("vendor", ""), "name": f.get("name", f["id"]), "desc": f.get("desc", ""),
                 "license": f.get("license", ""), "strengths": strengths.clean_tags(f.get("strengths", [])),
@@ -240,21 +242,28 @@ class LocalCatalog:
         ex = self.extras()
         if ex:
             fams.append({
-                "id": "extras", "vendor": "我加入的", "name": "新发现 / 手动加入", "extra": True,
-                "desc": "从「更新与发现」或手动加入的新型号,大小来自 Ollama 库的清单。",
+                "id": "extras",
+                "vendor": i18n.pick(lang, "Added by me", "我加入的"),
+                "name": i18n.pick(lang, "Newly found / added by hand", "新发现 / 手动加入"),
+                "extra": True,
+                "desc": i18n.pick(
+                    lang,
+                    "Models added from Updates & discovery or by hand; sizes come from the Ollama library listing.",
+                    "从「更新与发现」或手动加入的新型号,大小来自 Ollama 库的清单。",
+                ),
                 "license": "", "strengths": [],
                 "models": [row({"tag": e["tag"], "size_gb": e["size_gb"], "ctx": "", "note": e.get("note", "")}) for e in ex],
             })
         selfhost = []
-        for s in self.data.get("selfhost", []):
+        for s in data.get("selfhost", []):
             selfhost.append({
                 "id": s.get("id", ""), "vendor": s.get("vendor", ""), "name": s.get("name", ""), "desc": s.get("desc", ""),
                 "license": s.get("license", ""), "strengths": strengths.clean_tags(s.get("strengths", [])),
                 "models": [{**m, **assess(float(m.get("size_gb") or 0), hw)} for m in s.get("models", [])],
             })
         return {
-            "version": self.version, "source": self.source, "note": self.data.get("note", ""), "hardware": hw,
-            "families": fams, "selfhost": selfhost, "cloud_only": self.data.get("cloud_only", []),
+            "version": self.version, "source": self.source, "note": data.get("note", ""), "hardware": hw,
+            "families": fams, "selfhost": selfhost, "cloud_only": data.get("cloud_only", []),
         }
 
 

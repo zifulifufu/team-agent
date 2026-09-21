@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import strengths
+from . import i18n, strengths
 from .versions import is_newer
 
 SHIPPED = Path(__file__).parent / "data" / "catalog.json"
@@ -83,10 +83,12 @@ class Catalog:
         return None
 
     def models_of(self, key: str | None) -> list[dict]:
-        return list(self.data["providers"].get(key or "", {}).get("models", []))
+        """Catalog rows for a provider, with the text in the language of the request."""
+        return i18n.localize(list(self.data["providers"].get(key or "", {}).get("models", [])))
 
     def retired_of(self, key: str | None) -> dict[str, str]:
-        return {r["id"]: r.get("reason", "已停用") for r in self.data["providers"].get(key or "", {}).get("retired", [])}
+        rows = i18n.localize(self.data["providers"].get(key or "", {}).get("retired", []))
+        return {r["id"]: r.get("reason") or i18n.pick_now("Retired", "已停用") for r in rows}
 
     def find(self, key: str | None, model_name: str) -> dict | None:
         low = model_name.lower()
@@ -94,7 +96,7 @@ class Catalog:
             if m["id"].lower() == low or low in [a.lower() for a in ([m.get("alias")] if m.get("alias") else []) + m.get("aliases", [])]:
                 return m
         hit = self._by_id.get(low)
-        return hit[1] if hit else None
+        return i18n.localize(hit[1]) if hit else None
 
     def defaults(self, key: str) -> list[str]:
         """新建服务商时默认加入的模型:一个主力 + 一个快速档(都跳过旧版和预览版)。"""

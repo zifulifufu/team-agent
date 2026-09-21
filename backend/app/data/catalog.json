@@ -1,6 +1,6 @@
 {
  "version": "2026-09-20",
- "note": "随程序附带的模型目录快照,来自各服务商官方文档;强项标签由型号特征推断,仅供参考,可在界面中手动修改。",
+ "note": "Model catalog snapshot bundled with the app, based on each provider's official documentation. Strength tags are inferred from model characteristics and are indicative only; you can edit them in the UI.",
  "providers": {
   "deepseek": {
    "base_url": "https://api.deepseek.com",
@@ -9,36 +9,41 @@
     {
      "id": "deepseek-flash",
      "name": "DeepSeek V4.1 Flash",
-     "summary": "V4.1 Flash：思考/非思考双模式，支持图片输入",
+     "summary": "V4.1 Flash: dual thinking / non-thinking modes, accepts image input",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "V4.1 Flash：思考/非思考双模式，支持图片输入"
     },
     {
      "id": "deepseek-v4-pro",
      "name": "DeepSeek V4 Pro",
-     "summary": "V4 Pro：思考模式，Agent 能力增强，不支持图片",
+     "summary": "V4 Pro: thinking mode, stronger agentic ability, no image input",
      "context": 1000000,
      "reasoning": true,
      "vision": false,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "V4 Pro：思考模式，Agent 能力增强，不支持图片"
     }
    ],
    "retired": [
     {
      "id": "deepseek-chat",
-     "reason": "官方已于 2026-07-24 停用,请改用 deepseek-flash 或 deepseek-v4-pro"
+     "reason": "Retired by the provider on 2026-07-24; use deepseek-flash or deepseek-v4-pro instead",
+     "reason_zh": "官方已于 2026-07-24 停用,请改用 deepseek-flash 或 deepseek-v4-pro"
     },
     {
      "id": "deepseek-reasoner",
-     "reason": "官方已于 2026-07-24 停用,请改用 deepseek-v4-pro"
+     "reason": "Retired by the provider on 2026-07-24; use deepseek-v4-pro instead",
+     "reason_zh": "官方已于 2026-07-24 停用,请改用 deepseek-v4-pro"
     },
     {
      "id": "deepseek-v4-flash",
-     "reason": "旧名,已由 deepseek-flash 承接"
+     "reason": "Old name, superseded by deepseek-flash",
+     "reason_zh": "旧名,已由 deepseek-flash 承接"
     }
    ]
   },
@@ -49,42 +54,47 @@
     {
      "id": "kimi-k3",
      "name": "Kimi K3",
-     "summary": "Kimi 迄今最强，2.8 万亿参数，原生视觉理解",
+     "summary": "Kimi's strongest model yet: 2.8T parameters with native visual understanding",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "Kimi 迄今最强，2.8 万亿参数，原生视觉理解"
     },
     {
      "id": "kimi-k2.7-code",
      "name": "Kimi K2.7 Code",
-     "summary": "Kimi 编程模型，长上下文中更可靠遵循指令，思考始终开启",
+     "summary": "Kimi coding model: follows instructions more reliably in long contexts, thinking always on",
      "context": 262144,
      "reasoning": true,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "Kimi 编程模型，长上下文中更可靠遵循指令，思考始终开启"
     },
     {
      "id": "kimi-k2.7-code-highspeed",
-     "name": "Kimi K2.7 Code 高速版",
-     "summary": "K2.7 Code 高速版，输出约 180 Tokens/s",
+     "name": "Kimi K2.7 Code Highspeed",
+     "summary": "High-speed K2.7 Code: about 180 tokens/s output",
      "context": 262144,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "K2.7 Code 高速版，输出约 180 Tokens/s",
+     "name_zh": "Kimi K2.7 Code 高速版"
     },
     {
      "id": "kimi-k2.6",
      "name": "Kimi K2.6",
-     "summary": "支持图文输入、思考/非思考模式，适合对话与 Agent 任务",
+     "summary": "Text and image input with thinking / non-thinking modes; suits chat and agent tasks",
      "context": 262144,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "支持图文输入、思考/非思考模式，适合对话与 Agent 任务"
     }
    ]
   },
@@ -95,82 +105,90 @@
     {
      "id": "qwen3.8-max",
      "name": "Qwen3.8-Max",
-     "summary": "千问旗舰，擅长编程与法律金融等专业任务，原生视觉",
+     "summary": "Qwen flagship: strong at coding plus professional work such as legal and finance; native vision",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "千问旗舰，擅长编程与法律金融等专业任务，原生视觉"
     },
     {
      "id": "qwen3.7-plus",
      "name": "Qwen3.7-Plus",
-     "summary": "高性价比 Plus 档，多模态交互与 GUI/智能体能力",
+     "summary": "Value-for-money Plus tier with multimodal interaction and GUI / agent ability",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "高性价比 Plus 档，多模态交互与 GUI/智能体能力"
     },
     {
      "id": "qwen3.8-flash",
      "name": "Qwen3.8-Flash",
-     "summary": "多模态、响应快，适合编程辅助与智能体协作",
+     "summary": "Multimodal and fast; suits coding assistance and agent collaboration",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "多模态、响应快，适合编程辅助与智能体协作"
     },
     {
      "id": "qwen3.7-flash",
      "name": "Qwen3.7-Flash",
-     "summary": "原生视觉语言 Flash 模型，多模态理解与智能体执行增强",
+     "summary": "Native vision-language Flash model with stronger multimodal understanding and agent execution",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "原生视觉语言 Flash 模型，多模态理解与智能体执行增强"
     },
     {
      "id": "qwen3.8-27b",
      "name": "Qwen3.8-27B",
-     "summary": "27B 原生视觉语言稠密模型，强化编程与办公场景",
+     "summary": "27B native vision-language dense model tuned for coding and office work",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "27B 原生视觉语言稠密模型，强化编程与办公场景"
     },
     {
      "id": "qwen3-coder-next",
      "name": "Qwen3-Coder-Next",
-     "summary": "Qwen3 新一代代码模型，仓库级理解与多轮工具交互",
+     "summary": "Qwen3's next-generation code model with repository-level understanding and multi-turn tool use",
      "context": 262144,
      "reasoning": false,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "Qwen3 新一代代码模型，仓库级理解与多轮工具交互"
     },
     {
      "id": "qwen3-vl-plus",
      "name": "Qwen3-VL-Plus",
-     "summary": "百炼视觉理解模型（Qwen3-VL Plus）",
+     "summary": "Vision understanding model (Qwen3-VL Plus)",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "百炼视觉理解模型（Qwen3-VL Plus）"
     },
     {
      "id": "qwen3-vl-flash",
      "name": "Qwen3-VL-Flash",
-     "summary": "百炼视觉理解模型（Qwen3-VL Flash）",
+     "summary": "Vision understanding model (Qwen3-VL Flash)",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "百炼视觉理解模型（Qwen3-VL Flash）"
     }
    ]
   },
@@ -181,152 +199,167 @@
     {
      "id": "glm-5.3",
      "name": "GLM-5.3",
-     "summary": "旗舰模型，复杂软件工程、终端与 Agent 任务进步明显",
+     "summary": "Flagship: clear gains on complex software engineering, terminal and agent tasks",
      "context": 1000000,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "旗舰模型，复杂软件工程、终端与 Agent 任务进步明显"
     },
     {
      "id": "glm-5.3-flash",
      "name": "GLM-5.3-Flash",
-     "summary": "普惠的前沿原生多模态模型，理解图片视频、生成可交互代码",
+     "summary": "Accessible frontier native-multimodal model: understands images and video, generates interactive code",
      "context": 1000000,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "普惠的前沿原生多模态模型，理解图片视频、生成可交互代码"
     },
     {
      "id": "glm-5.2",
      "name": "GLM-5.2",
-     "summary": "长上下文复杂任务执行稳定，编程能力显著增强",
+     "summary": "Stable on long-context complex tasks, with a marked improvement in coding",
      "context": 1000000,
      "reasoning": true,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "长上下文复杂任务执行稳定，编程能力显著增强"
     },
     {
      "id": "glm-5.1",
      "name": "GLM-5.1",
-     "summary": "编程对齐 Claude Opus 4.6，长程任务显著提升",
+     "summary": "Coding on a par with Claude Opus 4.6; much better at long-horizon tasks",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "编程对齐 Claude Opus 4.6，长程任务显著提升"
     },
     {
      "id": "glm-5",
      "name": "GLM-5",
-     "summary": "编程对齐 Opus 4.5，擅长 Agent 长程规划",
+     "summary": "Coding on a par with Opus 4.5; strong at long-horizon agent planning",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "编程对齐 Opus 4.5，擅长 Agent 长程规划"
     },
     {
      "id": "glm-5-turbo",
      "name": "GLM-5-Turbo",
-     "summary": "面向复杂长程任务优化，持续执行连贯性好",
+     "summary": "Tuned for complex long-horizon tasks; stays coherent over long runs",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "面向复杂长程任务优化，持续执行连贯性好"
     },
     {
      "id": "glm-4.7",
      "name": "GLM-4.7",
-     "summary": "升级通用对话、推理与 Agent 能力",
+     "summary": "Upgraded general chat, reasoning and agent ability",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "升级通用对话、推理与 Agent 能力"
     },
     {
      "id": "glm-4.7-flash",
      "name": "GLM-4.7-Flash",
-     "summary": "免费的通用能力模型",
+     "summary": "Free general-purpose model",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "免费的通用能力模型"
     },
     {
      "id": "glm-4.7-flashx",
      "name": "GLM-4.7-FlashX",
-     "summary": "轻量高速，小尺寸强能力",
+     "summary": "Lightweight and fast: small size, strong ability",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "轻量高速，小尺寸强能力"
     },
     {
      "id": "glm-4.6",
      "name": "GLM-4.6",
-     "summary": "先进的编程与推理能力",
+     "summary": "Advanced coding and reasoning",
      "context": 200000,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "先进的编程与推理能力"
     },
     {
      "id": "glm-4.5-air",
      "name": "GLM-4.5-Air",
-     "summary": "轻量模型，面向推理与编码任务",
+     "summary": "Lightweight model aimed at reasoning and coding tasks",
      "context": 128000,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "轻量模型，面向推理与编码任务"
     },
     {
      "id": "glm-4.5-flash",
      "name": "GLM-4.5-Flash",
-     "summary": "免费模型，支持 128K 上下文",
+     "summary": "Free model with a 128K context",
      "context": 128000,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "免费模型，支持 128K 上下文"
     },
     {
      "id": "glm-5v-turbo",
      "name": "GLM-5V-Turbo",
-     "summary": "多模态编程基座，兼顾视觉理解、推理与代码生成",
+     "summary": "Multimodal coding base covering visual understanding, reasoning and code generation",
      "context": 200000,
      "reasoning": null,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "多模态编程基座，兼顾视觉理解、推理与代码生成"
     },
     {
      "id": "glm-4.6v",
      "name": "GLM-4.6V",
-     "summary": "原生支持工具调用，前端代码复现更稳定",
+     "summary": "Native tool calling; more reliable at reproducing front-end code",
      "context": 128000,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "原生支持工具调用，前端代码复现更稳定"
     },
     {
      "id": "glm-4.6v-flash",
      "name": "GLM-4.6V-Flash",
-     "summary": "免费视觉推理模型",
+     "summary": "Free visual reasoning model",
      "context": 128000,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "免费视觉推理模型"
     }
    ]
   },
@@ -337,42 +370,46 @@
     {
      "id": "doubao-seed-2-1-pro-260628",
      "name": "Doubao-Seed-2.1-pro",
-     "summary": "面向生产级任务，全面升级编程、智能体与多模态能力",
+     "summary": "Built for production tasks; across-the-board upgrade in coding, agent and multimodal ability",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向生产级任务，全面升级编程、智能体与多模态能力"
     },
     {
      "id": "doubao-seed-2-1-turbo-260628",
      "name": "Doubao-Seed-2.1-turbo",
-     "summary": "效果与成本均衡，全面升级编程、智能体与多模态能力",
+     "summary": "Balances quality and cost, with the same across-the-board upgrade",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "效果与成本均衡，全面升级编程、智能体与多模态能力"
     },
     {
      "id": "doubao-seed-2-0-lite-260428",
      "name": "Doubao-Seed-2.0-lite",
-     "summary": "豆包首款全模态理解模型，音视图文统一理解",
+     "summary": "Doubao's first all-modality model: audio, image, video and text understood together",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "豆包首款全模态理解模型，音视图文统一理解"
     },
     {
      "id": "doubao-seed-2-0-mini-260428",
      "name": "Doubao-Seed-2.0-mini",
-     "summary": "低时延、低成本，四档位思考与多模态理解",
+     "summary": "Low latency and low cost, with four thinking levels and multimodal understanding",
      "context": null,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "低时延、低成本，四档位思考与多模态理解"
     }
    ]
   },
@@ -382,68 +419,77 @@
    "models": [
     {
      "id": "zai-org/GLM-5.3",
-     "name": "GLM-5.3 (智谱)",
-     "summary": "智谱 GLM-5.3，744B 参数，支持工具调用",
+     "name": "GLM-5.3 (Zhipu)",
+     "summary": "Zhipu GLM-5.3, 744B parameters, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "智谱 GLM-5.3，744B 参数，支持工具调用",
+     "name_zh": "GLM-5.3 (智谱)"
     },
     {
      "id": "zai-org/GLM-5.2",
-     "name": "GLM-5.2 (智谱)",
-     "summary": "智谱 GLM-5.2，753B，主打 Vibe Coding",
+     "name": "GLM-5.2 (Zhipu)",
+     "summary": "Zhipu GLM-5.2, 753B, focused on vibe coding",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "智谱 GLM-5.2，753B，主打 Vibe Coding",
+     "name_zh": "GLM-5.2 (智谱)"
     },
     {
      "id": "Pro/zai-org/GLM-5.1",
-     "name": "GLM-5.1 (智谱, Pro)",
-     "summary": "智谱 GLM-5.1 Pro，754B，支持工具调用",
+     "name": "GLM-5.1 (Zhipu, Pro)",
+     "summary": "Zhipu GLM-5.1 Pro, 754B, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "智谱 GLM-5.1 Pro，754B，支持工具调用",
+     "name_zh": "GLM-5.1 (智谱, Pro)"
     },
     {
      "id": "deepseek-ai/DeepSeek-V4-Pro",
      "name": "DeepSeek-V4-Pro",
-     "summary": "DeepSeek V4 Pro，1600B，支持工具调用",
+     "summary": "DeepSeek V4 Pro, 1600B, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "DeepSeek V4 Pro，1600B，支持工具调用"
     },
     {
      "id": "deepseek-ai/DeepSeek-V4-Flash",
      "name": "DeepSeek-V4-Flash",
-     "summary": "DeepSeek V4 Flash，284B，支持工具调用",
+     "summary": "DeepSeek V4 Flash, 284B, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "DeepSeek V4 Flash，284B，支持工具调用"
     },
     {
      "id": "deepseek-ai/DeepSeek-V3.2",
      "name": "DeepSeek-V3.2",
-     "summary": "DeepSeek V3.2，671B，支持工具调用与长文本",
+     "summary": "DeepSeek V3.2, 671B, supports tool calling and long context",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "DeepSeek V3.2，671B，支持工具调用与长文本"
     },
     {
      "id": "deepseek-ai/DeepSeek-V3.1-Terminus",
      "name": "DeepSeek-V3.1-Terminus",
-     "summary": "DeepSeek V3.1 Terminus，671B",
+     "summary": "DeepSeek V3.1 Terminus, 671B",
      "context": null,
      "reasoning": null,
      "vision": false,
@@ -453,82 +499,93 @@
     {
      "id": "Pro/moonshotai/Kimi-K2.6",
      "name": "Kimi-K2.6 (Pro)",
-     "summary": "Kimi K2.6 Pro，1000B，支持视觉与工具调用",
+     "summary": "Kimi K2.6 Pro, 1000B, supports vision and tool calling",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "Kimi K2.6 Pro，1000B，支持视觉与工具调用"
     },
     {
      "id": "moonshotai/Kimi-K2.7-Code",
      "name": "Kimi-K2.7-Code",
-     "summary": "Kimi K2.7 编程模型，1000B，支持视觉",
+     "summary": "Kimi K2.7 coding model, 1000B, supports vision",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "Kimi K2.7 编程模型，1000B，支持视觉"
     },
     {
      "id": "Qwen/Qwen3.8-27B",
      "name": "Qwen3.8-27B",
-     "summary": "阿里 Qwen3.8 27B，支持视觉输入与工具调用",
+     "summary": "Alibaba Qwen3.8 27B, supports image input and tool calling",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "阿里 Qwen3.8 27B，支持视觉输入与工具调用"
     },
     {
      "id": "Qwen/Qwen3.6-35B-A3B",
      "name": "Qwen3.6-35B-A3B",
-     "summary": "阿里 Qwen3.6 35B-A3B，支持视觉与工具调用",
+     "summary": "Alibaba Qwen3.6 35B-A3B, supports vision and tool calling",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "阿里 Qwen3.6 35B-A3B，支持视觉与工具调用"
     },
     {
      "id": "Qwen/Qwen3.6-27B",
      "name": "Qwen3.6-27B",
-     "summary": "阿里 Qwen3.6 27B，支持视觉输入与工具调用",
+     "summary": "Alibaba Qwen3.6 27B, supports image input and tool calling",
      "context": null,
      "reasoning": null,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "阿里 Qwen3.6 27B，支持视觉输入与工具调用"
     },
     {
      "id": "meituan-longcat/LongCat-2.0",
-     "name": "LongCat-2.0 (美团)",
-     "summary": "美团 LongCat 2.0，1600B，支持工具调用",
+     "name": "LongCat-2.0 (Meituan)",
+     "summary": "Meituan LongCat 2.0, 1600B, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "美团 LongCat 2.0，1600B，支持工具调用",
+     "name_zh": "LongCat-2.0 (美团)"
     },
     {
      "id": "tencent/Hy4-preview",
-     "name": "Hy4-preview (腾讯混元)",
-     "summary": "腾讯混元 Hy4 预览版，770B，支持工具调用",
+     "name": "Hy4-preview (Tencent Hunyuan)",
+     "summary": "Tencent Hunyuan Hy4 preview, 770B, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "腾讯混元 Hy4 预览版，770B，支持工具调用",
+     "name_zh": "Hy4-preview (腾讯混元)"
     },
     {
      "id": "XingChenAGI/Xing4.0-29B",
-     "name": "Xing4.0-29B (中国电信)",
-     "summary": "中国电信星辰 Xing4.0，29B，支持工具调用",
+     "name": "Xing4.0-29B (China Telecom)",
+     "summary": "China Telecom Xingchen Xing4.0, 29B, supports tool calling",
      "context": null,
      "reasoning": null,
      "vision": false,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "中国电信星辰 Xing4.0，29B，支持工具调用",
+     "name_zh": "Xing4.0-29B (中国电信)"
     }
    ]
   },
@@ -539,629 +596,691 @@
     {
      "id": "MiniMax-M3",
      "name": "MiniMax-M3",
-     "summary": "前沿编程模型，面向 Agent 推理、工具调用与长上下文",
+     "summary": "Frontier coding model for agent reasoning, tool calling and long context",
      "context": 1000000,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "前沿编程模型，面向 Agent 推理、工具调用与长上下文"
     },
     {
      "id": "MiniMax-M2.7",
      "name": "MiniMax-M2.7",
-     "summary": "具备自我迭代能力的 M2.7",
+     "summary": "M2.7, with self-iteration ability",
      "context": 204800,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "具备自我迭代能力的 M2.7"
     },
     {
      "id": "MiniMax-M2.7-highspeed",
      "name": "MiniMax-M2.7-highspeed",
-     "summary": "M2.7 极速版，约 100 TPS",
+     "summary": "Very fast M2.7, about 100 TPS",
      "context": 204800,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "M2.7 极速版，约 100 TPS"
     },
     {
      "id": "MiniMax-M2.5",
      "name": "MiniMax-M2.5",
-     "summary": "兼顾性能与性价比",
+     "summary": "Balances performance and price",
      "context": 204800,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "兼顾性能与性价比"
     },
     {
      "id": "MiniMax-M2.1",
      "name": "MiniMax-M2.1",
-     "summary": "强化多语言编程",
+     "summary": "Stronger multilingual coding",
      "context": 204800,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "强化多语言编程"
     },
     {
      "id": "MiniMax-M2",
      "name": "MiniMax-M2",
-     "summary": "高效的编程与 Agent 工作流模型",
+     "summary": "Efficient model for coding and agent workflows",
      "context": 204800,
      "reasoning": null,
      "vision": false,
      "coding": true,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "高效的编程与 Agent 工作流模型"
     }
    ]
   },
   "openai": {
    "base_url": null,
-   "source": "https://developers.openai.com/api/docs/models (platform.openai.com/docs/models 302 跳转至此); model pages: https://developers.openai.com/api/docs/models/<id>; https://developers.openai.com/api/docs/deprecations",
+   "source": "https://developers.openai.com/api/docs/models (platform.openai.com/docs/models redirects here); per-model pages https://developers.openai.com/api/docs/models/<id>; https://developers.openai.com/api/docs/deprecations",
    "models": [
     {
      "id": "gpt-6-astra",
      "name": "GPT-6 Astra",
-     "summary": "OpenAI 最强模型，面向最难的端到端任务",
+     "summary": "OpenAI's strongest model, built for the hardest end-to-end tasks",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "OpenAI 最强模型，面向最难的端到端任务"
     },
     {
      "id": "gpt-5.6-sol",
      "name": "GPT-5.6 Sol",
-     "summary": "GPT-5.6 系列旗舰，面向复杂专业工作",
+     "summary": "Flagship of the GPT-5.6 family, aimed at complex professional work",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "GPT-5.6 系列旗舰，面向复杂专业工作"
     },
     {
      "id": "gpt-5.6-terra",
      "name": "GPT-5.6 Terra",
-     "summary": "兼顾智能与成本的均衡档",
+     "summary": "Balanced tier between intelligence and cost",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "兼顾智能与成本的均衡档"
     },
     {
      "id": "gpt-5.6-luna",
      "name": "GPT-5.6 Luna",
-     "summary": "面向成本敏感、高吞吐场景的轻量档",
+     "summary": "Light tier for cost-sensitive, high-throughput work",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "面向成本敏感、高吞吐场景的轻量档"
     },
     {
      "id": "gpt-5.5",
      "name": "GPT-5.5",
-     "summary": "面向编码与专业工作的新一代智能（上一代旗舰）",
+     "summary": "A new generation of intelligence for coding and professional work (previous flagship)",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向编码与专业工作的新一代智能（上一代旗舰）"
     },
     {
      "id": "gpt-5.4",
      "name": "GPT-5.4",
-     "summary": "面向编码与专业工作、价格更低的模型",
+     "summary": "Coding and professional work at a lower price",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "面向编码与专业工作、价格更低的模型"
     },
     {
      "id": "gpt-5.4-mini",
      "name": "GPT-5.4 mini",
-     "summary": "强力 mini：编码、电脑操作与子代理",
+     "summary": "A strong mini: coding, computer use and sub-agents",
      "context": 400000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "强力 mini：编码、电脑操作与子代理"
     },
     {
      "id": "gpt-5.4-nano",
      "name": "GPT-5.4 nano",
-     "summary": "最便宜的 5.4 级，适合简单高频任务",
+     "summary": "Cheapest 5.4-class model, for simple high-frequency tasks",
      "context": 400000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "最便宜的 5.4 级，适合简单高频任务"
     },
     {
      "id": "gpt-5.3-codex",
      "name": "GPT-5.3-Codex",
-     "summary": "官方称迄今最强的智能体编程模型",
+     "summary": "Described by its maker as the strongest agentic coding model yet",
      "context": 400000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "官方称迄今最强的智能体编程模型"
     },
     {
      "id": "gpt-5.2",
      "name": "GPT-5.2",
-     "summary": "上一代旗舰，面向复杂专业工作",
+     "summary": "Previous-generation flagship for complex professional work",
      "context": 400000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "上一代旗舰，面向复杂专业工作"
     },
     {
      "id": "gpt-5-mini",
      "name": "GPT-5 mini",
-     "summary": "低延迟高吞吐的高性价比推理模型",
+     "summary": "Low-latency, high-throughput reasoning model with good value",
      "context": 400000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "低延迟高吞吐的高性价比推理模型"
     },
     {
      "id": "o3",
      "name": "o3",
-     "summary": "o 系列推理模型，擅长数学科学编码与视觉推理",
+     "summary": "o-series reasoning model: maths, science, coding and visual reasoning",
      "context": 200000,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "flagship",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "o 系列推理模型，擅长数学科学编码与视觉推理"
     },
     {
      "id": "gpt-4.1",
      "name": "GPT-4.1",
-     "summary": "最聪明的非推理模型，指令遵循与工具调用强",
+     "summary": "The smartest non-reasoning model: strong instruction following and tool calling",
      "context": 1047576,
      "reasoning": false,
      "vision": true,
      "coding": false,
      "tier": "balanced",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "最聪明的非推理模型，指令遵循与工具调用强"
     },
     {
      "id": "gpt-4o",
      "name": "GPT-4o",
-     "summary": "快速、灵活的通用 GPT 模型",
+     "summary": "Fast, flexible general-purpose GPT model",
      "context": 128000,
      "reasoning": false,
      "vision": true,
      "coding": false,
      "tier": "balanced",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "快速、灵活的通用 GPT 模型"
     }
-   ]
+   ],
+   "source_zh": "https://developers.openai.com/api/docs/models (platform.openai.com/docs/models 302 跳转至此); model pages: https://developers.openai.com/api/docs/models/<id>; https://developers.openai.com/api/docs/deprecations"
   },
   "anthropic": {
    "base_url": null,
-   "source": "https://platform.claude.com/docs/en/models/overview (docs.claude.com 302 跳转); https://platform.claude.com/docs/en/about-claude/model-deprecations; 各模型页 https://platform.claude.com/docs/en/models/<model>/overview",
+   "source": "https://platform.claude.com/docs/en/models/overview (docs.claude.com redirects); https://platform.claude.com/docs/en/about-claude/model-deprecations; per-model pages https://platform.claude.com/docs/en/models/<model>/overview",
    "models": [
     {
      "id": "claude-fable-5-1",
      "name": "Claude Fable 5.1",
-     "summary": "面向高难推理与长程智能体工作",
+     "summary": "For hard reasoning and long-horizon agentic work",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向高难推理与长程智能体工作"
     },
     {
      "id": "claude-fable-5",
      "name": "Claude Fable 5",
-     "summary": "面向高难推理与长程智能体工作",
+     "summary": "For hard reasoning and long-horizon agentic work",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向高难推理与长程智能体工作"
     },
     {
      "id": "claude-opus-5",
      "name": "Claude Opus 5",
-     "summary": "面向复杂智能体编程与企业级工作",
+     "summary": "For complex agentic coding and enterprise work",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向复杂智能体编程与企业级工作"
     },
     {
      "id": "claude-sonnet-5",
      "name": "Claude Sonnet 5",
-     "summary": "速度与智能的最佳组合，日常编码与智能体",
+     "summary": "The best mix of speed and intelligence for everyday coding and agents",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "速度与智能的最佳组合，日常编码与智能体"
     },
     {
      "id": "claude-haiku-4-5-20251001",
      "name": "Claude Haiku 4.5",
-     "summary": "最快的模型，接近前沿智能",
+     "summary": "Fastest model in the family, close to frontier intelligence",
      "context": 200000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "最快的模型，接近前沿智能"
     },
     {
      "id": "claude-opus-4-8",
      "name": "Claude Opus 4.8",
-     "summary": "上一代 Opus（旧版，仍可用）",
+     "summary": "Previous-generation Opus (legacy, still available)",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "flagship",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "上一代 Opus（旧版，仍可用）"
     },
     {
      "id": "claude-opus-4-7",
      "name": "Claude Opus 4.7",
-     "summary": "旧版 Opus，官方建议迁移到 Opus 5",
+     "summary": "Legacy Opus; migrating to Opus 5 is recommended",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "flagship",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "旧版 Opus，官方建议迁移到 Opus 5"
     },
     {
      "id": "claude-opus-4-6",
      "name": "Claude Opus 4.6",
-     "summary": "旧版 Opus，官方建议迁移到 Opus 5",
+     "summary": "Legacy Opus; migrating to Opus 5 is recommended",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "flagship",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "旧版 Opus，官方建议迁移到 Opus 5"
     },
     {
      "id": "claude-sonnet-4-6",
      "name": "Claude Sonnet 4.6",
-     "summary": "旧版 Sonnet，官方建议迁移到 Sonnet 5",
+     "summary": "Legacy Sonnet; migrating to Sonnet 5 is recommended",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "balanced",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "旧版 Sonnet，官方建议迁移到 Sonnet 5"
     }
-   ]
+   ],
+   "source_zh": "https://platform.claude.com/docs/en/models/overview (docs.claude.com 302 跳转); https://platform.claude.com/docs/en/about-claude/model-deprecations; 各模型页 https://platform.claude.com/docs/en/models/<model>/overview"
   },
   "gemini": {
    "base_url": null,
-   "source": "https://ai.google.dev/gemini-api/docs/models ; 各模型页 https://ai.google.dev/gemini-api/docs/models/<id> ; https://ai.google.dev/gemini-api/docs/deprecations",
+   "source": "https://ai.google.dev/gemini-api/docs/models ; per-model pages https://ai.google.dev/gemini-api/docs/models/<id> ; https://ai.google.dev/gemini-api/docs/deprecations",
    "models": [
     {
      "id": "gemini-3.8-flash",
      "name": "Gemini 3.8 Flash",
-     "summary": "最智能的 Flash，面向长程软件工程与智能体",
+     "summary": "Smartest Flash, built for long-horizon software engineering and agents",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "最智能的 Flash，面向长程软件工程与智能体"
     },
     {
      "id": "gemini-3.7-flash",
      "name": "Gemini 3.7 Flash",
-     "summary": "上一代 Flash，适合复杂编码与智能体流程",
+     "summary": "Previous-generation Flash for complex coding and agent flows",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "上一代 Flash，适合复杂编码与智能体流程"
     },
     {
      "id": "gemini-3.6-flash",
      "name": "Gemini 3.6 Flash",
-     "summary": "速度与多模态兼顾，适合通用智能体任务",
+     "summary": "Balances speed and multimodality for general agent tasks",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "速度与多模态兼顾，适合通用智能体任务"
     },
     {
      "id": "gemini-3.5-flash",
      "name": "Gemini 3.5 Flash",
-     "summary": "旧版 Flash，基础速度，适合常规高吞吐",
+     "summary": "Older Flash with baseline speed, for routine high-throughput work",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "balanced",
-     "legacy": true
+     "legacy": true,
+     "summary_zh": "旧版 Flash，基础速度，适合常规高吞吐"
     },
     {
      "id": "gemini-3.5-flash-lite",
      "name": "Gemini 3.5 Flash-Lite",
-     "summary": "3.5 中最快最省，适合高吞吐执行",
-     "context": 1048576,
-     "reasoning": true,
-     "vision": true,
-     "coding": false,
-     "tier": "fast"
-    },
-    {
-     "id": "gemini-3.1-flash-lite",
-     "name": "Gemini 3.1 Flash-Lite",
-     "summary": "高频轻量任务，低成本快速",
-     "context": 1048576,
-     "reasoning": true,
-     "vision": true,
-     "coding": false,
-     "tier": "fast"
-    },
-    {
-     "id": "gemini-2.5-pro",
-     "name": "Gemini 2.5 Pro",
-     "summary": "深度推理与代码能力的高级模型（旧版稳定）",
-     "context": 1048576,
-     "reasoning": true,
-     "vision": true,
-     "coding": false,
-     "tier": "flagship",
-     "legacy": true
-    },
-    {
-     "id": "gemini-2.5-flash",
-     "name": "Gemini 2.5 Flash",
-     "summary": "低延迟、可推理的高性价比模型",
-     "context": 1048576,
-     "reasoning": true,
-     "vision": true,
-     "coding": false,
-     "tier": "balanced",
-     "legacy": true
-    },
-    {
-     "id": "gemini-2.5-flash-lite",
-     "name": "Gemini 2.5 Flash-Lite",
-     "summary": "2.5 系列最快最省的多模态模型",
+     "summary": "Fastest and cheapest of 3.5, for high-throughput execution",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": false,
      "tier": "fast",
-     "legacy": true
+     "summary_zh": "3.5 中最快最省，适合高吞吐执行"
+    },
+    {
+     "id": "gemini-3.1-flash-lite",
+     "name": "Gemini 3.1 Flash-Lite",
+     "summary": "Fast and cheap for frequent lightweight tasks",
+     "context": 1048576,
+     "reasoning": true,
+     "vision": true,
+     "coding": false,
+     "tier": "fast",
+     "summary_zh": "高频轻量任务，低成本快速"
+    },
+    {
+     "id": "gemini-2.5-pro",
+     "name": "Gemini 2.5 Pro",
+     "summary": "Advanced model for deep reasoning and coding (previous-generation stable)",
+     "context": 1048576,
+     "reasoning": true,
+     "vision": true,
+     "coding": false,
+     "tier": "flagship",
+     "legacy": true,
+     "summary_zh": "深度推理与代码能力的高级模型（旧版稳定）"
+    },
+    {
+     "id": "gemini-2.5-flash",
+     "name": "Gemini 2.5 Flash",
+     "summary": "Low-latency, capable reasoning model with good value",
+     "context": 1048576,
+     "reasoning": true,
+     "vision": true,
+     "coding": false,
+     "tier": "balanced",
+     "legacy": true,
+     "summary_zh": "低延迟、可推理的高性价比模型"
+    },
+    {
+     "id": "gemini-2.5-flash-lite",
+     "name": "Gemini 2.5 Flash-Lite",
+     "summary": "Fastest and cheapest multimodal model in the 2.5 family",
+     "context": 1048576,
+     "reasoning": true,
+     "vision": true,
+     "coding": false,
+     "tier": "fast",
+     "legacy": true,
+     "summary_zh": "2.5 系列最快最省的多模态模型"
     }
-   ]
+   ],
+   "source_zh": "https://ai.google.dev/gemini-api/docs/models ; 各模型页 https://ai.google.dev/gemini-api/docs/models/<id> ; https://ai.google.dev/gemini-api/docs/deprecations"
   },
   "openrouter": {
    "base_url": null,
-   "source": "https://openrouter.ai/models ; https://openrouter.ai/rankings ; 供应商页 https://openrouter.ai/<vendor> ; 单模型页 https://openrouter.ai/<vendor>/<slug>（openrouter.ai/api/v1/models 也可抽取）",
+   "source": "https://openrouter.ai/models ; https://openrouter.ai/rankings ; vendor pages https://openrouter.ai/<vendor> ; model pages https://openrouter.ai/<vendor>/<slug> (openrouter.ai/api/v1/models also works)",
    "models": [
     {
      "id": "anthropic/claude-fable-5.1",
      "name": "Claude Fable 5.1",
-     "summary": "Anthropic 最强，智能体编程与知识工作",
+     "summary": "Anthropic's strongest: agentic coding and knowledge work",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "Anthropic 最强，智能体编程与知识工作"
     },
     {
      "id": "anthropic/claude-opus-5",
      "name": "Claude Opus 5",
-     "summary": "面向高难推理、编程与长程智能体",
+     "summary": "For hard reasoning, coding and long-horizon agents",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向高难推理、编程与长程智能体"
     },
     {
      "id": "anthropic/claude-sonnet-5",
      "name": "Claude Sonnet 5",
-     "summary": "最强 Sonnet，编程、智能体与专业工作",
+     "summary": "Strongest Sonnet: coding, agents and professional work",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "最强 Sonnet，编程、智能体与专业工作"
     },
     {
      "id": "anthropic/claude-haiku-4.5",
      "name": "Claude Haiku 4.5",
-     "summary": "最快最省，接近前沿智能",
+     "summary": "Fastest and cheapest, close to frontier intelligence",
      "context": 200000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "最快最省，接近前沿智能"
     },
     {
      "id": "openai/gpt-6-astra",
      "name": "GPT-6 Astra",
-     "summary": "OpenAI 旗舰，面向高难端到端工作",
+     "summary": "OpenAI flagship for the hardest end-to-end work",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "OpenAI 旗舰，面向高难端到端工作"
     },
     {
      "id": "openai/gpt-5.6-sol",
      "name": "GPT-5.6 Sol",
-     "summary": "GPT-5.6 旗舰，复杂推理与编码",
+     "summary": "GPT-5.6 flagship for complex reasoning and coding",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "GPT-5.6 旗舰，复杂推理与编码"
     },
     {
      "id": "openai/gpt-5.6-luna",
      "name": "GPT-5.6 Luna",
-     "summary": "快速低价，适合高频低延迟场景",
+     "summary": "Fast and cheap, for high-frequency low-latency use",
      "context": 1050000,
      "reasoning": true,
      "vision": true,
      "coding": false,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "快速低价，适合高频低延迟场景"
     },
     {
      "id": "openai/gpt-oss-120b",
      "name": "gpt-oss-120b",
-     "summary": "开源权重 MoE，高强度推理与智能体",
+     "summary": "Open-weight MoE for heavy reasoning and agent tasks",
      "context": 131072,
      "reasoning": true,
      "vision": false,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "开源权重 MoE，高强度推理与智能体"
     },
     {
      "id": "google/gemini-3.8-flash",
      "name": "Gemini 3.8 Flash",
-     "summary": "最智能的 Flash，长程软件工程与智能体",
+     "summary": "Smartest Flash for long-horizon software engineering and agents",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "最智能的 Flash，长程软件工程与智能体"
     },
     {
      "id": "google/gemini-3.1-pro-preview",
      "name": "Gemini 3.1 Pro Preview",
-     "summary": "谷歌前沿推理模型（预览版）",
+     "summary": "Google's frontier reasoning model (preview)",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": true,
      "tier": "flagship",
-     "preview": true
+     "preview": true,
+     "summary_zh": "谷歌前沿推理模型（预览版）"
     },
     {
      "id": "deepseek/deepseek-v4-pro",
      "name": "DeepSeek V4 Pro",
-     "summary": "1.6T MoE，高级推理、编码与智能体",
+     "summary": "1.6T MoE for advanced reasoning, coding and agents",
      "context": 1048576,
      "reasoning": true,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "1.6T MoE，高级推理、编码与智能体"
     },
     {
      "id": "deepseek/deepseek-v4.1-flash",
      "name": "DeepSeek V4.1 Flash",
-     "summary": "稀疏 MoE，低价，面向编码与智能体",
+     "summary": "Sparse MoE, low cost, aimed at coding and agents",
      "context": 1048576,
      "reasoning": null,
      "vision": true,
      "coding": true,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "稀疏 MoE，低价，面向编码与智能体"
     },
     {
      "id": "qwen/qwen3.8-max-0902",
      "name": "Qwen3.8 Max (0902)",
-     "summary": "2.4T MoE，编码与智能体，可多模态输入",
+     "summary": "2.4T MoE for coding and agents, with multimodal input",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "2.4T MoE，编码与智能体，可多模态输入"
     },
     {
      "id": "qwen/qwen3.8-flash",
      "name": "Qwen3.8 Flash",
-     "summary": "多模态推理模型，编码助手与智能体",
+     "summary": "Multimodal reasoning model for coding assistance and agents",
      "context": 1000000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "多模态推理模型，编码助手与智能体"
     },
     {
      "id": "x-ai/grok-4.6",
      "name": "Grok 4.6",
-     "summary": "xAI 最强模型，编码、知识工作与 STEM",
+     "summary": "xAI's strongest: coding, knowledge work and STEM",
      "context": 500000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "xAI 最强模型，编码、知识工作与 STEM"
     },
     {
      "id": "moonshotai/kimi-k3",
      "name": "Kimi K3",
-     "summary": "2.8T 开源多模态推理模型，擅长复杂编码",
+     "summary": "2.8T open multimodal reasoning model, strong at complex coding",
      "context": 1048576,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "2.8T 开源多模态推理模型，擅长复杂编码"
     },
     {
      "id": "z-ai/glm-5.3",
      "name": "GLM 5.3",
-     "summary": "面向复杂软件工程与长程智能体的推理模型",
+     "summary": "Reasoning model for complex software engineering and long-horizon agents",
      "context": 1310720,
      "reasoning": true,
      "vision": false,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向复杂软件工程与长程智能体的推理模型"
     },
     {
      "id": "z-ai/glm-5.3-flash",
      "name": "GLM 5.3 Flash",
-     "summary": "原生多模态，高效编码与智能体",
+     "summary": "Native multimodal with efficient coding and agent ability",
      "context": 1310720,
      "reasoning": null,
      "vision": true,
      "coding": true,
-     "tier": "fast"
+     "tier": "fast",
+     "summary_zh": "原生多模态，高效编码与智能体"
     },
     {
      "id": "mistralai/mistral-medium-3-5",
      "name": "Mistral Medium 3.5",
-     "summary": "稠密 128B，智能体、编码与复杂推理",
+     "summary": "Dense 128B for agents, coding and complex reasoning",
      "context": 262144,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "稠密 128B，智能体、编码与复杂推理"
     },
     {
      "id": "meta-llama/llama-4-maverick",
      "name": "Llama 4 Maverick",
-     "summary": "Meta 多模态 MoE（17B 激活），指令调优",
+     "summary": "Meta multimodal MoE (17B active), instruction tuned",
      "context": 1048576,
      "reasoning": false,
      "vision": true,
      "coding": false,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "Meta 多模态 MoE（17B 激活），指令调优"
     }
-   ]
+   ],
+   "source_zh": "https://openrouter.ai/models ; https://openrouter.ai/rankings ; 供应商页 https://openrouter.ai/<vendor> ; 单模型页 https://openrouter.ai/<vendor>/<slug>（openrouter.ai/api/v1/models 也可抽取）"
   },
   "ollama": {
    "base_url": null,
-   "source": "https://ollama.com/library ; 各系列 tags 页 https://ollama.com/library/<name>/tags",
+   "source": "https://ollama.com/library ; per-family tag pages https://ollama.com/library/<name>/tags",
    "models": [
     {
      "id": "qwen3.6:27b",
      "name": "Qwen3.6 27B",
-     "summary": "智能体编程与思考保留更强的千问 3.6 稠密版",
+     "summary": "Qwen 3.6 dense edition with stronger agentic coding and thinking retention",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1169,12 +1288,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 18,
-     "params": "27B"
+     "params": "27B",
+     "summary_zh": "智能体编程与思考保留更强的千问 3.6 稠密版"
     },
     {
      "id": "qwen3.6:35b",
      "name": "Qwen3.6 35B (A3B)",
-     "summary": "千问 3.6 中型版，页面同名 tag 含 35b-a3b",
+     "summary": "Qwen 3.6 mid-size; the same-named tag on the Ollama page is 35b-a3b",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1182,12 +1302,13 @@
      "tools": true,
      "tier": "flagship",
      "size_gb": 23,
-     "params": "35B"
+     "params": "35B",
+     "summary_zh": "千问 3.6 中型版，页面同名 tag 含 35b-a3b"
     },
     {
      "id": "qwen3.5:4b",
      "name": "Qwen3.5 4B",
-     "summary": "千问 3.5 多模态小尺寸，低配电脑可跑",
+     "summary": "Qwen 3.5 small multimodal model that runs on modest machines",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1195,12 +1316,13 @@
      "tools": true,
      "tier": "fast",
      "size_gb": 3.4,
-     "params": "4B"
+     "params": "4B",
+     "summary_zh": "千问 3.5 多模态小尺寸，低配电脑可跑"
     },
     {
      "id": "qwen3.5:9b",
      "name": "Qwen3.5 9B",
-     "summary": "千问 3.5 多模态中小尺寸（该系列 latest）",
+     "summary": "Qwen 3.5 small-to-mid multimodal model (the latest of the series)",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1208,12 +1330,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 6.6,
-     "params": "9B"
+     "params": "9B",
+     "summary_zh": "千问 3.5 多模态中小尺寸（该系列 latest）"
     },
     {
      "id": "qwen3.5:27b",
      "name": "Qwen3.5 27B",
-     "summary": "千问 3.5 多模态大尺寸",
+     "summary": "Qwen 3.5 large multimodal model",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1221,12 +1344,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 17,
-     "params": "27B"
+     "params": "27B",
+     "summary_zh": "千问 3.5 多模态大尺寸"
     },
     {
      "id": "qwen3.8:27b",
      "name": "Qwen3.8 27B",
-     "summary": "千问 3.8，编码、研究与长程智能体任务提升",
+     "summary": "Qwen 3.8, with gains in coding, research and long-horizon agent tasks",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1234,12 +1358,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 18,
-     "params": "27B"
+     "params": "27B",
+     "summary_zh": "千问 3.8，编码、研究与长程智能体任务提升"
     },
     {
      "id": "qwen3:8b",
      "name": "Qwen3 8B",
-     "summary": "千问 3 稠密中小尺寸，支持思考模式",
+     "summary": "Qwen 3 dense small-to-mid model with thinking mode support",
      "context": 40000,
      "reasoning": true,
      "vision": false,
@@ -1247,12 +1372,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 5.2,
-     "params": "8B"
+     "params": "8B",
+     "summary_zh": "千问 3 稠密中小尺寸，支持思考模式"
     },
     {
      "id": "qwen3:14b",
      "name": "Qwen3 14B",
-     "summary": "千问 3 稠密中等尺寸",
+     "summary": "Qwen 3 dense mid-size model",
      "context": 40000,
      "reasoning": true,
      "vision": false,
@@ -1260,12 +1386,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 9.3,
-     "params": "14B"
+     "params": "14B",
+     "summary_zh": "千问 3 稠密中等尺寸"
     },
     {
      "id": "qwen3:32b",
      "name": "Qwen3 32B",
-     "summary": "千问 3 稠密大尺寸",
+     "summary": "Qwen 3 dense large model",
      "context": 40000,
      "reasoning": true,
      "vision": false,
@@ -1273,12 +1400,13 @@
      "tools": true,
      "tier": "flagship",
      "size_gb": 20,
-     "params": "32B"
+     "params": "32B",
+     "summary_zh": "千问 3 稠密大尺寸"
     },
     {
      "id": "qwen3-coder:30b",
      "name": "Qwen3-Coder 30B",
-     "summary": "阿里长上下文编程与智能体模型",
+     "summary": "Alibaba's long-context coding and agent model",
      "context": 256000,
      "reasoning": false,
      "vision": false,
@@ -1286,12 +1414,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 19,
-     "params": "30B"
+     "params": "30B",
+     "summary_zh": "阿里长上下文编程与智能体模型"
     },
     {
      "id": "gemma4:e4b",
      "name": "Gemma 4 E4B",
-     "summary": "Gemma 4 小尺寸（latest），多模态含音频",
+     "summary": "Gemma 4 small size (latest), multimodal including audio",
      "context": 128000,
      "reasoning": true,
      "vision": true,
@@ -1299,12 +1428,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 9.6,
-     "params": "E4B"
+     "params": "E4B",
+     "summary_zh": "Gemma 4 小尺寸（latest），多模态含音频"
     },
     {
      "id": "gemma4:12b",
      "name": "Gemma 4 12B",
-     "summary": "Gemma 4 中等尺寸，推理与智能体",
+     "summary": "Gemma 4 mid size, for reasoning and agents",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1312,12 +1442,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 7.6,
-     "params": "12B"
+     "params": "12B",
+     "summary_zh": "Gemma 4 中等尺寸，推理与智能体"
     },
     {
      "id": "gemma4:31b",
      "name": "Gemma 4 31B",
-     "summary": "Gemma 4 最大本地尺寸",
+     "summary": "Largest local Gemma 4 size",
      "context": 256000,
      "reasoning": true,
      "vision": true,
@@ -1325,12 +1456,13 @@
      "tools": true,
      "tier": "flagship",
      "size_gb": 20,
-     "params": "31B"
+     "params": "31B",
+     "summary_zh": "Gemma 4 最大本地尺寸"
     },
     {
      "id": "gemma3:4b",
      "name": "Gemma 3 4B",
-     "summary": "单卡可跑的多模态小模型（latest）",
+     "summary": "Multimodal small model that fits on a single GPU (latest)",
      "context": 128000,
      "reasoning": false,
      "vision": true,
@@ -1338,12 +1470,13 @@
      "tools": false,
      "tier": "fast",
      "size_gb": 3.3,
-     "params": "4B"
+     "params": "4B",
+     "summary_zh": "单卡可跑的多模态小模型（latest）"
     },
     {
      "id": "gemma3:12b",
      "name": "Gemma 3 12B",
-     "summary": "Gemma 3 中等尺寸多模态",
+     "summary": "Gemma 3 mid-size multimodal",
      "context": 128000,
      "reasoning": false,
      "vision": true,
@@ -1351,12 +1484,13 @@
      "tools": false,
      "tier": "balanced",
      "size_gb": 8.1,
-     "params": "12B"
+     "params": "12B",
+     "summary_zh": "Gemma 3 中等尺寸多模态"
     },
     {
      "id": "gemma3:27b",
      "name": "Gemma 3 27B",
-     "summary": "Gemma 3 最大尺寸多模态",
+     "summary": "Largest Gemma 3 multimodal size",
      "context": 128000,
      "reasoning": false,
      "vision": true,
@@ -1364,12 +1498,13 @@
      "tools": false,
      "tier": "balanced",
      "size_gb": 17,
-     "params": "27B"
+     "params": "27B",
+     "summary_zh": "Gemma 3 最大尺寸多模态"
     },
     {
      "id": "gpt-oss:20b",
      "name": "gpt-oss 20B",
-     "summary": "OpenAI 开源权重，强推理与智能体（latest）",
+     "summary": "OpenAI open weights with strong reasoning and agent ability (latest)",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1377,12 +1512,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 14,
-     "params": "20B"
+     "params": "20B",
+     "summary_zh": "OpenAI 开源权重，强推理与智能体（latest）"
     },
     {
      "id": "gpt-oss:120b",
      "name": "gpt-oss 120B",
-     "summary": "OpenAI 开源权重大尺寸，需大显存或内存",
+     "summary": "OpenAI open weights, large size; needs plenty of VRAM or RAM",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1390,12 +1526,13 @@
      "tools": true,
      "tier": "flagship",
      "size_gb": 65,
-     "params": "120B"
+     "params": "120B",
+     "summary_zh": "OpenAI 开源权重大尺寸，需大显存或内存"
     },
     {
      "id": "llama3.2:3b",
      "name": "Llama 3.2 3B",
-     "summary": "Meta 小型模型，适合轻量设备",
+     "summary": "Meta small model for lightweight devices",
      "context": 128000,
      "reasoning": false,
      "vision": false,
@@ -1403,12 +1540,13 @@
      "tools": true,
      "tier": "fast",
      "size_gb": 2.0,
-     "params": "3B"
+     "params": "3B",
+     "summary_zh": "Meta 小型模型，适合轻量设备"
     },
     {
      "id": "llama3.1:8b",
      "name": "Llama 3.1 8B",
-     "summary": "Meta 经典 8B 通用模型",
+     "summary": "Meta's classic 8B general-purpose model",
      "context": 128000,
      "reasoning": false,
      "vision": false,
@@ -1416,12 +1554,13 @@
      "tools": true,
      "tier": "fast",
      "size_gb": 4.9,
-     "params": "8B"
+     "params": "8B",
+     "summary_zh": "Meta 经典 8B 通用模型"
     },
     {
      "id": "llama3.1:70b",
      "name": "Llama 3.1 70B",
-     "summary": "Meta 70B，需高配机器",
+     "summary": "Meta 70B; needs a well-specced machine",
      "context": 128000,
      "reasoning": false,
      "vision": false,
@@ -1429,12 +1568,13 @@
      "tools": true,
      "tier": "flagship",
      "size_gb": 43,
-     "params": "70B"
+     "params": "70B",
+     "summary_zh": "Meta 70B，需高配机器"
     },
     {
      "id": "deepseek-r1:8b",
      "name": "DeepSeek-R1 8B",
-     "summary": "开源推理模型（该系列 latest）",
+     "summary": "Open reasoning model (the latest of the series)",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1442,12 +1582,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 5.2,
-     "params": "8B"
+     "params": "8B",
+     "summary_zh": "开源推理模型（该系列 latest）"
     },
     {
      "id": "deepseek-r1:14b",
      "name": "DeepSeek-R1 14B",
-     "summary": "开源推理模型，中等尺寸",
+     "summary": "Open reasoning model, mid size",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1455,12 +1596,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 9.0,
-     "params": "14B"
+     "params": "14B",
+     "summary_zh": "开源推理模型，中等尺寸"
     },
     {
      "id": "deepseek-r1:32b",
      "name": "DeepSeek-R1 32B",
-     "summary": "开源推理模型，大尺寸",
+     "summary": "Open reasoning model, large size",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1468,12 +1610,13 @@
      "tools": true,
      "tier": "flagship",
      "size_gb": 20,
-     "params": "32B"
+     "params": "32B",
+     "summary_zh": "开源推理模型，大尺寸"
     },
     {
      "id": "mistral:7b",
      "name": "Mistral 7B v0.3",
-     "summary": "Mistral 经典 7B，轻量通用",
+     "summary": "Mistral's classic 7B: light and general purpose",
      "context": 32000,
      "reasoning": false,
      "vision": false,
@@ -1481,12 +1624,13 @@
      "tools": true,
      "tier": "fast",
      "size_gb": 4.4,
-     "params": "7B"
+     "params": "7B",
+     "summary_zh": "Mistral 经典 7B，轻量通用"
     },
     {
      "id": "phi4:14b",
      "name": "Phi-4 14B",
-     "summary": "微软 14B 开源模型",
+     "summary": "Microsoft 14B open model",
      "context": 16000,
      "reasoning": false,
      "vision": false,
@@ -1494,12 +1638,13 @@
      "tools": false,
      "tier": "balanced",
      "size_gb": 9.1,
-     "params": "14B"
+     "params": "14B",
+     "summary_zh": "微软 14B 开源模型"
     },
     {
      "id": "granite4.2:3b",
      "name": "Granite 4.2 3B",
-     "summary": "IBM 企业级小模型，多语言、编码、RAG",
+     "summary": "IBM enterprise small model: multilingual, coding, RAG",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1507,12 +1652,13 @@
      "tools": true,
      "tier": "fast",
      "size_gb": 2.2,
-     "params": "3B"
+     "params": "3B",
+     "summary_zh": "IBM 企业级小模型，多语言、编码、RAG"
     },
     {
      "id": "granite4.2:8b",
      "name": "Granite 4.2 8B",
-     "summary": "IBM 企业级 8B（该系列 latest）",
+     "summary": "IBM enterprise 8B (the latest of the series)",
      "context": 128000,
      "reasoning": true,
      "vision": false,
@@ -1520,12 +1666,13 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 5.3,
-     "params": "8B"
+     "params": "8B",
+     "summary_zh": "IBM 企业级 8B（该系列 latest）"
     },
     {
      "id": "muse-glimmer:30b",
      "name": "Muse Glimmer 30B",
-     "summary": "Meta 面向常驻本地智能体的 Apache-2.0 模型",
+     "summary": "Meta Apache-2.0 model for always-on local agents",
      "context": 128000,
      "reasoning": true,
      "vision": true,
@@ -1533,9 +1680,11 @@
      "tools": true,
      "tier": "balanced",
      "size_gb": 18,
-     "params": "30B"
+     "params": "30B",
+     "summary_zh": "Meta 面向常驻本地智能体的 Apache-2.0 模型"
     }
-   ]
+   ],
+   "source_zh": "https://ollama.com/library ; 各系列 tags 页 https://ollama.com/library/<name>/tags"
   },
   "xai": {
    "base_url": "https://api.x.ai/v1",
@@ -1544,22 +1693,24 @@
     {
      "id": "grok-4.6",
      "name": "Grok 4.6",
-     "summary": "xAI 前沿模型，编码、智能体与知识工作",
+     "summary": "xAI frontier model for coding, agents and knowledge work",
      "context": 500000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "xAI 前沿模型，编码、智能体与知识工作"
     },
     {
      "id": "grok-4.5",
      "name": "Grok 4.5",
-     "summary": "面向智能体软件工程的编码模型",
+     "summary": "Coding model for agentic software engineering",
      "context": 500000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "面向智能体软件工程的编码模型"
     }
    ]
   },
@@ -1570,34 +1721,38 @@
     {
      "id": "mistral-medium-3-5-26-04",
      "name": "Mistral Medium 3.5",
-     "summary": "面向智能体与编码的前沿多模态模型",
+     "summary": "Frontier multimodal model for agents and coding",
      "context": 256000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "面向智能体与编码的前沿多模态模型"
     },
     {
      "id": "mistral-small-2603",
      "name": "Mistral Small 4",
-     "summary": "统一指令、推理与编码的混合模型",
+     "summary": "Hybrid model unifying instruction following, reasoning and coding",
      "context": 256000,
      "reasoning": true,
      "vision": true,
      "coding": true,
-     "tier": "balanced"
+     "tier": "balanced",
+     "summary_zh": "统一指令、推理与编码的混合模型"
     },
     {
      "id": "mistral-large-2512",
      "name": "Mistral Large 3",
-     "summary": "开放权重通用多模态 MoE 大模型",
+     "summary": "Open-weight general-purpose multimodal MoE",
      "context": 256000,
      "reasoning": false,
      "vision": true,
      "coding": false,
-     "tier": "flagship"
+     "tier": "flagship",
+     "summary_zh": "开放权重通用多模态 MoE 大模型"
     }
    ]
   }
- }
+ },
+ "note_zh": "随程序附带的模型目录快照,来自各服务商官方文档;强项标签由型号特征推断,仅供参考,可在界面中手动修改。"
 }

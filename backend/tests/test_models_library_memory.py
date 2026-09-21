@@ -14,13 +14,13 @@ from tests.conftest import FakeLLM
 
 # -------------------------------------------------------------- strengths
 def test_infer_uses_catalog_flags_name_hints_and_local():
-    assert "多模态" in strengths.infer("x-vl-72b")
-    assert "代码" in strengths.infer("qwen3-coder:30b")
-    assert {"速度", "低成本"} <= set(strengths.infer("gpt-9-mini", {"tier": "fast"}))
+    assert "multimodal" in strengths.infer("x-vl-72b")
+    assert "coding" in strengths.infer("qwen3-coder:30b")
+    assert {"speed", "low-cost"} <= set(strengths.infer("gpt-9-mini", {"tier": "fast"}))
     local = strengths.infer("qwen2.5:7b", is_local=True)
-    assert "本地" in local and "推理" not in strengths.infer("tiny", {"reasoning": True, "tier": "fast"}, is_local=True)
-    assert "长文本" in strengths.infer("kimi-k3") and len(strengths.infer("claude-opus-9", {"tier": "flagship", "reasoning": True, "vision": True, "coding": True})) <= 6
-    assert strengths.clean_tags(["写作", "不存在", "写作", "代码"]) == ["写作", "代码"]
+    assert "local" in local and "reasoning" not in strengths.infer("tiny", {"reasoning": True, "tier": "fast"}, is_local=True)
+    assert "long-context" in strengths.infer("kimi-k3") and len(strengths.infer("claude-opus-9", {"tier": "flagship", "reasoning": True, "vision": True, "coding": True})) <= 6
+    assert strengths.clean_tags(["写作", "不存在", "写作", "代码"]) == ["writing", "coding"]   # 中文别名 → ASCII id
 
 
 def test_catalog_shipped_is_valid_and_lookup_works(tmp_path):
@@ -49,8 +49,8 @@ def test_catalog_override_wins_only_when_newer_and_valid(tmp_path):
 def test_model_strengths_can_be_overridden_and_reset(store):
     m = store.get_model("deepseek/deepseek-flash")
     assert not m["strengths_custom"] and m["strengths"] == m["strengths_auto"]
-    m = store.update_model(m["id"], {"strengths": ["写作", "乱写的"]})
-    assert m["strengths"] == ["写作"] and m["strengths_custom"] and m["strengths_auto"] != ["写作"]
+    m = store.update_model(m["id"], {"strengths": ["写作", "乱写的"]})   # 中文别名与未知标签混着提交
+    assert m["strengths"] == ["writing"] and m["strengths_custom"] and m["strengths_auto"] != ["writing"]
     m = store.update_model(m["id"], {"strengths": None})
     assert not m["strengths_custom"]
 
@@ -76,7 +76,7 @@ def test_model_options_flags_retired_and_new_from_catalog_update(store, tmp_path
     store.add_model("deepseek", "deepseek-chat")
     modelopts.model_options(store, "deepseek")
     by = {m["id"]: m for m in modelopts.model_options(store, "deepseek")["models"]}
-    assert "停用" in by["deepseek-chat"]["retired_reason"]
+    assert "Retired" in by["deepseek-chat"]["retired_reason"]
     # 目录升级后多出来的型号被标为新
     data = json.loads(json.dumps(store.catalog.data))
     data["version"] = "9999-01-01"

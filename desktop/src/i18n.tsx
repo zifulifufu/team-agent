@@ -130,6 +130,9 @@ function translate(lang: Lang, key: string, vars?: Record<string, string | numbe
   return interpolate(lang === "zh" ? ZH[key] ?? key : key, vars);
 }
 
+/** Current UI language, readable from non-component code (api.ts, callbacks). */
+export const currentLang = (): Lang => current;
+
 /** 非组件代码(api.ts / lib.ts / 事件回调)用的翻译函数:按当前语言返回。 */
 export const tr = (key: string, vars?: Record<string, string | number>) => translate(current, key, vars);
 

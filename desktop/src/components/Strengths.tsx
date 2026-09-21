@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 import { api, type Tag } from "../api";
 
-/** 强项标签清单(后端为准),整个应用共用一份缓存。 */
-let cache: { id: Tag; desc: string }[] | null = null;
-let inflight: Promise<{ id: Tag; desc: string }[]> | null = null;
+/** A strength tag: `id` is the stable key sent to the backend, `label`/`desc` are
+ * already in the UI language (the backend localizes them). */
+export interface StrengthTag {
+  id: Tag;
+  label?: string;
+  desc: string;
+}
 
-export function useStrengthTags(): { id: Tag; desc: string }[] {
-  const [tags, setTags] = useState(cache ?? []);
+/** Strength tags (backend is the source of truth); one cache for the whole app. */
+let cache: StrengthTag[] | null = null;
+let inflight: Promise<StrengthTag[]> | null = null;
+
+export function useStrengthTags(): StrengthTag[] {
+  const [tags, setTags] = useState<StrengthTag[]>(cache ?? []);
   useEffect(() => {
     if (cache) return;
     inflight ??= api.strengthTags().then((r) => (cache = r.tags));
@@ -17,26 +25,34 @@ export function useStrengthTags(): { id: Tag; desc: string }[] {
   return tags;
 }
 
-/** 只读的强项标签串。max 限制显示个数,多出的折成「+N」。 */
+/** Display name of a tag id, falling back to the id itself. */
+export const tagLabel = (tags: StrengthTag[], id: Tag): string =>
+  tags.find((t) => t.id === id)?.label ?? id;
+
+/** Read-only strength chips. `max` caps how many show; the rest collapse into "+N". */
 export function StrengthChips({ tags, max = 6, className = "" }: { tags: Tag[]; max?: number; className?: string }) {
-  const desc = new Map(useStrengthTags().map((t) => [t.id, t.desc]));
+  const all = useStrengthTags();
+  const desc = new Map(all.map((t) => [t.id, t.desc]));
   if (!tags.length) return null;
   const shown = tags.slice(0, max);
+  const name = (id: Tag) => tagLabel(all, id);
   return (
     <span className={"str-chips " + className}>
       {shown.map((t) => (
-        <span key={t} className={"str-chip" + (t === "本地" ? " local" : "")} title={desc.get(t)}>{t}</span>
+        <span key={t} className={"str-chip" + (t === "local" ? " local" : "")} title={desc.get(t)}>{name(t)}</span>
       ))}
-      {tags.length > max && <span className="str-chip more" title={tags.slice(max).join("、")}>+{tags.length - max}</span>}
+      {tags.length > max && (
+        <span className="str-chip more" title={tags.slice(max).map(name).join(", ")}>+{tags.length - max}</span>
+      )}
     </span>
   );
 }
 
-/** 可点选的强项选择器(多选)。 */
+/** Clickable strength picker (multi-select). Values are ids, labels are localized. */
 export function StrengthPicker({ value, onChange, disabled }: { value: Tag[]; onChange: (v: Tag[]) => void; disabled?: boolean }) {
   const all = useStrengthTags();
   return (
-    <div className="str-picker" role="group" aria-label="强项">
+    <div className="str-picker" role="group" aria-label="Strength tags">
       {all.map((t) => {
         const on = value.includes(t.id);
         return (
@@ -49,7 +65,7 @@ export function StrengthPicker({ value, onChange, disabled }: { value: Tag[]; on
             title={t.desc}
             onClick={() => onChange(on ? value.filter((x) => x !== t.id) : [...value, t.id])}
           >
-            {t.id}
+            {t.label ?? t.id}
           </button>
         );
       })}

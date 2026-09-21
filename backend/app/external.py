@@ -34,7 +34,7 @@ ENGINES: dict[str, dict] = {
         "name": "WorkBuddy",
         "avatar": "🧰",
         "role": "外部智能体 · WorkBuddy",
-        "tags": ["工具调用", "代码"],
+        "tags": ["tool-use", "coding"],
         "prompt": (
             "你是 WorkBuddy(桌面智能体),以群成员的身份参与协作。你自带读文件、检索等工具,适合承担需要「动手查、动手整理」的部分:"
             "读取本地资料、汇总检索结果、整理成文档。你的权限由用户限定,做不到或权限不够时直接说明,不要硬试。"

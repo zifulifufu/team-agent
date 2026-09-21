@@ -46,8 +46,8 @@ class Collector:
 PLAN = json.dumps({
     "goal": "写发布会通知", "conventions": "统一称呼「各位同事」;日期写成 2026-10-12",
     "tasks": [
-        {"id": "t1", "owner": "文案", "title": "初稿", "instruction": "写通知初稿", "strengths": ["写作"], "deliverable": "Markdown"},
-        {"id": "t2", "owner": "校对", "title": "审校", "instruction": "审校初稿", "needs": ["t1"], "strengths": ["中文"]},
+        {"id": "t1", "owner": "文案", "title": "初稿", "instruction": "写通知初稿", "strengths": ["writing"], "deliverable": "Markdown"},
+        {"id": "t2", "owner": "校对", "title": "审校", "instruction": "审校初稿", "needs": ["t1"], "strengths": ["chinese"]},
     ]}, ensure_ascii=False)
 
 

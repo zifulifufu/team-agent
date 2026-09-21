@@ -32,7 +32,7 @@ def fake_env(monkeypatch, tmp_path):
 
 
 def make_agent(store, **cfg):
-    return store.create_agent("WorkBuddy", "🧰", "外部智能体", "p", None, [], ["工具调用"], engine="workbuddy",
+    return store.create_agent("WorkBuddy", "🧰", "外部智能体", "p", None, [], ["tool-use"], engine="workbuddy",
                               engine_cfg=clean_cfg(cfg))
 
 
@@ -402,7 +402,7 @@ def test_api_create_patch_and_group_rules(client, tmp_path):
     g = client.get("/api/groups").json()[0]
     a = client.post("/api/external/agents", json={"group_id": g["id"], "cfg": {"level": "edit", "cwd": str(tmp_path)}}).json()
     assert a["engine"] == "workbuddy" and a["name"] == "WorkBuddy" and a["model_id"] is None
-    assert a["engine_cfg"]["level"] == "edit" and set(a["tags"]) == {"工具调用", "代码"}
+    assert a["engine_cfg"]["level"] == "edit" and set(a["tags"]) == {"tool-use", "coding"}
     assert a["id"] in client.get("/api/groups").json()[0]["member_ids"]
     b = client.post("/api/external/agents", json={}).json()          # 自动避重名
     assert b["name"] == "WorkBuddy2" and b["engine_cfg"]["level"] == "read"

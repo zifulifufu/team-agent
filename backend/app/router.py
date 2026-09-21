@@ -131,12 +131,14 @@ class ModelRouter:
 
     def rank_by_tags(self, tags: list[str], limit: int = 5) -> list[dict]:
         """按强项给可用模型排序。同分时:云端优先于本地(本地留作兜底),再按设置里优先级链的顺序。
-        除非明确要「本地」强项,或者根本没有可用的云端模型,否则不会把本地小模型排在云端前面。"""
+        除非明确要「本地」强项,或者根本没有可用的云端模型,否则不会把本地小模型排在云端前面。
+        标签会先规范化:旧版用中文标签名传来的值("代码")要照样认(见 strengths.ALIASES)。"""
+        tags = strength_lib.clean_tags(tags)
         if not tags:
             return []
         chain = list(self.store.get_settings()["route_chain"])
         pool = self.usable_models()
-        if "本地" not in tags and any(not m["is_local"] for m in pool):
+        if "local" not in tags and any(not m["is_local"] for m in pool):
             pool = [m for m in pool if not m["is_local"]]
         ranked = []
         for m in pool:

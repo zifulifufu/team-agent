@@ -31,6 +31,7 @@ from .library import Library
 from .local_models import native_machine
 from .mcp_client import McpManager
 from .memory import MemoryService
+from . import i18n
 from . import net
 from .obsidian import ObsidianSync
 from .orchestrator import Orchestrator
@@ -229,6 +230,8 @@ def create_app(
             await mcp.shutdown()
 
     app = FastAPI(title="Team Agent", lifespan=lifespan)
+    # Resolves the request language (?lang= or Accept-Language) for built-in content.
+    app.add_middleware(i18n.LanguageMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     if token:  # Electron 渲染进程的 Origin 可能是 file:// (即 "null"),靠 token 而不是来源来鉴权
         app.add_middleware(
