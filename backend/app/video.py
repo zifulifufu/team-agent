@@ -97,7 +97,6 @@ MAX_SECONDS = max(s["seconds"][1] for s in SHAPES.values())
 ASPECT_RATIOS: tuple[str, ...] = tuple(
     dict.fromkeys(r for s in SHAPES.values() for r in s["ratios"])
 )
-DEFAULT_ASPECT = "16:9"     # what both shapes accept, and what H3 defaults to
 
 # MetaChat's open media API. `{base}` is the API prefix MetaChat's documentation gives for it —
 # `https://api.mmchat.xyz/open/v1` — so these paths are relative to that and not to the host, which
@@ -111,8 +110,8 @@ META_RESULT = "video/result/{vid}"
 # this pivot it is the smaller file.
 META_RESOLUTIONS = ("480p", "720p")
 META_RESOLUTION_PIVOT = 640
-# MetaChat also reports what a job cost, in its own points. Worth showing: the price is real.
-META_MODELS: tuple[str, ...] = media.BUILTIN_MEDIA_MODELS[META_KIND]
+# Its models are defined once, in `media.BUILTIN_MEDIA_MODELS` — the preset seeds from there and
+# `discovery` answers a refresh with it, so this module deliberately keeps no second copy.
 
 # Status words. Anything that is neither done nor failed counts as "still working" and the
 # deadline decides when to stop, so a server that invents a new word for "queued" does not make

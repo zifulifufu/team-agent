@@ -50,7 +50,9 @@ BUILTIN_MEDIA_MODELS: dict[str, tuple[str, ...]] = {
 # Guessing wrong in the "chat" direction costs nothing; guessing wrong towards "image" would make
 # a perfectly good chat model look unusable. So the name rules are narrow and specific, and
 # anything unrecognised stays `chat`.
-PURPOSES: tuple[str, ...] = ("chat", "image", "video", "responses")
+#
+# The four answers `purpose_of` can give are `chat`, `image`, `video` and `responses` (OpenAI's
+# other API shape — not a medium, but the reason a member pointed at one would fail).
 
 # `mode` values as providers spell them. Unknown values fall through to the name rules rather
 # than being forced into a bucket.
