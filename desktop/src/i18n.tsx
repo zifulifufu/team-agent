@@ -1418,7 +1418,7 @@ const ZH: Record<string, string> = {
   "Working directory:": "工作目录:",
   "a dedicated empty folder": "专属空文件夹",
   "Good to know": "使用须知",
-  "Every reply is a separate command-line process with no memory across turns (the context comes from the chat log). The first one usually takes tens of seconds; later ones are quicker.": "每次发言是一个独立的命令行进程,没有跨轮记忆(上下文靠群聊记录);第一次通常要等几十秒,之后会快一些。",
+  "By default every reply is a separate command-line process with no memory across turns (the context comes from the chat log). Switch on \"Use the application's own configuration\" to keep one continuing session instead. The first run usually takes tens of seconds; later ones are quicker.": "默认每次发言是一个独立的命令行进程,轮与轮之间没有记忆(上下文靠群聊记录);打开「沿用该应用自己的配置」后会改为保留一个持续会话。首次通常要等几十秒,之后会快一些。",
   "An external agent cannot be the group host, and its reply is only chat text — it is never executed as a plan or a tool call.": "外部智能体不能当群主,它的回复只当聊天文字,不会被当作分工计划或工具调用来执行。",
   "A read-only working directory is a starting point, not a fence. To limit what it can read, do not give it an account that can read what it should not.": "「只读」的工作目录只是起点,不是围栏;要限制读取范围,请不要给它读不该读的东西的账户权限。",
   "Files and web pages it reads can contain text trying to tell it what to do (prompt injection). The higher the permission, the bigger the risk.": "它读到的文件、网页内容都可能包含试图指挥它的文字(提示词注入),越高的权限风险越大。",

@@ -98,7 +98,7 @@ export default function ExternalPage(_: PageProps) {
 
       <div className="sec">{t("Good to know")}</div>
       <ul className="ext-notes">
-        <li>{t("Every reply is a separate command-line process with no memory across turns (the context comes from the chat log). The first one usually takes tens of seconds; later ones are quicker.")}</li>
+        <li>{t("By default every reply is a separate command-line process with no memory across turns (the context comes from the chat log). Switch on \"Use the application's own configuration\" to keep one continuing session instead. The first run usually takes tens of seconds; later ones are quicker.")}</li>
         <li>{t("An external agent cannot be the group host, and its reply is only chat text — it is never executed as a plan or a tool call.")}</li>
         <li>{t("A read-only working directory is a starting point, not a fence. To limit what it can read, do not give it an account that can read what it should not.")}</li>
         <li>{t("Files and web pages it reads can contain text trying to tell it what to do (prompt injection). The higher the permission, the bigger the risk.")}</li>
