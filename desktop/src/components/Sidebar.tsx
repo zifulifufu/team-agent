@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Download, Info, MessageSquarePlus, PanelLeftClose, Palette, Plug, Puzzle, Search, Settings, Sparkles, TerminalSquare, Trash2, Users, Webhook, WifiOff, X } from "lucide-react";
+import { Anchor, ChevronDown, ChevronRight, Download, Info, MessageSquarePlus, PanelLeftClose, Palette, Plug, Puzzle, Search, Settings, Sparkles, TerminalSquare, Trash2, Users, Webhook, WifiOff, X } from "lucide-react";
 import { api, relTime } from "../api";
 import { useData } from "../data";
 import { Switch, useConfirm, useOutside } from "../ui";
@@ -18,6 +18,7 @@ export type View =
   | { kind: "mcp" }
   | { kind: "external" }
   | { kind: "channels" }
+  | { kind: "hooks" }
   // A group's own library, opened from a chat. The overview of every document lives in
   // Settings, so this view always belongs to one group.
   | { kind: "library"; gid: string }
@@ -30,10 +31,11 @@ export type View =
  *  other way round: they are things you set up once and then keep an eye on, so they sit here
  *  rather than behind a settings menu.
  */
-const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "external" | "channels"; label: string; icon: typeof Sparkles }[] = [
+const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "hooks" | "external" | "channels"; label: string; icon: typeof Sparkles }[] = [
   { kind: "skills", label: "Skills", icon: Sparkles },
   { kind: "plugins", label: "Plugins", icon: Puzzle },
   { kind: "mcp", label: "MCP", icon: Plug },
+  { kind: "hooks", label: "Hooks", icon: Anchor },
   { kind: "external", label: "External agents", icon: TerminalSquare },
   { kind: "channels", label: "Chat channels", icon: Webhook },
 ];

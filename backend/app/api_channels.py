@@ -76,6 +76,9 @@ class Channels:
 
     def __init__(self, store: Any, orch: Any, hub: Any) -> None:
         self.store, self.orch, self.hub = store, orch, hub
+        # The hooks live on the orchestrator (it owns the pipeline); the channel layer only
+        # needs the outgoing gate, and reading it from there keeps one owner instead of two.
+        self.hooks = getattr(orch, "hooks", None)
         self.status: dict[str, Status] = {cid: Status() for cid in channels.ids()}
         self.seen = {cid: Recent(512) for cid in channels.ids()}
         self.limiter = RateLimit(PER_MINUTE, 60.0)
@@ -152,11 +155,17 @@ class Channels:
         finally:
             await self.hub.broadcast(gid, {"type": "idle"})
             if replies:
-                body = channels.format_reply(cid, cfg, replies[-1])
-                ok, detail = await channels.send(cid, cfg, item.sender, body)
-                st.last_reply = {"at": time.time(), "ok": bool(ok), "detail": detail, "chars": len(body)}
-                if not ok:
-                    st.last_error = detail
+                allowed, text = await self._before_send(gid, replies[-1])
+                if allowed:
+                    body = channels.format_reply(cid, cfg, text)
+                    ok, detail = await channels.send(cid, cfg, item.sender, body)
+                    st.last_reply = {"at": time.time(), "ok": bool(ok), "detail": detail, "chars": len(body)}
+                    if not ok:
+                        st.last_error = detail
+                else:
+                    # A hook held it back. Recorded as a reply that did not happen (with the reason
+                    # the settings page already shows) rather than counted as inbound noise.
+                    st.last_reply = {"at": time.time(), "ok": False, "detail": text, "chars": 0}
 
     async def _accept(self, cid: str, item: channels.Inbound, cfg: dict) -> bool:
         """Shared gate for a single message, whether it was posted or polled."""
@@ -191,6 +200,20 @@ class Channels:
         self._spawn(self._round(cid, item, cfg))
         return True
 
+    async def _before_send(self, gid: str, text: str) -> tuple[bool, str]:
+        """Ask the `before_send` hooks about text that is about to leave this machine.
+
+        One choke point for both directions (a reply to an inbound message, and the push into a
+        group robot), because "the message already went out" is the one thing no hook can undo.
+        Returns `(allowed, text_to_send_or_reason)`.
+        """
+        if self.hooks is None:
+            return True, text
+        reason, maybe = await self.hooks.gate_outgoing(gid, text)
+        if reason:
+            return False, reason
+        return True, maybe
+
     async def push_answer(self, gid: str, text: str) -> None:
         """Forward a finished answer into every one-way channel bound to this group.
 
@@ -198,6 +221,9 @@ class Channels:
         raised: a broken robot must never turn a good answer into a failed round.
         """
         if not (text or "").strip():
+            return
+        allowed, text = await self._before_send(gid, text)
+        if not allowed:
             return
         settings = self.store.get_settings()
         for cid in channels.ids():

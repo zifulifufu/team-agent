@@ -103,6 +103,40 @@ to keep it that way, and removing that variable is what makes the real keychain 
 - **No automatic outbound calls**: update checks are off by default.
 - A "block hosted models" switch stops every hosted request, including update checks and remote MCP.
 - Plugins and MCP servers run code with your privileges. Enable only what you trust.
+- **Hooks** are your own code too. They run in a subprocess with a trimmed environment (no app
+  token, no inherited API keys), with a timeout, off by default, and a gate can only *object* or
+  *rewrite* — never grant what Permissions & control already denies.
+
+## Hooks
+
+*Sidebar → Tools → **Hooks***. Your own code at six fixed points of a group chat. A hook is one
+folder with two files, and it is **off until you switch it on**:
+
+```
+hooks/my-hook/HOOK.json     which events, timeout, whether it may block, which groups
+hooks/my-hook/hook.py       def handle(event, payload): ...
+```
+
+| Event | Kind | What it is for |
+|---|---|---|
+| `round.start` / `round.end` | observer | One user message in, one answer out: log it, count it, push it somewhere |
+| `agent.reply` | observer | One member finished a reply (who, which model, how long, which tools) |
+| `tool.called` | observer | A tool ran: name, arguments, ok, how long, a cut-down result |
+| `pre_tool_use` | gate | Before a tool runs: object (`{"block": true, "reason": …}`) or rewrite the arguments |
+| `before_send` | gate | Before text leaves this machine (chat channels): object, or replace the text |
+
+Four things are enforced rather than documented, because a hook file gets copied between machines:
+
+- **A gate can only tighten.** Your permission settings are consulted first, and a hook has no
+  vocabulary for granting anything — there is no "allow", only "object". A hook that echoes the
+  whole payload back cannot turn a value it was never shown into the real one either.
+- **It runs in a subprocess** with the trimmed environment members' code gets: no app token, no
+  inherited API keys, its own process group, and a timeout that kills the group.
+- **A failure is recorded, never fatal.** The reason appears on the Hooks page and in
+  `hook-log.jsonl` next to the data directory. By default a broken gate lets read-only tools
+  through and holds back writes and outgoing messages.
+- **It can be run once from the page** with a sample payload — installed and working are different
+  claims, and the page shows the second one.
 
 ## External agents
 

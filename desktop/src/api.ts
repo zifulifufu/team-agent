@@ -211,6 +211,28 @@ export interface GalleryApplyResult {
   skipped: string[];                 // Skipped because it already existed
   notes: string[];                   // Reminders the user should know about
 }
+export interface HookEntry {
+  id: string;
+  name: string;
+  description: string;
+  events: string[];
+  kind: "observe" | "gate";
+  timeout_ms: number;
+  on_error: "auto" | "open" | "closed";
+  enabled: boolean;
+  groups: string[];                  // Empty = every group
+  error: string;                     // Why it cannot run, if it cannot
+  last: { ok?: boolean; note?: string; ms?: number; at?: number };
+}
+export interface HookLogRow {
+  at: number;
+  hook: string;
+  event: string;
+  group_id: string;
+  ok: boolean;
+  note: string;
+  tool?: string;
+}
 export interface AgentPreset {
   key: string;
   name: string;
@@ -997,6 +1019,14 @@ export const api = {
   settings: () => get<Settings>("/api/settings"),
   putSettings: (b: Partial<Settings>) => put<Settings>("/api/settings", b),
   channels: () => get<{ channels: ChannelInfo[] }>("/api/channels"),
+  hooks: () => get<{ hooks: HookEntry[]; errors: string[]; guide: string; directory: string; log_file: string }>("/api/hooks"),
+  hooksLog: (limit = 50) => get<{ entries: HookLogRow[] }>(`/api/hooks/log?limit=${limit}`),
+  reloadHooks: () => post<{ hooks: HookEntry[]; errors: string[] }>("/api/hooks/reload", {}),
+  patchHook: (id: string, b: { enabled?: boolean; groups?: string[] }) =>
+    patch<{ hook: HookEntry }>(`/api/hooks/${encodeURIComponent(id)}`, b),
+  hookSource: (id: string) => get<{ id: string; content: string }>(`/api/hooks/${encodeURIComponent(id)}/source`),
+  testHook: (id: string, b: { event?: string; group_id?: string }) =>
+    post<{ ok: boolean; note: string; answer: Record<string, unknown> | null }>(`/api/hooks/${encodeURIComponent(id)}/test`, b),
   /** `patch` is keyed by field name (enabled, group_id, …), not by the full setting key. */
   setChannel: (id: string, patch: Record<string, unknown>) =>
     put<{ ok: boolean; ready: boolean; missing: string[]; secrets: Record<string, boolean> }>(`/api/channels/${id}`, patch),

@@ -19,7 +19,7 @@ import PromptsPage from "../pages/PromptsPage";
 
 export type SettingsTab =
   | "providers" | "routing" | "local"
-  | "skills" | "plugins" | "mcp" | "external" | "channels" | "gallery" | "prompts" | "library" | "memory"
+  | "skills" | "plugins" | "mcp" | "hooks" | "external" | "channels" | "gallery" | "prompts" | "library" | "memory"
   | "general" | "permissions" | "updates" | "appearance" | "data" | "stats" | "deps" | "about";
 
 /** Each settings page may take an `onTab` so it can jump to another settings tab. */

@@ -26,11 +26,13 @@ from .api_ext import Ctx, build_router
 from .api_external import build_external_router
 from .api_gallery import build_gallery_router
 from .api_channels import build_channels
+from .api_hooks import build_hooks_router
 from .api_import import build_import_router
 from .approvals import Approvals
 from . import channels
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
+from .hooks import HookManager, ensure_example_hooks
 from .library import Library
 from .local_models import native_machine
 from .mcp_client import McpManager
@@ -239,13 +241,18 @@ def create_app(
     mcp = McpManager()
     library = Library(store)
     memory = MemoryService(store, router)
-    toolhub = ToolHub(store, registry, mcp, library, memory)
+    # Hooks: the user's own code at six fixed points. Written once by the example below, off
+    # until switched on, and every run goes through a subprocess (see app/hooks.py).
+    ensure_example_hooks(store.data_dir)
+    hooks = HookManager(store.data_dir)
+    hooks.load()
+    toolhub = ToolHub(store, registry, mcp, library, memory, hooks=hooks)
     board = HealthBoard(store, router)
     prompts = PromptBuilder(store, router)
     approvals = Approvals(store)
     obsidian = ObsidianSync(store)
     orch = Orchestrator(store, router, prompts=prompts, toolhub=toolhub, memory=memory, library=library,
-                        registry=registry, mcp=mcp, approvals=approvals)
+                        registry=registry, mcp=mcp, approvals=approvals, hooks=hooks)
     updater = Updater(store, APP_VERSION, github_transport)
     hub = Hub()
     # Chat channels: inbound webhooks, polled platforms, and the one-way pushes. Built here
@@ -288,6 +295,7 @@ def create_app(
             if background:
                 await chan.shutdown()
             await orch.drain()
+            await hooks.drain()      # let a running observer finish rather than cutting it off
             await mcp.shutdown()
 
     # The interactive docs live outside /api, so `require_token` never covers them: with a token in
@@ -336,6 +344,7 @@ def create_app(
         return await call_next(request)
     app.state.store, app.state.router, app.state.orch = store, router, orch
     app.state.updater, app.state.mcp, app.state.registry = updater, mcp, registry
+    app.state.hooks = hooks
 
     def need(x: Any, what: str) -> Any:
         if x is None:
@@ -816,6 +825,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
     app.include_router(build_external_router(store, orch.external))
     app.include_router(build_gallery_router(store))
+    app.include_router(build_hooks_router(store, hooks))
     app.include_router(build_import_router(store))
     # Chat channels: the inbound webhook lives outside /api on purpose. Token middleware does
     # not cover it, because the caller is a chat platform rather than the app's own front end,

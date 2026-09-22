@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .approvals import policy_for
+from .hooks import scrub_args, scrub_text
 from .library import Library
 from .mcp_client import McpManager, pick_transport, slug
 from .memory import MemoryService, looks_sensitive
@@ -234,8 +235,13 @@ def timeout_budget(cfg: dict, spec: dict) -> float:
 
 
 class ToolHub:
-    def __init__(self, store: Store, registry: ToolRegistry, mcp: McpManager, library: Library, memory: MemoryService):
+    def __init__(self, store: Store, registry: ToolRegistry, mcp: McpManager, library: Library,
+                 memory: MemoryService, hooks: Any = None):
         self.store, self.registry, self.mcp, self.library, self.memory = store, registry, mcp, library, memory
+        # Hooks are asked twice around a tool call: once to object (`pre_tool_use`) and once to be
+        # told what happened (`tool.called`). They are consulted *after* the user's own permission
+        # rules, so a hook can only ever tighten a call, never grant one (see app/hooks.py).
+        self.hooks = hooks
 
     # ----------------------------------------------------------- listing
     def _mcp_name(self, server: dict, tool: str, taken: set[str]) -> str:
@@ -350,6 +356,13 @@ When it is not supplied, calls needing confirmation are always denied."""
             )
         if pol == "ask" and self.policy(spec) == "deny":   # while waiting for confirmation the user changed it to "forbidden"
             return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。"), False, 0, True)
+        if self.hooks is not None:
+            blocked, args = await self.hooks.gate_tool(ctx.group["id"], spec, args)
+            if blocked:
+                return ToolOutcome(
+                    i18n.pick_now(f"{blocked} Do not retry the same call — find another way, or tell the user what you need and why.",
+                                  f"{blocked}不要重试同一调用,请换个办法,或直接告诉用户你需要做什么、为什么。"),
+                    False, 0, True)
         t0 = time.time()  # elapsed time excludes the wait for user confirmation
         timeout = timeout_budget(self.store.get_settings(), spec)
         try:
@@ -361,7 +374,14 @@ When it is not supplied, calls needing confirmation are always denied."""
             raise
         except Exception as e:  # noqa: BLE001
             text, ok, files = i18n.pick_now(f"Tool execution failed: {type(e).__name__}: {e}", f"工具执行出错:{type(e).__name__}: {e}")[:500], False, []
-        return ToolOutcome(text, ok, int((time.time() - t0) * 1000), False, files)
+        outcome = ToolOutcome(text, ok, int((time.time() - t0) * 1000), False, files)
+        if self.hooks is not None:
+            self.hooks.notify("tool.called", ctx.group["id"], {
+                "agent": ctx.agent.get("name", ""), "tool": name, "source": spec.get("source"),
+                "args": scrub_args(args), "ok": ok, "ms": outcome.ms,
+                "text": scrub_text(text),
+            })
+        return outcome
 
     def _note_unstoppable(self, spec: dict) -> None:
         """A plugin tool that is a plain function runs in a worker thread (see `tools.py`), and a

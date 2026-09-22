@@ -1,0 +1,23 @@
+.hook { margin-bottom: 10px; }
+.hook.bad { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.hook-head { display: flex; align-items: center; gap: 9px; }
+.hook-head > svg { color: var(--text-3); flex: none; }
+.hook-title { display: flex; flex-direction: column; min-width: 0; }
+.hook-title b { font-weight: 500; }
+.hook-title .small { font-family: var(--font-mono); }
+.hook-desc { margin: 6px 0 0 24px; }
+.hook-meta { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 0 24px; font-family: var(--font-mono); }
+.hook-groups { display: flex; align-items: center; gap: 10px; margin: 8px 0 0 24px; }
+.hook-groups-pick { min-width: 190px; max-width: 100%; min-height: 30px; max-height: 84px; font: inherit; font-size: 12px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+.hook-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 0 24px; }
+.hook-foot .btn { display: inline-flex; align-items: center; gap: 5px; }
+.hook-source { position: relative; margin: 10px 0 0 24px; }
+.hook-source pre { max-height: 320px; overflow: auto; margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-sub); color: var(--text-2); font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.hook-source-x { position: absolute; top: 6px; right: 6px; }
+.hook-guide { margin: 0 0 14px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-sub); color: var(--text-2); font-family: var(--font-mono); font-size: 12px; line-height: 1.65; overflow: auto; white-space: pre-wrap; }
+.hook-dir { margin: -6px 0 12px; }
+.hook-dir code { font-family: var(--font-mono); }
+.hook-log-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.hook-logrow { display: flex; align-items: center; gap: 9px; padding: 7px 14px; border-top: 1px solid var(--border); }
+.hook-logrow:first-child { border-top: 0; }
+.hook-logrow .chip { font-family: var(--font-mono); }

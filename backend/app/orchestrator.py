@@ -149,6 +149,7 @@ class Orchestrator:
         toolhub: ToolHub | None = None, memory: MemoryService | None = None, library: Library | None = None,
         registry: ToolRegistry | None = None, mcp: McpManager | None = None,
         approvals: Approvals | None = None, external_runner: ExternalRunner | None = None,
+        hooks: Any = None,
     ):
         self.store = store
         self.external = external_runner or ExternalRunner(store.data_dir)
@@ -157,9 +158,12 @@ class Orchestrator:
         self.memory = memory or MemoryService(store, router)
         self.registry = registry or ToolRegistry()
         self.mcp = mcp or McpManager()
-        self.toolhub = toolhub or ToolHub(store, self.registry, self.mcp, self.library, self.memory)
+        self.toolhub = toolhub or ToolHub(store, self.registry, self.mcp, self.library, self.memory, hooks=hooks)
         self.prompts = prompts or PromptBuilder(store, router)
         self.approvals = approvals or Approvals(store)
+        # The user's own hooks (see app/hooks.py). Optional everywhere so a test can build an
+        # orchestrator without one; the channel layer reads it from here.
+        self.hooks = hooks
         self._locks: dict[str, asyncio.Lock] = {}
         self._bg: set[asyncio.Task] = set()
         # Optional callback `(group_id, final_text)` run once per finished round, for
@@ -308,9 +312,25 @@ straight into the context."""
                 return
             run = RunState(gid, text, read_only=read_only)
             run.refs_block = self._refs_block(group, text)
+            self._notify("round.start", gid, group,
+                         {"sender": sender_name, "chars": len(text),
+                          "read_only": read_only, "images": len(images or [])})
             await self._run_turns(group, text, emit, run)
             self._after_run(group, run)
         await self._announce(gid, run)
+        self._notify("round.end", gid, group, {
+            "sender": sender_name, "entries": len(run.steps),
+            "seconds": round(time.time() - run.started, 2),
+            "agents": [s.get("agent") for s in run.steps],
+            "answer_chars": len(run.final_text or ""),
+        })
+
+    def _notify(self, event: str, gid: str, group: dict, payload: dict) -> None:
+        """Tell the observers about a round. A no-op when no hook is switched on, so the hot path
+        pays nothing for a feature nobody uses."""
+        if self.hooks is None or not self.hooks.any_enabled():
+            return
+        self.hooks.notify(event, gid, {"group_name": group.get("name", ""), **payload})
 
     async def _announce(self, gid: str, run: RunState) -> None:
         """Hand the finished answer to the push channels bound to this group.
@@ -685,6 +705,11 @@ protocol and should not decide what the others do."""
             "agent": agent["name"], "model": res.model_id, "ok": True,
             "tools": [t["name"] for t in trace if t.get("status") == "ok"], "fallback": bool(res.fallback_from),
         })
+        self._notify("agent.reply", group["id"], group, {
+            "agent": agent["name"], "model": res.model_id, "fallback_from": res.fallback_from or "",
+            "chars": len(content), "tools": [t["name"] for t in trace],
+            "latency_ms": (attempts[-1].get("latency_ms") if attempts else 0),
+        })
         return TurnOut(content, "\n".join(raws), saved)
 
     # ------------------------------------------------------- external agent turn
@@ -795,6 +820,11 @@ protocol and should not decide what the others do."""
         await emit({"type": "message_end", "message": saved})
         run.steps.append({"agent": name, "model": f"ext:{agent['engine']}", "ok": True,
                           "tools": [t["name"] for t in trace if t.get("status") == "ok"], "fallback": False})
+        self._notify("agent.reply", gid, group, {
+            "agent": name, "model": f"ext:{agent['engine']}", "external": True,
+            "chars": len(content), "tools": [t["name"] for t in trace],
+            "cost_usd": res.cost_usd, "num_turns": res.num_turns,
+        })
         return TurnOut(content, res.text, saved)
 
     async def _plan_failed(self, gid: str, out: "TurnOut", note: str, emit: Emit) -> None:

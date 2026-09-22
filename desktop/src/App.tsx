@@ -16,19 +16,22 @@ import PluginsPage from "./settings/PluginsPage";
 import McpPage from "./settings/McpPage";
 import ExternalPage from "./settings/ExternalPage";
 import ChannelsPage from "./settings/ChannelsPage";
+import HooksPage from "./settings/HooksPage";
 import SettingsModal, { type PageProps, type SettingsTab } from "./settings/SettingsModal";
 
 /** The pages that are the main area rather than a tab inside Settings. Prompts, the library
  *  and memory are the other way round: they are Settings tabs, so a link to one of them keeps
  *  Settings open and just switches tab (see `goTab`). */
-const AREA_PAGES: Record<"skills" | "plugins" | "mcp" | "external" | "channels", ComponentType<PageProps>> = {
-  skills: SkillsPage, plugins: PluginsPage, mcp: McpPage, external: ExternalPage, channels: ChannelsPage,
+const AREA_PAGES: Record<"skills" | "plugins" | "mcp" | "hooks" | "external" | "channels", ComponentType<PageProps>> = {
+  skills: SkillsPage, plugins: PluginsPage, mcp: McpPage, hooks: HooksPage, external: ExternalPage,
+  channels: ChannelsPage,
 };
 
 /** Settings ids that name one of those pages, as the `View` that shows it. */
 const AREA_VIEWS: Partial<Record<SettingsTab, View>> = {
   skills: { kind: "skills" }, plugins: { kind: "plugins" }, mcp: { kind: "mcp" },
-  external: { kind: "external" }, channels: { kind: "channels" }, appearance: { kind: "appearance" },
+  hooks: { kind: "hooks" }, external: { kind: "external" }, channels: { kind: "channels" },
+  appearance: { kind: "appearance" },
 };
 
 export default function App() {
