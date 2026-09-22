@@ -128,10 +128,14 @@ def test_policy_matrix():
     mem = {"name": "memory_save", "source": "builtin", "risk": "write"}
     lib = {"name": "library_search", "source": "builtin", "risk": "read"}
     now = {"name": "current_time", "source": "builtin", "risk": "read"}
-    assert [risk_of(s) for s in (plug, mcp_ro, mcp_rw, mem, lib)] == ["exec", "read", "exec", "write", "read"]
+    assert [risk_of(s) for s in (plug, mcp_ro, mcp_rw, mem, lib)] == ["exec", "exec", "exec", "write", "read"]
     # …and a spec that somehow arrives without one counts as exec, never as read
     assert risk_of({"name": "memory_save", "source": "builtin"}) == "exec"
-    assert [policy_for(base, s) for s in (plug, mcp_ro, mcp_rw, mem, lib, now)] == ["ask", "allow", "ask", "allow", "allow", "allow"]
+    # An MCP tool is `exec` whatever its server says about it: `readOnlyHint` is the server's own
+    # annotation, and this is the decision that decides whether anything is shown to the user.
+    assert [policy_for(base, s) for s in (plug, mcp_ro, mcp_rw, mem, lib, now)] == ["ask", "ask", "ask", "allow", "allow", "allow"]
+    # The way to stop being asked about a read-only server is to allow that tool, once, by hand
+    assert policy_for({**base, "perm_allow": ["m1"]}, mcp_ro) == "allow"
     ask_all = {**base, "perm_mode": "ask_all"}
     assert [policy_for(ask_all, s) for s in (plug, mcp_ro, mem, lib, now)] == ["ask", "ask", "ask", "ask", "allow"]
     assert policy_for({**ask_all, "perm_allow": ["p"]}, plug) == "allow"
@@ -286,3 +290,41 @@ def test_history_clip_and_tool_output_limit(store, make_router):
     body = msgs[-1]["content"]
     assert "omitted in the middle" in body and body.count("全文") == 800           # older messages get clipped, the newest stays whole
     assert body.startswith("[me] 开头")
+
+
+def test_a_servers_own_read_only_claim_does_not_skip_the_approval():
+    """`readOnlyHint` is an annotation the MCP *server* writes about its own tool, and this is the
+    decision that decides whether anything is put in front of the user at all. Trusting it meant a
+    server could label something that writes or sends as read-only and have it run unattended."""
+    base = {"perm_mode": "ask_risky", "perm_allow": [], "perm_deny": []}
+    claiming = {"name": "mcp__notes__delete_all", "source": "mcp", "read_only": True,
+                "server_id": "srv1", "tool": "delete_all"}
+    assert risk_of(claiming) == "exec"
+    assert policy_for(base, claiming) == "ask"
+    # "always allow" is the user's decision, and it is what makes the prompt stop
+    assert policy_for({**base, "perm_allow": ["mcp__notes__delete_all"]}, claiming) == "allow"
+
+
+def test_deleting_an_mcp_server_takes_its_always_allow_entries_with_it(tmp_path):
+    """An allow entry names a tool, and an MCP tool's name comes from the server's display name.
+    Left behind, the entries would be inherited by whatever server is added under that name next
+    — a permission the user granted to a tool they read, silently applied to another one."""
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好的"))
+    with TestClient(app, base_url="http://127.0.0.1") as cl:
+        srv = cl.post("/api/mcp", json={"name": "notes", "command": "npx", "args": ["-y", "notes"]}).json()
+        cl.put("/api/settings", json={"perm_allow": ["mcp__notes__read", "library_search"]})
+        cl.delete(f"/api/mcp/{srv['id']}")
+        left = cl.get("/api/settings").json()["perm_allow"]
+    assert left == ["library_search"], "the deleted server's permission outlived it"
+
+
+@pytest.mark.parametrize("host,want", [
+    ("127.0.0.1", True), ("localhost", True), ("::1", True), ("[::1]", True),
+    ("0.0.0.0", False), ("192.168.1.212", False), ("example.com", False), ("", False),
+])
+def test_only_a_loopback_bind_counts_as_this_machine_only(host, want):
+    """The warning that fires when the API is put on the network without a token rests on this
+    predicate — and the obvious one to reuse, `net.is_local_url`, answers the proxy question
+    instead and calls `0.0.0.0` and the LAN ranges local."""
+    from app.__main__ import loopback_only
+    assert loopback_only(host) is want

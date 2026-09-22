@@ -808,8 +808,19 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.delete("/api/mcp/{mid}")
     async def mcp_del(mid: str) -> dict:
+        m = store.get_mcp(mid)
         await c.mcp.disconnect(mid)
         store.delete_mcp(mid)
+        # An "always allow" entry names a tool, and an MCP tool's name is built from the server's
+        # *display name* (`mcp__<server>__<tool>`). Left behind, those entries would be inherited
+        # by whatever server is added under that name next: the tool the user actually read and
+        # approved is gone, so its permission goes with it. Approving again is one click.
+        if m:
+            prefix = f"mcp__{slug(m['name'])}__"
+            allowed = store.get_settings()["perm_allow"]
+            kept = [n for n in allowed if not n.startswith(prefix)]
+            if kept != allowed:
+                store.update_settings({"perm_allow": kept})
         for g in store.list_groups():  # also clear the selection inside the groups
             if mid in g["ext"]["mcp"]:
                 store.update_group(g["id"], {"ext": {"mcp": [x for x in g["ext"]["mcp"] if x != mid]}})

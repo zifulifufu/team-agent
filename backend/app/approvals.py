@@ -40,13 +40,20 @@ def risk_label(risk: str) -> str:
 
 def risk_of(spec: dict) -> str:
     """read is read-only · write only modifies this app's own data (memory) · exec runs
-code or has external effects (plugins, non-read-only MCP tools).
+code or has external effects (plugins, MCP tools).
 
 A spec may carry its own `risk`, and every built-in now does (a test fails if one is added
 without it). The rules below are the fallback for a spec built by hand somewhere else, and they
 fail *closed*: an unnamed tier counts as `exec`, not as read-only. The earlier shape ("read
 unless memory_save") meant a new tool that runs something would be allowed without asking —
 the one direction this must never fail in.
+
+An MCP tool is `exec` whatever its server says about it. The `readOnlyHint` annotation is the
+*server's own claim* — the same reasoning `toolhub.read_only_tools` gives for withholding those
+tools from a round that came in over the network — and this is the decision that decides whether
+anything is put in front of the user at all. Trusting it here meant a server could label a tool
+that writes or sends as read-only and have it run unattended. The hint is still shown in the MCP
+page, and one "always allow" makes the prompt stop for a tool the user has actually read.
 """
     declared = spec.get("risk")
     if declared:
@@ -58,8 +65,6 @@ the one direction this must never fail in.
     src = spec.get("source")
     if src == "builtin":
         return "exec"
-    if src == "mcp":
-        return "read" if spec.get("read_only") else "exec"
     return "exec"
 
 
