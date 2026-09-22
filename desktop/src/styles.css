@@ -394,7 +394,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 /* 本地模型 */
 
 .lc-done { display: inline-flex; align-items: center; gap: 4px; }
-.mcp-form { display: grid; grid-template-columns: 1fr 1fr 1.4fr 1.4fr auto; gap: 8px; margin-top: 12px; }
 
 /* 外观 */
 .theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }

@@ -30,16 +30,10 @@ import re
 from typing import Any
 
 from .. import i18n
-from .base import MAX_BODY, Inbound, clip, http_client, why  # noqa: F401  (MAX_BODY re-exported)
+from .base import MAX_BODY, Inbound, clip, http_client, why  # noqa: F401  (MAX_BODY is re-exported for the tests)
 
 GRAPH = "https://graph.facebook.com/v21.0"
 SIGNATURE_HEADER = "x-hub-signature-256"
-
-# Meta caps a single text body at 4096 characters.
-TEXT_HARD_LIMIT = 4096
-
-# What has to be present before this channel can do its job at all.
-REQUIRED = ("group_id", "app_secret", "token", "phone_number_id", "allowed")
 
 
 def verify_signature(app_secret: str, body: bytes, header: str | None) -> bool:

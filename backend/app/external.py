@@ -198,14 +198,16 @@ def localize_member(agent: dict, lang: str) -> dict:
     if not eng:
         return agent
     out = dict(agent)
-    for field in ("role", "prompt"):
-        english = eng.get(field) or ""
-        zh = eng.get(field + "_zh")
+    # Not `field`: this module imports `field` from dataclasses, and a loop variable of that name
+    # would shadow it for the rest of the function.
+    for key in ("role", "prompt"):
+        english = eng.get(key) or ""
+        zh = eng.get(key + "_zh")
         if not zh or not english:
             continue
-        if (agent.get(field) or "") not in {english, zh}:
+        if (agent.get(key) or "") not in {english, zh}:
             continue                     # the user rewrote this field — keep their text
-        out[field] = zh if lang == "zh" else english
+        out[key] = zh if lang == "zh" else english
     return out
 
 DEFAULT_CFG: dict[str, Any] = {

@@ -45,6 +45,29 @@ def offline_reason(provider: dict, cfg: dict, what: str, what_zh: str) -> str:
     )
 
 
+def providers_of_kind(store, kinds: tuple[str, ...]) -> list[dict]:
+    """The configured providers that generate this kind of media (`imagegen.KINDS`,
+    `video.KINDS`) — never a chat model, and never the other generator's kind."""
+    return [p for p in store.list_providers() if p["kind"] in kinds]
+
+
+def api_url(base: str, path: str) -> str:
+    """Join a base URL and an API path, tolerating a base that already ends in /v1."""
+    b = (base or "").strip().rstrip("/")
+    p = path.lstrip("/")
+    if p.startswith("v1/") and b.endswith("/v1"):
+        p = p[3:]
+    return f"{b}/{p}"
+
+
+def auth_headers(key: str) -> dict[str, str]:
+    """The headers both media generators send: JSON, plus a bearer token when there is one."""
+    h = {"Content-Type": "application/json"}
+    if key:
+        h["Authorization"] = f"Bearer {key}"
+    return h
+
+
 def slug(text: str, limit: int = 40) -> str:
     """A filename-safe fragment of a prompt, so an output file is recognisable later."""
     import re

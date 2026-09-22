@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, imagegen, images, modelopts, presets, strengths as strength_lib, updater, video
+from . import coderun, i18n, imagegen, images, media, modelopts, presets, strengths as strength_lib, updater, video
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -658,7 +658,7 @@ def build_router(c: Ctx) -> APIRouter:
         cfg = store.get_settings()
         want = (body.provider_id if body else "") or str(cfg.get("video_provider_id") or "")
         if want:
-            prov = next((p for p in video.media_providers(store) if p["id"] == want), None)
+            prov = next((p for p in media.providers_of_kind(store, video.KINDS) if p["id"] == want), None)
             if prov is None:
                 raise HTTPException(404, i18n.pick_now("No video provider with that id", "没有这个 id 的视频服务商"))
         else:

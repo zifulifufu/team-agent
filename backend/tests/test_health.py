@@ -50,8 +50,6 @@ def test_a_stored_diagnostic_is_rendered_in_the_readers_language(tmp_path):
     """A health record outlives the run that wrote it and is read by whoever opens the page next,
     so it cannot hold the language of whoever pressed "check" — it holds one canonical form, and
     the reader's language is applied when the indicator is drawn."""
-    from app import health
-
     c, store, _ = make(tmp_path)
     ol = next(m for m in store.list_models() if m["provider_id"] == "ollama")
 

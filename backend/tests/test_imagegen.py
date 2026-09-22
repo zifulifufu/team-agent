@@ -125,9 +125,9 @@ def test_the_request_body_omits_response_format_and_sends_one_image():
 
 
 def test_the_base_url_tolerates_a_trailing_slash_or_a_trailing_v1():
-    assert imagegen._api("https://x/v1", "/v1/images/generations") == "https://x/v1/images/generations"
-    assert imagegen._api("https://x/v1/", "v1/images/generations") == "https://x/v1/images/generations"
-    assert imagegen._api("https://x", "/v1/images/generations") == "https://x/v1/images/generations"
+    assert media.api_url("https://x/v1", "/v1/images/generations") == "https://x/v1/images/generations"
+    assert media.api_url("https://x/v1/", "v1/images/generations") == "https://x/v1/images/generations"
+    assert media.api_url("https://x", "/v1/images/generations") == "https://x/v1/images/generations"
 
 
 # ------------------------------------------------------------ response shapes
@@ -385,8 +385,8 @@ def test_an_image_provider_is_not_usable_for_video_and_the_other_way_round(store
     endpoint, which surfaces as a broken server rather than a wrong lookup."""
     image_prov = store.add_provider_from_preset("openai-image")
     video_prov = store.add_provider_from_preset("minimax-h3")
-    assert [p["id"] for p in imagegen.media_providers(store)] == [image_prov["id"]]
-    assert [p["id"] for p in video.media_providers(store)] == [video_prov["id"]]
+    assert [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)] == [image_prov["id"]]
+    assert [p["id"] for p in media.providers_of_kind(store, video.KINDS)] == [video_prov["id"]]
     assert set(media.MEDIA_KINDS) == {"minimax_video", "openai_image"}
     # and neither is offered to a member as a chat model
     assert [m["id"] for m in store.list_models() if m["provider_id"] in (image_prov["id"], video_prov["id"])] == []

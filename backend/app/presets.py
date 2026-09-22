@@ -15,7 +15,7 @@ kind decides how it maps onto the LiteLLM model string:
 
 from __future__ import annotations
 
-from . import channels
+from . import channels, i18n
 
 PRESETS: list[dict] = [
     {
@@ -982,12 +982,6 @@ def display_name(name: str | None, lang: str) -> str:
     if not entry:
         return name or ""
     return (entry.get("name_zh") if lang == "zh" else entry.get("name")) or name or ""
-
-
-def prompt_key(title: str | None) -> str | None:
-    """The stable key of the built-in prompt a stored title belongs to."""
-    entry = prompt_for(title)
-    return entry.get("key") if entry else None
 
 
 def prompt_titles(title: str | None) -> list[str]:

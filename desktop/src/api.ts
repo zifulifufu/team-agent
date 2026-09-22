@@ -997,7 +997,6 @@ export const api = {
   settings: () => get<Settings>("/api/settings"),
   putSettings: (b: Partial<Settings>) => put<Settings>("/api/settings", b),
   channels: () => get<{ channels: ChannelInfo[] }>("/api/channels"),
-  channel: (id: string) => get<ChannelInfo>(`/api/channels/${id}`),
   /** `patch` is keyed by field name (enabled, group_id, …), not by the full setting key. */
   setChannel: (id: string, patch: Record<string, unknown>) =>
     put<{ ok: boolean; ready: boolean; missing: string[]; secrets: Record<string, boolean> }>(`/api/channels/${id}`, patch),

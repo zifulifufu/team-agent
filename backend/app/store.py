@@ -926,12 +926,6 @@ already exists, otherwise create it (name and strengths are both taken from the 
     def delete_attachment(self, aid: str) -> None:
         self._x("DELETE FROM attachments WHERE id=?", (aid,))
 
-    def clear_attachments(self, gid: str | None = None) -> list[str]:
-        """Forget attachments, returning their ids so the caller can unlink the files."""
-        rows = self._q("SELECT id FROM attachments" + (" WHERE group_id=?" if gid else ""), (gid,) if gid else ())
-        self._x("DELETE FROM attachments" + (" WHERE group_id=?" if gid else ""), (gid,) if gid else ())
-        return [r["id"] for r in rows]
-
     def used_attachment_ids(self) -> set[str]:
         """Ids referenced by a message. Only messages that carry images are scanned."""
         used: set[str] = set()

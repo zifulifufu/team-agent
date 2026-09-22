@@ -28,7 +28,6 @@ from .. import i18n
 from .base import Inbound, clip, esc, http_client, to_html, why
 
 API = "https://api.telegram.org"
-HARD_CHARS = 4096
 
 # Long-poll wait. Telegram holds the request open for up to `timeout` seconds, so the
 # HTTP timeout has to be comfortably longer or a quiet channel looks like a failure.

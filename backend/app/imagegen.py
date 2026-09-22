@@ -32,7 +32,7 @@ from pathlib import Path
 import httpx
 
 from . import i18n, media, net
-from .media import offline_reason, slug  # noqa: F401  (re-exported for the tool layer)
+from .media import offline_reason
 
 # The provider kinds this module can drive. A subset of `media.MEDIA_KINDS`: the video tool
 # must never pick an image provider, and the other way round.
@@ -57,10 +57,6 @@ class ImageError(Exception):
 
 
 # ------------------------------------------------------------------ providers
-def media_providers(store) -> list[dict]:
-    return [p for p in store.list_providers() if p["kind"] in KINDS]
-
-
 def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     """(the provider to generate with, why there is none).
 
@@ -68,7 +64,7 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     reported rather than silently replaced, because quietly generating on somebody else's
     account is exactly the surprise this file should not produce.
     """
-    rows = media_providers(store)
+    rows = media.providers_of_kind(store, KINDS)
     wanted = str(cfg.get("image_provider_id") or "").strip()
     if wanted:
         p = next((x for x in rows if x["id"] == wanted), None)
@@ -101,22 +97,6 @@ def blocked_by_offline(provider: dict, cfg: dict) -> str:
 
 
 # -------------------------------------------------------------------- request
-def _api(base: str, path: str) -> str:
-    """Join a base URL and an API path, tolerating a base that already ends in /v1."""
-    b = (base or "").strip().rstrip("/")
-    p = path.lstrip("/")
-    if p.startswith("v1/") and b.endswith("/v1"):
-        p = p[3:]
-    return f"{b}/{p}"
-
-
-def _headers(key: str) -> dict[str, str]:
-    h = {"Content-Type": "application/json"}
-    if key:
-        h["Authorization"] = f"Bearer {key}"
-    return h
-
-
 def build_payload(prompt: str, *, model: str, size: str) -> dict:
     """The request body. `response_format` is deliberately absent — see the module docstring."""
     return {"model": (model or DEFAULT_MODEL).strip(), "prompt": prompt.strip(),
@@ -168,13 +148,11 @@ def first_image(data: object) -> tuple[bytes | None, str]:
 def explain(status: int, body: str) -> str:
     """Turn a refusal into the setting that caused it."""
     detail = ""
-    code = None
     try:
         obj = json.loads(body or "{}")
         if isinstance(obj, dict):
             err = obj.get("error")
             if isinstance(err, dict):
-                code = err.get("code")
                 detail = str(err.get("message") or "")
             else:
                 detail = str(obj.get("message") or "")
@@ -327,7 +305,7 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     image itself reads as a size at every call site, and `size_label(b"...")` fails with a
     comparison error far from its cause.
     """
-    url = _api(provider["base_url"], "/v1/images/generations")
+    url = media.api_url(provider["base_url"], "/v1/images/generations")
     base = (provider.get("base_url") or "").strip()
     cap = max(ERROR_BODY_CAP, max_bytes * 2)      # base64 inflates by a third; the envelope is small
     own = client is None
@@ -336,7 +314,7 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     try:
         try:
             async with c.stream("POST", url, json=payload,
-                                headers=_headers(provider.get("api_key") or ""),
+                                headers=media.auth_headers(provider.get("api_key") or ""),
                                 timeout=max(5.0, deadline_s)) as resp:
                 status = resp.status_code
                 raw = await _read_capped(resp, cap if status < 300 else ERROR_BODY_CAP,
@@ -388,12 +366,12 @@ async def probe(provider: dict, model: str, *, client: httpx.AsyncClient | None 
     if not base:
         return False, i18n.pick_now("no address is configured for this provider",
                                     "这个服务商没有填地址")
-    url = _api(base, "/v1/models")
+    url = media.api_url(base, "/v1/models")
     own = client is None
     c = client or net.client(url, timeout=15.0)
     try:
         try:
-            resp = await c.get(url, headers=_headers(provider.get("api_key") or ""))
+            resp = await c.get(url, headers=media.auth_headers(provider.get("api_key") or ""))
         except Exception as e:  # noqa: BLE001
             return False, i18n.pick_now(f"could not reach {url} ({e})", f"连不上 {url}({e})")
     finally:

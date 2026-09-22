@@ -7,7 +7,6 @@ time, chosen from `?lang=` or `Accept-Language`, with English as the default.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from pathlib import Path

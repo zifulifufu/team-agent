@@ -69,10 +69,6 @@ class VideoError(Exception):
 
 
 # ------------------------------------------------------------------ providers
-def media_providers(store) -> list[dict]:
-    return [p for p in store.list_providers() if p["kind"] in KINDS]
-
-
 def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     """(the provider to generate with, why there is none).
 
@@ -80,7 +76,7 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     reported rather than silently replaced, because quietly generating on a different machine
     than the user asked for is exactly the kind of surprise this file should not produce.
     """
-    rows = media_providers(store)
+    rows = media.providers_of_kind(store, KINDS)
     wanted = str(cfg.get("video_provider_id") or "").strip()
     if wanted:
         p = next((x for x in rows if x["id"] == wanted), None)
@@ -125,22 +121,6 @@ def blocked_by_offline(provider: dict, cfg: dict) -> str:
 
 
 # ------------------------------------------------------------------ helpers
-def _api(base: str, path: str) -> str:
-    """Join a base URL and an API path, tolerating a base that already ends in /v1."""
-    b = (base or "").strip().rstrip("/")
-    p = path.lstrip("/")
-    if p.startswith("v1/") and b.endswith("/v1"):
-        p = p[3:]
-    return f"{b}/{p}"
-
-
-def _headers(key: str) -> dict[str, str]:
-    h = {"Content-Type": "application/json"}
-    if key:
-        h["Authorization"] = f"Bearer {key}"
-    return h
-
-
 def _why(r: httpx.Response) -> str:
     """The most useful sentence a failed response carries, whatever shape it uses."""
     body = (r.text or "").strip()
@@ -250,14 +230,14 @@ def clamp_seconds(want: object, cap: int) -> tuple[int, bool]:
 
 # ------------------------------------------------------------------ HTTP
 async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None) -> str:
-    url = _api(prov["base_url"], "v1/videos")
+    url = media.api_url(prov["base_url"], "v1/videos")
     try:
         if client is not None:
-            r = await client.post(url, headers=_headers(prov.get("api_key", "")), json=payload,
+            r = await client.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
                                   timeout=SUBMIT_TIMEOUT)
         else:
             async with httpx.AsyncClient(timeout=SUBMIT_TIMEOUT, trust_env=False) as c:
-                r = await c.post(url, headers=_headers(prov.get("api_key", "")), json=payload,
+                r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
                                  timeout=SUBMIT_TIMEOUT)
     except httpx.HTTPError as e:
         raise VideoError(i18n.pick_now(
@@ -285,13 +265,13 @@ async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None 
 
 
 async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None) -> tuple[str, dict]:
-    url = _api(prov["base_url"], f"v1/videos/{vid}")
+    url = media.api_url(prov["base_url"], f"v1/videos/{vid}")
     try:
         if client is not None:
-            r = await client.get(url, headers=_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
+            r = await client.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
         else:
             async with httpx.AsyncClient(timeout=STATUS_TIMEOUT, trust_env=False) as c:
-                r = await c.get(url, headers=_headers(prov.get("api_key", "")))
+                r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
     except httpx.HTTPError as e:
         raise VideoError(i18n.pick_now(
             f"Lost contact with the video server while waiting: {type(e).__name__}: {e}",
@@ -309,13 +289,13 @@ async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = 
 
 
 async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncClient | None = None) -> bytes:
-    url = _api(prov["base_url"], f"v1/videos/{vid}/content")
+    url = media.api_url(prov["base_url"], f"v1/videos/{vid}/content")
     try:
         if client is not None:
-            r = await client.get(url, headers=_headers(prov.get("api_key", "")), timeout=DOWNLOAD_TIMEOUT)
+            r = await client.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=DOWNLOAD_TIMEOUT)
         else:
             async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, trust_env=False) as c:
-                r = await c.get(url, headers=_headers(prov.get("api_key", "")))
+                r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
     except httpx.HTTPError as e:
         raise VideoError(i18n.pick_now(
             f"Could not download the video: {type(e).__name__}: {e}",
@@ -369,7 +349,7 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
         return False, i18n.pick_now("This provider has no address configured.", "这个服务商没有填地址。")
     key = prov.get("api_key", "")
     try:
-        r = await c.get(_api(base, "health"), headers=_headers(key))
+        r = await c.get(media.api_url(base, "health"), headers=media.auth_headers(key))
         if r.status_code < 400:
             return True, i18n.pick_now(
                 f"{base} answered /health ({r.status_code}).", f"{base} 的 /health 有响应({r.status_code})。"
@@ -377,7 +357,7 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
     except httpx.HTTPError:
         pass
     try:
-        r = await c.get(_api(base, "v1/videos/team-agent-probe"), headers=_headers(key))
+        r = await c.get(media.api_url(base, "v1/videos/team-agent-probe"), headers=media.auth_headers(key))
     except httpx.HTTPError as e:
         return False, i18n.pick_now(
             f"Could not reach {base}: {type(e).__name__}: {e}", f"连不上 {base}:{type(e).__name__}: {e}"

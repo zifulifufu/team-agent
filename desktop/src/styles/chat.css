@@ -144,8 +144,6 @@
 .gp-block { padding-bottom: 2px; }
 .gp-block + .gp-block { border-top: 1px solid var(--border); margin-top: 6px; }
 .count-badge-lite { font-size: 11px; font-weight: 500; background: var(--hover); border-radius: 9px; padding: 0 7px; color: var(--text-2); }
-.gp-add { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--card); }
-.gp-add .btn { margin-top: 2px; }
 
 .gp-check { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); margin-bottom: 5px; cursor: pointer; }
 .gp-check:hover:not(.off) { border-color: var(--border-strong); }
