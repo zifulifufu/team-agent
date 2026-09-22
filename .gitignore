@@ -20,3 +20,7 @@ Claude outputs/
 
 # --- Agent working notes (absolute paths / environment details) ---
 .workbuddy/
+# The application's own data directory: chats, API-key references, memory. It normally lives in
+# the home directory, but `TEAM_AGENT_DATA` can point it inside the tree (tests and smoke runs do
+# exactly that), and that is a directory that must never be committed by accident.
+.team-agent/
