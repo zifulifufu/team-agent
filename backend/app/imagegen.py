@@ -64,7 +64,9 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     reported rather than silently replaced, because quietly generating on somebody else's
     account is exactly the surprise this file should not produce.
     """
-    rows = media.providers_of_kind(store, KINDS)
+    # Not `media.providers_of_kind`: a gateway whose kind is "chat" still belongs here when its
+    # own model list says it serves image models (see Store.providers_for_use).
+    rows = store.providers_for_use("image", KINDS)
     wanted = str(cfg.get("image_provider_id") or "").strip()
     if wanted:
         p = next((x for x in rows if x["id"] == wanted), None)
@@ -83,11 +85,13 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     usable = [p for p in rows if p["enabled"] and (p["base_url"] or "").strip()]
     if not usable:
         return None, i18n.pick_now(
-            "Image generation is on, but no image provider has been added yet. Add \"Image "
-            "generation (OpenAI-compatible)\" under model providers — a MetaChat key or any "
-            "endpoint serving /images/generations will do.",
-            "绘画已开启,但还没有添加图片服务商。请在「模型服务商」里添加"
-            "「绘画(OpenAI 兼容)」——MetaChat 的密钥,或任何提供 /images/generations 的地址都可以。",
+            "Image generation is on, but nothing here can draw yet. Add an "
+            "\"Image generation (OpenAI-compatible)\" provider — any endpoint serving "
+            "/images/generations will do — or refresh the model list of a gateway that serves image "
+            "models; one is offered for drawing as soon as its list is known.",
+            "绘画已开启,但还没有能画的服务商。可以添加一个「绘画(OpenAI 兼容)」服务商"
+            "(任何提供 /images/generations 的地址都可以),或者刷新某个网关的模型列表——"
+            "只要它提供绘画模型,刷新后就会自动出现在绘画服务里。",
         )
     return usable[0], ""
 

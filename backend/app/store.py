@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from . import media
 from . import strengths as strength_lib
 from . import channels
 from . import video
@@ -249,6 +250,11 @@ class Store(ExtStore):
             ("attachments", "meta", "TEXT NOT NULL DEFAULT '{}'"),             # duration, pixel size, codecs
             ("attachments", "source", "TEXT NOT NULL DEFAULT 'upload'"),       # upload | library
             ("attachments", "doc_id", "TEXT NOT NULL DEFAULT ''"),             # the library document this row points at
+            # What a model is for (chat | image | video | responses). A gateway lists several kinds
+            # of model on one endpoint, so "a member can be pointed at it" stopped being true of
+            # every row; empty means the provider never said and the name is read instead.
+            ("models", "use", "TEXT NOT NULL DEFAULT ''"),
+            ("model_live", "modes", "TEXT NOT NULL DEFAULT '{}'"),             # id -> the provider's own word for it
         ]
         for table, col, decl in adds:
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
@@ -692,6 +698,10 @@ plaintext (non-macOS / keychain unavailable)."""
         r["enabled"] = bool(r["enabled"])
         r["is_local"] = bool(r["is_local"])
         r["provider_enabled"] = bool(r["provider_enabled"])
+        # What this model is for. The row remembers what the provider said, when it said anything;
+        # otherwise the name is read, which is a guess — see `media.purpose_of` for why it is
+        # allowed to be a guess and why an unrecognised name stays "chat".
+        r["use"] = r.get("use") or media.purpose_of(r["model_name"])
         prov = {"id": r["provider_id"], "base_url": r.pop("provider_base_url"), "is_local": r["is_local"]}
         custom = json.loads(r["strengths"]) if r["strengths"] else None
         auto = self.catalog.strengths_for(prov, r["model_name"])
@@ -728,13 +738,75 @@ plaintext (non-macOS / keychain unavailable)."""
         r = self._one(self.MODEL_SELECT + "WHERE m.id=?", (model_id,))
         return self._model_row(r) if r else None
 
-    def add_model(self, provider_id: str, model_name: str, display_name: str | None = None) -> dict:
+    def add_model(self, provider_id: str, model_name: str, display_name: str | None = None,
+                  use: str = "") -> dict:
         mid = f"{provider_id}/{model_name}"
+        # The purpose is computed here rather than taken from the request: the client is not the
+        # authority on what a model is, and the worst outcome of getting this wrong is a member
+        # pointed at a model that cannot hold a conversation.
         self._x(
-            "INSERT OR IGNORE INTO models(id,provider_id,model_name,display_name,enabled) VALUES(?,?,?,?,1)",
-            (mid, provider_id, model_name, display_name or model_name),
+            "INSERT OR IGNORE INTO models(id,provider_id,model_name,display_name,enabled,use) VALUES(?,?,?,?,1,?)",
+            (mid, provider_id, model_name, display_name or model_name,
+             use or media.purpose_of(model_name)),
         )
         return self.get_model(mid)  # type: ignore[return-value]
+
+    def list_provider_models(self, pid: str) -> list[dict]:
+        """Every model row of one provider, including media kinds — a direct lookup rather than the
+        roster `list_models()` returns, which filters those out on purpose."""
+        return [self._model_row(r) for r in self._q(self.MODEL_SELECT + "WHERE m.provider_id=?", (pid,))]
+
+    def sync_model_uses(self, pid: str, modes: dict[str, str]) -> int:
+        """Correct the stored purpose from what the provider just said about its own models.
+
+        Called after a refresh, because a name is only a fallback: a gateway that labels each entry
+        knows better than any pattern can, and this is the moment the row can be fixed.
+        """
+        changed = 0
+        for m in self.list_provider_models(pid):
+            want = media.purpose_of(m["model_name"], modes.get(m["model_name"]))
+            if want != m.get("use"):
+                self._x("UPDATE models SET use=? WHERE id=?", (want, m["id"]))
+                changed += 1
+        return changed
+
+    def provider_serves_use(self, pid: str, use: str) -> bool:
+        """Does this provider offer models for that purpose?
+
+        Answered from the live listing when it has been fetched — that is where the provider's own
+        answer lives — and from the rows already added otherwise. The name-based fallback inside
+        `purpose_of` is what makes this work on a listing fetched before `modes` was stored.
+        """
+        live = self.get_model_live(pid) or {}
+        modes = live.get("modes") or {}
+        for mid in live.get("ids", []):
+            if media.purpose_of(mid, modes.get(mid)) == use:
+                return True
+        return any(m["use"] == use for m in self.list_provider_models(pid))
+
+    def providers_for_use(self, use: str, kinds: tuple[str, ...]) -> list[dict]:
+        """The providers a media tool may use for one purpose.
+
+        Two ways in. A provider whose *kind* is that medium is one by definition. A plain
+        OpenAI-compatible gateway gets in by what it serves — it counts if its own listing labelled
+        something for this purpose, which is how one MetaChat key can both chat and draw without
+        being configured twice.
+
+        Deliberately not "any OpenAI-compatible provider": pointing the image tool at a provider
+        with no image model buys a failure, and the user picks from this list, so the list has to
+        be the answer to "which of these can actually do it".
+        """
+        direct = [p for p in self.list_providers() if p["kind"] in kinds]
+        seen = {p["id"] for p in direct}
+        extra = [p for p in self.list_providers()
+                 if p["id"] not in seen and p["enabled"] and p["kind"] == "openai_compatible"
+                 and self.provider_serves_use(p["id"], use)]
+        return direct + extra
+
+    def models_of_use(self, pid: str, use: str) -> list[dict]:
+        """The models of one provider that are used for one thing — what an image or video
+        setting offers as its model name."""
+        return [m for m in self.list_provider_models(pid) if m["use"] == use and m["enabled"]]
 
     def update_model(self, model_id: str, patch: dict) -> dict | None:
         if "enabled" in patch:

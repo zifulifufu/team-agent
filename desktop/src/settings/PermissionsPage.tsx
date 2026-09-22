@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
-import { api, type PermMode, type Permissions, type PlanMode, type Settings } from "../api";
+import { api, type MediaOptions, type PermMode, type Permissions, type PlanMode, type Settings } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import { Switch } from "../ui";
@@ -35,7 +35,7 @@ type Override = "default" | "allow" | "deny";
 
 export default function PermissionsPage({ onTab }: PageProps) {
   const { t } = useI18n();
-  const { settings, providers } = useData();
+  const { settings } = useData();
   const { set, err: saveErr, saving } = useSettingsSaver();
   const [perm, setPerm] = useState<Permissions | null>(null);
   const [loadErr, setLoadErr] = useState("");
@@ -46,10 +46,20 @@ export default function PermissionsPage({ onTab }: PageProps) {
   const [videoCheck, setVideoCheck] = useState("");
   const [imageCheck, setImageCheck] = useState("");
   const err = saveErr || loadErr;
-  // Video providers only: a chat provider has no /v1/videos.
-  const videoProviders = useMemo(() => providers.filter((p) => p.kind === "minimax_video"), [providers]);
-  // Image providers only, for the same reason: a chat provider has no /images/generations.
-  const imageProviders = useMemo(() => providers.filter((p) => p.kind === "openai_image"), [providers]);
+  // Which providers can actually do this — and which of their models to name — is a question for the
+  // backend. A gateway that serves image models on its chat endpoint cannot be recognised from the
+  // provider list alone (the answer lives in what its own model listing said), and the answer
+  // changes as soon as the list is refreshed, so it is re-fetched with the settings.
+  const [imageMedia, setImageMedia] = useState<MediaOptions | null>(null);
+  const [videoMedia, setVideoMedia] = useState<MediaOptions | null>(null);
+  const imageProviders = imageMedia?.providers ?? [];
+  const videoProviders = videoMedia?.providers ?? [];
+
+  // The models to offer for the chosen provider (or the first one, which is the default).
+  const imageModels = useMemo(() => {
+    const chosen = imageProviders.find((p) => p.id === settings?.image_provider_id) ?? imageProviders[0];
+    return chosen?.models ?? [];
+  }, [imageProviders, settings?.image_provider_id]);
 
   const checkImage = async () => {
     setChecking(true);
@@ -79,6 +89,18 @@ export default function PermissionsPage({ onTab }: PageProps) {
 
   const load = useCallback(() => api.permissions().then(setPerm).catch((e) => setLoadErr((e as Error).message)), []);
   useEffect(() => { void load(); }, [load, settings?.perm_mode, settings?.perm_allow, settings?.perm_deny, settings?.tool_rounds]);
+  useEffect(() => {
+    if (!settings?.image_enabled) return;
+    let alive = true;
+    void api.mediaOptions("image").then((o) => alive && setImageMedia(o)).catch(() => undefined);
+    return () => { alive = false; };
+  }, [settings?.image_enabled, settings?.image_provider_id]);
+  useEffect(() => {
+    if (!settings?.video_enabled) return;
+    let alive = true;
+    void api.mediaOptions("video").then((o) => alive && setVideoMedia(o)).catch(() => undefined);
+    return () => { alive = false; };
+  }, [settings?.video_enabled, settings?.video_provider_id]);
 
   const groups = useMemo(() => {
     const m = new Map<string, NonNullable<typeof perm>["tools"]>();
@@ -218,7 +240,7 @@ export default function PermissionsPage({ onTab }: PageProps) {
                 {videoProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </Row>
-            {videoProviders.length === 0 && <div className="pm-note">{t("No video provider has been added yet, so the tool stays hidden from members. Add one under Model providers first.")}</div>}
+            {videoProviders.length === 0 && <div className="pm-note">{t("No video provider has been added yet, so the tool stays hidden from members. Add one under Model providers first — a gateway counts as soon as its model list says it serves video models.")}</div>}
             <Row title={t("Longest clip")} desc={t("The longest clip a member may ask for. H3 itself accepts 4-15 seconds; a longer request is shortened rather than refused, and the member is told it was.")}>
               <NumInput v={settings.video_max_seconds} min={1} max={15} unit={t("sec")} label={t("Longest clip")} onCommit={(n) => set({ video_max_seconds: n })} />
             </Row>
@@ -248,16 +270,33 @@ export default function PermissionsPage({ onTab }: PageProps) {
         </Row>
         {settings.image_enabled && (
           <>
-            <Row title={t("Image service")} desc={t("Which provider to draw with. Add \"Image generation (OpenAI-compatible)\" under Model providers and put the service's key there.")}>
+            <Row title={t("Image service")} desc={t("Which provider to draw with. Either a dedicated \"Image generation (OpenAI-compatible)\" provider, or a gateway whose model list includes image models — MetaChat on one key, for instance. Both are found by asking the provider what it serves.")}>
               <select className="pm-text" value={settings.image_provider_id} aria-label={t("Image service")} onChange={(e) => void set({ image_provider_id: e.target.value })}>
                 <option value="">{t("The first enabled one")}</option>
-                {imageProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {imageProviders.map((p) => (
+                  <option key={p.id} value={p.id}>{p.direct ? p.name : t("{name} (a gateway with image models)", { name: p.name })}</option>
+                ))}
               </select>
             </Row>
-            {imageProviders.length === 0 && <div className="pm-note">{t("No image provider has been added yet, so the tool stays hidden from members. Add one under Model providers first.")}</div>}
-            <Row title={t("Model name")} desc={t("What to ask that service for, for example gpt-image-1.5. MetaChat also serves Gemini's image models on its Gemini-native address, which this endpoint cannot reach.")}>
-              <input className="pm-text" defaultValue={settings.image_model} aria-label={t("Model name")}
-                     onBlur={(e) => void set({ image_model: e.target.value.trim() })} />
+            {imageProviders.length === 0 && <div className="pm-note">{t("Nothing here can draw yet, so the tool stays hidden from members. Add an image service under Model providers, or refresh a gateway's model list — a provider that serves image models is offered automatically once its list is known.")}</div>}
+            <Row title={t("Model name")} desc={imageModels.length > 0
+              ? t("Which of that provider's image models to use. The list comes from the provider's own model list, where it says which models are for images.")
+              : t("What to ask that service for, for example gpt-image-1.5. Refresh the provider's model list under Model providers and this becomes a list of what it actually serves.")}>
+              {imageModels.length > 0 ? (
+                <select className="pm-text" value={settings.image_model} aria-label={t("Model name")}
+                        onChange={(e) => void set({ image_model: e.target.value })}>
+                  {imageModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                  {/* A name that is not in the list has to stay selectable: the setting can hold a
+                      model the provider has not listed (or a newer one), and switching providers
+                      must not silently change it to something else. */}
+                  {!imageModels.some((m) => m.id === settings.image_model) && (
+                    <option value={settings.image_model}>{settings.image_model}</option>
+                  )}
+                </select>
+              ) : (
+                <input className="pm-text" defaultValue={settings.image_model} aria-label={t("Model name")}
+                       onBlur={(e) => void set({ image_model: e.target.value.trim() })} />
+              )}
             </Row>
             <Row title={t("Image size")} desc={t("What the service is asked for. A size it does not accept comes back as an error rather than a different picture.")}>
               <select className="pm-text" value={settings.image_size} aria-label={t("Image size")} onChange={(e) => void set({ image_size: e.target.value })}>

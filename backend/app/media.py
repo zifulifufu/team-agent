@@ -23,6 +23,59 @@ from .coderun import inside as _inside
 # `imagegen.KINDS`) — add the new kind here **and** to that subset.
 MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "openai_image")
 
+# ------------------------------------------------------------------ what a model is for
+#
+# A gateway lists everything on one endpoint, so a provider's model list mixes chat models with
+# models that cannot hold a conversation at all: asking `gpt-image-1.5` to answer a question, or
+# pointing a member at it, fails — and it fails after the user has picked it, which is the worst
+# moment. The listing itself is the authority when it says what a model is for (MetaChat sends
+# `mode` per entry); reading the name is only a fallback, and it is treated as the guess it is.
+#
+# Guessing wrong in the "chat" direction costs nothing; guessing wrong towards "image" would make
+# a perfectly good chat model look unusable. So the name rules are narrow and specific, and
+# anything unrecognised stays `chat`.
+PURPOSES: tuple[str, ...] = ("chat", "image", "video", "responses")
+
+# `mode` values as providers spell them. Unknown values fall through to the name rules rather
+# than being forced into a bucket.
+_MODE_PURPOSE: dict[str, str] = {
+    "chat": "chat", "completion": "chat", "completions": "chat", "conversation": "chat",
+    "image_generation": "image", "image": "image", "images": "image",
+    "video_generation": "video", "video": "video", "videos": "video",
+    "responses": "responses",
+}
+
+# Whole words and distinctive stems, not substrings: `-image` catches gemini-2.5-flash-image and
+# qwen-image, and nothing in the chat catalogue happens to contain it.
+_NAME_PURPOSE: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("image", ("dall-e", "gpt-image", "-image", "image-", "flux", "seedream", "midjourney",
+               "stable-diffusion", "sdxl", "imagen-", "nano-banana", "seededit")),
+    ("video", ("sora", "veo-", "veo2", "veo3", "kling", "runway", "pika", "luma",
+               "seedance", "hailuo", "cogvideo", "mochi", "-video", "video-", "wan2")),
+)
+
+
+def purpose_of(model_name: str, mode: str | None = None) -> str:
+    """What a model is for: `chat` / `image` / `video` / `responses`.
+
+    The provider's own answer wins. `responses` is not a medium but a different API shape — those
+    models answer on `/responses` rather than `/chat/completions`, so a member pointed at one
+    would fail for a reason nobody could guess from the name.
+    """
+    said = _MODE_PURPOSE.get((mode or "").strip().lower())
+    if said:
+        return said
+    low = (model_name or "").strip().lower()
+    for purpose, needles in _NAME_PURPOSE:
+        if any(n in low for n in needles):
+            return purpose
+    return "chat"
+
+
+def is_chat_model(model_name: str, mode: str | None = None) -> bool:
+    """Can a member be pointed at this model?"""
+    return purpose_of(model_name, mode) == "chat"
+
 # Names for common unit sizes, so a failure reads "3.2 MB" instead of "3355 KB".
 _KB = 1024
 

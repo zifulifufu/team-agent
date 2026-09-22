@@ -497,14 +497,21 @@ restored): old check results are no longer trustworthy, so clear them."""
         )
 
     def get_model_live(self, pid: str) -> dict | None:
-        r = self._one("SELECT ids, fetched_at FROM model_live WHERE provider_id=?", (pid,))  # type: ignore[attr-defined]
-        return {"ids": json.loads(r["ids"]), "fetched_at": r["fetched_at"]} if r else None
+        r = self._one("SELECT ids, modes, fetched_at FROM model_live WHERE provider_id=?", (pid,))  # type: ignore[attr-defined]
+        if not r:
+            return None
+        # `modes` is missing on rows written before it existed: an empty map, which the caller reads
+        # as "the provider did not say" and falls back to the name for.
+        return {"ids": json.loads(r["ids"]), "modes": json.loads(r["modes"] or "{}"),
+                "fetched_at": r["fetched_at"]}
 
-    def set_model_live(self, pid: str, ids: list[str]) -> None:
+    def set_model_live(self, pid: str, ids: list[str], modes: dict[str, str] | None = None) -> None:
         self._x(  # type: ignore[attr-defined]
-            "INSERT INTO model_live(provider_id,ids,fetched_at) VALUES(?,?,?) "
-            "ON CONFLICT(provider_id) DO UPDATE SET ids=excluded.ids, fetched_at=excluded.fetched_at",
-            (pid, json.dumps(ids), time.time()),
+            "INSERT INTO model_live(provider_id,ids,modes,fetched_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(provider_id) DO UPDATE SET ids=excluded.ids, modes=excluded.modes, "
+            "fetched_at=excluded.fetched_at",
+            (pid, json.dumps(ids), json.dumps({k: v for k, v in (modes or {}).items() if v}),
+             time.time()),
         )
 
     # ------------------------------------------------------------------ updates

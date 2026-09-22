@@ -5,6 +5,7 @@ import { useData } from "../data";
 import { currentLang, pickLang, useI18n } from "../i18n";
 import { LetterIcon, Modal, Switch, useBusy, useConfirm, useFlash } from "../ui";
 import { ModelPicker, pendingNew } from "../components/ModelPicker";
+import ModelUseTag from "../components/ModelUseTag";
 import { StrengthChips, StrengthPicker } from "../components/Strengths";
 import { HealthDot } from "../components/Health";
 import "../styles/models.css";
@@ -299,6 +300,7 @@ function ProviderDetail({
             <div className="mr-main">
               <div className="mr-name">
                 <HealthDot h={health[m.id]} label />&nbsp;{m.display_name}
+                <ModelUseTag use={m.use} />
                 {m.strengths_custom && <span className="tag" title={t("Strengths were edited by hand; use Strengths to go back to automatic")}>{t("Custom")}</span>}
                 {m.retired_reason && <span className="tag mp-warn-tag">{t("Disabled")}</span>}
               </div>

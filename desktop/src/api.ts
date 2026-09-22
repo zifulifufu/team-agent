@@ -38,6 +38,10 @@ export interface ModelHealth {
   stale: boolean;
 }
 
+/** What a model is for. A gateway lists several kinds on one endpoint, so "this model exists" and
+ *  "a member can talk to it" stopped being the same statement. */
+export type ModelUse = "chat" | "image" | "video" | "responses";
+
 export interface Model {
   id: string;                      // provider_id/model_name
   provider_id: string;
@@ -48,6 +52,7 @@ export interface Model {
   kind?: string;
   is_local?: boolean;
   provider_enabled?: boolean;
+  use: ModelUse;                   // chat = a member can be pointed at it; the others cannot
   strengths: Tag[];                // Strengths in effect (a custom list wins, otherwise the auto-inferred one)
   strengths_auto: Tag[];
   strengths_custom: boolean;
@@ -99,7 +104,20 @@ export interface ModelOption {
   retired_reason: string | null;
   gone: boolean;                   // Added, but no longer in the provider's live list (most likely retired)
   installed?: boolean | null;      // Local providers only
+  use: ModelUse;                   // What the provider says this model is for (see media.purpose_of)
 }
+export interface MediaOptions {
+  use: "image" | "video";
+  providers: {
+    id: string;
+    name: string;
+    is_local: boolean;
+    enabled: boolean;
+    direct: boolean;               // a real image/video service, rather than a gateway that happens to serve one
+    models: { id: string; added: boolean; enabled: boolean | null }[];
+  }[];
+}
+
 export interface ModelOptions {
   provider_id: string;
   catalog_version: string;
@@ -146,14 +164,36 @@ export interface ExternalCfg {
   api_key: string;                 // chat gateways: never sent back to the UI (it shows "***")
   has_key?: boolean;               // whether a key is stored — the UI never sees the key itself
 }
+export interface ExternalProviderModel { name: string; display_name: string }
+/** The model provider an engine is bound to. Non-null means the engine owns no address, no key and
+ * no model list of its own: they all live in that provider row (Settings → Providers), and the
+ * member's settings only hold what the provider has no opinion about. */
+export interface ExternalProvider {
+  id: string;
+  missing: boolean;                // the provider row is gone: nothing to talk to until it is back
+  name: string;
+  base_url: string;
+  has_key: boolean;                // whether that provider has a key — the key itself never comes back
+  models: ExternalProviderModel[];  // the ones that are enabled, in the provider's own order
+}
+/** What a member actually resolves to, shown so the user can confirm a model they did not pick. */
+export interface ExternalBinding {
+  provider_id?: string;
+  provider_name?: string;
+  model?: string;
+  model_default?: boolean;         // true = we fell back (empty, or the chosen model is gone)
+  problem?: string;                // plain-language reason when it cannot run as saved
+}
 export interface ExternalOverview {
   enabled: boolean;                // Master switch for external agents
   external_calls_enabled: boolean;
   engines: { id: string; name: string; avatar: string; role: string; found: boolean; path: string; via: string; hint: string;
-             kind: "cli" | "http"; base_url: string; docs: string; key_hint: string }[];
+             kind: "cli" | "http"; base_url: string; docs: string; key_hint: string;
+             provider: ExternalProvider | null }[];
   levels: { id: ExternalLevel; label: string; desc: string }[];
   defaults: ExternalCfg;
-  members: { id: string; name: string; engine: string; cfg: ExternalCfg; workspace: string }[];
+  members: { id: string; name: string; engine: string; cfg: ExternalCfg; workspace: string;
+             binding: ExternalBinding }[];
 }
 export interface ExternalProbe {
   found: boolean;
@@ -1037,6 +1077,9 @@ export const api = {
   addModels: (pid: string, model_names: string[]) => post<Model[]>(`/api/providers/${pid}/models/batch`, { model_names }),
   strengthTags: () => get<{ tags: { id: Tag; label?: string; desc: string }[] }>("/api/strengths"),
   modelOptions: (pid: string) => get<ModelOptions>(`/api/providers/${pid}/model-options`),
+  /** Which providers can generate this kind of media, and which of their models to name. The page
+   *  cannot work this out itself: it depends on what each provider said about its own models. */
+  mediaOptions: (use: "image" | "video") => get<MediaOptions>(`/api/media/options${qs({ use })}`),
   /** Ask providers for their live list and return the merged options (needs network; cloud providers return 403 when outbound calls are off) */
   refreshModelOptions: (pid: string) => post<ModelOptions>(`/api/providers/${pid}/model-options/refresh`),
   /** Mark every current model as seen (clears the new flags) */
@@ -1109,7 +1152,7 @@ export const api = {
   externalOverview: () => get<ExternalOverview>("/api/external"),
   externalCreate: (b: { engine?: string; name?: string; group_id?: string; cfg: Partial<ExternalCfg> }) => post<Agent>("/api/external/agents", b),
   externalPatch: (id: string, cfg: Partial<ExternalCfg>) => patch<Agent>(`/api/external/agents/${id}`, { cfg }),
-  externalTest: (b: { live?: boolean; agent_id?: string; engine?: string; cli_path?: string; base_url?: string; api_key?: string }) => post<ExternalProbe>("/api/external/test", b),
+  externalTest: (b: { live?: boolean; agent_id?: string; engine?: string; cli_path?: string; base_url?: string; api_key?: string; model?: string }) => post<ExternalProbe>("/api/external/test", b),
   /** Template gallery: the catalog (first-party templates shipped with the app + custom ones in the data directory) */
   gallery: () => get<GalleryOverview>("/api/gallery"),
   /** Template detail: brings back the full body so you can read it before installing */

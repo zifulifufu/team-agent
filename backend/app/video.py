@@ -76,7 +76,9 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     reported rather than silently replaced, because quietly generating on a different machine
     than the user asked for is exactly the kind of surprise this file should not produce.
     """
-    rows = media.providers_of_kind(store, KINDS)
+    # Not `media.providers_of_kind`: a gateway whose kind is "chat" still belongs here when its
+    # own model list says it serves video models (see Store.providers_for_use).
+    rows = store.providers_for_use("video", KINDS)
     wanted = str(cfg.get("video_provider_id") or "").strip()
     if wanted:
         p = next((x for x in rows if x["id"] == wanted), None)

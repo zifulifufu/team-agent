@@ -316,13 +316,20 @@ outside your home directory, a plain-text URL, environment values that did not c
 ## Using a platform that aggregates models
 
 Platforms such as **MetaChat** and **Cherry Studio** front many models behind one key. Both are
-already integrated here, in two shapes:
+integrated here, in two shapes:
 
-* **as an external-agent engine** — a member whose replies come from that platform's chat
-  endpoint (Settings → External agents). Cherry Studio's local gateway and MetaChat's
-  OpenAI-compatible address are both built in.
 * **as a model provider** — the same platforms appear in the provider presets, so their chat
-  models can be used for members through the ordinary routing layer.
+  models can be used for members through the ordinary routing layer. For MetaChat this is the
+  *only* place it is configured: the address, the key and the model list all live there.
+* **as an external-agent engine** — a member whose replies come from that platform's chat
+  endpoint (Settings → External agents). **Cherry Studio** uses its own local gateway, with the
+  address and key held on the member; **MetaChat's engine is bound to the provider of the same
+  name**, so the address, the key and the model come from there and only the *other* settings
+  (the @-mention hand-off, the timeout) stay on the member. One platform, configured once — no
+  more "changed it under Providers, but the member still had the old value".
+  MetaChat's models join a group through Add member → Models I added; it is no longer offered as
+  something to add as a new external agent, while members already using it stay editable under
+  Settings → External agents.
 
 What their APIs actually expose, checked against MetaChat's own documentation rather than
 assumed:
@@ -330,11 +337,18 @@ assumed:
 | Capability | Reachable | Notes |
 |---|---|---|
 | Text models | **yes** | OpenAI / Anthropic / Gemini-compatible addresses; one key covers all of them |
-| Image generation | **yes** | OpenAI-compatible `/images/generations` (GPT-Image), plus MetaChat's own asynchronous endpoints (Seedream, FLUX, Z-Image, Grok Imagine) and Midjourney with its upscale/variation/zoom operations |
-| Video generation | **yes** | Grok Imagine and Midjourney, both asynchronous jobs |
+| Image generation | **partly** | The models on the OpenAI-compatible address are reachable, and are recognised as image models when that provider's list is refreshed (GPT-Image, Gemini's `*-image`). MetaChat's Midjourney, FLUX, Seedream and Z-Image endpoints are a separate asynchronous API on a **different host** (`api.mmchat.xyz/open/v1`), which nothing here speaks yet |
+| Video generation | **no, not through this key** | MetaChat's own model list says so: **only Midjourney Video is on their API**; Veo, Sora, Seedance and Grok Imagine Video are web-only. The address this app talks to answers with no video models at all, so refreshing cannot reveal them — reaching them means implementing that other API |
 | Account quota | yes | MetaChat exposes balance and usage |
 | **Agents / 智能体** | **no** | an agent is a *web-app* construct: a prompt plus a chosen model. There is no endpoint that runs one, so nothing can be imported from that list |
 | **Audio / speech** | **no** | MetaChat publishes no TTS/STT endpoint and no audio models, so "音频" cannot be called through it |
+
+A provider that lists several kinds of model on one endpoint is handled as such: every model carries
+what the provider said it is for — chat, image, video, or `responses` (OpenAI's other API shape) —
+and the model list shows it. That is what makes one MetaChat key usable both for members and for
+drawing, and what keeps a member from being pointed at a model that cannot hold a conversation.
+The video settings look for the same signal, so a provider that reports video models is offered
+there without any further setup.
 
 So an agent you like on that site cannot be called as such — but it can be **reproduced here**,
 because a member here *is* a model plus a role prompt: add a member, pick the same model, and

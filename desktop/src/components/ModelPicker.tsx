@@ -3,6 +3,7 @@ import { Check, ChevronRight, Plus, RefreshCw, Search } from "lucide-react";
 import { api, type ModelOption, type ModelOptions, type Provider, type Tag } from "../api";
 import { useData } from "../data";
 import { Modal, useBusy, useConfirm } from "../ui";
+import ModelUseTag from "./ModelUseTag";
 import { StrengthChips, useStrengthTags } from "./Strengths";
 import { tr, useI18n } from "../i18n";
 import "../styles/models.css";
@@ -280,6 +281,7 @@ function ModelRow({ m, local, checked, onToggle }: { m: ModelOption; local: bool
           <span className="mp-name">{m.name}</span>
           <span className="mp-id">{m.id}</span>
           <span className="mp-badges">
+            <ModelUseTag use={m.use} />
             {m.added && <span className="tag"><Check size={11} /> {t("Added")}</span>}
             {m.is_new && <span className="tag new">{t("New")}</span>}
             {m.preview && <span className="tag">{t("Preview")}</span>}

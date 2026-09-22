@@ -78,3 +78,7 @@
 
 /* 测试失败的完整原因:换行显示,不截断(限速、鉴权等错误信息比较长) */
 .mp-testerr { margin-top: 6px; white-space: normal; word-break: break-word; line-height: 1.5; }
+
+/* A model that is not a chat model. Deliberately the quietest of the badges that change what the
+   user may do with a row — it explains why the row cannot be used, rather than reporting a fault. */
+.tag.mp-use { background: var(--chip-bg, transparent); border: 1px dashed var(--line); color: var(--muted); }

@@ -219,8 +219,11 @@ PRESETS: list[dict] = [
         "base_url": "https://llm-api.mmchat.xyz/v1",
         "is_local": False,
         "models": [],
-        "hint": "Not a chat model: it answers /images/generations. The address above is MetaChat's OpenAI-compatible one, where gpt-image-1.5 and the other GPT-Image models live; any other service that speaks the same endpoint works too (put its key below and set the model name under Permissions & control → Image generation). MetaChat's richer image models — Seedream, FLUX, Z-Image, Grok Imagine, Midjourney — use asynchronous endpoints of their own and are not reachable through this kind yet.",
-        "hint_zh": "不是对话模型:它提供 /images/generations。上面的地址是 MetaChat 的 OpenAI 兼容入口,gpt-image-1.5 等 GPT-Image 模型在这里;其他实现同一接口的服务也可以(把密钥填在下面,再到「权限与操控 → 绘画」里填模型名)。MetaChat 更强的图像模型 —— Seedream、FLUX、Z-Image、Grok Imagine、Midjourney —— 走的是它们自己的异步接口,这个 kind 目前还够不到。",
+        "hint": "Not a chat model: it answers /images/generations. Any service speaking that endpoint works "
+                "too — put its key below and pick the model under Permissions & control → Image generation. "
+                "A chat gateway whose model list includes image models does not need this preset at all: "
+                "refresh that provider and it is offered for drawing on its own key.",
+        "hint_zh": "不是对话模型:它提供 /images/generations。任何实现同一接口的服务都可以——把密钥填在下面,再到「权限与操控 → 绘画」里选模型。如果一个「对话」网关的模型列表里就带绘画模型,那根本不需要加这个预设:刷新那个服务商,它自己那把 key 就能用来画画。",
     },
 ]
 
@@ -330,11 +333,12 @@ DEFAULT_SETTINGS: dict = {
     "video_timeout": 900,      # how long one generation may take before giving up, in seconds
     "video_max_mb": 512,       # cap on the downloaded file, checked before it is saved
     # ---- image generation through an OpenAI-compatible /images/generations endpoint. Unlike
-    # video this needs no local GPU: a key and a model name are the whole setup, which is why it
-    # is the one media capability that works with a gateway such as MetaChat (see the
-    # "Image generation (OpenAI-compatible)" preset). `image_model` is a setting rather than a
-    # column on the provider because one gateway serves many models and a media provider carries
-    # no model of its own.
+    # video this needs no local GPU: a key and a model name are the whole setup. Two kinds of
+    # provider can do it — a dedicated "Image generation (OpenAI-compatible)" one, or a chat
+    # gateway whose own model list includes image models (MetaChat on one key). Which of them are
+    # offered is decided by `store.providers_for_use`, from what each provider said about itself.
+    # `image_model` is a setting rather than a column on the provider because one gateway serves
+    # many models and a media provider carries no model of its own.
     "image_enabled": False,
     "image_provider_id": "",   # which image provider to use; empty = the first enabled one
     "image_model": "gpt-image-1",

@@ -32,19 +32,54 @@ def _key(provider: dict) -> str:
     return provider.get("api_key") or os.environ.get(ENV_KEYS.get(provider["kind"], ""), "")
 
 
-def _ids_from_openai_like(data: Any) -> list[str]:
+def _entries_from_openai_like(data: Any) -> list[dict]:
+    """`[{"id": ..., "mode": ...}]` from an OpenAI-shaped listing.
+
+    `mode` is whatever the provider put there and nothing else: a gateway that lists chat models
+    and image models on one endpoint has no other way to say which is which, and inventing the
+    answer from the name is the fallback rather than the first choice. Absent means absent.
+    """
     rows = data.get("data") if isinstance(data, dict) else data
     if not isinstance(rows, list):
         raise DiscoveryError(i18n.pick_now("The response is not a list of models", "返回格式不是模型列表"))
     out = []
     for r in rows:
-        mid = r.get("id") if isinstance(r, dict) else r
+        if isinstance(r, dict):
+            mid, mode = r.get("id"), r.get("mode")
+        else:
+            mid, mode = r, None
         if isinstance(mid, str) and mid:
-            out.append(mid)
+            out.append({"id": mid, "mode": mode if isinstance(mode, str) and mode else None})
     return out
 
 
-async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.AsyncClient | None = None) -> list[str]:
+def _ids_from_openai_like(data: Any) -> list[str]:
+    return [e["id"] for e in _entries_from_openai_like(data)]
+
+
+def _merge(entries: list[dict]) -> list[dict]:
+    """One row per model id, keeping the first non-empty `mode` any of its rows carried.
+
+    A gateway with several backends for the same model lists it more than once (MetaChat answers
+    with 350 rows for 106 models); the listing is a set of models, not a set of routes.
+    """
+    out: dict[str, dict] = {}
+    for e in entries:
+        mid = e["id"]
+        if mid not in out:
+            out[mid] = {"id": mid, "mode": e.get("mode")}
+        elif not out[mid].get("mode") and e.get("mode"):
+            out[mid]["mode"] = e["mode"]
+    return [out[k] for k in sorted(out)]
+
+
+async def fetch_models(provider: dict, timeout: float = 15.0,
+                       client: httpx.AsyncClient | None = None) -> list[dict]:
+    """The provider's live listing: `[{"id": ..., "mode": ...}]`, sorted by id.
+
+    `mode` is the provider's own word for what the model is for, when it has one; `None` means it
+    did not say, and `media.purpose_of` then reads the name and says so.
+    """
     kind = provider["kind"]
     base = (provider.get("base_url") or "").rstrip("/")
     key = _key(provider)
@@ -94,14 +129,22 @@ async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.A
         raise DiscoveryError(i18n.pick_now("The response is not JSON; check whether the API address ends with /v1", "返回内容不是 JSON,请检查 API 地址是否以 /v1 结尾")) from None
 
     if kind == "ollama":
-        ids = [m["name"] for m in data.get("models", []) if isinstance(m, dict) and m.get("name")]
+        entries = [{"id": m["name"], "mode": None}
+                   for m in data.get("models", []) if isinstance(m, dict) and m.get("name")]
     elif kind == "gemini":
-        ids = []
+        entries = []
         for m in data.get("models", []):
             if "generateContent" not in (m.get("supportedGenerationMethods") or []):
                 continue  # skip embedding and other models that cannot chat
-            ids.append(str(m.get("name", "")).removeprefix("models/"))
-        ids = [i for i in ids if i]
+            name = str(m.get("name", "")).removeprefix("models/")
+            if name:
+                entries.append({"id": name, "mode": "chat"})   # this API only lists what it can generate with
     else:
-        ids = _ids_from_openai_like(data)
-    return sorted(set(ids))
+        entries = _entries_from_openai_like(data)
+    return _merge(entries)
+
+
+async def fetch_model_ids(provider: dict, timeout: float = 15.0, client: httpx.AsyncClient | None = None) -> list[str]:
+    """Just the ids — the older, narrower question. Prefer `fetch_models` where the purpose of a
+    model matters: a gateway answers with image and video models in the same list."""
+    return [e["id"] for e in await fetch_models(provider, timeout, client)]

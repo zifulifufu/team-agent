@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, imagegen, media, modelopts, presets, strengths as strength_lib, updater, video
+from . import coderun, i18n, imagegen, modelopts, presets, strengths as strength_lib, updater, video
 from . import attachments as attachments_lib
 from . import vision
 from .approvals import Approvals, risk_label, risk_of
@@ -736,7 +736,7 @@ def build_router(c: Ctx) -> APIRouter:
         cfg = store.get_settings()
         want = (body.provider_id if body else "") or str(cfg.get("video_provider_id") or "")
         if want:
-            prov = next((p for p in media.providers_of_kind(store, video.KINDS) if p["id"] == want), None)
+            prov = next((p for p in store.providers_for_use("video", video.KINDS) if p["id"] == want), None)
             if prov is None:
                 raise HTTPException(404, i18n.pick_now("No video provider with that id", "没有这个 id 的视频服务商"))
         else:
@@ -749,6 +749,27 @@ def build_router(c: Ctx) -> APIRouter:
                     "detail": blocked}
         ok, detail = await video.probe(prov)
         return {"ok": ok, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]}, "detail": detail}
+
+    @r.get("/api/media/options")
+    async def media_options(use: str = "image") -> dict:
+        """What can generate this kind of media: the providers, and per provider the model names.
+
+        The page cannot answer this itself. Whether a plain OpenAI-compatible gateway belongs in
+        this list depends on what its own model listing said (see `Store.providers_for_use`), and
+        which of its models are for this medium is decided the same way — so the question is put to
+        the backend, where that answer already lives.
+        """
+        if use not in ("image", "video"):
+            raise HTTPException(422, i18n.pick_now("use must be image or video", "use 只能是 image 或 video"))
+        kinds = imagegen.KINDS if use == "image" else video.KINDS
+        providers = []
+        for p in store.providers_for_use(use, kinds):
+            providers.append({
+                "id": p["id"], "name": p["name"], "is_local": p["is_local"], "enabled": bool(p["enabled"]),
+                "direct": p["kind"] in kinds,          # a real image/video service vs a gateway that serves one
+                "models": modelopts.models_for_use(store, p["id"], use),
+            })
+        return {"use": use, "providers": providers}
 
     @r.post("/api/image/test")
     async def image_test() -> dict:

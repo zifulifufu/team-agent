@@ -11,14 +11,20 @@ listing count as "new" until "mark all as read" clears them.
 
 from __future__ import annotations
 
-from .discovery import fetch_model_ids
+from .discovery import fetch_models
+from .media import purpose_of
 from .store import Store
 
 
-def _entry_view(store: Store, prov: dict, model_name: str, entry: dict | None, have: dict) -> dict:
+def _entry_view(store: Store, prov: dict, model_name: str, entry: dict | None, have: dict,
+                mode: str | None = None) -> dict:
     mine = have.get(model_name)
     return {
         "id": model_name,
+        # What this is for. The provider's own word wins (`mode` in its listing); the name is the
+        # fallback. The dialog shows it, because a gateway lists chat and image models together and
+        # picking an image model for a member fails only after the choice has been made.
+        "use": purpose_of(model_name, mode),
         "name": (entry or {}).get("name") or (mine or {}).get("display_name") or model_name,
         "summary": (entry or {}).get("summary", ""),
         "context": (entry or {}).get("context"),
@@ -43,6 +49,7 @@ def model_options(store: Store, pid: str) -> dict:
     retired = cat.retired_of(key)
     live = store.get_model_live(pid)
     live_ids = set(live["ids"]) if live else None
+    live_modes = live["modes"] if live else {}
     have = {m["model_name"]: m for m in store.list_models() if m["provider_id"] == pid}
 
     ordered: list[str] = []
@@ -63,7 +70,7 @@ def model_options(store: Store, pid: str) -> dict:
 
     items = []
     for mid in ordered:
-        v = _entry_view(store, prov, mid, cat.find(key, mid), have)
+        v = _entry_view(store, prov, mid, cat.find(key, mid), have, live_modes.get(mid))
         v["live"] = (mid in live_ids) if live_ids is not None else None
         v["is_new"] = mid not in seen_set
         v["retired_reason"] = retired.get(mid)
@@ -89,18 +96,47 @@ def model_options(store: Store, pid: str) -> dict:
     }
 
 
+def models_for_use(store: Store, pid: str, use: str) -> list[dict]:
+    """The models of one provider that are meant for one thing: the choices an image or video
+    setting offers as its model name.
+
+    Taken from the live listing when there is one — that is where the provider's own answer lives —
+    and from the rows already added otherwise.
+    """
+    prov = store.get_provider(pid)
+    if not prov:
+        raise KeyError(pid)
+    live = store.get_model_live(pid) or {"ids": [], "modes": {}}
+    rows = {m["model_name"]: m for m in store.list_provider_models(pid)}
+    out: list[dict] = []
+    for mid in live["ids"]:
+        if purpose_of(mid, live["modes"].get(mid)) != use:
+            continue
+        row = rows.get(mid)
+        out.append({"id": mid, "added": row is not None, "enabled": bool(row["enabled"]) if row else None})
+    if not out:      # nothing was fetched yet: fall back to what has been added
+        out = [{"id": n, "added": True, "enabled": bool(m["enabled"])}
+               for n, m in rows.items() if m["use"] == use]
+    return sorted(out, key=lambda e: e["id"])
+
+
 def mark_seen(store: Store, pid: str) -> None:
     data = model_options(store, pid)
     store.set_model_seen(pid, [m["id"] for m in data["models"]])
 
 
 async def refresh_live(store: Store, pid: str) -> list[str]:
-    """Query the provider for its live listing, cache it, and return the ID list.
-    Raises DiscoveryError on failure."""
+    """Query the provider for its live listing, cache it — ids *and* what each model is for — and
+    return the id list. Raises DiscoveryError on failure."""
     prov = store.get_provider(pid)
     if store.get_model_seen(pid) is None:
         model_options(store, pid)  # record the "seen" baseline first, so only IDs new
         # to this live listing count as new
-    ids = await fetch_model_ids(prov, timeout=store.get_settings().get("request_timeout", 60))  # type: ignore[arg-type]
-    store.set_model_live(pid, ids)
+    entries = await fetch_models(prov, timeout=store.get_settings().get("request_timeout", 60))  # type: ignore[arg-type]
+    ids = [e["id"] for e in entries]
+    modes = {e["id"]: e["mode"] for e in entries if e.get("mode")}
+    store.set_model_live(pid, ids, modes)
+    # A refresh is also the moment the rows already added can be corrected: the provider just told
+    # us which of them are not chat models, and a name-based guess is all we had before.
+    store.sync_model_uses(pid, modes)
     return ids
