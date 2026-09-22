@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import strengths as strength_lib
+from . import channels
 from . import video
 from .catalog import Catalog
 from .local_models import LocalCatalog
@@ -410,9 +411,9 @@ something the user deleted is not seeded again."""
     # and "written in plaintext into a database that ends up in backups".
     SECRET_SETTINGS: dict[str, tuple[str, str]] = {
         "github_token": ("github-token", "default"),
-        "whatsapp_token": ("whatsapp", "access-token"),
-        "whatsapp_app_secret": ("whatsapp", "app-secret"),
-        "whatsapp_verify_token": ("whatsapp", "verify-token"),
+        # One entry per secret field a channel declares, so a new channel cannot ship a
+        # credential that is quietly written into the database in the clear.
+        **channels.secrets(),
     }
 
     def get_settings(self) -> dict[str, Any]:

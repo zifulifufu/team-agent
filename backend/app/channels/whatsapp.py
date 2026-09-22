@@ -1,27 +1,24 @@
-"""WhatsApp Cloud API as an inbound channel: people message a WhatsApp number, the
-group chat here answers, the reply goes back to WhatsApp.
-
-This is the first channel whose messages arrive from **outside** the machine, so
-the whole module is written around one rule: **fail closed**. Nothing is processed
-until an HMAC over the raw body checks out against the app secret Meta gave you;
-if the secret is not configured, every request is refused rather than waved
-through. A missing signature is not "probably fine" — it is unauthenticated input
-that would otherwise drive agents that can read files.
+"""WhatsApp Cloud API: people message a WhatsApp number, the group here answers,
+the reply goes back to WhatsApp.
 
 Three facts about the platform shape the code:
 
-* Meta posts the webhook and expects **HTTP 200 within 5 seconds**; the actual
-  round of collaboration takes far longer, so the route answers first and does the
-  work in the background. Meta retries on non-200 and disables the endpoint
-  entirely after seven days of failures.
+* Meta posts the webhook and expects **HTTP 200 within 5 seconds**; the actual round of
+  collaboration takes far longer, so the route answers first and does the work in the
+  background. Meta retries on non-200 and disables the endpoint entirely after seven
+  days of failures.
 * The Cloud API can only reply within the **24-hour service window** opened by the
-  user's own message. Outside it, sending requires a pre-approved template. A chat
-  that answers immediately always sits inside the window, which is why this module
-  never initiates a conversation.
+  user's own message. Outside it, sending requires a pre-approved template. A channel
+  that answers immediately always sits inside the window, which is why it never
+  initiates a conversation.
 * `graph.facebook.com` is **not reachable from mainland China**. Unlike the local
-  gateways elsewhere in this project (which force `trust_env=False` so a proxy
-  cannot hijack a loopback call), this channel usually *needs* a proxy, so it takes
-  an explicit one from settings and otherwise falls back to the system proxy.
+  gateways elsewhere in this project (which force `trust_env=False` so a proxy cannot
+  hijack a loopback call), this channel usually *needs* a proxy, so it takes an explicit
+  one from its settings and otherwise falls back to the system proxy.
+
+Everything in this module is written around one rule: **fail closed**. Nothing is
+processed until an HMAC over the raw body checks out against the app secret; if the
+secret is not configured, every request is refused rather than waved through.
 """
 
 from __future__ import annotations
@@ -30,24 +27,19 @@ import hashlib
 import hmac
 import json
 import re
-import time
-from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
-from . import i18n, net
+from .. import i18n
+from .base import MAX_BODY, Inbound, clip, http_client, why  # noqa: F401  (MAX_BODY re-exported)
 
 GRAPH = "https://graph.facebook.com/v21.0"
 SIGNATURE_HEADER = "x-hub-signature-256"
 
-# Meta caps a single text body at 4096 characters; the default reply limit sits well
-# below that so a long answer stays readable instead of arriving as a wall of text.
+# Meta caps a single text body at 4096 characters.
 TEXT_HARD_LIMIT = 4096
-# A text-message webhook payload is a couple of kilobytes. This only guards against
-# someone posting garbage at the endpoint; it is not a real capacity limit.
-MAX_BODY = 128 * 1024
-TIMEOUT = 30.0
+
+# What has to be present before this channel can do its job at all.
+REQUIRED = ("group_id", "app_secret", "token", "phone_number_id", "allowed")
 
 
 def verify_signature(app_secret: str, body: bytes, header: str | None) -> bool:
@@ -76,15 +68,6 @@ def challenge(mode: str | None, token: str | None, expected: str, value: str | N
     if token is None or not hmac.compare_digest(str(token), expected):
         return None
     return value
-
-
-@dataclass
-class Inbound:
-    """One usable incoming text message."""
-    wa_id: str            # sender's phone number, digits only
-    name: str             # profile name when Meta sent one, else empty
-    text: str
-    message_id: str       # drops duplicates: Meta retries on slow or failed posts
 
 
 def parse(payload: Any) -> tuple[list[Inbound], list[str]]:
@@ -120,12 +103,12 @@ def parse(payload: Any) -> tuple[list[Inbound], list[str]]:
                 body = str((msg.get("text") or {}).get("body") or "").strip()
                 if not body:
                     continue
-                out.append(Inbound(wa_id=frm, name=names.get(frm, ""),
+                out.append(Inbound(sender=frm, name=names.get(frm, ""),
                                    text=body, message_id=str(msg.get("id") or "")))
     return out, skipped
 
 
-def digits(raw: Any) -> list[str]:
+def numbers(raw: Any) -> list[str]:
     """Normalize allowlist entries to bare digits, so "+86 138-0000-0000" and
     "8613800000000" are the same number. Meta always reports `from` as digits only.
 
@@ -141,6 +124,11 @@ def digits(raw: Any) -> list[str]:
         if d and d not in out:
             out.append(d)
     return out
+
+
+# Backwards-compatible alias: the allowlist normalizer was named after what it returns
+# before other channels needed their own (Telegram ids keep a leading `-`).
+digits = numbers
 
 
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*)$", re.M)
@@ -166,61 +154,6 @@ def to_plain(text: str) -> str:
     s = _LINK.sub(lambda m: f"{m.group(1)} ({m.group(2)})", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
-
-
-def clip(text: str, limit: int) -> str:
-    """Trim to `limit` characters, marking the cut so nobody thinks the answer ended."""
-    body = (text or "").strip()
-    if limit <= 0 or len(body) <= limit:
-        return body
-    return body[:max(0, limit - 1)].rstrip() + "…"
-
-
-class Recent:
-    """Bounded set of recently seen message ids (Meta may deliver the same event more
-    than once when a post is slow). Insertion order is age order, so the oldest entry
-    is evicted first.
-    """
-
-    def __init__(self, size: int = 512) -> None:
-        self.size = max(1, size)
-        self._seen: dict[str, float] = {}
-
-    def first_time(self, key: str) -> bool:
-        """True the first time `key` is seen; False for a repeat."""
-        if not key:
-            return True
-        if key in self._seen:
-            return False
-        self._seen[key] = time.time()
-        while len(self._seen) > self.size:
-            self._seen.pop(next(iter(self._seen)))
-        return True
-
-
-class RateLimit:
-    """Sliding-window limiter, so one noisy sender cannot keep a group busy.
-
-    A round of collaboration can take minutes; without this, a burst of messages from
-    one phone number queues up rounds faster than they can finish.
-    """
-
-    def __init__(self, limit: int, window: float = 60.0) -> None:
-        self.limit, self.window = max(1, limit), window
-        self._hits: dict[str, list[float]] = {}
-
-    def allow(self, key: str) -> bool:
-        now = time.time()
-        hits = [t for t in self._hits.get(key, []) if now - t < self.window]
-        if len(hits) >= self.limit:
-            self._hits[key] = hits
-            return False
-        hits.append(now)
-        self._hits[key] = hits
-        return True
-
-    def forget(self, key: str) -> None:
-        self._hits.pop(key, None)
 
 
 def _error_bits(body: str) -> tuple[int | None, str]:
@@ -269,25 +202,34 @@ def explain_http(status: int, body: str) -> str:
     return f"{msg} · {detail}" if detail else msg
 
 
-def client_for(proxy: str, url: str = "") -> httpx.AsyncClient:
-    """Build the client used to talk to Meta.
+def missing(cfg: dict) -> list[str]:
+    """What still has to be filled in, in the order the setup flow asks for it."""
+    out: list[str] = []
+    if not str(cfg.get("group_id") or ""):
+        out.append(i18n.pick_now("no group chat is bound to this channel",
+                                 "这条通道没有绑定群聊"))
+    if not str(cfg.get("app_secret") or ""):
+        out.append(i18n.pick_now("the app secret is missing, so every webhook post is refused",
+                                 "缺少 App Secret,所有回调请求都会被拒绝"))
+    if not str(cfg.get("verify_token") or ""):
+        out.append(i18n.pick_now("the verify token is missing, so Meta cannot verify the callback URL",
+                                 "缺少 verify token,Meta 无法校验回调地址"))
+    if not str(cfg.get("token") or "") or not str(cfg.get("phone_number_id") or ""):
+        out.append(i18n.pick_now("the access token or the phone number id is missing, so replies cannot be sent",
+                                 "缺少访问令牌或 phone number id,无法发送回复"))
+    if not numbers(cfg.get("allowed")):
+        out.append(i18n.pick_now("nobody is allowlisted, so every message is dropped",
+                                 "白名单为空,所有消息都会被丢弃"))
+    return out
 
-    With an explicit proxy configured, `trust_env=False` keeps the environment's
-    HTTP_PROXY from layering a second proxy on top of it. Without one, `net.client`
-    decides: loopback/LAN goes direct, external hosts honour the system proxy.
-    """
-    if proxy:
-        return httpx.AsyncClient(proxy=proxy, trust_env=False, timeout=TIMEOUT)
-    return net.client(url, timeout=TIMEOUT)
 
-
-async def send_text(cfg: dict, to: str, text: str, *, base: str | None = None) -> tuple[bool, str]:
+async def send(cfg: dict, to: str, text: str, *, base: str | None = None) -> tuple[bool, str]:
     """Send one text message. Returns `(ok, detail)`, where `detail` is either the
     WhatsApp message id or a sentence explaining what to fix.
     """
-    number = (digits(to) or [""])[0]
+    number = (numbers(to) or [""])[0]
     pid = str(cfg.get("phone_number_id") or "").strip()
-    token = str(cfg.get("access_token") or "").strip()
+    token = str(cfg.get("token") or "").strip()
     proxy = str(cfg.get("proxy") or "").strip()
     if not pid:
         return False, i18n.pick_now("the phone number id is not set", "没有填 phone number id")
@@ -300,13 +242,13 @@ async def send_text(cfg: dict, to: str, text: str, *, base: str | None = None) -
     payload = {"messaging_product": "whatsapp", "recipient_type": "individual",
                "to": number, "type": "text", "text": {"preview_url": False, "body": text}}
     try:
-        async with client_for(proxy, url) as client:
+        async with http_client(proxy, url) as client:
             resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {token}"})
     except Exception as e:  # noqa: BLE001 — a connection failure is the common case here
         return False, i18n.pick_now(
-            f"could not reach WhatsApp ({e}). From mainland China graph.facebook.com needs a proxy — set one "
+            f"could not reach WhatsApp ({why(e)}). From mainland China graph.facebook.com needs a proxy — set one "
             f"for this channel (Clash usually listens on http://127.0.0.1:7890)",
-            f"连不上 WhatsApp({e})。在中国大陆访问 graph.facebook.com 需要代理——请给这条通道设置代理"
+            f"连不上 WhatsApp({why(e)})。在中国大陆访问 graph.facebook.com 需要代理——请给这条通道设置代理"
             f"(Clash 通常监听 http://127.0.0.1:7890)")
     if resp.status_code >= 300:
         return False, explain_http(resp.status_code, resp.text)
@@ -317,16 +259,20 @@ async def send_text(cfg: dict, to: str, text: str, *, base: str | None = None) -
     return True, mid or i18n.pick_now("sent", "已发送")
 
 
+def format_reply(cfg: dict, text: str) -> str:
+    return clip(to_plain(text), int(cfg.get("max_chars") or 1500))
+
+
 async def probe(cfg: dict, *, base: str | None = None) -> tuple[bool, str]:
     """Read the number's own metadata.
 
     The cheapest way to prove that the token, the proxy and the phone number id all work
     together — one GET, and no message is sent to anybody. Worth having separately from
-    `send_text`, because the first thing that goes wrong on this channel is a token that
-    was copied with a trailing space.
+    `send`, because the first thing that goes wrong on this channel is a token that was
+    copied with a trailing space.
     """
     pid = str(cfg.get("phone_number_id") or "").strip()
-    token = str(cfg.get("access_token") or "").strip()
+    token = str(cfg.get("token") or "").strip()
     proxy = str(cfg.get("proxy") or "").strip()
     if not pid:
         return False, i18n.pick_now("the phone number id is not set", "没有填 phone number id")
@@ -334,12 +280,12 @@ async def probe(cfg: dict, *, base: str | None = None) -> tuple[bool, str]:
         return False, i18n.pick_now("the access token is not set", "没有填访问令牌")
     url = f"{(base or GRAPH).rstrip('/')}/{pid}?fields=display_phone_number,verified_name"
     try:
-        async with client_for(proxy, url) as client:
+        async with http_client(proxy, url) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
     except Exception as e:  # noqa: BLE001
         return False, i18n.pick_now(
-            f"could not reach WhatsApp ({e}) — from mainland China this needs a proxy",
-            f"连不上 WhatsApp({e})——在中国大陆需要代理")
+            f"could not reach WhatsApp ({why(e)}) — from mainland China this needs a proxy",
+            f"连不上 WhatsApp({why(e)})——在中国大陆需要代理")
     if resp.status_code >= 300:
         return False, explain_http(resp.status_code, resp.text)
     try:

@@ -162,6 +162,11 @@ class Orchestrator:
         self.approvals = approvals or Approvals(store)
         self._locks: dict[str, asyncio.Lock] = {}
         self._bg: set[asyncio.Task] = set()
+        # Optional callback `(group_id, final_text)` run once per finished round, for
+        # channels that only push (a group robot cannot be answered, so it receives what
+        # the group produced rather than a reply to a question). Set by main.py; absent in
+        # tests, where nothing should leave the machine.
+        self.on_answer: Callable[[str, str], Awaitable[None]] | None = None
 
     def _lock(self, gid: str) -> asyncio.Lock:
         return self._locks.setdefault(gid, asyncio.Lock())
@@ -305,6 +310,21 @@ straight into the context."""
             run.refs_block = self._refs_block(group, text)
             await self._run_turns(group, text, emit, run)
             self._after_run(group, run)
+        await self._announce(gid, run)
+
+    async def _announce(self, gid: str, run: RunState) -> None:
+        """Hand the finished answer to the push channels bound to this group.
+
+        Deliberately outside the group lock and never allowed to raise: forwarding is a
+        side effect of a round, and a chat platform that is slow or broken must not hold
+        the group hostage or turn a good answer into a failed round.
+        """
+        if not self.on_answer or not run.final_text.strip():
+            return
+        try:
+            await self.on_answer(gid, run.final_text)
+        except Exception as e:  # noqa: BLE001
+            print("forwarding to a chat channel failed:", e)
 
     def _after_run(self, group: dict, run: RunState) -> None:
         cfg = self.store.get_settings()

@@ -15,6 +15,8 @@ kind decides how it maps onto the LiteLLM model string:
 
 from __future__ import annotations
 
+from . import channels
+
 PRESETS: list[dict] = [
     {
         "preset": "deepseek",
@@ -320,27 +322,14 @@ DEFAULT_SETTINGS: dict = {
     "update_interval_hours": 12,
     "auto_update_skills": False,  # only text skills may update automatically; plugins / MCP / the app itself always need
 # manual confirmation
-    # ---- inbound WhatsApp channel (Cloud API), off by default. This is the only place
-    # where input arrives from *outside* the machine, so three things are deliberately
-    # strict: the webhook is authenticated by Meta's HMAC signature alone (no secret
-    # configured = every request refused), only allowlisted numbers may speak, and the
-    # round they trigger is limited to read-only tools. `whatsapp_public_host` is the
-    # hostname your tunnel forwards to this app — the API otherwise only accepts
-    # loopback hosts, so without it nothing can reach the webhook.
-    "whatsapp_enabled": False,
-    "whatsapp_group_id": "",           # which group chat answers; empty = the channel does nothing
-    "whatsapp_phone_number_id": "",    # Cloud API phone number id, used when sending the reply
-    "whatsapp_allowed": [],            # who may talk to it, as phone numbers; empty = nobody
-    "whatsapp_public_host": "",        # public hostname of the tunnel/VPS in front of this app
-    "whatsapp_proxy": "",              # graph.facebook.com is unreachable from mainland China
-    "whatsapp_max_chars": 1500,        # reply length sent back (WhatsApp's own limit is 4096)
-    "whatsapp_prefix": "",             # optional text put in front of every reply
-    # These three hold a keychain reference, never the value itself (see store.SECRET_SETTINGS).
-    # The app secret is the one that matters: it is what proves a webhook post really came
-    # from Meta. Leave it empty and the endpoint refuses every request.
-    "whatsapp_token": "",              # Cloud API access token, used when sending
-    "whatsapp_app_secret": "",         # Meta app secret, used to verify the signature
-    "whatsapp_verify_token": "",       # the string Meta echoes back during its GET handshake
+    # ---- chat channels (see channels/spec.py, which owns these keys). Off by default: this
+    # is the only place where input arrives from *outside* the machine. Three things are
+    # deliberately strict — a channel authenticates every request by the platform's own
+    # signature (no secret configured = every request refused), only allowlisted senders may
+    # speak, and the round they trigger is limited to read-only tools. Any channel needing a
+    # public address also needs its hostname registered, because the API otherwise accepts
+    # loopback hosts only and nothing could reach it.
+    **channels.defaults(),
     # ---- scoring a planned round, so a group can notice its own weak hand-offs (see scoring.py).
     # Off by default: it costs one extra model call per planned round. The judge is meant to be a
     # model that is *not* one of the group's members — a model grading its own answer is the least

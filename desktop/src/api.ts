@@ -371,42 +371,59 @@ export interface Settings {
   code_workdir: string;            // Empty = <data dir>/workspace
   vision_cloud: boolean;           // May attached images reach a cloud model? Separate from external_calls_enabled
   vision_max_mb: number;           // Per-image size cap, checked before anything is written to disk
-  whatsapp_enabled: boolean;        // Let WhatsApp drive a group chat; off by default
-  whatsapp_group_id: string;        // Which group chat answers; empty = the channel does nothing
-  whatsapp_phone_number_id: string; // Cloud API phone number id, used when sending
-  whatsapp_allowed: string[];       // Who may talk to it, as phone numbers; empty = nobody
-  whatsapp_public_host: string;     // Public hostname of the tunnel/VPS in front of this app
-  whatsapp_proxy: string;           // graph.facebook.com is unreachable from mainland China
-  whatsapp_max_chars: number;       // Reply length sent back (WhatsApp's own limit is 4096)
-  whatsapp_prefix: string;          // Text put in front of every reply
-  whatsapp_token: string;           // Write-only: reads back empty, like github_token
-  whatsapp_app_secret: string;      // Write-only
-  whatsapp_verify_token: string;    // Write-only
-  whatsapp_token_set: boolean;
-  whatsapp_app_secret_set: boolean;
-  whatsapp_verify_token_set: boolean;
+  // Chat channels (whatsapp_*, telegram_*, wecom_*, feishu_*, dingtalk_*, slack_*) are NOT
+  // listed here on purpose: the backend's channel catalogue declares every field with its
+  // label, bounds and value, so /api/channels is the single source and adding a platform
+  // needs no change on this side. The backend still accepts them through /api/settings.
   scoring_enabled: boolean;          // Grade each planned round with a separate judge model
   score_judge_model: string;         // Empty = pick one automatically (never a group member)
   score_threshold: number;           // Percent; below this a task counts as needing rework
   score_excerpt_chars: number;       // How much of each deliverable the judge reads (head + tail)
   score_max_lessons: number;         // How many lessons one round may write into memory
 }
-/** State of the inbound WhatsApp channel, in the shape the settings page shows it.
- *  A webhook is invisible by nature, so without this the only symptom of a
+/** One configurable field of a chat channel, described by the backend catalogue.
+ *  `setting` is the full settings key; `secret` fields never carry a value, only `set`. */
+export interface ChannelField {
+  key: string;
+  setting: string;
+  kind: "switch" | "text" | "secret" | "number" | "group" | "numbers" | "ids";
+  label: string;
+  desc: string;
+  placeholder?: string;
+  unit?: string;
+  min?: number | null;
+  max?: number | null;
+  secret: boolean;
+  value: string | number | boolean | string[];
+  set: boolean;
+}
+/** A chat channel: how it is reachable, what it still needs, and what it has done.
+ *  A webhook is invisible by nature, so without the counters the only symptom of a
  *  misconfiguration is silence. */
-export interface WhatsAppStatus {
-  enabled: boolean;
+export interface ChannelInfo {
+  id: string;
+  name: string;
+  avatar: string;
+  direction: "both" | "out";
+  transport: "webhook" | "poll" | "robot";
+  needs_public_url: boolean;
+  docs: string;
+  summary: string;
+  setup: string[];
+  fields: ChannelField[];
+  settings: Record<string, string | number | boolean | string[]>;
+  ready: boolean;
+  missing: string[];
   webhook_path: string;
   public_url: string;
-  group_id: string;
-  allowed: string[];
   counters: {
     accepted: number;
     rejected: number;   // refused before any work: bad signature, unconfigured, body too large
     ignored: number;    // authenticated but dropped: not allowlisted, duplicate, rate limited
-    last_inbound: { at?: number; wa_id?: string; name?: string; text?: string };
+    last_inbound: { at?: number; sender?: string; name?: string; text?: string };
     last_reply: { at?: number; ok?: boolean; detail?: string; chars?: number };
     last_error: string;
+    poller: string;     // "", "running", "stopped" — only for channels this app fetches
   };
 }
 /** One image attached to a message. `bytes` is the stored size, `mime` what the server sniffed. */
@@ -918,8 +935,14 @@ export const api = {
     post<{ ok: boolean; provider: { id: string; name: string; base_url: string } | null; detail: string }>("/api/video/test", { provider_id }),
   settings: () => get<Settings>("/api/settings"),
   putSettings: (b: Partial<Settings>) => put<Settings>("/api/settings", b),
-  whatsappStatus: () => get<WhatsAppStatus>("/api/whatsapp/status"),
-  whatsappProbe: () => post<{ ok: boolean; detail: string }>("/api/whatsapp/probe", {}),
+  channels: () => get<{ channels: ChannelInfo[] }>("/api/channels"),
+  channel: (id: string) => get<ChannelInfo>(`/api/channels/${id}`),
+  /** `patch` is keyed by field name (enabled, group_id, …), not by the full setting key. */
+  setChannel: (id: string, patch: Record<string, unknown>) =>
+    put<{ ok: boolean; ready: boolean; missing: string[]; secrets: Record<string, boolean> }>(`/api/channels/${id}`, patch),
+  channelProbe: (id: string) => post<{ ok: boolean; detail: string }>(`/api/channels/${id}/probe`, {}),
+  channelTest: (id: string) => post<{ ok: boolean; detail: string }>(`/api/channels/${id}/test`, {}),
+  channelReconnect: (id: string) => post<{ ok: boolean; poller: string }>(`/api/channels/${id}/reconnect`, {}),
   routePreview: (preferred?: string | null) =>
     get<RoutePreview>("/api/route/preview" + (preferred ? `?preferred=${encodeURIComponent(preferred)}` : "")),
   localStatus: () => get<LocalStatus>("/api/local/status"),

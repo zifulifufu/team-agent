@@ -463,3 +463,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 /* 主区里的「技能 / 插件 / MCP」页(和设置里是同一批页面) */
 .tool-page { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .expand-btn ~ .tool-page { padding-top: 40px; }
+
+/* 通道页:平台选择条 */
+.chan-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.chan-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; font-size: 13px; }
+.chan-tab:hover { background: var(--surface-2); }
+.chan-tab.on { border-color: var(--accent); color: var(--text-1); background: var(--surface-2); }
+.chan-emoji { font-size: 14px; line-height: 1; }
+.chan-dot { display: inline-flex; align-items: center; color: var(--text-3); }
+.chan-dot.on { color: var(--success, var(--chart-1)); }
+.chan-dot.warn { color: var(--warning, var(--danger)); }

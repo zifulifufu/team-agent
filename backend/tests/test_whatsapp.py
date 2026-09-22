@@ -22,7 +22,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from app import api_whatsapp, toolhub, whatsapp
+from app import api_channels, toolhub
+from app.channels import base, whatsapp
 from app.main import create_app
 from app.store import Store
 from tests.conftest import FakeLLM
@@ -173,9 +174,9 @@ def test_only_text_is_usable_and_the_rest_are_named():
 def test_numbers_are_normalized_but_not_split_on_spaces():
     """Regression: splitting on whitespace turned "+86 138-0000-0000" into two bogus entries
     ("86" and "13800000000"), so the real number never matched the allowlist."""
-    assert whatsapp.digits("+86 138-0000-0000") == [NUMBER]
-    assert whatsapp.digits(f"{NUMBER}, {OTHER}") == [NUMBER, OTHER]
-    assert whatsapp.digits([NUMBER, NUMBER, " " + OTHER]) == [NUMBER, OTHER]
+    assert whatsapp.numbers("+86 138-0000-0000") == [NUMBER]
+    assert whatsapp.numbers(f"{NUMBER}, {OTHER}") == [NUMBER, OTHER]
+    assert whatsapp.numbers([NUMBER, NUMBER, " " + OTHER]) == [NUMBER, OTHER]
 
 
 def test_markdown_is_rewritten_into_whatsapp_markup():
@@ -187,7 +188,7 @@ def test_markdown_is_rewritten_into_whatsapp_markup():
 
 
 def test_the_same_message_id_is_only_handled_once():
-    recent = whatsapp.Recent(3)
+    recent = base.Recent(3)
     assert recent.first_time("a") and not recent.first_time("a")
     for k in ("b", "c", "d"):
         recent.first_time(k)
@@ -196,7 +197,7 @@ def test_the_same_message_id_is_only_handled_once():
 
 
 def test_a_sender_is_rate_limited():
-    limiter = whatsapp.RateLimit(2)
+    limiter = base.RateLimit(2)
     assert limiter.allow(OTHER) and limiter.allow(OTHER) and not limiter.allow(OTHER)
     limiter.forget(OTHER)
     assert limiter.allow(OTHER)
@@ -271,7 +272,7 @@ def test_the_same_event_delivered_twice_only_runs_once(tmp_path):
 
 
 def test_a_flood_from_one_number_is_capped(tmp_path, monkeypatch):
-    monkeypatch.setattr(api_whatsapp, "PER_MINUTE", 2)     # read while the router is built
+    monkeypatch.setattr(api_channels, "PER_MINUTE", 2)     # read while the router is built
     with channel(tmp_path) as (cl, app, gid, _fake):
         accepted = [post(cl, payload(mid=f"wamid.F{i}")).json()["accepted"] for i in range(3)]
         assert accepted == [1, 1, 0]
@@ -314,9 +315,9 @@ def test_a_rejected_reply_is_recorded_rather_than_lost(tmp_path, monkeypatch):
         with channel(tmp_path) as (cl, _app, _gid, _fake):
             assert post(cl, payload()).json()["accepted"] == 1
             assert wait_for(lambda: fake_graph.state.sent)
-            assert wait_for(lambda: (cl.get("/api/whatsapp/status").json()["counters"]
+            assert wait_for(lambda: (cl.get("/api/channels/whatsapp").json()["counters"]
                                      ["last_reply"] or {}).get("ok") is False)
-            last = cl.get("/api/whatsapp/status").json()["counters"]["last_reply"]
+            last = cl.get("/api/channels/whatsapp").json()["counters"]["last_reply"]
             assert "24 hours" in last["detail"], "the 24-hour window has to be named as the reason"
 
 
@@ -339,18 +340,18 @@ def test_the_callback_url_is_built_from_whatever_was_typed(tmp_path, typed, want
     "https://host" with the whole path missing, and the page appended the path a second time.
     """
     with channel(tmp_path, whatsapp_public_host=typed) as (cl, _app, _gid, _fake):
-        assert cl.get("/api/whatsapp/status").json()["public_url"] == want
+        assert cl.get("/api/channels/whatsapp").json()["public_url"] == want
 
 
 def test_the_status_reports_what_arrived_and_what_was_ignored(tmp_path):
     with channel(tmp_path) as (cl, _app, _gid, _fake):
-        status = cl.get("/api/whatsapp/status").json()
-        assert status["enabled"] is True
+        status = cl.get("/api/channels/whatsapp").json()
+        assert status["settings"]["enabled"] is True
         assert status["public_url"] == f"https://{HOOK_HOST}/hooks/whatsapp"
-        assert status["allowed"] == [NUMBER]
+        assert status["settings"]["allowed"] == [NUMBER]
         post(cl, payload(frm=OTHER))
-        counters = cl.get("/api/whatsapp/status").json()["counters"]
-        assert counters["ignored"] >= 1 and counters["last_inbound"]["wa_id"] == OTHER
+        counters = cl.get("/api/channels/whatsapp").json()["counters"]
+        assert counters["ignored"] >= 1 and counters["last_inbound"]["sender"] == OTHER
 
 
 def test_the_secrets_are_stored_but_never_read_back(tmp_path):

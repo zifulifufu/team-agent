@@ -25,8 +25,9 @@ from pydantic import BaseModel
 from .api_ext import Ctx, build_router
 from .api_external import build_external_router
 from .api_gallery import build_gallery_router
-from .api_whatsapp import build_whatsapp_router
+from .api_channels import build_channels
 from .approvals import Approvals
+from . import channels
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
 from .library import Library
@@ -239,6 +240,11 @@ def create_app(
                         registry=registry, mcp=mcp, approvals=approvals)
     updater = Updater(store, APP_VERSION, github_transport)
     hub = Hub()
+    # Chat channels: inbound webhooks, polled platforms, and the one-way pushes. Built here
+    # because the middleware below needs to know which public hostnames to accept, and the
+    # orchestrator needs somewhere to hand each finished answer.
+    chan = build_channels(store, orch, hub)
+    orch.on_answer = chan.push_answer
     tasks: dict[str, set[asyncio.Task]] = {}
 
     @asynccontextmanager
@@ -262,11 +268,17 @@ def create_app(
             except Exception as e:  # noqa: BLE001 — housekeeping must never stop startup
                 print("attachment sweep failed:", e)
             threading.Thread(target=_warm_model_stack, daemon=True).start()
+            # A polled channel (Telegram) fetches its own messages, so it has to be running
+            # for the app to receive anything. Off unless a channel is both enabled and
+            # complete, which is why this is safe to arm unconditionally here.
+            await chan.startup()
         try:
             yield
         finally:
             for t in bg:
                 t.cancel()
+            if background:
+                await chan.shutdown()
             await orch.drain()
             await mcp.shutdown()
 
@@ -280,15 +292,13 @@ def create_app(
                   openapi_url="/openapi.json" if expose_docs else None)
     # Resolves the request language (?lang= or Accept-Language) for built-in content.
     app.add_middleware(i18n.LanguageMiddleware)
-    # The API is loopback-only on purpose. The single exception is the WhatsApp webhook:
-    # Meta posts to whatever public hostname sits in front of this app (a tunnel or a VPS),
-    # so that host has to be accepted here. It is the only path reachable from outside, and
-    # it authenticates every request by HMAC signature rather than by token, so allowing the
-    # host does not widen the API surface.
-    _hook_host = str(store.get_settings().get("whatsapp_public_host") or "").strip()
-    _hook_host = _hook_host.split("://")[-1].split("/")[0].split(":")[0]
+    # The API is loopback-only on purpose. The exception is a chat channel that needs a
+    # public address: a platform posts to whatever tunnel or VPS sits in front of this app,
+    # so those hostnames have to be accepted here. They are the only paths reachable from
+    # outside, and each authenticates every request with the platform's own signature
+    # rather than with a token, so allowing the hosts does not widen the API surface.
     app.add_middleware(TrustedHostMiddleware,
-                       allowed_hosts=["127.0.0.1", "localhost"] + ([_hook_host] if _hook_host else []))
+                       allowed_hosts=["127.0.0.1", "localhost"] + channels.public_hosts(store.get_settings()))
     if token:  # the Electron renderer's Origin may be file:// (i.e. "null"), so authenticate by token
 # rather than by origin
         app.add_middleware(
@@ -361,10 +371,12 @@ def create_app(
               "code_timeout": (5, 600), "vision_max_mb": (1, 64),
               # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
               "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
-              # whatsapp: WhatsApp refuses a single text body over 4096 characters
-              "whatsapp_max_chars": (100, 4096),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
-              "score_threshold": (0, 100), "score_excerpt_chars": (100, 4000), "score_max_lessons": (0, 3)}
+              "score_threshold": (0, 100), "score_excerpt_chars": (100, 4000), "score_max_lessons": (0, 3),
+              # chat channels: each numeric field declares its own bounds in channels/spec.py,
+              # so a new channel's limit cannot be forgotten here (which shows up as a 400 when
+              # the settings page tries to save it).
+              **channels.ranges()}
     # obsidian_dir can only be set through /api/obsidian (which validates the path); it is not
 # accepted here
     READONLY = {"obsidian_dir"}
@@ -784,9 +796,11 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
     app.include_router(build_external_router(store, orch.external))
     app.include_router(build_gallery_router(store))
-    # The WhatsApp webhook lives outside /api on purpose: token middleware does not cover it,
-    # because the caller is Meta rather than the app's own front end, and a webhook has to
-    # authenticate by signature. It is the only route here reachable from outside the machine.
-    app.include_router(build_whatsapp_router(store, orch, hub))
+    # Chat channels: the inbound webhook lives outside /api on purpose. Token middleware does
+    # not cover it, because the caller is a chat platform rather than the app's own front end,
+    # and each channel authenticates by the platform's own signature. It is the only route
+    # here reachable from outside the machine.
+    app.include_router(chan.router)
+    app.state.channels = chan          # the background poller and the tests both need it
 
     return app

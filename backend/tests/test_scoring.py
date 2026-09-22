@@ -22,7 +22,7 @@ import json
 
 import pytest
 
-from app import planner, scoring
+from app import scoring
 from app.planner import Plan, PlanTask
 from tests.conftest import FakeLLM
 from tests.test_collab import PLAN, Collector, role, last_user, has, setup

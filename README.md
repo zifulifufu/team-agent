@@ -104,33 +104,47 @@ to keep it that way, and removing that variable is what makes the real keychain 
 - A "block hosted models" switch stops every hosted request, including update checks and remote MCP.
 - Plugins and MCP servers run code with your privileges. Enable only what you trust.
 
-## WhatsApp channel
+## Chat channels
 
-A group chat can also be reached from WhatsApp: someone messages your WhatsApp number, a group answers
-here, and the reply goes back. It is off by default and needs three things arranged outside this app.
+A group chat here can be reached from a chat platform, and what it produces can be pushed into one.
+*Settings → Chat channels* lists six, each off by default:
 
-**1. A public HTTPS address.** Meta's Cloud API posts every event to a callback URL, and it rejects
-`localhost`, private addresses and plain HTTP. A tunnel is the usual answer —
-`cloudflared tunnel --url http://127.0.0.1:8765`, or `ngrok http 8765` — and the hostname it prints
-goes into *Settings → WhatsApp channel → Public hostname*. That hostname is the single exception to the
-API being loopback-only; requests on it are authenticated by Meta's signature rather than by the app
-token. Restart the app after changing it.
+| Channel | Direction | Needs a public address | Notes |
+|---|---|---|---|
+| **WhatsApp** (Cloud API) | receives and replies | **yes** | Meta posts every event to a callback URL, so a tunnel or a public server is required; `graph.facebook.com` also needs a proxy from mainland China |
+| **Telegram** | receives and replies | **no** | this app polls Telegram instead, so a machine behind NAT with no tunnel still receives messages |
+| **WeCom** | pushes only | no | a group robot cannot receive messages |
+| **Feishu** | pushes only | no | custom bot; optional signature |
+| **DingTalk** | pushes only | no | custom bot; keyword/IP/加签 security settings all supported |
+| **Slack** | pushes only | no | Incoming Webhook |
 
-**2. A Meta app with the WhatsApp product**: the phone number id, an access token, and the app secret,
-plus a verify token you invent. Paste `<your host>/hooks/whatsapp` and that verify token into
-*WhatsApp → Configuration → Webhook*, then subscribe to the `messages` field. Use a permanent access
-token; the temporary one expires in 24 hours.
+**Receiving channels answer the sender.** Only text is carried, only from the senders you allowlist, and
+each platform's own signature authenticates every request — an unconfigured secret refuses rather than
+accepts. A round started from outside **may only use read-only tools**: it can search the library and
+your memory, but it can never run code or write files, because there is nobody at this machine to
+approve anything.
 
-**3. A proxy, if you are in mainland China.** `graph.facebook.com` is unreachable there, so sending a
-reply needs one (`http://127.0.0.1:7890` for a local Clash). "Check the connection" proves the token,
-the number id and the proxy in a single request, without messaging anybody.
+**Pushing channels forward every finished answer** in the group they are bound to, so a WeCom or Feishu
+group sees what the team produced without opening this app.
 
-Only text arrives, and only from the numbers you allowlist — anyone else is dropped and counted on the
-settings page instead of being answered. A round started this way **may only use read-only tools**: it
-can search the library and your memory, but it can never run code or write files, because there is
-nobody at this machine to approve anything. Replies are shortened to the configured length, and a reply
-WhatsApp refuses — most often because the 24-hour service window has closed, which needs a pre-approved
-template — is reported on that page rather than silently disappearing.
+**WhatsApp specifics.** Three things are arranged outside this app. (1) A public HTTPS address: Meta
+rejects `localhost`, private addresses and plain HTTP, so a tunnel is the usual answer
+(`cloudflared tunnel --url http://127.0.0.1:8765`), and its hostname goes under *Public hostname*. That
+hostname is the single exception to the API being loopback-only, and requests on it are authenticated by
+Meta's signature rather than by the app token — restart the app after changing it. (2) A Meta app with
+the WhatsApp product: paste `<your host>/hooks/whatsapp` and your verify token into
+*WhatsApp → Configuration → Webhook*, then subscribe to `messages`. Use a permanent access token; the
+temporary one expires in 24 hours. (3) A proxy, if you are in mainland China.
+
+**Telegram specifics.** Talk to `@BotFather`, run `/newbot`, and paste the token. Send the bot one
+message so it knows your chat id, add that id to the allowlist, and switch the channel on — there is no
+tunnel, no certificate and no public address. Borrowing the bot's updates with a webhook set is the one
+configuration that fails silently, so "Check now" reports it explicitly.
+
+**Every channel has two buttons**: *Check now* (reads what the platform reports about itself, sends
+nothing) and *Send test* (really does send one, because on a robot that is the only honest test). The
+counters below them — accepted, rejected, ignored — are what makes a misconfiguration visible at all: a
+webhook's usual symptom is silence.
 
 ## Licence
 
