@@ -180,6 +180,34 @@ def level_view(key: str) -> dict:
     """One permission level, labelled in the request language."""
     return i18n.localize(LEVELS[key])
 
+
+def localize_member(agent: dict, lang: str) -> dict:
+    """Show an external member's built-in role and prompt in `lang`.
+
+    Same rule as the built-in members (`presets.localize_agent`): a field is swapped only while
+    it still equals what the engine ships — *in either language*, which is what makes this work
+    for a member added before the fix below as well as after it. A role or prompt the user
+    rewrote is left exactly as they wrote it.
+
+    Why this is needed at all: the role and prompt are stored with the member, and they used to
+    be stored **already localized**, so a member added from a Chinese interface kept its Chinese
+    role for ever — including in an English one. The store now keeps the canonical English and
+    this puts the reader's language back on top at display time.
+    """
+    eng = ENGINES.get(str(agent.get("engine") or ""))
+    if not eng:
+        return agent
+    out = dict(agent)
+    for field in ("role", "prompt"):
+        english = eng.get(field) or ""
+        zh = eng.get(field + "_zh")
+        if not zh or not english:
+            continue
+        if (agent.get(field) or "") not in {english, zh}:
+            continue                     # the user rewrote this field — keep their text
+        out[field] = zh if lang == "zh" else english
+    return out
+
 DEFAULT_CFG: dict[str, Any] = {
     # Fields for the command-line engines (`kind: "cli"`) and for the chat gateways
     # (`kind: "http"`) live in the same dict: a member uses one engine, and `clean_cfg` only

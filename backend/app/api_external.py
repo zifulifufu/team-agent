@@ -126,10 +126,11 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
             name = f"{name}{n}"
         if body.group_id and not store.get_group(body.group_id):
             raise HTTPException(404, i18n.pick_now("That group chat does not exist", "群聊不存在"))
-        # The member is created in the language it was added from, so a Chinese install gets
-        # a Chinese role prompt and an English one gets the English text.
-        shown = i18n.localize(eng)
-        agent = store.create_agent(name, shown["avatar"], shown["role"], shown["prompt"], None, [], shown["tags"],
+        # The role and the prompt are stored in their canonical English, the way every other piece
+        # of built-in content is: the display layer puts the reader's language back on top (see
+        # `external.localize_member`). Storing them already localized is what left a member added
+        # from a Chinese interface reading Chinese for ever — in an English one too.
+        agent = store.create_agent(name, eng["avatar"], eng["role"], eng["prompt"], None, [], eng["tags"],
                                    engine=body.engine, engine_cfg={**cfg, "api_key": ""})
         agent = save(agent, cfg)                       # stores the key in the keychain, if one was given
         if body.group_id:

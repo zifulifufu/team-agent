@@ -18,7 +18,9 @@ parameter through every call.
 
 from __future__ import annotations
 
+import contextlib
 from contextvars import ContextVar
+from collections.abc import Iterator
 from typing import Any, Awaitable, Callable
 
 DEFAULT_LANG = "en"
@@ -55,6 +57,21 @@ def resolve(lang: str | None = None, accept_language: str | None = None) -> str:
         if picked:
             return picked
     return DEFAULT_LANG
+
+
+@contextlib.contextmanager
+def pinned(lang: str) -> Iterator[None]:
+    """Run a block with the language pinned, whatever the request asked for.
+
+    For work whose *result is stored* rather than displayed: a value written to disk must not
+    depend on who happened to trigger the run, or the next reader sees a language they cannot
+    read. (`pick_now` would otherwise resolve against the request that started the task.)
+    """
+    token = _lang.set(lang)
+    try:
+        yield
+    finally:
+        _lang.reset(token)
 
 
 def current() -> str:

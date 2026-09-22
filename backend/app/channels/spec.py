@@ -264,7 +264,7 @@ CHANNELS: dict[str, dict] = {
         "summary": "Push what the group produces into a Feishu group.",
         "summary_zh": "把群里的成果推送到飞书群。",
         "setup": [
-            "In the Feishu group, add a custom bot (群设置 → 群机器人 → 添加机器人 → 自定义机器人).",
+            "In the Feishu group, add a custom bot (Group settings → Bots → Add bot → Custom bot).",
             "Copy the webhook address. If you switched on signature verification, copy that secret too.",
             "Send a test message from here to confirm it lands in the room.",
         ],
@@ -295,8 +295,8 @@ CHANNELS: dict[str, dict] = {
         "summary": "Push what the group produces into a DingTalk group.",
         "summary_zh": "把群里的成果推送到钉钉群。",
         "setup": [
-            "In the DingTalk group, add a custom robot (群设置 → 智能群助手 → 添加机器人 → 自定义).",
-            "Copy its webhook address. If the security setting is 加签, copy that secret too.",
+            "In the DingTalk group, add a custom robot (Group settings → Smart group assistant → Add robot → Custom).",
+            "Copy its webhook address. If the security setting is Signed, copy that secret too.",
             "Send a test message from here to confirm it lands in the room.",
         ],
         "setup_zh": [

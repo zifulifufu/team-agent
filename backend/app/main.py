@@ -41,6 +41,7 @@ from . import images
 from . import net
 from .obsidian import ObsidianSync
 from .orchestrator import Orchestrator
+from . import presets
 from .presets import DEFAULT_SETTINGS, PRESETS
 from .prompting import PromptBuilder
 from .router import ModelRouter
@@ -48,7 +49,7 @@ from .stats import compute_stats
 from .store import Store
 from .toolhub import ToolHub
 from .tools import build_registry, ensure_example_skills
-from .updater import Updater
+from .updater import Updater, backfill_notice_languages, drop_stale_check_snapshot
 
 
 # ------------------------------------------------------------------ schemas
@@ -227,6 +228,12 @@ def create_app(
     ensure_loopback_no_proxy()
     store = Store(data_dir)
     ensure_example_skills(store.data_dir / "skills", store._flag)
+    # Reminders used to be written in whichever language the check happened to run in. This gives
+    # the ones already on disk their English form, so an English interface stops showing Chinese
+    # ones immediately rather than waiting for the next check to rewrite them. Called by name
+    # rather than as `updater.…`: `updater` is a local variable further down this function.
+    backfill_notice_languages(store)
+    drop_stale_check_snapshot(store)
     router = ModelRouter(store, completion_fn)
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
@@ -355,7 +362,10 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/presets")
-    async def presets() -> list[dict]:
+    async def preset_catalog() -> list[dict]:
+        # Not named `presets`: a route function of that name shadows the `presets` module for the
+        # whole of `create_app`, and the next `presets.localize_provider(...)` in here would then
+        # be calling this function instead. (It was, until this rename.)
         return i18n.localize(PRESETS)
 
     def public_settings() -> dict:
@@ -438,10 +448,14 @@ def create_app(
     @app.get("/api/providers")
     async def providers() -> list[dict]:
         models = store.list_models()
+        lang = i18n.current()
         out = []
         for p in store.list_providers():
-            pp = public_provider(p)
-            pp["models"] = [m for m in models if m["provider_id"] == p["id"]]
+            # The built-in name is shown in the request language; a name the user typed is theirs.
+            pp = presets.localize_provider(public_provider(p), lang)
+            # The rows carry their provider's name too, so the same rule applies to them.
+            pp["models"] = [{**m, "provider_name": presets.provider_name_view(p["id"], m.get("provider_name") or "", lang)}
+                            for m in models if m["provider_id"] == p["id"]]
             out.append(pp)
         return out
 
@@ -457,7 +471,7 @@ def create_app(
             if not body.name:
                 raise HTTPException(400, i18n.pick_now("A name is required", "请填写名称"))
             p = store.add_provider(body.name, body.kind, body.base_url, body.api_key, body.is_local)
-        pp = public_provider(p)
+        pp = presets.localize_provider(public_provider(p), i18n.current())
         pp["models"] = [m for m in store.list_models() if m["provider_id"] == p["id"]]
         return pp
 
@@ -466,7 +480,7 @@ def create_app(
         need(store.get_provider(pid), i18n.pick_now("Provider", "服务商"))
         p = store.update_provider(pid, body.model_dump(exclude_unset=True))
         router.reset_circuit()
-        return public_provider(p)  # type: ignore[arg-type]
+        return presets.localize_provider(public_provider(p), i18n.current())  # type: ignore[arg-type]
 
     @app.delete("/api/providers/{pid}")
     async def del_provider(pid: str) -> dict:
@@ -504,7 +518,10 @@ local providers may be queried."""
 
     @app.get("/api/models")
     async def models() -> list[dict]:
-        return store.list_models()
+        # Each row carries its provider's name for display, so the same rule applies here.
+        lang = i18n.current()
+        return [{**m, "provider_name": presets.provider_name_view(m["provider_id"], m.get("provider_name") or "", lang)}
+                for m in store.list_models()]
 
     @app.patch("/api/models/{model_id:path}")
     async def patch_model(model_id: str, body: ModelPatch) -> dict:

@@ -566,8 +566,11 @@ plaintext (non-macOS / keychain unavailable)."""
         return self.get_provider(pid)  # type: ignore[return-value]
 
     def add_provider_from_preset(self, preset_id: str, api_key: str = "") -> dict:
-        # Shown in the model providers list, so take the name in the request language.
-        p = i18n.localize(PRESET_BY_ID[preset_id])
+        # The name is stored in its canonical English, like the rest of the built-in content: the
+        # display layer puts the reader's language on top (see `presets.localize_provider`).
+        # Storing it already localized meant a provider added from a Chinese interface was called
+        # 月之暗面 Kimi for ever, in an English one too.
+        p = PRESET_BY_ID[preset_id]
         prov = self.add_provider(
             p["name"], p["kind"], p["base_url"], api_key, p["is_local"], pid=p["preset"]
         )

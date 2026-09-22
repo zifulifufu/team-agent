@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, imagegen, images, modelopts, strengths as strength_lib, video
+from . import coderun, i18n, imagegen, images, modelopts, presets, strengths as strength_lib, updater, video
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -562,7 +562,9 @@ def build_router(c: Ctx) -> APIRouter:
             "tools": tools,
             "access": {
                 "external_calls": cfg["external_calls_enabled"],
-                "cloud_providers": [p["name"] for p in providers if not p["is_local"] and p["enabled"] and has_credentials(p)],
+                # shown on the permissions page, so the built-in names follow the request language
+                "cloud_providers": [presets.localize_provider(p, i18n.current())["name"]
+                                    for p in providers if not p["is_local"] and p["enabled"] and has_credentials(p)],
                 "data_dir": str(store.data_dir), "plugins_dir": str(store.data_dir / "plugins"),
                 "plugins": [{"id": p.id, "name": p.name or p.id, "tools": len(p.tools), "error": p.error} for p in c.registry.plugins.values()],
                 "mcp": [{"id": s["id"], "name": s["name"], "enabled": s["enabled"],
@@ -1249,7 +1251,7 @@ def build_router(c: Ctx) -> APIRouter:
             last = None
         cfg = store.get_settings()
         return {
-            "items": store.list_updates("new"),
+            "items": updater.localize_notices(store.list_updates("new")),
             "last_check": last,
             "checking": c.updater.checking,
             "configured": bool(cfg["app_repo"]),

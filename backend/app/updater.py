@@ -68,6 +68,146 @@ CURATED = [
 ]
 
 
+def notice(en: str, zh: str, detail: dict | None = None) -> tuple[str, dict]:
+    """A reminder's title in both languages.
+
+    A reminder row is written once and read many times, so the title is stored in its canonical
+    English with the Chinese travelling beside it in `detail`, and the reader picks. Storing only
+    the language that happened to be current when the check ran is what left Chinese reminders
+    sitting in an English interface for ever.
+    """
+    return en, {**(detail or {}), "title_zh": zh}
+
+
+# The templates notice titles used to be built from, before they became bilingual. A row written
+# then carries one language and no sibling, so it is turned back into (English, Chinese) from its
+# own text by `backfill_notice_languages`. Only these exact shapes are touched.
+_LEGACY_TITLES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^程序有新版本 (?P<v>.+)\(当前 (?P<c>.+)\)$"),
+     "A new version of the app is available: {v} (you are on {c})"),
+    (re.compile(r"^模型目录有新版本 (?P<v>.+)\(新增 (?P<n>.+) 个型号\)$"),
+     "A new model catalog is available: {v} ({n} new models)"),
+    (re.compile(r"^本地模型目录有新版本 (?P<v>.+)$"),
+     "A new local model catalog is available: {v}"),
+    (re.compile(r"^Ollama 有新版本 (?P<v>.+)\(本机 (?P<c>.+)\)$"),
+     "A new Ollama version is available: {v} (you have {c})"),
+    (re.compile(r"^(?P<p>.+) 有 (?P<n>.+) 个新模型$"), "{p} has {n} new models"),
+    (re.compile(r"^(?P<label>Ollama 新模型|新一代|Hugging Face 新模型|GitHub 新仓库):(?P<name>.+?)(?P<size>\(约 (?P<gb>[\d.]+) GB\))?$"),
+     "{label_en}: {name}{size_en}"),
+    (re.compile(r"^技能《(?P<name>.+)》在 GitHub 上有更新$"), 'Skill "{name}" has an update on GitHub'),
+    (re.compile(r"^插件《(?P<name>.+)》在 GitHub 上有更新$"), 'Plugin "{name}" has an update on GitHub'),
+)
+_LEGACY_LABELS = {"Ollama 新模型": "New Ollama models", "新一代": "New generation",
+                  "Hugging Face 新模型": "New Hugging Face models", "GitHub 新仓库": "New GitHub repositories"}
+_LEGACY_DETAIL_ZH = {"Ollama 模型库里的新模型": "New models in the Ollama library"}
+
+
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _has_chinese(node: Any) -> bool:
+    if isinstance(node, dict):
+        return any(_has_chinese(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_chinese(v) for v in node)
+    return isinstance(node, str) and bool(_CJK.search(node))
+
+
+def drop_stale_check_snapshot(store: Any) -> bool:
+    """Forget the last check's record when it was written in Chinese.
+
+    The snapshot holds the check's own messages, which cannot be translated after the fact, and it
+    used to be written in whatever language the run happened to be in. It is a record of one past
+    run, so dropping it and letting the next check write an English one is better than showing a
+    reader a wall of text in the language they did not pick.
+
+    Parsed rather than pattern-matched: the value on disk may hold its Chinese escaped (`\u65e0`)
+    or literal, depending on which code path wrote it, and only one of those answers a regex.
+    """
+    raw = store.get_meta("last_update_check", "")
+    if not raw:
+        return False
+    try:
+        snapshot = json.loads(raw)
+    except ValueError:
+        return False
+    if not _has_chinese(snapshot):
+        return False
+    store.set_meta("last_update_check", "null")
+    return True
+
+
+def backfill_notice_languages(store: Any) -> int:
+    """Give a reminder written before the titles were bilingual its English form.
+
+    Driven by the data and idempotent: a row is rewritten only while it has no `title_zh`, so
+    every later open skips it. A title this does not recognise is left exactly as it is — the next
+    update check rewrites it properly. Only rows the update page can show (`new`) are touched;
+    a dismissed one is left alone rather than being made new again.
+    """
+    fixed = 0
+    for row in store.list_updates("new"):
+        detail = row.get("detail")
+        if not isinstance(detail, dict) or detail.get("title_zh"):
+            continue
+        detail = dict(detail)
+        for zh, en in _LEGACY_DETAIL_ZH.items():
+            if detail.get("desc") == zh:
+                detail["desc"] = en
+                detail["desc_zh"] = zh
+        title = str(row.get("title") or "")
+        for pattern, template in _LEGACY_TITLES:
+            found = pattern.match(title)
+            if not found:
+                continue
+            groups = found.groupdict()
+            if "label" in groups:
+                groups["label_en"] = _LEGACY_LABELS.get(groups["label"] or "", groups["label"] or "")
+                # the English template writes ": {name}{size}", so the space belongs here
+                groups["size_en"] = f" (about {groups['gb']} GB)" if groups.get("gb") else ""
+            store.upsert_update(str(row["kind"]), str(row["ref"]), template.format(**groups),
+                                {**detail, "title_zh": title})
+            fixed += 1
+            break
+    return fixed
+
+
+def localize_notices(items: list[dict]) -> list[dict]:
+    """Each reminder as it should read in the request language.
+
+    A reminder is written once and read many times, so what it carries is stored in its canonical
+    English with the Chinese beside it — `title_zh` for the row's own title, and `desc_zh` (or any
+    other `*_zh` sibling) inside `detail` — and this picks one language and drops the accounting
+    fields, the way every other built-in piece of content is handled.
+
+    A reminder written before this existed carries a single language and no siblings; it is shown
+    as it is, and re-running a check rewrites it (`upsert_update` updates a row that is `new`).
+    """
+    lang = i18n.current()
+    out = []
+    for it in items:
+        detail = it.get("detail")
+        if not isinstance(detail, dict):
+            out.append(it)
+            continue
+        row = dict(it)
+        if lang == "zh" and detail.get("title_zh"):
+            row["title"] = detail["title_zh"]
+        shown: dict[str, Any] = {}
+        for key, value in detail.items():
+            if key.endswith("_zh"):
+                base = key[:-3]
+                if lang == "zh" and base in detail:
+                    shown[base] = value           # the Chinese sibling stands in for its base
+                continue
+            if lang == "zh" and f"{key}_zh" in detail:
+                continue                          # the sibling supplies the Chinese
+            shown[key] = value
+        row["detail"] = shown
+        out.append(row)
+    return out
+
+
 def curated() -> list[dict]:
     """The curated source list, described in the request language."""
     return [{**c, "desc": i18n.pick_now(*c["desc"])} for c in CURATED]
@@ -270,7 +410,9 @@ class Updater:
                 "assets": [{"name": a["name"], "size": a.get("size", 0), "url": a.get("browser_download_url", "")}
                            for a in rel.get("assets", [])][:10]}
         if avail:
-            self.store.upsert_update("app", latest, i18n.pick_now(f"A new version of the app is available: {latest} (you are on {self.app_version})", f"程序有新版本 {latest}(当前 {self.app_version})"), info)
+            self.store.upsert_update("app", latest, *notice(
+                f"A new version of the app is available: {latest} (you are on {self.app_version})",
+                f"程序有新版本 {latest}(当前 {self.app_version})", info))
         return info
 
     async def fetch_catalog(self) -> dict | None:
@@ -317,7 +459,9 @@ class Updater:
             info["applied"] = True
             self.store.resolve_updates("catalog", "catalog")
         elif newer:
-            self.store.upsert_update("catalog", "catalog", i18n.pick_now(f"A new model catalog is available: {data['version']} ({added} new models)", f"模型目录有新版本 {data['version']}(新增 {added} 个型号)"), info)
+            self.store.upsert_update("catalog", "catalog", *notice(
+                f"A new model catalog is available: {data['version']} ({added} new models)",
+                f"模型目录有新版本 {data['version']}(新增 {added} 个型号)", info))
         return info
 
     async def check_sources(self, kind: str, auto_apply: bool = False) -> list[dict]:
@@ -335,13 +479,13 @@ class Updater:
                 await self.install_skill(src["repo"], src["path"], src["ref"])
                 item["applied"] = True
             elif changed:
-                label = i18n.pick_now("Skill", "技能") if kind == "skill" else i18n.pick_now("Plugin", "插件")
+                label_en, label_zh = ("Skill", "技能") if kind == "skill" else ("Plugin", "插件")
                 name = src["name"]
-                self.store.upsert_update(kind, name, i18n.pick_now(
-                    f'{label} "{name}" has an update on GitHub',
-                    f"{label}《{name}》在 GitHub 上有更新"),
-                                         {"name": src["name"], "repo": src["repo"], "path": src["path"], "ref": src["ref"],
-                                          "sha": f["sha"], "current_sha": src["sha"]})
+                self.store.upsert_update(kind, name, *notice(
+                    f'{label_en} "{name}" has an update on GitHub',
+                    f"{label_zh}《{name}》在 GitHub 上有更新",
+                    {"name": src["name"], "repo": src["repo"], "path": src["path"], "ref": src["ref"],
+                     "sha": f["sha"], "current_sha": src["sha"]}))
             out.append(item)
         return out
 
@@ -363,8 +507,9 @@ class Updater:
             if p["is_local"]:  # a local provider's list is "what is installed", so "new/gone" means nothing for it
                 continue
             if new:
-                self.store.upsert_update("model", p["id"], i18n.pick_now(f"{p['name']} has {len(new)} new models", f"{p['name']} 有 {len(new)} 个新模型"),
-                                         {"provider_id": p["id"], "ids": new[:50]})
+                self.store.upsert_update("model", p["id"], *notice(
+                    f"{p['name']} has {len(new)} new models", f"{p['name']} 有 {len(new)} 个新模型",
+                    {"provider_id": p["id"], "ids": new[:50]}))
             out.append({"provider_id": p["id"], "name": p["name"], "new": len(new), "gone": gone})
         return out
 
@@ -419,7 +564,10 @@ class Updater:
             if not pr["exists"] or not pr["size_gb"]:
                 return None  # cloud-only release (there are no local weights to download)
             return {"source": "ollama", "name": n, "tag": f"{n}:latest", "size_gb": pr["size_gb"],
-                    "desc": i18n.pick_now("New models in the Ollama library", "Ollama 模型库里的新模型"), "url": f"https://ollama.com/library/{n}"}
+                    # Both languages travel with the candidate: it becomes part of a stored
+                    # reminder, which is read later in whatever language the reader is using.
+                    "desc": "New models in the Ollama library", "desc_zh": "Ollama 模型库里的新模型",
+                    "url": f"https://ollama.com/library/{n}"}
 
         for c in await asyncio.gather(*(one(n) for n in names)):
             if c and len([x for x in out if x["source"] == "ollama"]) < MAX_NEW_PER_SOURCE:
@@ -545,15 +693,22 @@ class Updater:
         for c in cands:
             uniq.setdefault(c["name"], c)
         for c in uniq.values():
-            label = {"ollama": i18n.pick_now("New Ollama models", "Ollama 新模型"), "successor": i18n.pick_now("New generation", "新一代"), "hf": i18n.pick_now("New Hugging Face models", "Hugging Face 新模型"), "github": i18n.pick_now("New GitHub repositories", "GitHub 新仓库")}[c["source"]]
-            size = i18n.pick_now(f"(about {c['size_gb']} GB)", f"(约 {c['size_gb']} GB)") if c.get("size_gb") else ""
-            self.store.upsert_update("localmodel", c["name"], f"{label}:{c['name']}{size}", c)
+            label_en, label_zh = {"ollama": ("New Ollama models", "Ollama 新模型"), "successor": ("New generation", "新一代"),
+                                  "hf": ("New Hugging Face models", "Hugging Face 新模型"),
+                                  "github": ("New GitHub repositories", "GitHub 新仓库")}[c["source"]]
+            size_en = f"(about {c['size_gb']} GB)" if c.get("size_gb") else ""
+            size_zh = f"(约 {c['size_gb']} GB)" if c.get("size_gb") else ""
+            self.store.upsert_update("localmodel", c["name"],
+                                     *notice(f"{label_en}: {c['name']}{size_en}",
+                                             f"{label_zh}:{c['name']}{size_zh}", c))
         ollama = None
         try:
             ollama = await self._ollama_version_note()
             if ollama and not ollama.get("ok"):
-                self.store.upsert_update("localmodel", "ollama-release", i18n.pick_now(f"A new Ollama version is available: {ollama['latest']} (you have {ollama['local']})", f"Ollama 有新版本 {ollama['latest']}(本机 {ollama['local']})"),
-                                         {"source": "ollama-release", "name": "ollama-release", **ollama})
+                self.store.upsert_update("localmodel", "ollama-release", *notice(
+                    f"A new Ollama version is available: {ollama['latest']} (you have {ollama['local']})",
+                    f"Ollama 有新版本 {ollama['latest']}(本机 {ollama['local']})",
+                    {"source": "ollama-release", "name": "ollama-release", **ollama}))
         except GitHubError as e:
             errors.append(i18n.pick_now(f"Ollama version: {e}", f"Ollama 版本: {e}"))
         return {"found": len(uniq), "candidates": list(uniq.values()), "errors": errors, "ollama": ollama, "catalog": cat.version}
@@ -580,7 +735,9 @@ class Updater:
             info["applied"] = True
             self.store.resolve_updates("localcatalog", "localcatalog")
         elif newer:
-            self.store.upsert_update("localcatalog", "localcatalog", i18n.pick_now(f"A new local model catalog is available: {data['version']}", f"本地模型目录有新版本 {data['version']}"), info)
+            self.store.upsert_update("localcatalog", "localcatalog", *notice(
+                f"A new local model catalog is available: {data['version']}",
+                f"本地模型目录有新版本 {data['version']}", info))
         return info
 
     async def check_all(self, auto_apply: bool = True) -> dict:
@@ -590,26 +747,30 @@ class Updater:
         self.checking = True
         cfg = self.store.get_settings()
         result: dict[str, Any] = {"at": time.time(), "errors": []}
-        try:
-            self._allowed()
-            for key, fn in (
-                ("app", self.check_app),
-                ("catalog", lambda: self.check_catalog(apply=auto_apply)),
-                ("skills", lambda: self.check_sources("skill", auto_apply and cfg["auto_update_skills"])),
-                ("plugins", lambda: self.check_sources("plugin")),
-                ("models", self.check_models),
-                ("local_catalog", lambda: self.check_local_catalog(apply=auto_apply)),
-                ("local_models", self.check_local_models),
-            ):
-                try:
-                    result[key] = await fn()
-                except GitHubError as e:
-                    result["errors"].append(f"{key}: {e}")
-                    result[key] = None
-        except GitHubError as e:
-            result["errors"].append(str(e))
-        finally:
-            self.checking = False
+        # English, always: this result is written to disk and read back later, so the messages in
+        # it must not depend on the language of whoever pressed the button. A stored diagnostic is
+        # never translated at display time, and a reader cannot read a language they did not pick.
+        with i18n.pinned("en"):
+            try:
+                self._allowed()
+                for key, fn in (
+                    ("app", self.check_app),
+                    ("catalog", lambda: self.check_catalog(apply=auto_apply)),
+                    ("skills", lambda: self.check_sources("skill", auto_apply and cfg["auto_update_skills"])),
+                    ("plugins", lambda: self.check_sources("plugin")),
+                    ("models", self.check_models),
+                    ("local_catalog", lambda: self.check_local_catalog(apply=auto_apply)),
+                    ("local_models", self.check_local_models),
+                ):
+                    try:
+                        result[key] = await fn()
+                    except GitHubError as e:
+                        result["errors"].append(f"{key}: {e}")
+                        result[key] = None
+            except GitHubError as e:
+                result["errors"].append(str(e))
+            finally:
+                self.checking = False
         self.store.set_meta("last_update_check", json.dumps(result, ensure_ascii=False, default=str))
         return result
 

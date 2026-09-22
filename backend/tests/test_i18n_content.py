@@ -7,6 +7,7 @@ time, chosen from `?lang=` or `Accept-Language`, with English as the default.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -215,3 +216,179 @@ def test_language_middleware_does_not_change_stored_data(tmp_path: Path) -> None
         c.get("/api/models?lang=zh")
         c.get("/api/local/catalog?lang=zh")
     assert Store(data).get_settings()["route_chain"] == before
+
+
+# ------------------------------------------------------------------------- stored built-in text
+def test_an_external_member_is_stored_in_english_and_read_in_the_readers_language(client: TestClient) -> None:
+    """The role and the prompt are built-in text that travels with the member.
+
+    They used to be stored *already localized*, so a member added from a Chinese interface read
+    Chinese for ever — in an English one too, because the display layer only swaps a field that
+    still equals the built-in value. Two things are pinned here: the row keeps the canonical
+    English, and a row that was stored in Chinese anyway is still shown in the reader's language.
+    """
+    from app import external
+
+    client.put("/api/settings", json={"external_agents_enabled": True})
+    created = client.post("/api/external/agents?lang=zh", json={"engine": "workbuddy", "cfg": {}}).json()
+    assert created["role"] and created["prompt"]
+    assert not HAN.search(created["role"]), "the stored role must be the canonical English"
+    assert not HAN.search(created["prompt"]), "the stored prompt must be the canonical English"
+
+    def member(lang: str = "en") -> dict:
+        url = "/api/agents" if lang == "en" else f"/api/agents?lang={lang}"
+        return next(a for a in client.get(url).json() if a["id"] == created["id"])
+
+    assert not HAN.search(member()["role"]) and not HAN.search(member()["prompt"])
+    assert HAN.search(member("zh")["role"]) and HAN.search(member("zh")["prompt"])
+
+    # A member stored the old way is put right as well — that is what makes this safe for an
+    # existing install rather than only for members added from now on.
+    store = client.app.state.store
+    store.update_agent(created["id"], {"role": external.ENGINES["workbuddy"]["role_zh"]})
+    assert member()["role"] == external.ENGINES["workbuddy"]["role"]
+
+    # …but a role the user rewrote is theirs, whichever language it is in.
+    store.update_agent(created["id"], {"role": "我的助手"})
+    assert member()["role"] == "我的助手" == member("zh")["role"]
+
+
+def test_a_provider_from_a_preset_is_stored_in_english_and_read_in_the_readers_language(client: TestClient) -> None:
+    """Same rule, same reason: the preset's name is built-in text, and the row used to keep
+    whichever language it was added from."""
+    created = client.post("/api/providers?lang=zh", json={"preset": "moonshot"}).json()
+    assert created["name"] == "月之暗面 Kimi", "the response follows the request it was made in"
+    store = client.app.state.store
+    assert store.get_provider(created["id"])["name"] == "Moonshot Kimi", "the row keeps the canonical English"
+
+    def provider(lang: str = "en") -> dict:
+        url = "/api/providers" if lang == "en" else f"/api/providers?lang={lang}"
+        return next(p for p in client.get(url).json() if p["id"] == created["id"])
+
+    assert provider()["name"] == "Moonshot Kimi"
+    assert provider("zh")["name"] == "月之暗面 Kimi"
+    # The model rows carry the provider's name for display, so they follow the same rule.
+    assert not HAN.search(next(m["provider_name"] for m in provider()["models"] if m.get("provider_name")))
+    assert HAN.search(next(m["provider_name"] for m in provider("zh")["models"] if m.get("provider_name")))
+
+    store.update_provider(created["id"], {"name": "月之暗面 Kimi"})          # stored the old way
+    assert provider()["name"] == "Moonshot Kimi"
+    store.update_provider(created["id"], {"name": "我的 Kimi"})             # the user's own name
+    assert provider()["name"] == "我的 Kimi" == provider("zh")["name"]
+
+
+def test_a_reminder_carries_both_languages_and_shows_the_readers(client: TestClient) -> None:
+    """A reminder is written once and read many times, so the language it happened to be written
+    in must not decide what a later reader sees. That is how a wall of Chinese reminders appeared
+    in an English interface."""
+    from app import updater
+
+    store = client.app.state.store
+    title_en, detail = updater.notice("A new Ollama version is available: 0.9 (you have 0.8)",
+                                      "Ollama 有新版本 0.9(本机 0.8)", {"source": "ollama-release"})
+    store.upsert_update("localmodel", "ollama-release", title_en, detail)
+
+    def item(ref: str, lang: str = "en") -> dict:
+        url = "/api/updates" if lang == "en" else f"/api/updates?lang={lang}"
+        return next(i for i in client.get(url).json()["items"] if i["ref"] == ref)
+
+    assert item("ollama-release")["title"] == title_en
+    assert item("ollama-release", "zh")["title"] == "Ollama 有新版本 0.9(本机 0.8)"
+    # the Chinese copy travels in `detail`, and the accounting field never reaches the client
+    assert not _zh_keys(item("ollama-release")), "a `_zh` field leaked to the client"
+    assert not _zh_keys(item("ollama-release", "zh"))
+
+    # A reminder written before this existed has no Chinese copy; it keeps its own text rather
+    # than showing nothing, and re-running a check rewrites it.
+    store.upsert_update("localmodel", "legacy", "Ollama 新模型:x", {"source": "ollama"})
+    assert item("legacy")["title"] == "Ollama 新模型:x"
+
+
+def test_a_reminder_written_before_the_titles_were_bilingual_is_put_right(client: TestClient) -> None:
+    """The rows already on disk carry one language and no sibling, so a reader in the other
+    language got the wrong one. The backfill rebuilds both from the app's own old templates —
+    idempotently, and touching only what it recognises."""
+    from app import updater
+
+    store = client.app.state.store
+    store.upsert_update("localmodel", "ollama-x", "Ollama 新模型:medgemma(约 3 GB)",
+                        {"source": "ollama", "desc": "Ollama 模型库里的新模型"})
+    store.upsert_update("model", "p1", "DeepSeek 有 4 个新模型", {"provider_id": "p1"})
+    store.upsert_update("localmodel", "words-of-my-own", "我自己起的一句话", {})
+
+    assert updater.backfill_notice_languages(store) == 2, "the two it recognises, not the third"
+    assert updater.backfill_notice_languages(store) == 0, "second run has nothing left to do"
+
+    def item(ref: str, lang: str = "en") -> dict:
+        url = "/api/updates" if lang == "en" else f"/api/updates?lang={lang}"
+        return next(i for i in client.get(url).json()["items"] if i["ref"] == ref)
+
+    assert item("ollama-x")["title"] == "New Ollama models: medgemma (about 3 GB)"
+    assert item("ollama-x", "zh")["title"] == "Ollama 新模型:medgemma(约 3 GB)"
+    assert item("ollama-x")["detail"]["desc"] == "New models in the Ollama library"
+    assert item("ollama-x", "zh")["detail"]["desc"] == "Ollama 模型库里的新模型"
+    assert item("p1")["title"] == "DeepSeek has 4 new models"
+    # a title it cannot place is left alone rather than guessed at
+    assert item("words-of-my-own")["title"] == "我自己起的一句话"
+
+
+def test_a_stale_check_record_is_dropped_rather_than_shown_in_the_wrong_language(client: TestClient) -> None:
+    """The last-check snapshot holds the check's own messages, which cannot be translated after
+    the fact. It is a record of one past run, so a Chinese one is dropped rather than shown to an
+    English reader; the next check writes an English one."""
+    import json
+
+    from app import updater
+
+    store = client.app.state.store
+    store.set_meta("last_update_check", json.dumps({"at": 1.0, "errors": ["models: 无法连接 x:ConnectError"]}))
+    assert client.get("/api/updates").json()["last_check"] is not None
+
+    assert updater.drop_stale_check_snapshot(store) is True
+    assert client.get("/api/updates").json()["last_check"] is None
+    assert updater.drop_stale_check_snapshot(store) is False, "nothing left to drop"
+
+    # A record written since the check was pinned to English is kept.
+    store.set_meta("last_update_check", json.dumps({"at": 2.0, "errors": ["models: cannot reach x:ConnectError"]}))
+    assert updater.drop_stale_check_snapshot(store) is False
+    assert client.get("/api/updates").json()["last_check"]["at"] == 2.0
+
+
+def test_the_check_records_itself_in_english_whatever_language_asked_for_it(client: TestClient,
+                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its result is written to disk and read back later, so the language of whoever pressed the
+    button must not decide what a later reader sees. The step that fails here reports in whatever
+    language is current; pinning the check is what keeps the record readable."""
+    from app import i18n, updater
+
+    async def quiet(*_: object, **__: object) -> None:
+        return None
+
+    async def boom(*_: object, **__: object) -> None:
+        raise updater.GitHubError(i18n.pick_now("Cannot reach GitHub: ConnectError",
+                                                "无法连接 GitHub:ConnectError"))
+
+    for name in ("check_app", "check_catalog", "check_sources", "check_models", "check_local_catalog"):
+        monkeypatch.setattr(updater.Updater, name, quiet)
+    monkeypatch.setattr(updater.Updater, "check_local_models", boom)
+
+    client.post("/api/updates/check?lang=zh")               # asked for in Chinese on purpose
+
+    snapshot = client.get("/api/updates").json()["last_check"]
+    assert snapshot and snapshot.get("errors"), snapshot
+    assert any("Cannot reach GitHub" in e for e in snapshot["errors"]), snapshot["errors"]
+    assert not any(HAN.search(e) for e in snapshot["errors"]), snapshot["errors"]
+
+
+def test_the_access_summary_names_providers_in_the_readers_language(client: TestClient) -> None:
+    """The permissions page lists the cloud providers this app may reach, by name. Those are
+    built-in names too, so they follow the reader rather than whoever added the provider."""
+    client.post("/api/providers", json={"preset": "moonshot", "api_key": "sk-not-a-real-key"})
+
+    def names(lang: str = "en") -> list[str]:
+        url = "/api/permissions" if lang == "en" else f"/api/permissions?lang={lang}"
+        return client.get(url).json()["access"]["cloud_providers"]
+
+    assert "Moonshot Kimi" in names()
+    assert not any(HAN.search(n) for n in names())
+    assert "月之暗面 Kimi" in names("zh")

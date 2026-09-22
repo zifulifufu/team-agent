@@ -711,9 +711,44 @@ def localize_model_member(agent: dict, lang: str) -> dict:
     return out
 
 
+def localize_provider(prov: dict, lang: str) -> dict:
+    """Show a provider's built-in name in `lang`.
+
+    A provider added from a preset keeps that preset's id (a second one added later gets a
+    four-character suffix, which is looked through), so the canonical name is recoverable from
+    the row itself. As with a member, the name is swapped only while it still equals what the
+    preset ships — in either language — so a provider the user renamed keeps their name, and a
+    row created before this existed (whose name was stored already localized) is put right again.
+    """
+    out = dict(prov)
+    pid = str(prov.get("id") or "")
+    entry = PRESET_BY_ID.get(pid)
+    if entry is None and len(pid) > 5 and pid[-5] == "-":
+        entry = PRESET_BY_ID.get(pid[:-5])       # `add_provider` disambiguates with `-abcd`
+    if entry is None:
+        return out
+    english, zh = entry.get("name") or "", entry.get("name_zh")
+    if not english or not zh or (prov.get("name") or "") not in {english, zh}:
+        return out
+    out["name"] = zh if lang == "zh" else english
+    return out
+
+
+def provider_name_view(pid: str, name: str, lang: str | None = None) -> str:
+    """The same rule for a row that carries only the provider's id and name — a model's join."""
+    return localize_provider({"id": pid, "name": name}, lang or i18n.current())["name"]
+
+
 def localize_member(agent: dict, lang: str) -> dict:
-    """Any member as it should read in `lang`: built-in names first, then model members."""
-    return localize_model_member(localize_agent(agent, lang), lang)
+    """Any member as it should read in `lang`.
+
+    Three kinds of member arrive here — a built-in one, one that *is* a model, and one that is
+    another application's agent — and each stores its display text from a different source, so
+    each needs its own rule. What they share is the property that matters: a field the user
+    rewrote is left exactly as they wrote it.
+    """
+    from . import external      # local: `external` never imports presets, and this keeps it one-way
+    return external.localize_member(localize_model_member(localize_agent(agent, lang), lang), lang)
 
 
 def localize_agent(agent: dict, lang: str) -> dict:
