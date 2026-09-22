@@ -17,6 +17,9 @@ const MODES: { id: PermMode; title: string; desc: string; danger?: boolean }[] =
   { id: "allow_all", title: "Allow everything automatically", desc: "Members can call any tool enabled in this group, including plugins that execute code. Only choose this if you fully trust the plugins and MCP servers you installed.", danger: true },
 ];
 const POLICY_TEXT = { allow: "Runs directly", ask: "Asks me first", deny: "Blocked" } as const;
+/** The sizes the backend will send (imagegen.SIZES). Kept in step by hand: the API refuses a
+ *  size it does not know, so a mismatch shows up as an error rather than a wrong picture. */
+const IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"];
 const PLAN_MODES: { id: Exclude<PlanMode, "inherit">; label: string }[] = [
   { id: "auto", label: "Auto" },
   { id: "on", label: "Always split" },
@@ -41,9 +44,25 @@ export default function PermissionsPage({ onTab }: PageProps) {
   const [workdir, setWorkdir] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [videoCheck, setVideoCheck] = useState("");
+  const [imageCheck, setImageCheck] = useState("");
   const err = saveErr || loadErr;
   // Video providers only: a chat provider has no /v1/videos.
   const videoProviders = useMemo(() => providers.filter((p) => p.kind === "minimax_video"), [providers]);
+  // Image providers only, for the same reason: a chat provider has no /images/generations.
+  const imageProviders = useMemo(() => providers.filter((p) => p.kind === "openai_image"), [providers]);
+
+  const checkImage = async () => {
+    setChecking(true);
+    setImageCheck("");
+    try {
+      const r = await api.testImage();
+      setImageCheck((r.ok ? "✓ " + t("Reachable") : "✗ " + t("Not reachable")) + (r.detail ? " · " + r.detail : ""));
+    } catch (e) {
+      setImageCheck("✗ " + (e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const checkVideo = async () => {
     setChecking(true);
@@ -216,6 +235,45 @@ export default function PermissionsPage({ onTab }: PageProps) {
               <div className="row">
                 <button className="btn small" disabled={checking} onClick={checkVideo}>{checking ? t("Checking…") : t("Test the video server")}</button>
                 {videoCheck && <span className={videoCheck.startsWith("✓") ? "ok-text small" : "err small"}>{videoCheck}</span>}
+              </div>
+            </Row>
+          </>
+        )}
+      </div>
+
+      <div className="sec">{t("Image generation")}</div>
+      <div className="card flush">
+        <Row title={t("Let members draw images")} desc={t("Off by default. When on, members get a generate_image tool. Unlike video this needs no local GPU: it talks to any service that implements /images/generations — MetaChat's OpenAI-compatible address with a GPT-Image model, or any aggregator. The picture lands in the group's own workspace.")}>
+          <Switch checked={settings.image_enabled} label={t("Let members draw images")} onChange={(v) => void set({ image_enabled: v })} />
+        </Row>
+        {settings.image_enabled && (
+          <>
+            <Row title={t("Image service")} desc={t("Which provider to draw with. Add \"Image generation (OpenAI-compatible)\" under Model providers and put the service's key there.")}>
+              <select className="pm-text" value={settings.image_provider_id} aria-label={t("Image service")} onChange={(e) => void set({ image_provider_id: e.target.value })}>
+                <option value="">{t("The first enabled one")}</option>
+                {imageProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </Row>
+            {imageProviders.length === 0 && <div className="pm-note">{t("No image provider has been added yet, so the tool stays hidden from members. Add one under Model providers first.")}</div>}
+            <Row title={t("Model name")} desc={t("What to ask that service for, for example gpt-image-1.5. MetaChat also serves Gemini's image models on its Gemini-native address, which this endpoint cannot reach.")}>
+              <input className="pm-text" defaultValue={settings.image_model} aria-label={t("Model name")}
+                     onBlur={(e) => void set({ image_model: e.target.value.trim() })} />
+            </Row>
+            <Row title={t("Image size")} desc={t("What the service is asked for. A size it does not accept comes back as an error rather than a different picture.")}>
+              <select className="pm-text" value={settings.image_size} aria-label={t("Image size")} onChange={(e) => void set({ image_size: e.target.value })}>
+                {IMAGE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Row>
+            <Row title={t("Generation timeout")} desc={t("How long one image may take before giving up. Drawing is seconds, not minutes, so the default is much shorter than the video one.")}>
+              <NumInput v={settings.image_timeout} min={20} max={900} unit={t("sec")} label={t("Generation timeout")} onCommit={(n) => set({ image_timeout: n })} />
+            </Row>
+            <Row title={t("Largest image to keep")} desc={t("A downloaded image bigger than this is refused instead of saved.")}>
+              <NumInput v={settings.image_max_mb} min={1} max={128} unit="MB" label={t("Largest image to keep")} onCommit={(n) => set({ image_max_mb: n })} />
+            </Row>
+            <Row title={t("Is the service reachable?")} desc={t("Reads the service's model list: two requests, nothing is generated and nothing is charged. Finding the model name there is the useful part.")}>
+              <div className="row">
+                <button className="btn small" disabled={checking} onClick={checkImage}>{checking ? t("Checking…") : t("Test the image service")}</button>
+                {imageCheck && <span className={imageCheck.startsWith("✓") ? "ok-text small" : "err small"}>{imageCheck}</span>}
               </div>
             </Row>
           </>

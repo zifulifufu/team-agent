@@ -11,7 +11,7 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 
 from __future__ import annotations
 
-from . import coderun, i18n, video
+from . import coderun, i18n, imagegen, media, video
 
 import asyncio
 import json
@@ -176,6 +176,27 @@ BUILTIN_SPECS: dict[str, dict] = {
                      "description_zh": "填 0 表示随机"}},
             "required": ["prompt"]},
     },
+    "generate_image": {
+        "description": "Draw one image from a text description through the image service this "
+                       "machine is configured with. Describe the image itself — subject, "
+                       "composition, style, and any text that must appear — rather than asking "
+                       "for a summary or a diagram of a document. The file lands in this group's "
+                       "workspace. You cannot see the result, so say what you asked for, never "
+                       "describe what came out.",
+        "description_zh": "用本机配置的图片服务,按文字描述画一张图。描述要写画面本身 —— 主体、构图、风格,"
+                          "以及需要出现的文字 —— 而不是让它「总结一份文档」或「画一张文档的图」。文件会落在"
+                          "本群工作目录里。你看不到生成结果,所以只说你要求了什么,绝不要描述画出来是什么样。",
+        "risk": "exec",            # it reaches a service outside this app, so it asks first
+        "timeout_key": "image_timeout",
+        "parameters": {"type": "object", "properties": {
+            "prompt": {"type": "string",
+                       "description": "What to draw, written as a description of the picture",
+                       "description_zh": "要画什么,写成对画面的描述"},
+            "size": {"type": "string", "enum": list(imagegen.SIZES),
+                     "description": f"One of: {', '.join(imagegen.SIZES)}; the configured default is used when omitted",
+                     "description_zh": f"可选:{', '.join(imagegen.SIZES)};不填则用配置里的默认尺寸"}},
+            "required": ["prompt"]},
+    },
 }
 
 # Every spec is handed out through here so the descriptions follow the request language.
@@ -258,6 +279,15 @@ class ToolHub:
                 ctx.problems.append(why or blocked)
             else:
                 add("generate_video", specs["generate_video"], source="builtin")
+        if cfg["image_enabled"]:
+            # Same rule as video: a member is not handed a tool that cannot work, and the user is
+            # told why it is missing instead.
+            iprov, why = imagegen.pick_provider(self.store, cfg)
+            blocked = imagegen.blocked_by_offline(iprov, cfg) if iprov else ""
+            if why or blocked:
+                ctx.problems.append(why or blocked)
+            else:
+                add("generate_image", specs["generate_image"], source="builtin")
         for t in self.registry.plugin_tools(ext["plugins"]):
             if t.name in ctx.tools or t.name in BUILTIN_TOOL_NAMES:   # a plugin cannot displace a built-in tool (permission checks go by name)
                 ctx.problems.append(i18n.pick_now(f"The plugin tool \"{t.name}\" has the same name as a built-in tool, so it was ignored.", f"插件工具「{t.name}」和内置工具重名,已忽略。"))
@@ -353,6 +383,8 @@ When it is not supplied, calls needing confirmation are always denied."""
             return (res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, default=str)), True, []
         if name == "generate_video":
             return await self._generate_video(ctx, args)
+        if name == "generate_image":
+            return await self._generate_image(ctx, args)
         text, ok = await self._builtin(ctx, name, args)
         return text, ok, []
 
@@ -427,6 +459,58 @@ When it is not supplied, calls needing confirmation are always denied."""
             "你看不到也听不到生成结果,不要描述里面的内容 —— 只要告诉用户已经生成好了、文件在哪里。",
         ))
         return "\n".join(lines), True, [{"kind": "video", "name": r["name"], "bytes": r["bytes"], "seconds": seconds}]
+
+    # ----------------------------------------------------------- image generation
+    async def _generate_image(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
+        """Draw one image through the image provider, into this group's workspace.
+
+        Every refusal names the thing to go and change: a member handed a generic "failed" will
+        retry, and then blame itself for the service's answer.
+        """
+        cfg = self.store.get_settings()
+        prov, why = imagegen.pick_provider(self.store, cfg)
+        if prov is None:
+            return why, False, []
+        blocked = imagegen.blocked_by_offline(prov, cfg)
+        if blocked:
+            return blocked, False, []
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return i18n.pick_now("The prompt was empty, so nothing was drawn.",
+                                 "提示词是空的,没有生成。"), False, []
+        size = str(args.get("size") or cfg["image_size"] or imagegen.DEFAULT_SIZE).strip()
+        if size not in imagegen.SIZES:
+            return i18n.pick_now(
+                f"\"{size}\" is not a size this service produces, so nothing was drawn. Use one of: {', '.join(imagegen.SIZES)}.",
+                f"「{size}」不是这个服务支持的尺寸,没有生成。可用:{', '.join(imagegen.SIZES)}。",
+            ), False, []
+        workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg, ctx.group["id"])
+        payload = imagegen.build_payload(prompt, model=str(cfg["image_model"]), size=size)
+        try:
+            got = await imagegen.generate(
+                prov, payload,
+                max_bytes=max(1, int(cfg["image_max_mb"])) * 1024 * 1024,
+                deadline_s=float(cfg["image_timeout"]),
+            )
+            path = imagegen.save(got["data"], workspace, prompt)
+        except imagegen.ImageError as e:
+            return str(e), False, []
+        lines = [
+            i18n.pick_now(
+                f"Drew a {size} image with {prov['name']} ({cfg['image_model']}): {path.name} "
+                f"({media.size_label(got['size'])}, took {got['seconds']:.0f}s).",
+                f"用 {prov['name']}({cfg['image_model']})画了一张 {size} 的图:{path.name}"
+                f"({media.size_label(got['size'])},用了 {got['seconds']:.0f} 秒)。",
+            ),
+            i18n.pick_now(f"Saved in this group's workspace: {path}", f"已保存在本群工作目录:{path}"),
+            # Without this line a model tends to describe the picture it never saw.
+            i18n.pick_now(
+                "You cannot see the result, so do not describe what is in it — tell the user it is "
+                "ready and where it is.",
+                "你看不到生成结果,不要描述画面内容 —— 只要告诉用户已经画好了、文件在哪里。",
+            ),
+        ]
+        return "\n".join(lines), True, [{"kind": "image", "name": path.name, "bytes": got["size"]}]
 
     async def _builtin(self, ctx: ToolContext, name: str, args: dict) -> tuple[str, bool]:
         group, agent = ctx.group, ctx.agent

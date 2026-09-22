@@ -207,6 +207,21 @@ PRESETS: list[dict] = [
         "hint": "Not a chat model: H3 generates video with stereo audio (4-15s, 768p). Serve it with SGLang or vLLM and point this at that server — port 30010 for the FL2VA checkpoint, 30011 for Ref2VA. Members can then use the generate_video tool. The weights are tens of GB (about 42.5 GB even pruned) and the official example uses 4 GPUs; 2K output and the H3-Context-IR prompt shaper are not open source. On a rented cloud GPU, turn Local off below so the offline switch gates it too.",
         "hint_zh": "不是对话模型:H3 生成带立体声的视频(4-15 秒、768p)。用 SGLang 或 vLLM 跑起来后,这里填那个服务地址 —— FL2VA 检查点用 30010,Ref2VA 用 30011。之后成员就能用 generate_video 工具。权重几十 GB(精简版也要约 42.5 GB),官方示例用 4 张卡;2K 输出与 H3-Context-IR 提示词预处理未开源。如果跑在租来的云 GPU 上,请把下面的「本地」关掉,让「允许外呼」也能管住它。",
     },
+    {
+        # The one media kind that is reached through a *gateway* rather than a self-hosted
+        # server: /images/generations is what OpenAI serves, what MetaChat serves on its
+        # OpenAI-compatible address (GPT-Image), and what most aggregators implement. A key
+        # and a model name is the whole setup — no GPU, which is why this is offered as a
+        # preset while the H3 one above is not seeded.
+        "preset": "openai-image",
+        "name": "Image generation (OpenAI-compatible)", "name_zh": "绘画(OpenAI 兼容)",
+        "kind": "openai_image",
+        "base_url": "https://llm-api.mmchat.xyz/v1",
+        "is_local": False,
+        "models": [],
+        "hint": "Not a chat model: it answers /images/generations. The address above is MetaChat's OpenAI-compatible one, where gpt-image-1.5 and the other GPT-Image models live; any other service that speaks the same endpoint works too (put its key below and set the model name under Permissions & control → Image generation). MetaChat's richer image models — Seedream, FLUX, Z-Image, Grok Imagine, Midjourney — use asynchronous endpoints of their own and are not reachable through this kind yet.",
+        "hint_zh": "不是对话模型:它提供 /images/generations。上面的地址是 MetaChat 的 OpenAI 兼容入口,gpt-image-1.5 等 GPT-Image 模型在这里;其他实现同一接口的服务也可以(把密钥填在下面,再到「权限与操控 → 绘画」里填模型名)。MetaChat 更强的图像模型 —— Seedream、FLUX、Z-Image、Grok Imagine、Midjourney —— 走的是它们自己的异步接口,这个 kind 目前还够不到。",
+    },
 ]
 
 PRESET_BY_ID = {p["preset"]: p for p in PRESETS}
@@ -300,6 +315,18 @@ DEFAULT_SETTINGS: dict = {
     "video_max_seconds": 15,   # longest clip a member may ask for (H3 itself accepts 4-15)
     "video_timeout": 900,      # how long one generation may take before giving up, in seconds
     "video_max_mb": 512,       # cap on the downloaded file, checked before it is saved
+    # ---- image generation through an OpenAI-compatible /images/generations endpoint. Unlike
+    # video this needs no local GPU: a key and a model name are the whole setup, which is why it
+    # is the one media capability that works with a gateway such as MetaChat (see the
+    # "Image generation (OpenAI-compatible)" preset). `image_model` is a setting rather than a
+    # column on the provider because one gateway serves many models and a media provider carries
+    # no model of its own.
+    "image_enabled": False,
+    "image_provider_id": "",   # which image provider to use; empty = the first enabled one
+    "image_model": "gpt-image-1",
+    "image_size": "1024x1024",
+    "image_timeout": 180,      # how long one generation may take, in seconds
+    "image_max_mb": 24,        # cap on the downloaded file, checked before it is saved
     # ---- memory <-> Obsidian: one folder in the vault to sync with (empty = disabled)
     "obsidian_dir": "",
     "obsidian_auto": False,    # when enabled, sync automatically every 30 seconds

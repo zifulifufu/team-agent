@@ -175,6 +175,45 @@ command line it would run, plus notes for the cases worth a second look: a launc
 downloads a package (`npx`, `uvx`), an argument containing shell characters, a program
 outside your home directory, a plain-text URL, environment values that did not come along.
 
+## Using a platform that aggregates models
+
+Platforms such as **MetaChat** and **Cherry Studio** front many models behind one key. Both are
+already integrated here, in two shapes:
+
+* **as an external-agent engine** — a member whose replies come from that platform's chat
+  endpoint (Settings → External agents). Cherry Studio's local gateway and MetaChat's
+  OpenAI-compatible address are both built in.
+* **as a model provider** — the same platforms appear in the provider presets, so their chat
+  models can be used for members through the ordinary routing layer.
+
+What their APIs actually expose, checked against MetaChat's own documentation rather than
+assumed:
+
+| Capability | Reachable | Notes |
+|---|---|---|
+| Text models | **yes** | OpenAI / Anthropic / Gemini-compatible addresses; one key covers all of them |
+| Image generation | **yes** | OpenAI-compatible `/images/generations` (GPT-Image), plus MetaChat's own asynchronous endpoints (Seedream, FLUX, Z-Image, Grok Imagine) and Midjourney with its upscale/variation/zoom operations |
+| Video generation | **yes** | Grok Imagine and Midjourney, both asynchronous jobs |
+| Account quota | yes | MetaChat exposes balance and usage |
+| **Agents / 智能体** | **no** | an agent is a *web-app* construct: a prompt plus a chosen model. There is no endpoint that runs one, so nothing can be imported from that list |
+| **Audio / speech** | **no** | MetaChat publishes no TTS/STT endpoint and no audio models, so "音频" cannot be called through it |
+
+So an agent you like on that site cannot be called as such — but it can be **reproduced here**,
+because a member here *is* a model plus a role prompt: add a member, pick the same model, and
+write the instructions. See "Members and roles".
+
+**Image generation is wired up** (*Permissions & control → Image generation*): add the provider
+under Model providers (the "Image generation (OpenAI-compatible)" preset points at MetaChat's
+OpenAI-compatible address), save its key, then switch the tool on. Members get `generate_image`,
+the picture lands in the group's own workspace, and it appears in the transcript. Nothing needs a
+GPU — a key and a model name are the whole setup. The probe button reads the service's model list
+so you can see whether the model name you typed exists before spending anything.
+
+**Not yet wired**: MetaChat's *asynchronous* image endpoints (Seedream / FLUX / Grok Imagine /
+Midjourney) and their video endpoints. The video tool speaks the self-hosted H3 dialect
+(`/v1/videos` + polling), and those are a different job shape — a second provider kind with its
+own submit/poll dialect, which is the natural next step rather than something to pretend works.
+
 ## Licence
 
 **[Apache License 2.0](LICENSE)** — Copyright 2026 **zifulifufu**.

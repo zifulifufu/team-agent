@@ -24,9 +24,7 @@ and the approval flow), because only it knows the group and the settings.
 from __future__ import annotations
 
 import asyncio
-import itertools
 import json
-import os
 import re
 import time
 import urllib.parse
@@ -34,12 +32,16 @@ from pathlib import Path
 
 import httpx
 
-from . import i18n
+from . import i18n, media
 from .coderun import inside as _inside     # one implementation of "is this still inside the workspace"
 
-# Provider kinds that are media generators rather than chat models. `store.list_models()` filters
-# these out of the model list, so a member can never be pointed at one.
-MEDIA_KINDS: tuple[str, ...] = ("minimax_video",)
+# Every provider kind that is a generator rather than a chat model, re-exported from `media`:
+# `store.list_models()` filters by this, so a member can never be pointed at one.
+MEDIA_KINDS: tuple[str, ...] = media.MEDIA_KINDS
+# ...while this module only drives its own kinds. The two lists were the same thing until a
+# second generator existed; picking a provider by the union would let the video tool select an
+# image provider, which surfaces as a broken server rather than a wrong lookup.
+KINDS: tuple[str, ...] = ("minimax_video",)
 
 # H3's own output range. A request outside it is clamped rather than refused, and the clamping is
 # reported back so the caller is not surprised by a 4-second clip.
@@ -68,7 +70,7 @@ class VideoError(Exception):
 
 # ------------------------------------------------------------------ providers
 def media_providers(store) -> list[dict]:
-    return [p for p in store.list_providers() if p["kind"] in MEDIA_KINDS]
+    return [p for p in store.list_providers() if p["kind"] in KINDS]
 
 
 def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
@@ -399,52 +401,16 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
 def save(data: bytes, workspace: Path, prompt: str, vid: str) -> Path:
     """Write the mp4 into the group's workspace, and nowhere else.
 
-    Three properties, each for a concrete failure:
-
-    * the directory is checked, not assumed — a member can create `video` as a symlink to
-      somewhere else with `run_code`, and `mkdir(exist_ok=True)` would happily write through it;
-    * the staging file is created with O_EXCL|O_NOFOLLOW, so a symlink planted at that name
-      cannot make this truncate something outside the workspace, and two simultaneous saves
-      cannot share one staging file;
-    * publishing uses `link`, which fails if the destination already exists, so a clip never
-      overwrites a file that appeared while it was downloading, and never appears partially —
-      the name only comes into existence when the bytes are complete.
+    The writing itself lives in `media.save_bytes`, shared with image generation: it is the
+    part with the three symlink-safety properties, and two copies of that would be two chances
+    to get it subtly wrong.
     """
-    root = workspace.resolve()
-    out_dir = workspace / "video"
-    if out_dir.is_symlink():
-        raise VideoError(i18n.pick_now(
-            f"\"{out_dir}\" is a symlink, so the clip was not saved. Runs keep their output in a "
-            "real directory inside the workspace.",
-            f"「{out_dir}」是一个符号链接,所以视频没有保存。产物必须放在工作目录里的真实目录中。",
-        ))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    if not _inside(root, out_dir):
-        raise VideoError(i18n.pick_now(
-            f"\"{out_dir}\" resolves outside the workspace, so the clip was not saved.",
-            f"「{out_dir}」解析后在工作目录之外,视频没有保存。",
-        ))
-    stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug(prompt) or slug(vid) or 'clip'}"
-    staging = out_dir / f".{stem}.{os.getpid()}.part"
     try:
-        fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    except OSError as e:
-        raise VideoError(i18n.pick_now(
-            f"Could not create the staging file in {out_dir}: {e}",
-            f"无法在 {out_dir} 里创建临时文件:{e}",
-        )) from None
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        for n in itertools.count(1):
-            path = out_dir / (f"{stem}.mp4" if n == 1 else f"{stem}-{n}.mp4")
-            try:
-                os.link(staging, path)        # atomic, and fails rather than overwriting
-            except FileExistsError:
-                continue
-            return path
-    finally:
-        staging.unlink(missing_ok=True)
+        return media.save_bytes(data, workspace, subdir="video", ext=".mp4",
+                                stem_source=prompt, fallback=vid or "clip",
+                                what="clip", what_zh="视频")
+    except ValueError as e:
+        raise VideoError(str(e)) from None
 
 
 async def generate(

@@ -372,6 +372,8 @@ def create_app(
               "code_timeout": (5, 600), "vision_max_mb": (1, 64),
               # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
               "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
+              # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
+              "image_timeout": (20, 900), "image_max_mb": (1, 128),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
               "score_threshold": (0, 100), "score_excerpt_chars": (100, 4000), "score_max_lessons": (0, 3),
               # chat channels: each numeric field declares its own bounds in channels/spec.py,

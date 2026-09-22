@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, images, modelopts, strengths as strength_lib, video
+from . import coderun, i18n, imagegen, images, modelopts, strengths as strength_lib, video
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -601,6 +601,22 @@ def build_router(c: Ctx) -> APIRouter:
         ok, detail = await video.probe(prov)
         return {"ok": ok, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]}, "detail": detail}
 
+    @r.post("/api/image/test")
+    async def image_test() -> dict:
+        """Check the image service without spending a generation: reach /models, and see whether
+        the configured model is among them. The honest test of the rest is to draw one."""
+        cfg = store.get_settings()
+        prov, why = imagegen.pick_provider(store, cfg)
+        if prov is None:
+            return {"ok": False, "detail": why}
+        blocked = imagegen.blocked_by_offline(prov, cfg)
+        if blocked:
+            return {"ok": False, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]},
+                    "detail": blocked}
+        ok, detail = await imagegen.probe(prov, str(cfg["image_model"]))
+        return {"ok": ok, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]},
+                "detail": detail}
+
     @r.get("/api/groups/{gid}/video/{name}")
     async def group_video(gid: str, name: str) -> Response:
         """Serve a clip a member generated, out of this group's own workspace.
@@ -633,6 +649,32 @@ def build_router(c: Ctx) -> APIRouter:
         if not real.is_file():
             raise HTTPException(404, i18n.pick_now("That video is not there any more", "这个视频已经不在了"))
         return Response(real.read_bytes(), media_type="video/mp4",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+    @r.get("/api/groups/{gid}/image/{name}")
+    async def group_image(gid: str, name: str) -> Response:
+        """Serve an image a member generated, out of this group's own workspace.
+
+        The same three checks as the video route, for the same reason: the requested name is a
+        plain filename, the leaf may not be a symlink, and the resolved path has to stay inside
+        the workspace. A generated image is drawn from a prompt someone else wrote, so this must
+        not become a way to read a file off this machine.
+        """
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.png", name):
+            raise HTTPException(400, i18n.pick_now("That is not an image file name", "这不是一个图片文件名"))
+        ws = coderun.workspace_path(Path(store.data_dir), store.get_settings(), gid)
+        path = ws / "image" / name
+        if path.is_symlink():
+            raise HTTPException(404, i18n.pick_now("That image is not there any more", "这张图片已经不在了"))
+        try:
+            real = path.resolve(strict=True)
+            real.relative_to(ws.resolve())
+        except (OSError, ValueError):
+            raise HTTPException(404, i18n.pick_now("That image is not there any more", "这张图片已经不在了")) from None
+        if not real.is_file():
+            raise HTTPException(404, i18n.pick_now("That image is not there any more", "这张图片已经不在了"))
+        return Response(real.read_bytes(), media_type="image/png",
                         headers={"Cache-Control": "private, max-age=3600"})
 
     # ============================================================ plugins

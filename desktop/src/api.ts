@@ -365,7 +365,13 @@ export interface Settings {
   video_short_edge: number;        // Output short edge in pixels (H3 is natively 768)
   video_max_seconds: number;       // Longest clip a member may ask for (H3 itself accepts 4-15)
   video_timeout: number;           // How long one generation may take before giving up, in seconds
-  video_max_mb: number;            // Cap on the downloaded clip, checked before it is saved
+  video_max_mb: number;
+  image_enabled: boolean;            // Let members draw images through an OpenAI-compatible service
+  image_provider_id: string;         // Which image provider; empty = the first enabled one
+  image_model: string;               // The model name to ask that service for
+  image_size: string;                // One of the sizes imagegen accepts
+  image_timeout: number;
+  image_max_mb: number;            // Cap on the downloaded clip, checked before it is saved
   code_enabled: boolean;           // Let members write and run code in a workspace; off by default
   code_timeout: number;            // Seconds one run may take before it is killed
   code_workdir: string;            // Empty = <data dir>/workspace
@@ -1089,6 +1095,11 @@ export const api = {
   /** A clip a member generated, out of that group's own workspace. Same header problem, so the
    *  bytes come through the API and are turned into an object URL (`MessageVideo`). */
   videoBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/video/${encodeURIComponent(name)}`),
+  /** An image a member *drew*, fetched the same way as a clip. Named apart from `imageBytes`
+   *  above, which is an uploaded attachment: the two collide in the same object literal, and a
+   *  collision there silently rebinds the older one. */
+  drawnImageBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/image/${encodeURIComponent(name)}`),
+  testImage: () => post<{ ok: boolean; provider?: { id: string; name: string; base_url: string }; detail: string }>("/api/image/test", {}),
   addDocUrl: (url: string, scope: { kb?: string; group?: string } = {}) =>
     post<LibraryDoc>("/api/library/url", { url, kb_id: scope.kb ?? "", group_id: scope.group ?? "" }),
   addDocDir: (path: string, recursive = true, scope: { kb?: string; group?: string } = {}) =>

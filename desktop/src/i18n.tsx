@@ -1628,6 +1628,26 @@ const ZH: Record<string, string> = {
   "Scan again": "重新扫描",
   "This reads the configuration files that other AI applications keep on this machine, and shows what they contain. Nothing is started, and everything imported arrives disabled — a server here is a command line that will later run with your privileges, so read it before switching it on.": "这里读取的是其他 AI 应用留在本机的配置文件,并列出其中的内容。不会启动任何东西,导入的条目都是停用状态——这里的服务器本质上是一条将来会以你的权限运行的命令行,启用前请先看清它。",
   "{n} found": "找到 {n} 条",
+
+  // ---------------------------------------------------------------- 绘画
+  "A downloaded image bigger than this is refused instead of saved.": "下载的图片超过这个大小就会被拒绝保存,而不是写进磁盘。",
+  "Generation timeout": "生成超时",
+  "How long one image may take before giving up. Drawing is seconds, not minutes, so the default is much shorter than the video one.": "一张图最多等多久就放弃。画图是秒级而不是分钟级,所以默认值比视频那条短得多。",
+  "Image generation": "绘画",
+  "Image service": "图片服务",
+  "Image size": "图片尺寸",
+  "Is the service reachable?": "服务是否可达?",
+  "Largest image to keep": "最大保留尺寸",
+  "Let members draw images": "让成员绘画",
+  "Loading the image…": "正在加载图片…",
+  "No image provider has been added yet, so the tool stays hidden from members. Add one under Model providers first.": "还没有添加图片服务商,所以这个工具对成员是隐藏的。请先在「模型服务商」里添加一个。",
+  "Off by default. When on, members get a generate_image tool. Unlike video this needs no local GPU: it talks to any service that implements /images/generations — MetaChat's OpenAI-compatible address with a GPT-Image model, or any aggregator. The picture lands in the group's own workspace.": "默认关闭。开启后成员会获得 generate_image 工具。与视频不同,它不需要本机 GPU:只要对方实现了 /images/generations 就能用——MetaChat 的 OpenAI 兼容入口配 GPT-Image 模型,或任何聚合服务。图片会落在本群自己的工作目录里。",
+  "Reads the service's model list: two requests, nothing is generated and nothing is charged. Finding the model name there is the useful part.": "读取服务方的模型清单:一两个请求,不生成任何图片,也不产生费用。真正有用的是看清模型名在不在里面。",
+  "Test the image service": "测试图片服务",
+  "The image could not be loaded": "图片加载失败",
+  "What the service is asked for. A size it does not accept comes back as an error rather than a different picture.": "向服务方请求的尺寸。它不接受的尺寸会直接报错,而不是悄悄换一个尺寸。",
+  "What to ask that service for, for example gpt-image-1.5. MetaChat also serves Gemini's image models on its Gemini-native address, which this endpoint cannot reach.": "要向服务方请求哪个模型,例如 gpt-image-1.5。MetaChat 还通过它的 Gemini 原生地址提供 Gemini 图像模型,而这个接口够不到那些。",
+  "Which provider to draw with. Add \"Image generation (OpenAI-compatible)\" under Model providers and put the service's key there.": "用哪个服务商来画。请在「模型服务商」里添加「绘画(OpenAI 兼容)」,并把服务方的密钥填在那里。",
 };
 
 let current: Lang = DEFAULT_LANG;

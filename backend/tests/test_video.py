@@ -341,11 +341,19 @@ def test_saving_never_overwrites_or_publishes_half_a_file(tmp_path):
 
 def test_a_planted_link_at_the_staging_name_is_not_followed(tmp_path, monkeypatch):
     """The staging file is created with O_EXCL|O_NOFOLLOW: a link planted at that exact name
-    makes the save fail instead of truncating whatever it points at."""
+    makes the save fail instead of truncating whatever it points at.
+
+    The clock and the pid are patched **on the shared writer** (`media`), which is where the
+    staging name is built now that image generation uses the same code. Patching `video.time`
+    would still import fine and still do nothing, so this test would quietly stop testing the
+    thing it exists for.
+    """
+    from app import media
+
     ws = tmp_path / "ws"
     (ws / "video").mkdir(parents=True)
-    monkeypatch.setattr(video.time, "strftime", lambda *_: "20260101-000000")
-    monkeypatch.setattr(video.os, "getpid", lambda: 4242)
+    monkeypatch.setattr(media.time, "strftime", lambda *_: "20260101-000000")
+    monkeypatch.setattr(media.os, "getpid", lambda: 4242)
     victim = tmp_path / "victim.bin"
     victim.write_bytes(b"precious")
     (ws / "video" / ".20260101-000000-a-cat.4242.part").symlink_to(victim)
