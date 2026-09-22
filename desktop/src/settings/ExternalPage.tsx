@@ -86,7 +86,7 @@ export default function ExternalPage(_: PageProps) {
                   <div className="sr-desc">{gateway ? (
                     <>{t("Model")}: {a.engine_cfg?.model || t("Not set")} · {t("Address")}: {a.engine_cfg?.base_url || t("Not set")}</>
                   ) : (
-                    <>{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")}</>
+                    <>{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")} · {t("Configuration:")} {a.engine_cfg?.native ? t("the application's own") : t("isolated")}</>
                   )}</div>
                 </div>
                 <button className="btn small" onClick={() => setEditId(a.id)}><Settings2 size={12} /> {t("Settings")}</button>
