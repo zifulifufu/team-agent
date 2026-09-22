@@ -1589,6 +1589,23 @@ const ZH: Record<string, string> = {
   "Nothing has been sent yet": "还没有发出任何内容",
   "Sent": "已发送",
   "A round started from WhatsApp may only use read-only tools: it can search the library and your memory, but it can never run code or write files. Nobody is sitting at this machine to approve anything.": "由 WhatsApp 触发的一轮只能使用只读工具:可以检索资料库和记忆,但永远不能运行代码或写文件。这台机器前没有人能替你点确认。",
+  // ---------------------------------------------------------------- 协作评分
+  "Grading the work": "对产出评分",
+  "After a round has split the job between members, each task can be graded on two questions: did it deliver what was asked, and could the next task build on it as it stands. Grading only annotates — it never edits, redoes or deletes anything a member produced.": "一轮分工跑完之后,可以对每个任务问两个问题:它交付了要求的东西吗?下一个任务能不能直接用它的结果?评分只做批注——绝不修改、重做或删除成员的任何产出。",
+  "Grade each planned round": "对每轮分工评分",
+  "Costs one extra model call per planned round. The scores land on the task board, and the weakest hand-offs become lessons that the next round reads.": "每轮分工多花一次模型调用。分数显示在任务板上,最弱的交接会成为教训,由下一轮读取。",
+  "Judge model": "评判模型",
+  "Never a model that took part in the round. Left on automatic it prefers a local model, so the contents of a round do not leave this machine merely to be graded.": "绝不会用参与了这一轮的模型。留「自动」时会优先选本地模型,这样一轮的内容不会仅仅为了评分离开这台机器。",
+  "Pick automatically": "自动选择",
+  "Strictness": "严格度",
+  "Below this, a task counts as needing rework. Higher is stricter.": "低于这个分数,任务算需要返工。越高越严格。",
+  "Graded by {judge}: {ok} good, {weak} delivered but unusable downstream, {rework} to redo, {failed} failed.": "由 {judge} 评分:{ok} 个合格,{weak} 个交付了但下一步用不了,{rework} 个需返工,{failed} 个失败。",
+  "No model graded this round, so only the mechanical checks are shown.": "这一轮没有模型参与评分,因此只显示机械核对的结果。",
+  "Good": "合格",
+  "Unusable downstream": "下一步不可用",
+  "Needs rework": "需返工",
+  "Delivered {d} · usable downstream {u}": "已交付 {d} · 下一步可用 {u}",
+  "Not graded by a model; only the mechanical checks ran.": "没有模型评分,只做了机械核对。",
 };
 
 let current: Lang = DEFAULT_LANG;

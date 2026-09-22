@@ -117,6 +117,17 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
         <i className={status} style={{ width: pct + "%" }} />
       </div>
 
+      {meta.score && meta.score.summary && (
+        <div className={"plan-score" + (meta.score.judge ? "" : " plain")}>
+          {meta.score.judge
+            ? t("Graded by {judge}: {ok} good, {weak} delivered but unusable downstream, {rework} to redo, {failed} failed.",
+                { judge: meta.score.judge, ok: meta.score.summary.ok, weak: meta.score.summary.weak,
+                  rework: meta.score.summary.rework, failed: meta.score.summary.failed })
+            : t("No model graded this round, so only the mechanical checks are shown.")}
+          {meta.score.judge_error ? ` ${meta.score.judge_error}` : ""}
+        </div>
+      )}
+
       {meta.goal && (
         <div className="plan-goal">
           <Target size={14} aria-hidden />
@@ -168,6 +179,29 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
                   <div className="plan-deliv"><span>{t("Deliverable")}</span>{task.deliverable}</div>
                 )}
                 {task.status === "failed" && task.error && <div className="plan-err">{task.error}</div>}
+                {(() => {
+                  // The grade for this task, when the round was graded. Both numbers are shown
+                  // rather than one combined score: "delivered but unusable downstream" is the
+                  // distinction the whole exercise is for, and a single number hides it.
+                  const sc = meta.score?.tasks.find((s) => s.task_id === task.id);
+                  if (!sc) return null;
+                  const tip = [
+                    sc.delivered !== null && sc.usable !== null
+                      ? t("Delivered {d} · usable downstream {u}", { d: sc.delivered.toFixed(2), u: sc.usable.toFixed(2) })
+                      : t("Not graded by a model; only the mechanical checks ran."),
+                    sc.reason,
+                  ].filter(Boolean).join("\n");
+                  return (
+                    <div className={"plan-verdict " + sc.verdict} title={tip}>
+                      <span className="pv-dot" aria-hidden />
+                      {sc.verdict === "ok" ? t("Good") : sc.verdict === "weak" ? t("Unusable downstream")
+                        : sc.verdict === "rework" ? t("Needs rework") : t("Failed")}
+                      {sc.delivered !== null && sc.usable !== null && (
+                        <em>{sc.delivered.toFixed(2)} / {sc.usable.toFixed(2)}</em>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
               <span className={"plan-state " + task.status} title={TASK_LABEL[task.status]()}>
                 <StatusIcon status={task.status} />

@@ -294,9 +294,38 @@ export interface Message {
     conventions?: string;
     status?: PlanStatus;
     tasks?: PlanTaskView[];
+    /** Present once the round has been graded. The mechanical half is always filled in; `judged`
+     *  on a task says whether a model actually scored it, so "no score" never reads as "good". */
+    score?: PlanScore;
   };
   created_at?: number;
   streaming?: boolean;
+}
+export type Verdict = "ok" | "weak" | "rework" | "failed";
+/** One graded task. `delivered` and `usable` are the two questions asked — "did the member produce
+ *  what was asked" and "could the next task build on it" — and either may be null on a task the
+ *  judge did not cover. */
+export interface TaskScore {
+  task_id: string;
+  owner: string;
+  title: string;
+  verdict: Verdict;
+  delivered: number | null;
+  usable: number | null;
+  reason: string;
+  judged: boolean;
+  mechanical: { status: string; chars: number; empty: boolean; error: boolean;
+                fallback: boolean; tools: string[]; delivered: boolean };
+}
+export interface PlanScore {
+  at: number;
+  threshold: number;             // Percent; below this a task counts as needing rework
+  judge: string;                 // Model id that graded the round; empty = nothing graded it
+  judge_error: string;           // Why there is no judge, when there is none
+  skipped?: string;              // "disabled" | "no tasks" when scoring did not run at all
+  tasks: TaskScore[];
+  lessons: { scope: string; scope_id: string; content: string; memory_id: string }[];
+  summary: { total: number; judged: number; ok: number; weak: number; rework: number; failed: number };
 }
 export interface Settings {
   external_calls_enabled: boolean;
@@ -356,6 +385,11 @@ export interface Settings {
   whatsapp_token_set: boolean;
   whatsapp_app_secret_set: boolean;
   whatsapp_verify_token_set: boolean;
+  scoring_enabled: boolean;          // Grade each planned round with a separate judge model
+  score_judge_model: string;         // Empty = pick one automatically (never a group member)
+  score_threshold: number;           // Percent; below this a task counts as needing rework
+  score_excerpt_chars: number;       // How much of each deliverable the judge reads (head + tail)
+  score_max_lessons: number;         // How many lessons one round may write into memory
 }
 /** State of the inbound WhatsApp channel, in the shape the settings page shows it.
  *  A webhook is invisible by nature, so without this the only symptom of a

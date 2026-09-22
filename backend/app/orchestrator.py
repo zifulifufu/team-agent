@@ -25,7 +25,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from . import external, planner
+from . import external, planner, scoring
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
 from .library import Library
@@ -464,6 +464,15 @@ protocol and should not decide what the others do."""
             if final is not None:
                 run.final_text = final.text
             await push()
+            # Grade the hand-offs only after the answer exists: the user gets the result first, and
+            # a judge that is slow, unreachable or nonsensical can add a note but can never change
+            # or delay what the group produced (see scoring.py — it never raises).
+            plan.scorecard = await scoring.score_round(self.store, self.router, group, plan, outputs, run.steps)
+            if plan.scorecard.get("tasks"):
+                await push()                                  # the board carries the scores
+                note = scoring.summarize_card(plan.scorecard)
+                if note:
+                    await self._system(gid, note, emit)
         except asyncio.CancelledError:
             plan.status = "stopped"
             for t in plan.tasks:

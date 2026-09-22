@@ -362,7 +362,9 @@ def create_app(
               # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
               "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
               # whatsapp: WhatsApp refuses a single text body over 4096 characters
-              "whatsapp_max_chars": (100, 4096)}
+              "whatsapp_max_chars": (100, 4096),
+              # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
+              "score_threshold": (0, 100), "score_excerpt_chars": (100, 4000), "score_max_lessons": (0, 3)}
     # obsidian_dir can only be set through /api/obsidian (which validates the path); it is not
 # accepted here
     READONLY = {"obsidian_dir"}

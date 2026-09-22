@@ -341,6 +341,16 @@ DEFAULT_SETTINGS: dict = {
     "whatsapp_token": "",              # Cloud API access token, used when sending
     "whatsapp_app_secret": "",         # Meta app secret, used to verify the signature
     "whatsapp_verify_token": "",       # the string Meta echoes back during its GET handshake
+    # ---- scoring a planned round, so a group can notice its own weak hand-offs (see scoring.py).
+    # Off by default: it costs one extra model call per planned round. The judge is meant to be a
+    # model that is *not* one of the group's members — a model grading its own answer is the least
+    # useful signal available — so an empty `score_judge_model` picks a usable non-member, preferring
+    # a local one, and grading fails closed (mechanical signals only) when none is available.
+    "scoring_enabled": False,
+    "score_judge_model": "",           # empty = pick an eligible model that is not in the group
+    "score_threshold": 50,             # percent: below this a task counts as needing rework
+    "score_excerpt_chars": 800,        # how much of each deliverable the judge reads (head + tail)
+    "score_max_lessons": 1,            # how many lessons one round may write into memory
 }
 
 SEED_AGENTS: list[dict] = [

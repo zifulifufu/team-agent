@@ -78,6 +78,16 @@
 .plan-bar i { display: block; height: 100%; border-radius: 3px; background: var(--primary); transition: width 0.35s ease; }
 .plan-bar i.failed { background: var(--danger); }
 .plan-bar i.stopped { background: var(--text-3); }
+/* The scorecard (see scoring.py in the backend): one line about the round, one badge per task.
+   Both numbers appear on the badge, because "delivered but unusable downstream" is the distinction
+   the grading exists to make — collapsing them into one score would hide exactly that. */
+.plan-score { margin: 2px 0 0; font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.plan-score.plain { color: var(--text-3); }
+.plan-verdict { display: inline-flex; align-items: center; gap: 5px; margin-top: 5px; font-size: 11px; color: var(--text-2); }
+.plan-verdict .pv-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
+.plan-verdict.ok .pv-dot { background: var(--primary); }
+.plan-verdict.rework .pv-dot, .plan-verdict.failed .pv-dot { background: var(--danger); }
+.plan-verdict em { font-style: normal; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .plan-goal { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; line-height: 1.6; }
 .plan-goal > svg { flex: none; margin-top: 4px; color: var(--ok); }
 .plan-goal b { margin-right: 6px; color: var(--text-2); font-weight: 600; }

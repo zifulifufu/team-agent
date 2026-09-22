@@ -110,6 +110,41 @@ export default function RoutingPage() {
           )}
         </div>
       )}
+
+      <h3 className="sec">{t("Grading the work")}</h3>
+      <p className="muted small">
+        {t("After a round has split the job between members, each task can be graded on two questions: did it deliver what was asked, and could the next task build on it as it stands. Grading only annotates — it never edits, redoes or deletes anything a member produced.")}
+      </p>
+      <div className="card flush">
+        <div className="setting-row pad">
+          <div>
+            <div className="sr-title">{t("Grade each planned round")}</div>
+            <div className="sr-desc">{t("Costs one extra model call per planned round. The scores land on the task board, and the weakest hand-offs become lessons that the next round reads.")}</div>
+          </div>
+          <Switch checked={settings.scoring_enabled} disabled={saving} label={t("Grade each planned round")}
+                  onChange={(v) => void set({ scoring_enabled: v })} />
+        </div>
+        <div className="setting-row pad">
+          <div>
+            <div className="sr-title">{t("Judge model")}</div>
+            <div className="sr-desc">{t("Never a model that took part in the round. Left on automatic it prefers a local model, so the contents of a round do not leave this machine merely to be graded.")}</div>
+          </div>
+          <ModelSelect value={settings.score_judge_model || null} ariaLabel={t("Judge model")}
+                       autoLabel={t("Pick automatically")} disabled={saving}
+                       onChange={(id) => void set({ score_judge_model: id ?? "" })} />
+        </div>
+        <div className="setting-row pad">
+          <div>
+            <div className="sr-title">{t("Strictness")}</div>
+            <div className="sr-desc">{t("Below this, a task counts as needing rework. Higher is stricter.")}</div>
+          </div>
+          <select className="ext-plan-select" value={String(settings.score_threshold)}
+                  aria-label={t("Strictness")} disabled={saving}
+                  onChange={(e) => void set({ score_threshold: Number(e.target.value) })}>
+            {[30, 50, 60, 70, 80, 90].map((n) => <option key={n} value={n}>{n}%</option>)}
+          </select>
+        </div>
+      </div>
     </div>
   );
 }

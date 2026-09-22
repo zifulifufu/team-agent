@@ -55,10 +55,17 @@ class Plan:
     tasks: list[PlanTask]
     status: str = "running"      # running | integrating | done | stopped | failed
     message_id: str = ""
+    # Filled in once the tasks are finished (see scoring.py). It lives on the plan because the
+    # scorecard is a judgement about this round's hand-offs, and the task board is what the round
+    # produced — so the board is where a reader expects to find it.
+    scorecard: dict = field(default_factory=dict)
 
     def to_meta(self) -> dict:
-        return {"kind": "plan", "goal": self.goal, "conventions": self.conventions, "status": self.status,
+        meta = {"kind": "plan", "goal": self.goal, "conventions": self.conventions, "status": self.status,
                 "tasks": [t.to_dict() for t in self.tasks]}
+        if self.scorecard:
+            meta["score"] = self.scorecard
+        return meta
 
     def by_id(self, tid: str) -> PlanTask | None:
         return next((t for t in self.tasks if t.id == tid), None)
