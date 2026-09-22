@@ -11,14 +11,25 @@ import ChatView from "./pages/ChatView";
 import AgentsPage from "./pages/AgentsPage";
 import LibraryPage from "./pages/LibraryPage";
 import AppearancePage from "./settings/AppearancePage";
-import MemoryPage from "./pages/MemoryPage";
-import PromptsPage from "./pages/PromptsPage";
 import SkillsPage from "./settings/SkillsPage";
 import PluginsPage from "./settings/PluginsPage";
 import McpPage from "./settings/McpPage";
+import ExternalPage from "./settings/ExternalPage";
+import ChannelsPage from "./settings/ChannelsPage";
 import SettingsModal, { type PageProps, type SettingsTab } from "./settings/SettingsModal";
 
-const TOOL_PAGES: Record<"skills" | "plugins" | "mcp", ComponentType<PageProps>> = { skills: SkillsPage, plugins: PluginsPage, mcp: McpPage };
+/** The pages that are the main area rather than a tab inside Settings. Prompts, the library
+ *  and memory are the other way round: they are Settings tabs, so a link to one of them keeps
+ *  Settings open and just switches tab (see `goTab`). */
+const AREA_PAGES: Record<"skills" | "plugins" | "mcp" | "external" | "channels", ComponentType<PageProps>> = {
+  skills: SkillsPage, plugins: PluginsPage, mcp: McpPage, external: ExternalPage, channels: ChannelsPage,
+};
+
+/** Settings ids that name one of those pages, as the `View` that shows it. */
+const AREA_VIEWS: Partial<Record<SettingsTab, View>> = {
+  skills: { kind: "skills" }, plugins: { kind: "plugins" }, mcp: { kind: "mcp" },
+  external: { kind: "external" }, channels: { kind: "channels" }, appearance: { kind: "appearance" },
+};
 
 export default function App() {
   const { t } = useI18n();
@@ -38,20 +49,20 @@ export default function App() {
   }, [groups, view]);
 
   /**
-   * "Go to another page". The tools that live in the sidebar's Tools column switch to the main
-   * area — and if a link inside Settings points at one, Settings closes first, so the user is
-   * not left with a dialog covering the page it just opened.
+   * "Go to another page". A settings id either names a page in the main area — in which case
+   * Settings closes first, so the user is not left with it covering the page it just opened —
+   * or it is a tab inside Settings, in which case the dialog stays open and switches to it.
    */
-  const TOOL_VIEWS: SettingsTab[] = ["skills", "plugins", "mcp", "prompts", "library", "memory", "appearance"];
   const goTab = (t: SettingsTab) => {
-    if (TOOL_VIEWS.includes(t)) {
+    const area = AREA_VIEWS[t];
+    if (area) {
       setSettings(null);
-      setView(t === "library" ? { kind: "library" } : { kind: t as "skills" });
+      setView(area);
     } else {
       setSettings(t);
     }
   };
-  const ToolPage = view.kind === "skills" || view.kind === "plugins" || view.kind === "mcp" ? TOOL_PAGES[view.kind] : null;
+  const AreaPage = view.kind in AREA_PAGES ? AREA_PAGES[view.kind as keyof typeof AREA_PAGES] : null;
   // After a group is created from the template gallery, go straight into it: close Settings and switch to that group
   const openGroup = (gid: string) => {
     setSettings(null);
@@ -80,12 +91,12 @@ export default function App() {
           />
         )}
         {view.kind === "agents" && <AgentsPage onSettings={goTab} />}
-        {ToolPage && view.kind !== "home" && <div className="tool-page"><ToolPage key={view.kind} onTab={goTab} /></div>}
+        {AreaPage && <div className="tool-page"><AreaPage key={view.kind} onTab={goTab} /></div>}
+        {/* A group's own library is a drill-down from its chat, and it goes "back" to the
+            library tab in Settings, which is where the overview of every document lives. */}
         {view.kind === "library" && (
-          <LibraryPage key={view.gid ?? "all"} groupId={view.gid} onBack={() => setView({ kind: "library" })} />
+          <LibraryPage key={view.gid} groupId={view.gid} onBack={() => goTab("library")} />
         )}
-        {view.kind === "memory" && <MemoryPage />}
-        {view.kind === "prompts" && <PromptsPage />}
         {view.kind === "appearance" && <div className="tool-page"><AppearancePage /></div>}
       </main>
       <Toaster />

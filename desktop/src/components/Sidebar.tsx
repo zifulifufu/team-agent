@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Brain, ChevronDown, ChevronRight, Download, Info, MessageSquarePlus, MessageSquareText, PanelLeftClose, Palette, Plug, Puzzle, Search, Settings, Sparkles, Trash2, Users, WifiOff, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, Info, MessageSquarePlus, PanelLeftClose, Palette, Plug, Puzzle, Search, Settings, Sparkles, TerminalSquare, Trash2, Users, Webhook, WifiOff, X } from "lucide-react";
 import { api, relTime } from "../api";
 import { useData } from "../data";
 import { Switch, useConfirm, useOutside } from "../ui";
@@ -16,21 +16,26 @@ export type View =
   | { kind: "skills" }
   | { kind: "plugins" }
   | { kind: "mcp" }
-  | { kind: "prompts" }
-  // `gid` opens that group chat's own library; without it the view is the overview of every
-  // document, which is what the sidebar entry gives.
-  | { kind: "library"; gid?: string }
-  | { kind: "memory" }
+  | { kind: "external" }
+  | { kind: "channels" }
+  // A group's own library, opened from a chat. The overview of every document lives in
+  // Settings, so this view always belongs to one group.
+  | { kind: "library"; gid: string }
   | { kind: "appearance" };
 
-/** The Tools section of the sidebar: each entry is its own page (Settings → Tools reaches the same ones) */
-const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "prompts" | "library" | "memory"; label: string; icon: typeof Sparkles }[] = [
+/** The Tools section of the sidebar: each entry is its own page.
+ *
+ *  Prompts, the library and memory are deliberately *not* here — they are Settings tabs, which
+ *  is where the rest of the configuration lives. External agents and chat channels are the
+ *  other way round: they are things you set up once and then keep an eye on, so they sit here
+ *  rather than behind a settings menu.
+ */
+const TOOL_NAV: { kind: "skills" | "plugins" | "mcp" | "external" | "channels"; label: string; icon: typeof Sparkles }[] = [
   { kind: "skills", label: "Skills", icon: Sparkles },
   { kind: "plugins", label: "Plugins", icon: Puzzle },
   { kind: "mcp", label: "MCP", icon: Plug },
-  { kind: "prompts", label: "Prompts", icon: MessageSquareText },
-  { kind: "library", label: "Library", icon: BookOpen },
-  { kind: "memory", label: "Memory", icon: Brain },
+  { kind: "external", label: "External agents", icon: TerminalSquare },
+  { kind: "channels", label: "Chat channels", icon: Webhook },
 ];
 
 interface Props {

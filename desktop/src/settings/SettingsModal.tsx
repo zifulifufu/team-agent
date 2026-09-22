@@ -1,12 +1,10 @@
 import { useEffect, type ComponentType } from "react";
-import { ArrowLeft, BarChart3, type LucideIcon, Boxes, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, Server, ShieldCheck, SlidersHorizontal, TerminalSquare, Webhook } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import ProvidersPage from "./ProvidersPage";
 import RoutingPage from "./RoutingPage";
 import LocalPage from "./LocalPage";
-import ExternalPage from "./ExternalPage";
-import ChannelsPage from "./ChannelsPage";
 import GalleryPage from "./GalleryPage";
 import UpdatesPage from "./UpdatesPage";
 import GeneralPage from "./GeneralPage";
@@ -15,6 +13,9 @@ import DataPage from "./DataPage";
 import StatsPage from "./StatsPage";
 import DepsPage from "./DepsPage";
 import AboutPage from "./AboutPage";
+import LibraryPage from "../pages/LibraryPage";
+import MemoryPage from "../pages/MemoryPage";
+import PromptsPage from "../pages/PromptsPage";
 
 export type SettingsTab =
   | "providers" | "routing" | "local"
@@ -28,6 +29,14 @@ export interface PageProps {
   onOpenGroup?: (gid: string) => void;
 }
 
+/** The library, as a settings tab: the overview of every document. A single group's library is
+ *  reached from that group's chat instead and shows up in the main area, so this one takes no
+ *  `groupId` and is wrapped rather than pointed at directly — the nav hands every page the same
+ *  props, and `LibraryPage`'s own are optional and named differently. */
+function LibraryTab() {
+  return <LibraryPage />;
+}
+
 const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: LucideIcon; page: ComponentType<PageProps> }[] }[] = [
   {
     title: "Models",
@@ -38,15 +47,16 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
     ],
   },
   {
-    // Skills, plugins, MCP, prompts, the library, memory and appearance are not listed here:
-    // each already has its own entry in the sidebar's Tools column (or under the account menu
-    // for appearance), and repeating them in Settings meant two doors to the same room. The
-    // pages themselves are unchanged — App routes those ids to the main area, so a link from
-    // inside Settings (Permissions -> Manage plugins) still lands in the right place.
+    // Prompts, the library and memory are listed here and nowhere else; skills, plugins and MCP
+    // have their own entry in the sidebar's Tools column instead, and both live in the main
+    // area (App routes those ids there, so a link from inside Settings — Gallery → "tick the
+    // skills" — lands in the right place). External agents and chat channels are the reverse
+    // case: they are in the sidebar, because they are set up once and watched, not tuned here.
     title: "Tools",
     items: [
-      { id: "external", label: "External agents", icon: TerminalSquare, page: ExternalPage },
-      { id: "channels", label: "Chat channels", icon: Webhook, page: ChannelsPage },
+      { id: "prompts", label: "Prompts", icon: MessageSquareText, page: PromptsPage },
+      { id: "library", label: "Library", icon: BookOpen, page: LibraryTab },
+      { id: "memory", label: "Memory", icon: Brain, page: MemoryPage },
       { id: "gallery", label: "Template gallery", icon: LayoutTemplate, page: GalleryPage },
     ],
   },
