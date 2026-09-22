@@ -271,14 +271,20 @@ class Store(ExtStore):
         if not cols or "kb_id" not in cols:
             return
         by_group = "group_id" in cols
-        where = "kb_id='' AND " + ("group_id=?" if by_group else "1=1")
         names = {g["id"]: g["name"] for g in self.list_groups()}
         if by_group:
-            leftovers = [r["group_id"] for r in self._q(
-                "SELECT DISTINCT group_id FROM library_docs WHERE kb_id=''")]
+            # `COALESCE` because the column is not declared NOT NULL: a row that was inserted with
+            # no owner at all carries NULL, and NULL means the same thing here as the empty string
+            # — "no group". It is not cosmetic: `knowledge_bases.group_id` *is* NOT NULL, so
+            # handing this NULL on to `add_kb` raised `IntegrityError: NOT NULL constraint failed`
+            # while the database was being opened, which left the whole app unable to start for
+            # anyone whose data contained such a row.
+            leftovers = [r["gid"] for r in self._q(
+                "SELECT DISTINCT COALESCE(group_id,'') AS gid FROM library_docs WHERE kb_id=''")]
         else:
             leftovers = [""] if self._one("SELECT 1 AS x FROM library_docs WHERE kb_id='' LIMIT 1") else []
         for gid in leftovers:
+            gid = "" if gid is None else gid
             existing = self._one("SELECT * FROM knowledge_bases WHERE group_id=?", (gid,))
             if existing:
                 kb = existing
@@ -291,8 +297,15 @@ class Store(ExtStore):
                     "Documents every group can search" if not gid else "This group's own documents",
                     gid,
                 )
-            self._x("UPDATE library_docs SET kb_id=? WHERE " + where,
-                    (kb["id"], gid) if by_group else (kb["id"],))
+            if not by_group:
+                self._x("UPDATE library_docs SET kb_id=? WHERE kb_id=''", (kb["id"],))
+            elif gid:
+                self._x("UPDATE library_docs SET kb_id=? WHERE kb_id='' AND group_id=?", (kb["id"], gid))
+            else:
+                # The shared bucket, which is where an unowned document belongs — including the
+                # NULL row that the equality test cannot reach.
+                self._x("UPDATE library_docs SET kb_id=? WHERE kb_id='' AND (group_id='' OR group_id IS NULL)",
+                        (kb["id"],))
         self._library_selection_to_kbs()
         if by_group:
             # The column is fully derived from the knowledge base now, so it goes: leaving it
@@ -795,7 +808,17 @@ already exists, otherwise create it (name and strengths are both taken from the 
             self._x("UPDATE groups SET prompt=? WHERE id=?", (patch["prompt"], gid))
         if isinstance(patch.get("ext"), dict):
             cur = self.get_group(gid)
-            merged = {**(cur["ext"] if cur else {}), **patch["ext"]}  # type: ignore[index]
+            cur_ext = dict(cur["ext"]) if cur else {}
+            merged = {**cur_ext, **patch["ext"]}  # type: ignore[index]
+            # `library` is merged one level deeper than the rest. The other keys are whole lists,
+            # so replacing them is the point; `library` is an object, and replacing it wholesale
+            # means a caller that sends only `kb_ids` resets `mode` to its default — which is
+            # "all", i.e. every knowledge base the group can reach, silently wider than the ones
+            # the user ticked. Every caller today spreads the whole object, so this guards a shape
+            # of call that does not exist yet; the cost of being wrong about that is not symmetric.
+            lib_patch = patch["ext"].get("library")
+            if isinstance(lib_patch, dict) and isinstance(cur_ext.get("library"), dict):
+                merged["library"] = {**cur_ext["library"], **lib_patch}
             self._x("UPDATE groups SET ext=? WHERE id=?", (json.dumps(normalize_ext(merged), ensure_ascii=False), gid))
         return self.get_group(gid)
 

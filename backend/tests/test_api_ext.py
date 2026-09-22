@@ -501,3 +501,62 @@ def test_upgrade_from_old_database_backfills_seed_tags_once(tmp_path):
     s2.update_agent(a["id"], {"tags": []})
     s3 = Store(tmp_path / "d")
     assert next(x for x in s3.list_agents() if x["name"] == "Copywriter")["tags"] == []
+
+
+def test_an_old_document_with_no_owner_at_all_is_still_assigned(tmp_path):
+    """`group_id` was never declared NOT NULL, so an old row can carry NULL rather than ''.
+
+    Read as NULL it went to `add_kb` unchanged, and `knowledge_bases.group_id` *is* NOT NULL — so
+    opening the database raised `IntegrityError: NOT NULL constraint failed` and the application
+    could not start at all. NULL means here exactly what the empty string already means: "no
+    group", i.e. the shared knowledge base.
+    """
+    import sqlite3
+
+    from app.store import Store
+
+    d = tmp_path / "nulldb"
+    d.mkdir()
+    db = sqlite3.connect(d / "team-agent.db")
+    db.execute("CREATE TABLE library_docs (id TEXT PRIMARY KEY, title TEXT NOT NULL, filename TEXT NOT NULL DEFAULT '', "
+               "kind TEXT NOT NULL DEFAULT 'note', size INTEGER NOT NULL DEFAULT 0, chars INTEGER NOT NULL DEFAULT 0, "
+               "chunks INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, "
+               "group_id TEXT DEFAULT '', created_at REAL NOT NULL)")
+    db.execute("INSERT INTO library_docs(id,title,kind,created_at,group_id) VALUES('n1','无主资料','txt',1.0,NULL)")
+    db.execute("INSERT INTO library_docs(id,title,kind,created_at,group_id) VALUES('s1','共享资料','txt',1.0,'')")
+    db.commit()
+    db.close()
+
+    st = Store(d)
+    kbs = st.list_kbs()
+    assert len(kbs) == 1, f"one shared base, not one per startup: {[k['group_id'] for k in kbs]}"
+    assert sorted(x["title"] for x in st.list_docs(kbs[0]["id"])) == ["共享资料", "无主资料"]
+
+    again = Store(d)                       # the second open has nothing left to do
+    assert len(again.list_kbs()) == 1 and len(again.list_docs()) == 2
+
+
+def test_a_partial_library_patch_keeps_the_rest_of_the_selection(tmp_path):
+    """`library` is the one `ext` key that is an object, and `ext` is merged one level deep.
+
+    A patch carrying only `kb_ids` therefore replaced the whole object and `normalize_ext` filled
+    `mode` with its default — which is `all`, i.e. every knowledge base the group can reach. A
+    caller that means "tick one more box" would have widened the group's search well past the
+    boxes that are ticked, and nothing would have said so.
+    """
+    from app.store import Store
+
+    st = Store(tmp_path / "d")
+    g = st.create_group("G")
+    st.update_group(g["id"], {"ext": {"library": {
+        "mode": "selected", "kb_ids": ["kb1"], "collection_ids": ["c1"]}}})
+    st.update_group(g["id"], {"ext": {"library": {"kb_ids": ["kb1", "kb2"]}}})
+    lib = st.get_group(g["id"])["ext"]["library"]
+    assert lib["mode"] == "selected", "the mode was reset to the default, which is wider"
+    assert lib["collection_ids"] == ["c1"]
+    assert lib["kb_ids"] == ["kb1", "kb2"]
+
+    # A sibling key is still replaced wholesale — only `library` is merged deeper.
+    st.update_group(g["id"], {"ext": {"plan": "off"}})
+    assert st.get_group(g["id"])["ext"]["plan"] == "off"
+    assert st.get_group(g["id"])["ext"]["library"]["mode"] == "selected"
