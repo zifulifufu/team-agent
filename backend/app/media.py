@@ -56,11 +56,17 @@ def save_bytes(data: bytes, workspace: Path, *, subdir: str, ext: str, stem_sour
                fallback: str, what: str, what_zh: str) -> Path:
     """Write generated media into the group's workspace, and nowhere else.
 
-    Three properties, each for a concrete failure:
+    Four properties, each for a concrete failure:
 
     * the directory is checked, not assumed — a member can create `video` (or `image`) as a
       symlink to somewhere else with `run_code`, and `mkdir(exist_ok=True)` would happily
       write through it;
+    * **the check and the write are the same object.** Testing the path and then using it again
+      leaves a window: a member's own process runs beside this one and can replace the
+      directory with a symlink in between, and `O_NOFOLLOW` on the file only covers the last
+      component. So the directory is opened `O_NOFOLLOW|O_DIRECTORY` and everything after that
+      goes through that descriptor — a directory swapped in mid-flight makes the open fail, or
+      is simply not the one the bytes are written into, instead of redirecting them;
     * the staging file is created with O_EXCL|O_NOFOLLOW, so a symlink planted at that name
       cannot make this truncate something outside the workspace, and two simultaneous saves
       cannot share one staging file;
@@ -82,24 +88,40 @@ def save_bytes(data: bytes, workspace: Path, *, subdir: str, ext: str, stem_sour
             f"\"{out_dir}\" resolves outside the workspace, so the {what} was not saved.",
             f"「{out_dir}」解析后在工作目录之外,{what_zh}没有保存。",
         ))
-    stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug(stem_source) or slug(fallback) or 'output'}"
-    staging = out_dir / f".{stem}.{os.getpid()}.part"
+    # Opened once and used for every operation below: opening a symlink with O_NOFOLLOW fails,
+    # which is also the re-check of the two tests above at the moment that matters.
     try:
-        fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        dir_fd = os.open(out_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW)
     except OSError as e:
         raise ValueError(i18n.pick_now(
-            f"Could not create the staging file in {out_dir}: {e}",
-            f"无法在 {out_dir} 里创建临时文件:{e}",
+            f"\"{out_dir}\" could not be opened for writing ({e}), so the {what} was not saved.",
+            f"无法打开「{out_dir}」写入({e}),{what_zh}没有保存。",
         )) from None
     try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        for n in itertools.count(1):
-            path = out_dir / (f"{stem}{ext}" if n == 1 else f"{stem}-{n}{ext}")
+        stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug(stem_source) or slug(fallback) or 'output'}"
+        staging = f".{stem}.{os.getpid()}.part"
+        try:
+            fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600,
+                         dir_fd=dir_fd)
+        except OSError as e:
+            raise ValueError(i18n.pick_now(
+                f"Could not create the staging file in {out_dir}: {e}",
+                f"无法在 {out_dir} 里创建临时文件:{e}",
+            )) from None
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            for n in itertools.count(1):
+                name = f"{stem}{ext}" if n == 1 else f"{stem}-{n}{ext}"
+                try:
+                    os.link(staging, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                except FileExistsError:
+                    continue
+                return out_dir / name
+        finally:
             try:
-                os.link(staging, path)        # atomic, and fails rather than overwriting
-            except FileExistsError:
-                continue
-            return path
+                os.unlink(staging, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
     finally:
-        staging.unlink(missing_ok=True)
+        os.close(dir_fd)

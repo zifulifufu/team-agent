@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-from . import i18n, media
+from . import i18n, media, net
 from .media import offline_reason, slug  # noqa: F401  (re-exported for the tool layer)
 
 # The provider kinds this module can drive. A subset of `media.MEDIA_KINDS`: the video tool
@@ -46,6 +46,10 @@ DEFAULT_MODEL = "gpt-image-1"
 
 SUBMIT_TIMEOUT = 120.0
 DOWNLOAD_TIMEOUT = 120.0
+
+# A refusal is a sentence, not a document. The cap exists so an error body cannot be unbounded
+# either — the size of a *reply* is a different question from the size of an *image*.
+ERROR_BODY_CAP = 64 * 1024
 
 
 class ImageError(Exception):
@@ -124,10 +128,18 @@ def decode_b64(value: str) -> bytes:
     if s.startswith("data:"):                     # some gateways inline a data: URL
         s = s.split(",", 1)[-1]
     try:
-        return base64.b64decode(s, validate=False)
+        blob = base64.b64decode(s, validate=False)
     except Exception as e:  # noqa: BLE001
         raise ImageError(i18n.pick_now(f"the image data could not be decoded ({e})",
                                        f"图片数据无法解码({e})")) from None
+    if not blob:
+        # `validate=False` drops characters outside the alphabet, so a gateway that answers with
+        # an error string — or with "!!!!" — decodes to nothing. Returning those bytes would save
+        # a 0-byte .png and report a successful generation.
+        raise ImageError(i18n.pick_now(
+            "the image data was empty once decoded, so no image came back",
+            "图片数据解码后是空的,也就是没有拿到图片"))
+    return blob
 
 
 def first_image(data: object) -> tuple[bytes | None, str]:
@@ -196,29 +208,107 @@ def explain(status: int, body: str) -> str:
     return f"{msg} · {detail}" if detail else msg
 
 
-def _why(r: httpx.Response) -> str:
-    return explain(r.status_code, r.text)
+def _why(status: int, body: str) -> str:
+    return explain(status, body)
 
 
-async def fetch(url: str, *, max_bytes: int, client: httpx.AsyncClient | None = None) -> bytes:
+def _too_big(cap: int, *, image_limit: bool) -> ImageError:
+    """Two different limits, two different sentences: one is the group's allowance for an image,
+    the other is a reply that is not an image at all but something oversized."""
+    if image_limit:
+        return ImageError(i18n.pick_now(
+            f"the image is larger than this group allows ({media.size_label(cap)})",
+            f"图片超过了本群允许的大小({media.size_label(cap)})"))
+    return ImageError(i18n.pick_now(
+        f"the image service sent more than {media.size_label(cap)} in one reply, so it was not read "
+        "(an image that size could not have been used anyway)",
+        f"图片服务单次返回了超过 {media.size_label(cap)} 的内容,已停止读取(这么大的图片本来也用不上)"))
+
+
+async def _read_capped(resp: httpx.Response, cap: int, *, image_limit: bool) -> bytes:
+    """Read a reply, refusing to hold more than `cap` bytes.
+
+    Reading the body and checking its length afterwards is the wrong order: by then a service
+    that answers with a gigabyte has already been buffered, and the check on the *image* size
+    does not bound the memory the *reply* takes. Every read in this module goes through here,
+    which is also what makes the error path in `fetch` possible — `resp.text` on a streamed
+    response raises before it has been read, and that used to hide the service's own message.
+    """
+    body = bytearray()
+    async for chunk in resp.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > cap:
+            raise _too_big(cap, image_limit=image_limit)
+    return bytes(body)
+
+
+def _local_host(host: str) -> bool:
+    """True for an address that only means something on this machine or on this network."""
+    import ipaddress
+
+    h = (host or "").strip().strip("[]").lower()
+    if not h:
+        return True                       # no host at all: not somewhere this could be fetched from
+    if h == "localhost" or h.endswith((".localhost", ".local", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False                      # a name on the internet; resolving it is DNS's business
+    return bool(ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved
+                or ip.is_unspecified or ip.is_multicast)
+
+
+def may_fetch(url: str, base: str) -> bool:
+    """May this download go ahead? An address on the internet always may; one on this machine
+    or the local network only when it is the provider's own address.
+
+    Everywhere else in this app `http(s)` means "does not touch this machine", which is true of
+    a host on the internet and false of `127.0.0.1`, `10.x` or `192.168.x`. A gateway chooses
+    the URL it answers with, so without this it could read a service on this machine — or a
+    neighbour on the LAN — and hand the response back as an "image". A provider that returns its
+    own address (a local ComfyUI or a self-hosted server) keeps working, and so does a gateway
+    that returns a CDN link, because that is neither.
+    """
+    try:
+        host = (httpx.URL(url).host or "").lower()
+        own = (httpx.URL(base).host or "").lower()
+    except Exception:  # noqa: BLE001 — an unparsable address is not one to fetch from
+        return False
+    return (not _local_host(host)) or host == own
+
+
+async def fetch(url: str, *, max_bytes: int, client: httpx.AsyncClient | None = None,
+                base: str = "") -> bytes:
     """Download an image a gateway returned as a URL. Those links expire quickly, so this
-    happens straight away rather than when the UI asks for it."""
+    happens straight away rather than when the UI asks for it.
+
+    `base` is the provider's own address; it is what lets a local provider's link through while
+    refusing a link that points at something local from a provider that is not (see `may_fetch`).
+    """
+    if not may_fetch(url, base):
+        try:
+            shown = httpx.URL(url).host or url
+        except Exception:  # noqa: BLE001
+            shown = url
+        raise ImageError(i18n.pick_now(
+            f"the image service asked for a download from \"{shown}\", which is this machine or the "
+            "local network, while the provider itself is not local. That was refused: a service "
+            "should not be able to reach into your network through this app. If the provider really "
+            "does run on this machine, mark it as local.",
+            f"图片服务要求从「{shown}」下载图片,那是本机或局域网地址,而这个服务商并不是本地服务——已拒绝:"
+            "服务方不应该通过本应用访问你的内网。如果它确实跑在本机,请把它标为本地。"))
     own = client is None
-    c = client or httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT)
+    c = client or net.client(url, timeout=DOWNLOAD_TIMEOUT)
     try:
         async with c.stream("GET", url) as resp:
             if resp.status_code >= 300:
-                raise ImageError(_why(resp))
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in resp.aiter_bytes():
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ImageError(i18n.pick_now(
-                        f"the image is larger than this group allows ({media.size_label(max_bytes)})",
-                        f"图片超过了本群允许的大小({media.size_label(max_bytes)})"))
-                chunks.append(chunk)
-            return b"".join(chunks)
+                # The body is read here instead of through `resp.text`: on a streamed response
+                # the text is not available until something has read it, and asking for it threw
+                # away the service's own message in favour of an httpx error about reading.
+                detail = await _read_capped(resp, ERROR_BODY_CAP, image_limit=False)
+                raise ImageError(_why(resp.status_code, detail.decode("utf-8", "replace")))
+            return await _read_capped(resp, max_bytes, image_limit=True)
     except ImageError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -238,27 +328,35 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     comparison error far from its cause.
     """
     url = _api(provider["base_url"], "/v1/images/generations")
+    base = (provider.get("base_url") or "").strip()
+    cap = max(ERROR_BODY_CAP, max_bytes * 2)      # base64 inflates by a third; the envelope is small
     own = client is None
-    c = client or httpx.AsyncClient(timeout=SUBMIT_TIMEOUT)
+    c = client or net.client(url, timeout=SUBMIT_TIMEOUT)
     started = time.time()
     try:
         try:
-            resp = await c.post(url, json=payload, headers=_headers(provider.get("api_key") or ""),
-                                timeout=max(5.0, deadline_s))
+            async with c.stream("POST", url, json=payload,
+                                headers=_headers(provider.get("api_key") or ""),
+                                timeout=max(5.0, deadline_s)) as resp:
+                status = resp.status_code
+                raw = await _read_capped(resp, cap if status < 300 else ERROR_BODY_CAP,
+                                        image_limit=False)
+        except ImageError:
+            raise
         except Exception as e:  # noqa: BLE001 — the common case is an unreachable address
             raise ImageError(i18n.pick_now(
                 f"could not reach the image service at {url} ({e})",
                 f"连不上图片服务 {url}({e})")) from None
-        if resp.status_code >= 300:
-            raise ImageError(_why(resp))
+        if status >= 300:
+            raise ImageError(_why(status, raw.decode("utf-8", "replace")))
         try:
-            data = resp.json()
+            data = json.loads(raw)
         except ValueError:
             raise ImageError(i18n.pick_now("the image service returned something that is not JSON",
                                            "图片服务返回的不是 JSON")) from None
         blob, link = first_image(data)
         if blob is None:
-            blob = await fetch(link, max_bytes=max_bytes, client=c)
+            blob = await fetch(link, max_bytes=max_bytes, client=c, base=base)
     finally:
         if own:
             await c.aclose()
@@ -292,7 +390,7 @@ async def probe(provider: dict, model: str, *, client: httpx.AsyncClient | None 
                                     "这个服务商没有填地址")
     url = _api(base, "/v1/models")
     own = client is None
-    c = client or httpx.AsyncClient(timeout=15.0)
+    c = client or net.client(url, timeout=15.0)
     try:
         try:
             resp = await c.get(url, headers=_headers(provider.get("api_key") or ""))
@@ -302,7 +400,7 @@ async def probe(provider: dict, model: str, *, client: httpx.AsyncClient | None 
         if own:
             await c.aclose()
     if resp.status_code >= 300:
-        return False, _why(resp)
+        return False, _why(resp.status_code, resp.text)
     try:
         ids = [str(m.get("id")) for m in (resp.json() or {}).get("data") or [] if isinstance(m, dict)]
     except ValueError:

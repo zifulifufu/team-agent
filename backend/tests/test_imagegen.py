@@ -18,10 +18,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 
 from app import imagegen, media, video
 from app.toolhub import builtin_specs, timeout_budget
 from tests.conftest import FakeLLM
+from tests.fakes import FakeServer as RealServer
 from tests.test_collab import setup
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 512
@@ -195,6 +198,80 @@ async def test_a_download_bigger_than_the_cap_is_refused_while_streaming(env):
     assert "larger" in str(e.value)
 
 
+# ------------------------------------------- what a service may make this app fetch or hold
+def test_data_that_decodes_to_nothing_is_not_a_successful_generation():
+    """`validate=False` drops characters outside the base64 alphabet, so an error string — or
+    "!!!!" — decodes to b"". Saving that left a 0-byte .png behind a "generation succeeded"."""
+    with pytest.raises(imagegen.ImageError) as e:
+        imagegen.decode_b64("!!!!")
+    assert "empty" in str(e.value)
+    assert imagegen.decode_b64(B64) == PNG          # the real thing still decodes
+
+
+def test_a_link_into_the_local_network_is_refused_unless_it_is_the_providers_own():
+    """`http(s)` means "not this machine" everywhere else in the app; that is false of
+    127.0.0.1, 10.x or 192.168.x, and a gateway chooses the URL it answers with."""
+    remote = "https://api.example.com/v1"
+    assert imagegen.may_fetch("https://cdn.example.com/x.png", remote) is True
+    assert imagegen.may_fetch("http://127.0.0.1:8188/x.png", "http://127.0.0.1:8188/v1") is True
+    for bad in ("http://127.0.0.1:9000/private/export", "http://localhost:9000/x",
+                "http://192.168.1.9/x", "http://10.0.0.5/x",
+                "http://169.254.169.254/latest/meta-data", "http://foo.internal/x"):
+        assert imagegen.may_fetch(bad, remote) is False, bad
+
+
+async def test_a_gateway_cannot_reach_into_the_local_network(env):
+    """The other end of the same rule: the provider is on the internet and answers with a URL
+    pointing at this machine, so the download is refused instead of being fetched and handed
+    back as an "image"."""
+    orch, store, g, prov, srv = env
+    store.update_provider(prov["id"], {"base_url": "https://api.example.com/v1"})
+    fake = FakeServer(body={"data": [{"url": "http://127.0.0.1:9000/private/export"}]})
+    with pytest.raises(imagegen.ImageError) as e:
+        await imagegen.generate(store.get_provider(prov["id"]),
+                                imagegen.build_payload("a cat", model="m", size="1024x1024"),
+                                max_bytes=1024 * 1024, deadline_s=10, client=fake.client())
+    assert "local network" in str(e.value)
+    assert not any(p.endswith("/private/export") for p in fake.paths), "the request went out anyway"
+
+
+async def test_an_oversized_reply_is_refused_while_it_is_read(env):
+    """The cap on an *image* cannot bound the memory a *reply* takes: a service answering with
+    four megabytes of base64 for a one-kilobyte allowance must not be buffered first."""
+    orch, store, g, prov, srv = env
+    fake = FakeServer(body={"data": [{"b64_json": "A" * 4_000_000}]})
+    with pytest.raises(imagegen.ImageError) as e:
+        await imagegen.generate(prov, imagegen.build_payload("a cat", model="m", size="1024x1024"),
+                                max_bytes=1000, deadline_s=10, client=fake.client())
+    assert "not read" in str(e.value)
+
+
+async def test_a_real_refusal_keeps_the_services_own_message(monkeypatch):
+    """A **real socket** on purpose. The fake transport hands back a response that already has a
+    body, while a streamed response from a real server does not — and asking `resp.text` for one
+    raises, so the service's own message was replaced by an httpx error about reading it. No test
+    through the fake transport could see that; this one can.
+
+    The proxy variable is set on purpose too: a local image service must be reached directly.
+    With the environment proxy honoured, this is exactly where "the service had a server-side
+    problem (HTTP 502)" came from for a service that was answering perfectly well — the same
+    trap `net.py` documents for Ollama and the reason the client is chosen by destination.
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")       # a port nothing listens on
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    app = FastAPI()
+
+    @app.get("/image-out.png")
+    async def gone():                                          # noqa: ANN202
+        return PlainTextResponse("link expired", status_code=403)
+
+    with RealServer(app) as srv:
+        with pytest.raises(imagegen.ImageError) as e:
+            await imagegen.fetch(f"{srv.url}/image-out.png", max_bytes=1024, base=srv.url)
+    assert "403" in str(e.value) and "link expired" in str(e.value), str(e.value)
+    assert "502" not in str(e.value), "the request was sent through the environment proxy"
+
+
 async def test_the_key_is_sent_as_a_bearer_token(env):
     orch, store, g, prov, srv = env
     fake = FakeServer(key_expected="sk-test-1234567890")
@@ -258,6 +335,40 @@ def test_a_planted_link_at_the_staging_name_is_not_followed(tmp_path, monkeypatc
         imagegen.save(b"NEW", ws, "a cat")
 
     assert victim.read_bytes() == b"precious" and "staging" in str(e.value)
+
+
+def test_a_directory_swapped_between_check_and_write_never_receives_the_bytes(tmp_path, monkeypatch):
+    """The check and the write have to be the same object.
+
+    A member's own process runs beside this one and can replace `image` with a symlink after
+    the path checks passed — `O_NOFOLLOW` on the file does not cover that, because it only
+    guards the last component. The swap is done inside the last check, so it lands exactly in
+    the window between "the path is fine" and "the bytes are written": with the directory
+    opened once and everything done through that descriptor, that window is closed.
+    """
+    ws = tmp_path / "ws"
+    (ws / "image").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_inside = media._inside
+    swapped = []
+
+    def check_then_swap(root, path, *a, **kw):
+        ok = real_inside(root, path, *a, **kw)
+        if ok and not swapped:
+            swapped.append(True)
+            (ws / "image").rmdir()            # empty: nothing has been written yet
+            (ws / "image").symlink_to(outside, target_is_directory=True)
+        return ok
+
+    monkeypatch.setattr(media, "_inside", check_then_swap)
+    try:
+        imagegen.save(b"SECRET", ws, "a cat")
+    except imagegen.ImageError:
+        # Refusing is a fine outcome; the point is that the bytes do not reach `outside`.
+        pass
+    assert swapped, "the swap must have happened for this test to mean anything"
+    assert list(outside.iterdir()) == [], "the bytes followed the swapped-in symlink"
 
 
 def test_two_images_with_the_same_prompt_do_not_overwrite_each_other(tmp_path):

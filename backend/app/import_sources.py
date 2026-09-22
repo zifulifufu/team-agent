@@ -267,7 +267,7 @@ def _mask(values: dict) -> dict:
     return {k: ("••••••" if v else "") for k, v in (values or {}).items()}
 
 
-def paths_of(src: dict) -> list[Path]:
+def paths_of(src: dict, capped: list[str] | None = None) -> list[Path]:
     """Where this source keeps its file, on this platform. Empty = not applicable here.
 
     A `tree` source may use a wildcard (`…/marketplaces/*/plugins/*/skills`), because the
@@ -277,11 +277,16 @@ def paths_of(src: dict) -> list[Path]:
     An `installed` source has no fixed path at all: the directories are whatever the other
     application's plugin record says is installed, joined with the subdirectory this source
     cares about (`skills`, `agents`).
+
+    `capped` collects the keys of sources whose own list was cut short, so the caller can say
+    the answer is partial rather than present it as the whole thing.
     """
     if src["format"] == "tree":
         raw = str(src["root"])
         if "*" in raw:
-            return sorted((Path(p) for p in glob.glob(str(_expand(raw)))), key=str)[:MAX_ITEMS]
+            all_found = sorted((Path(p) for p in glob.glob(str(_expand(raw)))), key=str)
+            _note_cap(src, len(all_found), MAX_ITEMS, capped)
+            return all_found[:MAX_ITEMS]
         return [_expand(raw)]
     if src["format"] == "installed":
         sub = str(src.get("sub") or "")
@@ -293,6 +298,7 @@ def paths_of(src: dict) -> list[Path]:
                     found.append(d)
             except OSError:
                 continue
+        _note_cap(src, len(found), MAX_ITEMS, capped)
         return found[:MAX_ITEMS]
     if src["format"] == "glob":
         return []                                    # resolved by `_files_of` instead
@@ -303,17 +309,54 @@ def paths_of(src: dict) -> list[Path]:
     return out
 
 
-def _files_of(src: dict) -> list[Path]:
-    """Every readable file this source points at, symlinks and oversized files excluded."""
+def _note_cap(src: dict, seen: int, cap: int, capped: list[str] | None) -> None:
+    """Record that this source had more than the cap allows.
+
+    Without it a source with 700 skills answers `truncated: false` while handing back 600: the
+    global list never grew past its own limit, so nothing downstream could tell that discovery
+    had already thrown entries away.
+    """
+    if capped is not None and seen > cap:
+        capped.append(src["key"])
+
+
+def _plain_path(path: Path, root: Path) -> bool:
+    """Is `path` a real path under `root`, with no symlink anywhere below `root`?
+
+    `path.is_symlink()` only answers for the last component. With a *directory* in the middle
+    replaced by a symlink — `~/.workbuddy/connectors/demo` pointing somewhere else — the files
+    underneath look like ordinary files at ordinary-looking paths, and reading them reaches
+    outside the directory the source declared. `resolve()` answers a different question ("where
+    does this end up"), which is why the walk in between is the thing to check.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False                          # not under the declared root at all
+    cur = root
+    for part in rel.parts:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _files_of(src: dict, capped: list[str] | None = None) -> list[Path]:
+    """Every readable file this source points at: symlinks, escapes and oversized files excluded."""
     if src["format"] == "glob":
         pat = str(_expand(src["glob"]))
-        found = sorted(Path(p) for p in glob.glob(pat))[:MAX_ITEMS]
+        all_found = sorted(Path(p) for p in glob.glob(pat))
+        _note_cap(src, len(all_found), MAX_ITEMS, capped)
+        found = all_found[:MAX_ITEMS]
     else:
-        found = paths_of(src)
+        found = paths_of(src, capped)
     out = []
     for p in found:
         try:
-            if p.is_symlink() or not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
+            if not _plain_path(p, _home()) or not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
                 continue
         except OSError:
             continue
@@ -397,7 +440,7 @@ def risk_notes(server: dict) -> list[str]:
     return out
 
 
-def _skill_items(src: dict, store: Any) -> list[dict]:
+def _skill_items(src: dict, store: Any, capped: list[str] | None = None) -> list[dict]:
     from .tools import parse_skill_text, safe_skill_name
     have = set()
     try:
@@ -409,10 +452,13 @@ def _skill_items(src: dict, store: Any) -> list[dict]:
     for root in paths_of(src):
         if not root.is_dir() or root.is_symlink():
             continue
-        for path in sorted(root.rglob("SKILL.md"))[:MAX_ITEMS]:
+        all_found = sorted(root.rglob("SKILL.md"))
+        _note_cap(src, len(all_found), MAX_ITEMS, capped)
+        for path in all_found[:MAX_ITEMS]:
             try:
                 rel = path.relative_to(root)
-                if len(rel.parts) > MAX_SKILL_DEPTH or path.is_symlink() or path.stat().st_size > MAX_SKILL_BYTES:
+                if (len(rel.parts) > MAX_SKILL_DEPTH or not _plain_path(path, root)
+                        or path.stat().st_size > MAX_SKILL_BYTES):
                     continue
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except (OSError, ValueError):
@@ -537,20 +583,28 @@ def expert_label(ex: dict, lang: str, fallback: str = "") -> str:
     return ex.get("display_en") or ex.get("display_zh") or fallback or ex.get("name") or ""
 
 
-def _expert_items(src: dict, store: Any, notes: list[str] | None = None) -> list[dict]:
+def _expert_items(src: dict, store: Any, notes: list[str] | None = None,
+                  capped: list[str] | None = None) -> list[dict]:
     """Expert packages found under this source, as members-to-be. Read-only."""
     pattern = str(src.get("glob") or "*.md")
     agents = store.list_agents()
+    # Which installed package each agents-directory belongs to. The package is part of an
+    # expert's identity: two packages can each ship an agent whose frontmatter says `name:
+    # helper`, and keying only on that would treat the second one as already imported.
+    sub = str(src.get("sub") or "")
+    package_of = {(pl["path"] / sub) if sub else pl["path"]: pl["key"] for pl in installed_plugins()}
     out: list[dict] = []
     stubs = 0
-    for root in paths_of(src):
+    for root in paths_of(src, capped):
         try:
-            found = sorted(root.glob(pattern))[:MAX_ITEMS]
+            all_found = sorted(root.glob(pattern))
         except OSError:
             continue
-        for path in found:
+        _note_cap(src, len(all_found), MAX_ITEMS, capped)
+        for path in all_found[:MAX_ITEMS]:
             try:
-                if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_EXPERT_BYTES:
+                if (not _plain_path(path, root) or not path.is_file()
+                        or path.stat().st_size > MAX_EXPERT_BYTES):
                     continue
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
@@ -565,21 +619,32 @@ def _expert_items(src: dict, store: Any, notes: list[str] | None = None) -> list
             slug = _slug(ex["name"]) or _slug(path.stem)
             if not slug:
                 continue
+            pkg = package_of.get(root) or f"{src['key']}:{path.parent.parent.name}"
+            identity = f"{pkg}#{slug}"
             label = expert_label(ex, i18n.current(), path.stem)
             out.append({"kind": "expert", "source": src["key"], "app": src["app"],
-                        "name": slug, "label": label,
+                        "name": slug, "identity": identity, "label": label,
                         "role": (ex["profession_zh"] if i18n.current() == "zh" else ex["profession_en"])
                                 or ex["profession_en"] or ex["profession_zh"] or "",
                         "description": ex["description"], "chars": len(body),
                         "avatar": expert_avatar(label, ex["profession_en"], ex["profession_zh"],
                                                 ex["description"], body[:400]),
                         "bundled_skills": _bundled_skills(path),
-                        "path": str(path), "exists": _expert_exists(agents, slug)})
+                        "path": str(path), "exists": _expert_exists(agents, identity, slug)})
     if stubs and notes is not None:
         notes.append(i18n.pick_now(
             f"{src['app']}: {stubs} agent file(s) are template stubs whose prompt lives in a "
             "separate template file, so there is nothing to import from them",
             f"{src['app']}:有 {stubs} 个 agent 文件只是模板片段(真正的提示词在另一个模板文件里),没有可导入的内容"))
+    # Two packages can ship an agent filed under the same name. The list is keyed by that name —
+    # ticking a row ticks the name — so the two rows would move together and only one of them
+    # could ever arrive. Where that happens the package is worked into the key.
+    seen: dict[str, int] = {}
+    for it in out:
+        seen[it["name"]] = seen.get(it["name"], 0) + 1
+    for it in out:
+        if seen[it["name"]] > 1:
+            it["name"] = it["identity"]
     # One pack ships four experts that all call themselves "PCXX AI Expert". A list where four
     # rows read identically is a list nobody can choose from, so the package name is added
     # where the display name is not unique. It is only the label: the member keeps the name
@@ -605,14 +670,19 @@ def _bundled_skills(agent_file: Path) -> int:
     return 0
 
 
-def _expert_exists(agents: list[dict], slug: str) -> bool:
-    """Has this package already been imported?
+def _expert_exists(agents: list[dict], identity: str, slug: str) -> bool:
+    """Has this package's agent already been imported?
 
-    Keyed on `origin` alone, which records the package rather than the name: the same expert
-    imported twice must be a skip, but a member that merely happens to share a display name
-    must not block it — one pack ships four experts that all call themselves the same thing.
+    Keyed on `origin`, which records the package *and* the file rather than the display name:
+    the same expert imported twice must be a skip, but a member that merely happens to share a
+    name must not block it — one pack ships four experts that all call themselves the same
+    thing, and two packs can each ship one called `helper`.
+
+    `workbuddy:<slug>` is also accepted: that is what an import wrote before the package became
+    part of the key, and refusing to recognise it would import a duplicate member.
     """
-    return any((a.get("origin") or "") == f"workbuddy:{slug}" for a in agents)
+    wanted = {f"workbuddy:{identity}", f"workbuddy:{slug}"}
+    return any((a.get("origin") or "") in wanted for a in agents)
 
 
 def unique_member_name(store: Any, wanted: str, slug: str) -> str:
@@ -689,6 +759,11 @@ def scan(store: Any, only: list[str] | None = None) -> dict:
     catalogue of every connector an application knows about — useful to search, wrong to
     pour into the default list, where it would bury the handful of things that are actually
     installed on this machine.
+
+    `truncated` means "this list is not everything on the machine": either the result hit the
+    cap, or a source's own enumeration did (`capped`) — a source holding 700 skills hands back
+    600 without the total ever exceeding the cap, and reporting `false` there would be a lie
+    about a complete answer.
     """
     if only:
         wanted = [s for s in SOURCES if s["key"] in only]
@@ -696,18 +771,19 @@ def scan(store: Any, only: list[str] | None = None) -> dict:
         wanted = [s for s in SOURCES if not s.get("bulk")]
     items: list[dict] = []
     notes: list[str] = []
+    capped: list[str] = []
     for src in wanted:
         if src["kind"] == "skill":
-            items.extend(_skill_items(src, store))
+            items.extend(_skill_items(src, store, capped))
             continue
         if src["kind"] == "expert":
-            items.extend(_expert_items(src, store, notes))
+            items.extend(_expert_items(src, store, notes, capped))
             continue
         # Anything this source says about *all* of its servers goes first: on a remote
         # connector it is the important part (the authorization stayed behind), and a
         # per-server heuristic has nothing to say about it.
         src_risks = [i18n.pick_now(en, zh) for en, zh in (src.get("risks") or [])]
-        for path in _files_of(src):
+        for path in _files_of(src, capped):
             try:
                 servers, warns = _read_at(src, path)
             except ValueError as e:
@@ -749,8 +825,14 @@ def scan(store: Any, only: list[str] | None = None) -> dict:
             f"{len(folded)} entry/entries are listed once because the same application defines "
             f"them in more than one file: {shown}",
             f"有 {len(folded)} 条同名条目只列一次,因为它们所属的同一个应用在多个文件里定义了它们:{shown}"))
+    if capped:
+        notes.append(i18n.pick_now(
+            f"some sources hold more than the {MAX_ITEMS} entries this scan reads, so the list is "
+            f"partial: {', '.join(sorted(set(capped))[:4])}",
+            f"有些来源的条目超过了本扫描一次读取的 {MAX_ITEMS} 条上限,所以这个清单是不完整的:"
+            f"{', '.join(sorted(set(capped))[:4])}"))
     return {"items": unique[:MAX_ITEMS], "notes": notes[:20],
-            "truncated": len(unique) > MAX_ITEMS}
+            "truncated": len(unique) > MAX_ITEMS or bool(capped)}
 
 
 def import_mcp(store: Any, source: str, names: list[str]) -> dict:
@@ -813,8 +895,9 @@ def import_experts(store: Any, source: str, names: list[str]) -> dict:
     an expert's instructions would be inventing an expert, and the package is the only thing
     here that knows what it is supposed to say.
 
-    `origin` records the package a member came from (`workbuddy:<slug>`). That is what makes a
-    second import a skip instead of a duplicate, and it stays true if the user renames them.
+    `origin` records the package and the file a member came from (`workbuddy:<package>#<slug>`).
+    That is what makes a second import a skip instead of a duplicate, and it stays true if the
+    user renames them.
     """
     src = BY_KEY.get(source)
     if not src or src["kind"] != "expert":
@@ -850,7 +933,7 @@ def import_experts(store: Any, source: str, names: list[str]) -> dict:
         role = ((ex["profession_zh"] if lang == "zh" else ex["profession_en"])
                 or ex["profession_en"] or ex["profession_zh"] or "")
         store.create_agent(name, item["avatar"], role, body, None, [], [],
-                           origin=f"workbuddy:{item['name']}")
+                           origin=f"workbuddy:{item['identity']}")
         added.append(name)
         if item["bundled_skills"]:
             notes.append(i18n.pick_now(

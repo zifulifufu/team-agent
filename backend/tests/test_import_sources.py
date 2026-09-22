@@ -356,7 +356,8 @@ def test_an_expert_package_becomes_a_member_with_its_own_prompt(home):
     a = imported(store)[0]
     assert a["name"] == "Academic Writing Expert" and a["role"] == "Academic Writing"
     assert "绝不编造文献" in a["prompt"], "the package's own text is the prompt"
-    assert a["origin"] == "workbuddy:academic-writing"
+    assert a["origin"] == "workbuddy:academic-writing@experts#academic-writing", \
+        "the package is part of the identity, so two packages may ship the same slug"
     assert a["model_id"] is None, "an imported expert must not have a model pinned for the user"
     # a second import is a skip, and the scan now says so
     assert I.import_experts(store, "workbuddy-experts", ["academic-writing"]) == {
@@ -512,3 +513,62 @@ def test_experts_are_listed_as_a_source_like_any_other(home):
     assert got["workbuddy-experts"]["kind"] == "expert"
     assert got["workbuddy-experts"]["found"] is True and got["workbuddy-experts"]["count"] == 1
     assert got["workbuddy-experts"]["notes"], "the source says what travels and what does not"
+
+
+# =================================================== identity, and what a scan does not show
+def test_an_agent_name_used_by_two_packages_is_not_treated_as_already_imported(home):
+    """Two packages can each ship an agent whose frontmatter says `name: helper`. Keying identity
+    on that alone made the second one look like a duplicate of the first: it showed as "already
+    here" and could never be imported."""
+    store = Store(home / "data")
+    install(home, "alpha", agents={"helper.md": expert_md(key="helper", en="Alpha Helper")})
+    install(home, "beta", agents={"helper.md": expert_md(key="helper", en="Beta Helper")})
+    items = servers_of(store, "workbuddy-experts")
+    assert len(items) == 2 and not any(i["exists"] for i in items)
+    assert {i["identity"] for i in items} == {"alpha@experts#helper", "beta@experts#helper"}
+    # the selection key has to be unique too, or one tick would move both rows
+    assert sorted(i["name"] for i in items) == ["alpha@experts#helper", "beta@experts#helper"]
+
+    got = I.import_experts(store, "workbuddy-experts", ["alpha@experts#helper", "beta@experts#helper"])
+    assert sorted(got["added"]) == ["Alpha Helper", "Beta Helper"]
+    assert {a["origin"] for a in imported(store)} == {
+        "workbuddy:alpha@experts#helper", "workbuddy:beta@experts#helper"}
+    assert I.import_experts(store, "workbuddy-experts",
+                            ["alpha@experts#helper"])["added"] == []
+
+
+def test_an_import_from_before_the_package_was_part_of_the_key_is_still_recognised(home):
+    """Members imported by an earlier version carry `workbuddy:<slug>`. Reading those as a
+    different expert would import a second copy instead of skipping."""
+    store = Store(home / "data")
+    install(home, "academic-writing", agents={"academic-writing.md": expert_md()})
+    store.create_agent("Imported earlier", "✍️", "", "x", None, [], [],
+                       origin="workbuddy:academic-writing")
+    assert servers_of(store, "workbuddy-experts")[0]["exists"] is True
+
+
+def test_a_source_cut_short_says_the_list_is_partial(home, monkeypatch):
+    """A source holding more entries than the cap hands back the cap — without saying so, the
+    total never exceeds the global limit either, so the answer claimed to be complete."""
+    store = Store(home / "data")
+    monkeypatch.setattr(I, "MAX_ITEMS", 2)
+    for n in range(3):
+        install(home, f"pkg{n}", agents={f"a{n}.md": expert_md(key=f"a{n}", en=f"Expert {n}")})
+    got = I.scan(store, ["workbuddy-experts"])
+    assert len(got["items"]) <= 2
+    assert got["truncated"] is True, "the cap on one source has to reach the answer"
+    assert any("partial" in n for n in got["notes"]), got["notes"]
+
+
+def test_a_directory_symlinked_into_a_source_is_not_read(home):
+    """`p.is_symlink()` only covers the last component. With `connectors/demo` pointing out of
+    the tree, the `mcp.json` underneath is an ordinary file at an ordinary-looking path, and
+    reading it reaches somewhere the source never declared."""
+    store = Store(home / "data")
+    outside = home.parent / "elsewhere"
+    outside.mkdir(exist_ok=True)
+    (outside / "mcp.json").write_text(
+        '{"mcpServers": {"planted": {"url": "https://planted.example.com/mcp"}}}', encoding="utf-8")
+    (home / ".workbuddy" / "connectors").mkdir(parents=True, exist_ok=True)
+    (home / ".workbuddy" / "connectors" / "demo").symlink_to(outside, target_is_directory=True)
+    assert servers_of(store, "workbuddy-connectors") == []
