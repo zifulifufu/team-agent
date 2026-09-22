@@ -1603,6 +1603,31 @@ const ZH: Record<string, string> = {
   "This app fetches messages from the platform itself; restarting re-reads the configuration right away instead of within a few seconds.": "本应用主动去平台取消息;重启会立刻重新读取配置,而不必等几秒。",
   "This one only pushes: nobody can talk to the group through it.": "这条只推送:没人能通过它跟群里对话。",
   "What you do on the platform's side": "平台那边要做的事",
+
+  // ---------------------------------------------------------------- 从其他 AI 应用导入
+  "A plugin here is a Python file that adds tools, so no other application produces one: a ChatGPT GPT is a prompt with actions behind a login, and a Cursor or VS Code extension is TypeScript against a different host. What does travel is the MCP standard (Claude Desktop, Claude Code, Codex, Cursor, Windsurf, Cline, Roo, Continue, Zed…) and Claude-style skills. Both can be read straight out of those applications' own configuration.": "本项目的插件是给成员加工具的 Python 文件,别的应用不会产出这种东西:ChatGPT 的 GPT 是「提示词+登录后的动作」,Cursor / VS Code 扩展是针对另一套宿主 API 的 TypeScript。真正能搬过来的是 **MCP 标准**(Claude Desktop、Claude Code、Codex、Cursor、Windsurf、Cline、Roo、Continue、Zed…)与 Claude 风格的技能,两者都可以直接从这些应用自己的配置里读出来。",
+  "Already here": "已经有了",
+  "Found on this machine": "已在本机找到",
+  "From another app": "从其他应用导入",
+  "Import MCP servers from another app": "从其他 AI 应用导入 MCP 服务器",
+  "Import from another app": "从其他应用导入",
+  "Import skills from another app": "从其他 AI 应用导入技能",
+  "Import {n} item(s)": "导入 {n} 项",
+  "Imported servers are disabled and are not connected to any group. Open one here to check the command and enable it.": "导入的服务器处于停用状态,也没有接到任何群。想用的话在这里打开它,核对命令后再启用。",
+  "Imported {n} item(s) from another app. They are disabled until you enable them.": "已从其他应用导入 {n} 项。在你启用之前它们都是停用的。",
+  "Imported {n} server(s) from another app. They are not connected to any group and they are not running.": "已从其他应用导入 {n} 个服务器。它们没有接到任何群,也没有在运行。",
+  "Imported {n} skill(s) from another app.": "已从其他应用导入 {n} 个技能。",
+  "List what is importable": "列出可导入的条目",
+  "Looking for other applications…": "正在查找其他应用…",
+  "Needs these values — they are not carried over:": "需要这些值——它们不会被带过来:",
+  "No description in the file": "文件里没有写描述",
+  "None of the applications this knows about were found on this machine. Paste a configuration by hand instead.": "本机没有找到已知的这些应用。可以改为手动粘贴配置。",
+  "Not found": "未找到",
+  "Nothing new was imported ({n} already existed).": "没有导入新条目(已有 {n} 个同名)。",
+  "Plugins from other AI apps cannot be installed here — but MCP servers and skills can": "其他 AI 应用的插件装不进来——但 MCP 服务器和技能可以",
+  "Scan again": "重新扫描",
+  "This reads the configuration files that other AI applications keep on this machine, and shows what they contain. Nothing is started, and everything imported arrives disabled — a server here is a command line that will later run with your privileges, so read it before switching it on.": "这里读取的是其他 AI 应用留在本机的配置文件,并列出其中的内容。不会启动任何东西,导入的条目都是停用状态——这里的服务器本质上是一条将来会以你的权限运行的命令行,启用前请先看清它。",
+  "{n} found": "找到 {n} 条",
 };
 
 let current: Lang = DEFAULT_LANG;

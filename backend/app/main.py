@@ -26,6 +26,7 @@ from .api_ext import Ctx, build_router
 from .api_external import build_external_router
 from .api_gallery import build_gallery_router
 from .api_channels import build_channels
+from .api_import import build_import_router
 from .approvals import Approvals
 from . import channels
 from .discovery import DiscoveryError, fetch_model_ids
@@ -796,6 +797,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
     app.include_router(build_external_router(store, orch.external))
     app.include_router(build_gallery_router(store))
+    app.include_router(build_import_router(store))
     # Chat channels: the inbound webhook lives outside /api on purpose. Token middleware does
     # not cover it, because the caller is a chat platform rather than the app's own front end,
     # and each channel authenticates by the platform's own signature. It is the only route

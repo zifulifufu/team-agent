@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, Plus, RefreshCw, Trash2, Users, User } from "lucide-react";
+import { AppWindow, Pencil, Plus, RefreshCw, Trash2, Users, User } from "lucide-react";
 import { api, type Skill } from "../api";
 import { useData } from "../data";
 import { currentLang, pickLang, useI18n } from "../i18n";
 import { Modal, useConfirm } from "../ui";
 import { GithubMark, SourceBadge, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
+import ImportFromApps from "../components/ImportFromApps";
 import "../styles/ext.css";
 
 // The scope wording per language. `scopeLabel` is a plain function, so it resolves through
@@ -28,6 +29,7 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
   const [newer, setNewer] = useState<Set<string>>(new Set());   // Skills that have a newer version on GitHub
   const [editing, setEditing] = useState<Skill | "new" | null>(null);
   const [discover, setDiscover] = useState(false);
+  const [fromApps, setFromApps] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
@@ -117,6 +119,7 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
               {checking ? <><Spin /> {t("Checking…")}</> : <><RefreshCw size={14} /> {t("Check for updates")}</>}
             </button>
           )}
+          <button className="btn" onClick={() => setFromApps(true)}><AppWindow size={14} /> {t("From another app")}</button>
           <button className="btn" onClick={() => setDiscover(true)}><GithubMark size={14} /> {t("Find on GitHub")}</button>
           <button className="btn primary" onClick={() => setEditing("new")}><Plus size={15} /> {t("New skill")}</button>
         </div>
@@ -183,6 +186,10 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
           onClose={() => setEditing(null)}
           onSaved={async () => { setEditing(null); await Promise.all([load(), reload()]); }}
         />
+      )}
+      {fromApps && (
+        <ImportFromApps kind="skill" onClose={() => setFromApps(false)}
+                        onDone={async (added) => { setFromApps(false); await load(); if (added) setCheckMsg({ ok: true, text: t("Imported {n} skill(s) from another app.", { n: added }) }); }} />
       )}
       {discover && <RepoDiscoverModal kind="skill" onClose={() => setDiscover(false)} onInstalled={async () => { setDiscover(false); await Promise.all([load(), reloadUpdates()]); }} />}
     </div>

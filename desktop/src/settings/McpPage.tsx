@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, ExternalLink, FileJson, Pencil, Plus, Trash2, X } from "lucide-react";
+import { AppWindow, ChevronRight, ExternalLink, FileJson, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type McpServer, type McpTemplate } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
@@ -7,6 +7,7 @@ import { Modal, Switch, useConfirm } from "../ui";
 import { Callout, GithubMark, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
 import McpImportModal from "../components/McpImport";
+import ImportFromApps from "../components/ImportFromApps";
 import "../styles/ext.css";
 
 const MASK = "••••••";
@@ -57,6 +58,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   const [dialog, setDialog] = useState<Dialog>(null);
   const [discover, setDiscover] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [fromApps, setFromApps] = useState(false);
   const [note, setNote] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<Record<string, string>>({});       // id → what it is doing
@@ -132,6 +134,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
       <div className="sp-head">
         <h2 className="sp-title">{t("MCP servers")}</h2>
         <div className="sp-head-actions">
+          <button className="btn" onClick={() => setFromApps(true)}><AppWindow size={14} /> {t("From another app")}</button>
           <button className="btn" onClick={() => setImporting(true)}><FileJson size={14} /> {t("Import JSON")}</button>
           <button className="btn" onClick={() => setDiscover(true)}><GithubMark size={14} /> {t("Discover on GitHub")}</button>
           <button className="btn primary" onClick={() => openAdd()}><Plus size={15} /> {t("Add an MCP server")}</button>
@@ -255,6 +258,19 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
           init={dialog.init}
           onClose={() => setDialog(null)}
           onSaved={async () => { setDialog(null); await load(); }}
+        />
+      )}
+      {fromApps && (
+        <ImportFromApps
+          kind="mcp"
+          onClose={() => setFromApps(false)}
+          onDone={async (added, skipped) => {
+            setFromApps(false);
+            setNote(added
+              ? t("Imported {n} server(s) from another app. They are not connected to any group and they are not running.", { n: added })
+              : t("Nothing new was imported ({n} already existed).", { n: skipped }));
+            await load();
+          }}
         />
       )}
       {importing && (

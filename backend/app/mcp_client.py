@@ -95,6 +95,63 @@ def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
     return out, warnings
 
 
+def validate_cfg(name: str, command: str, url: str, transport: str) -> tuple[str, str] | None:
+    """Check a server definition before it is stored. Returns an (en, zh) message, or None.
+
+    Lives here rather than in the API layer because there are now three ways in — typing
+    one, pasting JSON, and importing from another application's config — and a validation
+    rule that exists in one of them but not the others is the kind of gap that only shows
+    up as "the same server imports fine over there".
+    """
+    if not (name or "").strip():
+        return ("A name is required", "请填写名称")
+    if not (command or "").strip() and not (url or "").strip():
+        return ("Enter a start command (local) or a service URL (remote)",
+                "请填写启动命令(本地)或服务地址(远程)")
+    if transport and transport not in ("stdio", "sse", "http"):
+        return ("The transport must be one of stdio / sse / http", "传输方式只能是 stdio / sse / http")
+    if url and not re.match(r"^https?://", url):
+        return ("The service URL must start with http:// or https://",
+                "服务地址必须以 http:// 或 https:// 开头")
+    return None
+
+
+def import_servers(store: object, servers: list[dict], names: list[str] | None = None) -> dict:
+    """Add parsed servers to the store, skipping names that already exist.
+
+    Everything is validated **before anything is saved**: a list where the third entry is
+    malformed has to fail as a whole, otherwise an import leaves the store half-changed and
+    the UI reports an error over a state that did partly change.
+
+    Imported servers keep the `enabled` flag from their source config but are never started
+    here — connecting is a separate, explicit action.
+    """
+    have = {m["name"] for m in store.list_mcp()}          # type: ignore[attr-defined]
+    todo, skipped, bad = [], [], []
+    for s in servers:
+        if names is not None and s["name"] not in names:
+            continue
+        if s["name"] in have:
+            skipped.append(s["name"])
+            continue
+        message = validate_cfg(s["name"], s["command"], s.get("url", ""), s.get("transport", ""))
+        if message:
+            bad.append(f"{s['name']}: {i18n.pick_now(*message)}")
+            continue
+        todo.append(s)
+        have.add(s["name"])
+    if bad:
+        raise ValueError("; ".join(bad))
+    added = []
+    for s in todo:
+        m = store.add_mcp(s["name"], s["command"], s["args"], s["env"], s["url"],       # type: ignore[attr-defined]
+                          s["transport"], s["headers"], s.get("description", ""))
+        if not s.get("enabled", True):
+            m = store.update_mcp(m["id"], {"enabled": False})                            # type: ignore[attr-defined]
+        added.append(m)
+    return {"added": added, "skipped": skipped}
+
+
 @dataclass
 class ServerState:
     id: str

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { Code2, RefreshCw, Trash2 } from "lucide-react";
+import { AppWindow, Code2, RefreshCw, Trash2 } from "lucide-react";
 import { api, type PluginInfo } from "../api";
 import { Modal, useConfirm } from "../ui";
 import { Callout, GithubMark, SourceBadge, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
+import ImportFromApps from "../components/ImportFromApps";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import "../styles/ext.css";
@@ -32,6 +33,7 @@ export default function PluginsPage() {
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [viewing, setViewing] = useState<PluginInfo | null>(null);
   const [discover, setDiscover] = useState(false);
+  const [fromApps, setFromApps] = useState(false);
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -84,10 +86,16 @@ export default function PluginsPage() {
         <h2 className="sp-title">{t("Plugins")}</h2>
         <div className="sp-head-actions">
           <button className="btn" onClick={reload} disabled={reloading}>{reloading ? <><Spin /> {t("Reloading…")}</> : <><RefreshCw size={14} /> {t("Reload")}</>}</button>
+          <button className="btn" onClick={() => setFromApps(true)}><AppWindow size={14} /> {t("From another app")}</button>
           <button className="btn" onClick={() => setDiscover(true)}><GithubMark size={14} /> {t("Find a plugin on GitHub")}</button>
         </div>
       </div>
       <p className="sp-desc">{t("A plugin adds new tools to your members in Python (check the weather, call an internal API…). It is not the same thing as an MCP server: a plugin runs inside this app's own process, while MCP is a separate local process or a remote service.")}</p>
+
+      <Callout tone="info" title={t("Plugins from other AI apps cannot be installed here — but MCP servers and skills can")}>
+        {t("A plugin here is a Python file that adds tools, so no other application produces one: a ChatGPT GPT is a prompt with actions behind a login, and a Cursor or VS Code extension is TypeScript against a different host. What does travel is the MCP standard (Claude Desktop, Claude Code, Codex, Cursor, Windsurf, Cline, Roo, Continue, Zed…) and Claude-style skills. Both can be read straight out of those applications' own configuration.")}{" "}
+        <button className="link" onClick={() => setFromApps(true)}>{t("Import from another app")}</button>
+      </Callout>
 
       <Callout tone="warn" title={t("A plugin is not sandboxed")}>
         {t("A plugin is Python code running inside this app's process, with no sandbox, and it can reach your files and your network. Install only the ones you have read and trust.")}
@@ -153,6 +161,14 @@ export default function PluginsPage() {
       </p>
 
       {viewing && <SourceModal plugin={viewing} onClose={() => setViewing(null)} />}
+      {fromApps && (
+        <ImportFromApps kind="mcp" onClose={() => setFromApps(false)}
+                        onDone={async (added) => {
+                          setFromApps(false);
+                          await load();
+                          setNote({ ok: true, text: t("Imported {n} item(s) from another app. They are disabled until you enable them.", { n: added }) });
+                        }} />
+      )}
       {discover && <RepoDiscoverModal kind="plugin" onClose={() => setDiscover(false)} onInstalled={() => { void load(); }} />}
     </div>
   );

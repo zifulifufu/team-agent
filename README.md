@@ -146,6 +146,35 @@ nothing) and *Send test* (really does send one, because on a robot that is the o
 counters below them — accepted, rejected, ignored — are what makes a misconfiguration visible at all: a
 webhook's usual symptom is silence.
 
+## Bringing definitions in from other AI apps
+
+*Settings → MCP servers / Skills → **From another app*** reads the configuration those
+applications already keep on this machine and imports what they contain, instead of asking
+you to copy a config by hand.
+
+**What travels, and what does not.** MCP has become the shared standard for "a plugin" —
+Claude Desktop, Claude Code, Codex, Cursor, Windsurf, Cline, Roo Code, Continue, LM Studio
+and Zed all store the same `command` / `args` / `env` or `url` / `headers` shape. Claude-style
+`SKILL.md` folders travel as text, because that is the format this project's own skills use.
+Nothing else does: **a plugin here is a Python file calling `register()`**, which no other
+application produces; a ChatGPT GPT is a prompt plus authenticated actions behind a login;
+a Cursor or VS Code extension is TypeScript against a different host API. The importer says
+so rather than offering buttons that would silently import nothing.
+
+**How it reads.** Only a fixed list of paths (the ten applications above, plus the skills and
+MCP servers bundled inside installed Claude Code plugins). No walking of the home directory,
+no following symlinks, a size cap per file, and a cap on how many entries are handled. A scan
+reports a broken config instead of failing.
+
+**Nothing runs.** A scan reads text; an import writes rows. Secrets in a source config
+(`env`, `headers`) are masked in the preview and never sent to the UI — the import re-reads
+the file on the server, so a key does not have to travel through the browser to be moved.
+Everything imported lands **disabled**, whatever the other application had set, and an MCP
+server is not connected to anything until you open it here and say so. Each entry shows the
+command line it would run, plus notes for the cases worth a second look: a launcher that
+downloads a package (`npx`, `uvx`), an argument containing shell characters, a program
+outside your home directory, a plain-text URL, environment values that did not come along.
+
 ## Licence
 
 **[Apache License 2.0](LICENSE)** — Copyright 2026 **zifulifufu**.

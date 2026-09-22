@@ -303,21 +303,51 @@ def safe_skill_name(name: str) -> str:
     return n[:60]
 
 
+def _frontmatter_value(lines: list[str], i: int) -> tuple[str, int]:
+    """Read one frontmatter value starting at line `i`, returning (value, next index).
+
+    Handles the YAML block scalars (`>` folded, `|` literal) as well as a plain or quoted
+    one-liner. That matters because the two notations are equally common in the wild — a
+    Claude-style skill whose description is written as `description: >` would otherwise be
+    read as the literal string ">", and importing it would look like it worked.
+    """
+    key, sep, rest = lines[i].partition(":")
+    if not sep:
+        return "", i + 1
+    rest = rest.strip()
+    if rest not in (">", "|", ">-", "|-", ">+", "|+"):
+        return rest.strip("\"'"), i + 1
+    folded = rest.startswith(">")
+    chunk: list[str] = []
+    i += 1
+    while i < len(lines) and (lines[i].startswith((" ", "\t")) or not lines[i].strip()):
+        chunk.append(lines[i].strip())
+        i += 1
+    value = (" " if folded else "\n").join(x for x in chunk if x).strip()
+    return value, i
+
+
 def parse_skill_text(text: str, default_name: str, path: str = "") -> Skill:
     name, desc, body, scope, version = default_name, "", text, "member", ""
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.S)
     if m:
-        for line in m.group(1).splitlines():
-            k, _, v = line.partition(":")
-            k, v = k.strip(), v.strip().strip("\"'")
-            if k == "name" and v:
-                name = v
-            elif k == "description":
-                desc = v
-            elif k == "scope" and v in ("member", "group"):
-                scope = v
-            elif k == "version":
-                version = v
+        lines = m.group(1).splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if not line.strip() or line.lstrip().startswith("#") or line.startswith((" ", "\t")):
+                i += 1
+                continue                       # blank, comment, or a nested key we do not use
+            key = line.partition(":")[0].strip()
+            value, i = _frontmatter_value(lines, i)
+            if key == "name" and value:
+                name = value
+            elif key == "description":
+                desc = value
+            elif key == "scope" and value in ("member", "group"):
+                scope = value
+            elif key == "version":
+                version = value
         body = m.group(2)
     return Skill(name=name, description=desc, body=body.strip(), path=path, scope=scope, version=version)
 

@@ -627,6 +627,47 @@ export interface McpTemplate {
   args: string[];
   note: string;
 }
+/** One other AI application this machine has, and how much of it could be imported.
+ *  Discovery only reads the fixed paths the backend knows about. */
+export interface ImportSource {
+  key: string;
+  app: string;
+  kind: "mcp" | "skill";
+  format: string;
+  notes: string;
+  found: boolean;
+  files: string[];
+  count: number;
+  error: string;
+}
+/** One importable thing. For an MCP server the credential-bearing fields come back masked:
+ *  the import re-reads the source file on the server, so a key never has to reach here. */
+export interface ImportItem {
+  kind: "mcp" | "skill";
+  source: string;
+  app: string;
+  name: string;
+  path: string;
+  exists: boolean;
+  risks?: string[];
+  // mcp
+  command?: string;
+  args?: string[];
+  url?: string;
+  transport?: string;
+  env_keys?: string[];
+  header_keys?: string[];
+  description?: string;
+  enabled?: boolean;
+  // skill
+  folder?: string;
+  chars?: number;
+}
+export interface ImportScan {
+  items: ImportItem[];
+  notes: string[];
+  truncated: boolean;
+}
 export interface McpImportPreview {
   servers: { name: string; command: string; args: string[]; env: Record<string, string>; url: string; transport: string; headers: Record<string, string>; description: string; enabled: boolean; exists: boolean }[];
   warnings: string[];
@@ -1005,6 +1046,13 @@ export const api = {
   delPlugin: (id: string) => del(`/api/plugins/${encodeURIComponent(id)}`),
   mcp: () => get<McpServer[]>("/api/mcp"),
   mcpTemplates: () => get<McpTemplate[]>("/api/mcp/templates"),
+  importSources: () => get<{ sources: ImportSource[] }>("/api/import/sources"),
+  importScan: (sources?: string[]) => post<ImportScan>("/api/import/scan", { sources: sources ?? null }),
+  /** Imports land disabled; the names are re-read from the source file server-side. */
+  importMcpFrom: (source: string, names: string[]) =>
+    post<{ added: string[]; skipped: string[] }>("/api/import/mcp", { source, names }),
+  importSkillsFrom: (source: string, names: string[]) =>
+    post<{ added: string[]; skipped: string[] }>("/api/import/skills", { source, names }),
   mcpImportParse: (text: string) => post<McpImportPreview>("/api/mcp/import/parse", { text }),
   mcpImport: (text: string, names: string[]) => post<{ added: McpServer[]; skipped: string[] }>("/api/mcp/import", { text, names }),
   addMcp: (b: Record<string, unknown>) => post<McpServer>("/api/mcp", b),
