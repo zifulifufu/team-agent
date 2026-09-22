@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Boxes, Download, HardDrive, Package, Plug, Puzzle, RefreshCw, Sparkles, type LucideIcon } from "lucide-react";
+import { BookOpen, Boxes, Download, HardDrive, Package, Puzzle, RefreshCw, Sparkles, type LucideIcon } from "lucide-react";
 import { api, relTime, type Settings, type UpdateItem, type UpdatesInfo } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
@@ -76,7 +76,7 @@ export default function UpdatesPage({ onTab }: PageProps) {
   return (
     <div className="sp">
       <div className="sp-head">
-        <h2 className="sp-title">{t("Updates & discovery")}</h2>
+        <h2 className="sp-title">{t("Updates")}</h2>
         <div className="sp-head-actions">
           <button className="btn primary" onClick={check} disabled={busyNow}>
             {busyNow ? <><Spin /> {t("Checking…")}</> : <><RefreshCw size={14} /> {t("Check now")}</>}
@@ -84,7 +84,7 @@ export default function UpdatesPage({ onTab }: PageProps) {
         </div>
       </div>
       <p className="sp-desc">
-        {t("Checks GitHub for new versions of the app, the model catalog, and your installed skills and plugins, and lets you search for new skills, plugins, and MCP servers. Checking needs a network connection (Allow outbound calls under Routing & fallback).")}
+        {t("Checks GitHub for new versions of the app, the model catalog, and your installed skills and plugins. Checking needs a network connection (Allow outbound calls under Routing & fallback).")}
       </p>
 
       {err && <div className="ext-errbox"><div className="err">{t("Failed to load: {err}", { err })}</div><button className="btn small" onClick={() => void refresh()}>{t("Retry")}</button></div>}
@@ -139,22 +139,6 @@ export default function UpdatesPage({ onTab }: PageProps) {
                 </div>
               </div>
             ))}
-          </div>
-
-          <div className="sec">{t("Discover new extensions")}</div>
-          <div className="ext-cards3">
-            <button className="ext-entry" onClick={() => onTab("skills")}>
-              <b><Sparkles size={15} /> {t("Skills")}</b>
-              <span>{t("Plain-text prompts that run no code. Search GitHub, preview, then install.")}</span>
-            </button>
-            <button className="ext-entry" onClick={() => onTab("plugins")}>
-              <b><Puzzle size={15} /> {t("Plugins")}</b>
-              <span>{t("Python code that runs on your machine. Read the full source before installing.")}</span>
-            </button>
-            <button className="ext-entry" onClick={() => onTab("mcp")}>
-              <b><Plug size={15} /> {t("MCP server")}</b>
-              <span>{t("Nothing is installed automatically — this only finds the repository and pre-fills the config form.")}</span>
-            </button>
           </div>
 
           <div className="ext-foot">

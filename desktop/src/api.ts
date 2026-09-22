@@ -1143,7 +1143,7 @@ export const api = {
   previewPrompt: (content: string, ids: { agent_id?: string; group_id?: string } = {}) =>
     post<{ text: string; tokens: number; raw_tokens: number }>("/api/prompts/preview", { content, ...ids }),
   resetSystemPrompt: () => post<{ system_prompt: string }>("/api/prompts/reset-system"),
-  // ---- Updates & discovery (GitHub)
+  // ---- Updates (GitHub)
   updates: () => get<UpdatesInfo>("/api/updates"),
   checkUpdates: () => post<Record<string, unknown>>("/api/updates/check"),
   dismissUpdate: (id: string) => post(`/api/updates/${id}/dismiss`),

@@ -65,7 +65,7 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
     items: [
       { id: "general", label: "General", icon: SlidersHorizontal, page: GeneralPage },
       { id: "permissions", label: "Permissions & control", icon: ShieldCheck, page: PermissionsPage },
-      { id: "updates", label: "Updates & discovery", icon: Download, page: UpdatesPage },
+      { id: "updates", label: "Updates", icon: Download, page: UpdatesPage },
       { id: "data", label: "Data", icon: Database, page: DataPage },
       { id: "stats", label: "Usage stats", icon: BarChart3, page: StatsPage },
       { id: "deps", label: "Dependencies", icon: Cpu, page: DepsPage },

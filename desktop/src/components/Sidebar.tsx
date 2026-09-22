@@ -157,7 +157,7 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
                 }}
               />
             </div>
-            <button role="menuitem" onClick={() => { setMenu(false); onSettings("updates"); }}><Download size={15} /> {t("Updates & discovery")}{updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}</button>
+            <button role="menuitem" onClick={() => { setMenu(false); onSettings("updates"); }}><Download size={15} /> {t("Updates")}{updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}</button>
             <button role="menuitem" onClick={() => { setMenu(false); onSettings("about"); }}><Info size={15} /> {t("About")}</button>
           </div>
         )}
