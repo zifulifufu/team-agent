@@ -367,7 +367,10 @@ spending extra tokens."""
                 detail = _short(e)
                 attempts.append(Attempt(mid, "failed", detail, int((time.time() - t0) * 1000)))
                 if isinstance(e, ReasoningOnlyError):  # reachable, just a reasoning model that produced no answer text
-                    self._note_health(mid, "ok", i18n.pick_now("Connected (a reasoning model; within the quota it returned only its reasoning)", "连接正常(思考型模型,额度内只返回了思考过程)"), attempts[-1].latency_ms, source)
+                    # Written into the health record, so it is stored in one language and rendered
+                    # in the reader's (see health.DIAGNOSTICS) rather than in whoever's language
+                    # this happened to be.
+                    self._note_health(mid, "ok", "Connected (a reasoning model; within the quota it returned only its reasoning)", attempts[-1].latency_ms, source)
                 elif source != "chat" or not is_request_problem(e):
                     self._note_health(mid, classify_failure(e), detail, attempts[-1].latency_ms, source)
                 if emitted and on_reset:
