@@ -104,6 +104,29 @@ to keep it that way, and removing that variable is what makes the real keychain 
 - A "block hosted models" switch stops every hosted request, including update checks and remote MCP.
 - Plugins and MCP servers run code with your privileges. Enable only what you trust.
 
+## External agents
+
+A group member can *be* another application's command-line agent — WorkBuddy ships one — instead of
+a model reached through the routing layer. *Settings → External agents* holds the master switch
+(off by default), the permission level (read-only / may edit files / full), an optional working
+directory, and the hand-off rule.
+
+**Two shapes, and the difference is on purpose.** By default the engine is run inside the isolation
+this app sets up for it, and that isolation is *why* its answers are not always what you get from
+running the application by hand:
+
+| | Isolated (default) | "Use the application's own configuration" |
+|---|---|---|
+| MCP connectors | none (`--strict-mcp-config`) | the engine's own, as configured in that application |
+| Turn limit | `--max-turns 20` | none — the engine's own default |
+| Conversation | a fresh process each round | one session of its own, continued across rounds |
+| System prompt | permission level and working directory described | only what the group chat itself needs |
+
+Turn the switch on for a member whose answers should match a direct run; leave it off when the point
+is to keep the engine on a short leash. Either way its reply is chat text only — it is never parsed
+as `<plan>` or `<tool_call>` — and the subprocess gets an allow-listed environment with neither this
+app's token nor any provider's key.
+
 ## Chat channels
 
 A group chat here can be reached from a chat platform, and what it produces can be pushed into one.

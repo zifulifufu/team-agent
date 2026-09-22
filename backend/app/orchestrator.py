@@ -731,7 +731,7 @@ protocol and should not decide what the others do."""
         if external.kind_of(engine) == "cli":
             system += "\n\n" + external.addendum(
                 name, group["name"], external.level_view(ecfg["level"])["label"],
-                str(self.external.workspace(agent)),
+                str(self.external.workspace(agent)), native=bool(ecfg.get("native")),
             )
         prompt = external.flatten_convo(messages[1:])
         trace: list[dict] = []

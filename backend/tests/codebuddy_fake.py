@@ -39,6 +39,12 @@ if mode == "raw":
     sys.exit(0)
 if mode == "slow":
     time.sleep(60)
+if mode == "stale":
+    # A session the engine no longer has. It fails **only** while `--resume` is in play, so a test
+    # can tell "it retried without the session" from "it never tried to resume".
+    if "--resume" in argv:
+        sys.stderr.write("Error: no session found with that id\n")
+        sys.exit(1)
 
 out({"type": "system", "subtype": "init", "session_id": "sess-1", "model": "fake-model", "tools": ["Read"]})
 if mode == "delta":

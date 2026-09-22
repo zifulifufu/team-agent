@@ -135,6 +135,10 @@ export interface ExternalCfg {
   web: boolean;
   model: string;
   max_turns: number;
+  // Off = the engine runs inside this program's isolation (no MCP of its own, a turn cap, a fresh
+  // conversation each round). On = it is driven the way its own application drives it, which is
+  // what makes its answers match a direct run.
+  native: boolean;
   timeout: number;
   handoff: boolean;
   cli_path: string;                // command-line engines

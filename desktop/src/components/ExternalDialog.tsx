@@ -75,7 +75,7 @@ export default function ExternalDialog(props: Props) {
                // "***" tells the backend to keep the key it already has
                api_key: c.api_key.trim() || (c.has_key ? "***" : "") };
     }
-    return { level: c.level, risk_ack: needAck ? ack : c.risk_ack, web: c.level === "full" ? false : c.web, cwd: c.cwd.trim(), handoff: c.handoff, model: c.model.trim(), timeout: c.timeout, cli_path: c.cli_path.trim() };
+    return { level: c.level, risk_ack: needAck ? ack : c.risk_ack, web: c.level === "full" ? false : c.web, cwd: c.cwd.trim(), handoff: c.handoff, model: c.model.trim(), timeout: c.timeout, cli_path: c.cli_path.trim(), native: c.native, max_turns: c.max_turns };
   };
 
   const submit = () => run(async () => {
@@ -252,6 +252,11 @@ export default function ExternalDialog(props: Props) {
                   {cfg.level !== "read" && !cfg.cwd.trim() && <span className="muted small">{t("It is set to {level} right now: it can only touch things inside its own empty folder. To let it work on your project, pick a specific project folder (not the root, and not your whole home directory).", { level: cfg.level === "edit" ? t("Edit files") : t("Full") })}</span>}
                 </label>
 
+                <label className="check ext-native">
+                  <input type="checkbox" checked={cfg.native} onChange={(e) => set({ native: e.target.checked })} />
+                  {t("Use the application's own configuration (load its MCP connectors, no turn limit, and keep one continuing session so it remembers its earlier turns) — off by default, because this is what makes its answers match running it by hand, and it is also what gives it the reach it has there")}
+                </label>
+
                 <label className="check">
                   <input type="checkbox" checked={cfg.handoff} onChange={(e) => set({ handoff: e.target.checked })} />
                   {t("When its reply @mentions another member, that member speaks next")}
@@ -262,6 +267,7 @@ export default function ExternalDialog(props: Props) {
                   <div className="form-row">
                     <label className="field grow"><span>{t("Model (empty = the engine default)")}</span><input value={cfg.model} onChange={(e) => set({ model: e.target.value })} /></label>
                     <label className="field" style={{ width: 130 }}><span>{t("Timeout per turn (seconds)")}</span><input type="number" min={30} max={3600} value={cfg.timeout} onChange={(e) => set({ timeout: Number(e.target.value) || 600 })} /></label>
+                    <label className="field" style={{ width: 130 }}><span>{t("Max turns per reply")}</span><input type="number" min={1} max={100} value={cfg.max_turns} disabled={cfg.native} onChange={(e) => set({ max_turns: Number(e.target.value) || 20 })} /></label>
                   </div>
                   <label className="field"><span>{t("Command-line path (empty = find the one bundled with WorkBuddy automatically; the file name must start with codebuddy)")}</span><input value={cfg.cli_path} onChange={(e) => set({ cli_path: e.target.value })} /></label>
                 </details>
