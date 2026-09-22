@@ -19,9 +19,11 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 
 import pytest
 from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from app import api_channels, channels
 from app.channels import base, push, telegram
@@ -89,11 +91,16 @@ def robot_like(errcode: int = 0, errmsg: str = "ok", status: int = 200):
 
     @app.post("/hook")
     async def hook(request: Request):
-        app.state.calls.append({"query": dict(request.query_params),
-                                "body": json.loads((await request.body()) or b"{}")})
+        body = json.loads((await request.body()) or b"{}")
+        app.state.calls.append({"query": dict(request.query_params), "body": body})
+        slackish = isinstance(body.get("text"), str) and "msgtype" not in body
         if errcode == 0 and status < 300:
-            # Slack answers with plain text; the others answer JSON with a code.
+            # Slack's incoming webhook answers with plain text; the others answer JSON with a code.
+            if slackish:
+                return PlainTextResponse("ok")
             return {"errcode": 0, "errmsg": "ok", "code": 0, "msg": "success"}
+        if slackish:
+            return PlainTextResponse(errmsg, status_code=status if status >= 300 else 200)
         return {"errcode": errcode, "errmsg": errmsg, "code": errcode, "msg": errmsg}
 
     return app
@@ -488,3 +495,91 @@ def test_the_index_route_is_still_loopback_only_with_a_public_channel_configured
 
     assert TestClient(app, base_url="http://hook.example.com").get("/api/health").status_code == 200
     assert TestClient(app, base_url="http://elsewhere.example.com").get("/api/health").status_code == 400
+
+
+def html_instead_of_json():
+    """A robot endpoint that answers 200 with a page rather than an acknowledgement — what a
+    captive portal, a proxy error page or simply the wrong address in front of the real endpoint
+    does. Every platform here signals failure *inside* a 200 body, so this must not read as sent."""
+    app = FastAPI()
+
+    @app.post("/hook")
+    async def hook():                                          # noqa: ANN202
+        return HTMLResponse("<html><body>maintenance</body></html>")
+
+    return app
+
+
+@pytest.mark.parametrize("cid", ["wecom", "feishu", "dingtalk", "slack"])
+async def test_a_200_that_confirms_nothing_is_not_reported_as_sent(cid):
+    with FakeServer(html_instead_of_json()) as server:
+        ok, detail = await channels.send(cid, cfg_for(cid, webhook_url=server.url + "/hook"), "", "hi")
+    assert not ok, "a 200 carrying a web page is not a delivery"
+    assert "confirms delivery" in detail, detail
+
+
+# ============================================ the parts of a channel that are easy to get wrong
+def offset_aware_telegram(pending: list[dict], live: list[dict]):
+    """A Telegram that honours `offset` on a non-blocking call — which is what makes draining a
+    backlog more than one round. The shared fake ignores it, so it cannot show this."""
+    app = FastAPI()
+    app.state.calls = []
+
+    @app.post("/bot{token}/{method}")
+    async def call(token: str, method: str, request: Request):   # noqa: ANN202
+        body = json.loads((await request.body()) or b"{}")
+        app.state.calls.append({"method": method, "body": body})
+        if method == "getUpdates":
+            if int(body.get("timeout") or 0) == 0:
+                off = int(body.get("offset") or 0)
+                want = int(body.get("limit") or 100)
+                return {"ok": True, "result": [u for u in pending if int(u["update_id"]) >= off][:want]}
+            if live:
+                return {"ok": True, "result": [live.pop(0)]}
+            await asyncio.sleep(0.02)
+            return {"ok": True, "result": []}
+        if method == "sendMessage":
+            return {"ok": True, "result": {"message_id": 99}}
+        return {"ok": True, "result": {}}
+
+    return app
+
+
+async def test_the_whole_backlog_is_dropped_not_just_the_oldest_update(monkeypatch):
+    """`limit: 1` established where the backlog *started*, not where it ended: three waiting
+    messages came through as two, with a note claiming one had been skipped."""
+    pending = [update(f"旧{n}", uid=n) for n in (1, 2, 3)]
+    fake = offset_aware_telegram(pending, [update("今天的消息", uid=9)])
+    with FakeServer(fake) as server:
+        monkeypatch.setattr(telegram, "API", server.url)
+        notes: list[str] = []
+        got: list[str] = []
+        stop = asyncio.Event()
+
+        async def handle(item) -> None:                          # noqa: ANN001
+            got.append(item.text)
+            stop.set()
+
+        cfg = cfg_for("telegram", bot_token=BOT_TOKEN, allowed=[ALLOWED], group_id="g", drop_pending=True)
+        await asyncio.wait_for(
+            telegram.poll(cfg, handle, stop=stop, note=notes.append), timeout=20)
+
+    assert got == ["今天的消息"], "the backlog must not be delivered"
+    assert any("skipped 3 message" in n for n in notes), notes
+
+
+@pytest.mark.parametrize("limit", [100, 200, 3500])
+def test_a_long_reply_is_still_something_telegram_accepts(limit):
+    """The trim has to happen before the markup is added. Cutting converted HTML lands inside a
+    tag or drops its closing partner, and Telegram then refuses the whole message — so a reply
+    that was only too long would arrive not at all."""
+    cfg = cfg_for("telegram", bot_format="html", max_chars=limit)
+    for text in ("**加粗**" * 400, "a & b < c > d " * 200, "`code` and **bold** " * 200):
+        out = telegram.format_reply(cfg, text)
+        assert len(out) <= limit, (limit, len(out))
+        assert out.count("<b>") == out.count("</b>"), out[:200]
+        assert out.count("<code>") == out.count("</code>"), out[:200]
+        assert out.count("<pre>") == out.count("</pre>"), out[:200]
+        # no half-written entity: every & starts one of the three legal ones
+        for m in re.finditer(r"&(?!(amp|lt|gt);)", out):
+            raise AssertionError(f"a broken entity at {m.start()}: {out[m.start():m.start() + 12]!r}")

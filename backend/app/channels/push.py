@@ -27,6 +27,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -186,16 +187,42 @@ async def send(cid: str, cfg: dict, text: str, *, url_override: str = "") -> tup
         return False, i18n.pick_now(f"could not reach the robot ({why(e)})", f"连不上机器人({why(e)})")
     if resp.status_code >= 300:
         return False, _explain(cid, resp.status_code, resp.text)
-    # These APIs answer 200 with an error in the body, so the status code alone is not
-    # the verdict — the body has to be read.
-    if cid != "slack":
+    # These APIs answer 200 with an error in the body, so the status code alone is not the
+    # verdict — the body has to be read, and a body that says nothing recognisable is not a
+    # confirmation either. Reading it as "fine" is how a message that never arrived gets
+    # reported as sent: an intermediary answering 200 with an HTML page used to pass.
+    if cid == "slack":
+        # Slack's incoming webhook confirms with the literal text `ok`, while a Slack-compatible
+        # relay tends to answer Slack's JSON shape (`{"ok": true}`). Either means delivered;
+        # anything else does not.
+        if (resp.text or "").strip().lower() == "ok":
+            return True, i18n.pick_now("sent", "已发送")
         try:
-            obj = resp.json() or {}
+            relay = resp.json()
         except ValueError:
-            obj = {}
-        if isinstance(obj, dict) and obj.get("errcode", obj.get("code", 0)) not in (0, None):
-            return False, _explain(cid, resp.status_code, resp.text)
+            relay = None
+        if not (isinstance(relay, dict) and relay.get("ok") is True):
+            return False, _unconfirmed(resp)
+        return True, i18n.pick_now("sent", "已发送")
+    try:
+        obj = resp.json()
+    except ValueError:
+        obj = None
+    if not isinstance(obj, dict):
+        return False, _unconfirmed(resp)
+    if obj.get("errcode", obj.get("code", 0)) not in (0, None):
+        return False, _explain(cid, resp.status_code, resp.text)
     return True, i18n.pick_now("sent", "已发送")
+
+
+def _unconfirmed(resp: Any) -> str:
+    """A 2xx whose body carries no acknowledgement this app recognises."""
+    body = re.sub(r"\s+", " ", (resp.text or "").strip())[:120]
+    return i18n.pick_now(
+        f"the robot answered HTTP {resp.status_code}, but with nothing that confirms delivery "
+        f"({body or 'an empty body'}), so this is not counted as sent",
+        f"机器人返回了 HTTP {resp.status_code},但内容里没有任何表示「已送达」的确认"
+        f"({body or '空内容'}),所以不算发送成功")
 
 
 async def probe(cid: str, cfg: dict) -> tuple[bool, str]:

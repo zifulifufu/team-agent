@@ -160,13 +160,16 @@ def plain(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", s).strip()
 
 
-def _esc(s: str) -> str:
+def esc(s: str) -> str:
+    """The three characters Telegram's HTML mode requires escaped. Public because the
+    Telegram formatter needs it to build a fallback that cannot contain markup."""
+
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _inline_html(s: str) -> str:
     """Escape first, then add the few tags, so anything the model wrote is inert."""
-    s = _esc(s)
+    s = esc(s)
     s = _HEADING.sub(lambda m: "<b>" + m.group(1).strip().rstrip("*") + "</b>", s)
     s = _BOLD.sub(lambda m: "<b>" + m.group(1).strip() + "</b>", s)
     s = _LINK.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', s)
@@ -184,9 +187,9 @@ def to_html(text: str) -> str:
     for m in _CODE_SPAN.finditer(text or ""):
         out.append(_inline_html((text or "")[pos:m.start()]))
         if m.group(1) is not None:
-            out.append(f"<pre>{_esc(m.group(1).strip())}</pre>")
+            out.append(f"<pre>{esc(m.group(1).strip())}</pre>")
         else:
-            out.append(f"<code>{_esc(m.group(2))}</code>")
+            out.append(f"<code>{esc(m.group(2))}</code>")
         pos = m.end()
     out.append(_inline_html((text or "")[pos:]))
     return "".join(out).strip()

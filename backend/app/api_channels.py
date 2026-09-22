@@ -362,8 +362,16 @@ class Channels:
                     patch[name] = channels.allowlist(cid, raw)
                 else:
                     patch[name] = str(raw or "").strip()
+            before = self.store.get_settings()
             if patch:
                 self.store.update_settings(patch)
+                if any(before.get(k) != v for k, v in patch.items()):
+                    # Message ids belong to the account that answered, and a save can switch
+                    # which bot or number that is: Telegram ids are per chat, so the new bot's
+                    # "chat:7" is a different message from the old bot's. Keeping the set across
+                    # that switch drops the new account's messages as duplicates; clearing it can
+                    # at most re-handle a redelivery, which the platforms send again anyway.
+                    self.seen[cid] = Recent(512)
             # Secrets are never read back, so readiness is judged from the store rather than
             # from what was just submitted — which also means an empty secret field (the way
             # the UI says "keep the saved one") still counts as configured.
@@ -447,10 +455,17 @@ class Channels:
             if declared and declared.isdigit() and int(declared) > MAX_BODY:
                 st.rejected += 1
                 return JSONResponse({"detail": "the body is too large"}, status_code=413)
-            raw = await request.body()
-            if len(raw) > MAX_BODY:
-                st.rejected += 1
-                return JSONResponse({"detail": "the body is too large"}, status_code=413)
+            # Read it in pieces and stop at the cap. `await request.body()` would buffer
+            # whatever arrives and only then allow the check, so a caller sending a chunked
+            # body without a Content-Length could make this process allocate without limit —
+            # on the one route the internet is meant to reach.
+            raw = bytearray()
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > MAX_BODY:
+                    st.rejected += 1
+                    return JSONResponse({"detail": "the body is too large"}, status_code=413)
+            raw = bytes(raw)
 
             cfg = self.cfg(cid)
             if not cfg.get("enabled") or channels.missing(cid, cfg):
@@ -470,7 +485,7 @@ class Channels:
                 st.rejected += 1
                 return JSONResponse({"detail": "the body is not JSON"}, status_code=400)
 
-            messages, skipped = channels.parse(cid, payload)
+            messages, skipped = channels.parse(cid, payload, cfg)
             started = 0
             for item in messages:
                 if await self._accept(cid, item, cfg):

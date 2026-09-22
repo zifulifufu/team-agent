@@ -430,3 +430,36 @@ def test_a_round_triggered_over_the_webhook_is_read_only(tmp_path):
         # and the message is attributed, so later rounds know where it came from
         assert any("WhatsApp · Zhang" in m["sender_name"]
                    for m in app.state.store.list_messages(gid) if m["sender_type"] == "user")
+
+
+# ====================================================== which number the event belongs to
+def test_a_message_addressed_to_another_number_of_the_same_app_is_ignored():
+    """One Meta app can serve several numbers and they all post to the same callback URL, so the
+    signature proves *which app* sent the event, not which number it was addressed to. Without
+    this check a message sent to another of the user's numbers was handled as if it had arrived
+    here — the allowlist would usually stop it, but "usually" is not a boundary."""
+    other = payload("这条是发给我另一个号码的")
+    other["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"] = "999999999"
+    msgs, skipped = whatsapp.parse(other, PID)
+    assert msgs == [] and skipped == ["another number"]
+
+    mine, _ = whatsapp.parse(payload("这条是发给这个号码的"), PID)
+    assert [m.text for m in mine] == ["这条是发给这个号码的"]
+
+    # An event that does not say which number it belongs to is still read: dropping those would
+    # lose messages from payloads that leave `metadata` out.
+    bare = payload("没说号码")
+    del bare["entry"][0]["changes"][0]["value"]["metadata"]
+    got, _ = whatsapp.parse(bare, PID)
+    assert [m.text for m in got] == ["没说号码"]
+
+
+def test_the_webhook_route_ignores_an_event_for_another_number(tmp_path):
+    """The check has to be wired through the route, not only available in the parser: the route
+    is what holds the configured number."""
+    other = payload("这条是发给我另一个号码的")
+    other["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"] = "999999999"
+    with channel(tmp_path) as (cl, app, gid, _fake):
+        r = post(cl, other)
+        assert r.status_code == 200 and r.json()["accepted"] == 0, r.text
+    assert user_texts(app, gid) == [], "a message for another number reached the group"

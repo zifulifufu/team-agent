@@ -70,13 +70,20 @@ def challenge(mode: str | None, token: str | None, expected: str, value: str | N
     return value
 
 
-def parse(payload: Any) -> tuple[list[Inbound], list[str]]:
+def parse(payload: Any, expected_number: str = "") -> tuple[list[Inbound], list[str]]:
     """Pull the usable text messages out of a webhook payload.
 
     Returns `(messages, skipped)`, where `skipped` names the message types that arrived
     but cannot be used. That list exists so the UI can say "2 images were ignored"
     instead of silently appearing to do nothing — this channel only carries text, and
     unexplained silence is the worst possible failure mode.
+
+    `expected_number` is the `phone_number_id` this channel is set up for. One Meta app can
+    serve several numbers, and they all post to the same callback, so without the check a
+    message sent to another of the user's numbers would be handled as if it had arrived here —
+    the signature proves which app sent the event, not which number it was addressed to. An
+    event that does not say which number it belongs to is still read: dropping those would lose
+    messages from payloads that leave `metadata` out.
     """
     out: list[Inbound] = []
     skipped: list[str] = []
@@ -87,6 +94,12 @@ def parse(payload: Any) -> tuple[list[Inbound], list[str]]:
             continue
         for change in entry.get("changes") or []:
             value = (change or {}).get("value") or {}
+            here = str((value.get("metadata") or {}).get("phone_number_id") or "")
+            if expected_number and here and here != expected_number:
+                label = i18n.pick_now("another number", "另一个号码")
+                if label not in skipped:
+                    skipped.append(label)
+                continue
             names: dict[str, str] = {}
             for c in value.get("contacts") or []:
                 if isinstance(c, dict) and c.get("wa_id"):

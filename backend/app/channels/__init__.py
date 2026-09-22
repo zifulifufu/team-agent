@@ -145,9 +145,12 @@ def handshake(cid: str, query: dict, cfg: dict) -> str | None:
     return None
 
 
-def parse(cid: str, payload: Any) -> tuple[list[Inbound], list[str]]:
+def parse(cid: str, payload: Any, cfg: dict | None = None) -> tuple[list[Inbound], list[str]]:
+    """Read usable messages out of a webhook body. `cfg` is the channel's own settings, which
+    a channel may need to decide whether an event belongs to this channel at all (WhatsApp: one
+    Meta app can carry several numbers onto one callback URL)."""
     if cid == "whatsapp":
-        return whatsapp.parse(payload)
+        return whatsapp.parse(payload, str((cfg or {}).get("phone_number_id") or ""))
     if cid == "telegram":
         item, skipped = telegram.parse_update(payload)
         return ([item] if item else []), ([skipped] if skipped and skipped != "other" else [])

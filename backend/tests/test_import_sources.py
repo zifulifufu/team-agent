@@ -572,3 +572,20 @@ def test_a_directory_symlinked_into_a_source_is_not_read(home):
     (home / ".workbuddy" / "connectors").mkdir(parents=True, exist_ok=True)
     (home / ".workbuddy" / "connectors" / "demo").symlink_to(outside, target_is_directory=True)
     assert servers_of(store, "workbuddy-connectors") == []
+
+
+def test_skill_discovery_is_bounded_while_it_walks(home, monkeypatch):
+    """`rglob` builds the whole match list before anything is checked, so the depth and count
+    limits were applied after the walk had already paid for it — a deep tree of SKILL.md files was
+    traversed in full. The walk has to stop where the limits say it does, and still miss nothing
+    that is inside them."""
+    store = Store(home / "data")
+    write(home, ".claude/skills/deep/a/b/c/d/e/SKILL.md", "---\nname: too-deep\n---\n\nx")
+    write(home, ".claude/skills/one/SKILL.md", "---\nname: one\n---\n\nx")
+    write(home, ".claude/skills/two/SKILL.md", "---\nname: two\n---\n\nx")
+    assert sorted(i["name"] for i in servers_of(store, "claude-skills")) == ["one", "two"]
+
+    monkeypatch.setattr(I, "MAX_ITEMS", 1)
+    got = I.scan(store, ["claude-skills"])
+    assert len(got["items"]) == 1 and got["truncated"] is True, got
+    assert any("partial" in n for n in got["notes"]), got["notes"]

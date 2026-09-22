@@ -25,7 +25,7 @@ import re
 from typing import Any, Awaitable, Callable
 
 from .. import i18n
-from .base import Inbound, clip, http_client, to_html, why
+from .base import Inbound, clip, esc, http_client, to_html, why
 
 API = "https://api.telegram.org"
 HARD_CHARS = 4096
@@ -38,6 +38,10 @@ POLL_HTTP_TIMEOUT = 40.0
 # webhook conflict will not fix itself, so hammering the API is pointless.
 BACKOFF_FIRST = 2.0
 BACKOFF_MAX = 120.0
+# How many non-blocking rounds are used to find the end of a backlog at startup. Telegram hands
+# over at most 100 updates per call, so this covers 5000 messages waiting; the loop also stops as
+# soon as a round makes no progress, which is what ends it in practice.
+BACKLOG_ROUNDS = 50
 
 
 def ids(raw: Any) -> list[str]:
@@ -164,7 +168,32 @@ async def _call(cfg: dict, method: str, payload: dict | None = None, *,
 
 
 def format_reply(cfg: dict, text: str) -> str:
-    return clip(to_html(text), int(cfg.get("max_chars") or 3500))
+    """Markdown to the HTML subset Telegram renders, inside the length this channel allows.
+
+    The trim happens on the **source text** and the markup is added afterwards, not the other way
+    round. Cutting already-converted HTML can land inside a tag or drop its closing partner, and
+    Telegram refuses the whole message then ("can't parse entities") — so a reply that was merely
+    too long would not arrive at all.
+    """
+    limit = int(cfg.get("max_chars") or 3500)
+    html = to_html(clip(text, limit))
+    if len(html) <= limit:
+        return html
+    # Markup still pushed it past the limit, which escaping alone can do (`&` becomes `&amp;`).
+    # Sending that would be refused outright, so fall back to the trimmed text with nothing to
+    # parse — cut on a character boundary of the *escaped* form, because slicing "&amp;" in half
+    # is refused just as firmly as an unclosed tag.
+    body = clip(text, limit)
+    out: list[str] = []
+    size = 0
+    for ch in body:
+        piece = esc(ch)
+        if size + len(piece) > max(0, limit - 1):
+            break
+        out.append(piece)
+        size += len(piece)
+    trimmed = "".join(out).rstrip()
+    return (trimmed + "…") if len(trimmed) < len(body) else trimmed
 
 
 async def send(cfg: dict, to: str, text: str) -> tuple[bool, str]:
@@ -216,13 +245,31 @@ async def poll(cfg: dict, handle: Callable[[Inbound], Awaitable[None]], *,
 
     offset = 0
     if bool(cfg.get("drop_pending", True)):
-        # One non-blocking call to find where the backlog ends, then start after it.
-        ok, updates, _ = await _call(cfg, "getUpdates", {"timeout": 0, "limit": 1,
-                                                         "allowed_updates": ["message"]}, timeout=15.0)
-        if ok and isinstance(updates, list) and updates:
-            offset = int(updates[-1].get("update_id") or 0) + 1
-            say(i18n.pick_now(f"skipped {len(updates)} message(s) that arrived while this was off",
-                              f"已跳过 {len(updates)} 条应用关闭期间到达的消息"))
+        # Drain until Telegram answers with nothing left, then start from there. Asking for
+        # `limit: 1` established the *oldest* pending update, not the end of the queue, so a
+        # backlog of three arrived as two messages while the note claimed one was skipped.
+        skipped = 0
+        for _ in range(BACKLOG_ROUNDS):
+            ok, updates, detail = await _call(cfg, "getUpdates", {
+                "timeout": 0, "limit": 100, "offset": offset, "allowed_updates": ["message"],
+            }, timeout=15.0)
+            if not ok:
+                # The backlog could not be read, so it will be delivered instead of dropped.
+                # That is the safe way round — say so rather than appear to have skipped it.
+                say(i18n.pick_now(
+                    f"could not check what arrived while this was off ({detail}), so those messages will be handled",
+                    f"没能查到应用关闭期间到达的消息({detail}),所以这些消息会被处理"))
+                break
+            if not isinstance(updates, list) or not updates:
+                break
+            nxt = int(updates[-1].get("update_id") or 0) + 1
+            if nxt <= offset:            # no progress: nothing further to drain
+                break
+            offset = nxt
+            skipped += len(updates)
+        if skipped:
+            say(i18n.pick_now(f"skipped {skipped} message(s) that arrived while this was off",
+                              f"已跳过 {skipped} 条应用关闭期间到达的消息"))
 
     backoff = BACKOFF_FIRST
     while not stop.is_set():

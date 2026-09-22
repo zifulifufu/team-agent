@@ -440,6 +440,40 @@ def risk_notes(server: dict) -> list[str]:
     return out
 
 
+def _skill_files(root: Path, src: dict, capped: list[str] | None) -> list[Path]:
+    """Every `SKILL.md` under `root`, with the depth and count limits enforced *while walking*.
+
+    Walked by hand rather than with `sorted(root.rglob("SKILL.md"))`, which builds the entire
+    match list before anything is checked: a limit applied after the walk has already paid for it
+    bounds nothing, and a home directory holding a deep tree of `SKILL.md` files is exactly the
+    case these limits exist for. Entries are sorted per directory, so the order is deterministic
+    and the set is unchanged for any tree that fits inside the limits.
+    """
+    out: list[Path] = []
+    stack = [root]
+    while stack:
+        try:
+            entries = sorted(stack.pop().iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                depth = len(e.relative_to(root).parts)
+            except ValueError:
+                continue
+            if e.is_dir():
+                if not e.is_symlink() and depth < MAX_SKILL_DEPTH:
+                    stack.append(e)
+                continue
+            if e.name != "SKILL.md" or not _plain_path(e, root):
+                continue
+            out.append(e)
+            if len(out) >= MAX_ITEMS:
+                _note_cap(src, MAX_ITEMS + 1, MAX_ITEMS, capped)   # there may be more
+                return out
+    return out
+
+
 def _skill_items(src: dict, store: Any, capped: list[str] | None = None) -> list[dict]:
     from .tools import parse_skill_text, safe_skill_name
     have = set()
@@ -452,13 +486,9 @@ def _skill_items(src: dict, store: Any, capped: list[str] | None = None) -> list
     for root in paths_of(src):
         if not root.is_dir() or root.is_symlink():
             continue
-        all_found = sorted(root.rglob("SKILL.md"))
-        _note_cap(src, len(all_found), MAX_ITEMS, capped)
-        for path in all_found[:MAX_ITEMS]:
+        for path in _skill_files(root, src, capped):
             try:
-                rel = path.relative_to(root)
-                if (len(rel.parts) > MAX_SKILL_DEPTH or not _plain_path(path, root)
-                        or path.stat().st_size > MAX_SKILL_BYTES):
+                if path.stat().st_size > MAX_SKILL_BYTES:
                     continue
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except (OSError, ValueError):
