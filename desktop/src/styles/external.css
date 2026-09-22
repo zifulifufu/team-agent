@@ -35,6 +35,12 @@
 .ext-level em { font-style: normal; font-size: 11px; margin-left: 6px; padding: 1px 7px; border-radius: 10px; color: var(--primary); border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--border)); }
 .ext-level small { display: block; margin-top: 3px; font-size: 12px; line-height: 1.6; color: var(--text-3); }
 .ext-ack, .ext-web { margin-top: 8px; font-size: 12.5px; line-height: 1.6; }
+/* The mode switch reads as a block rather than as one more checkbox in a row: it changes what
+   every field under it means, and with it on the engine reaches as far as it does in its own
+   application. `display: flex` beats the base `.check`'s inline-flex, which centres a long
+   label against its checkbox instead of wrapping it neatly. */
+.ext-native { display: flex; align-items: flex-start; margin-top: 8px; padding: 9px 12px; font-size: 12.5px; line-height: 1.6; }
+.ext-native:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
 .ext-dir { display: flex; gap: 6px; align-items: center; }
 .ext-dir input { flex: 1; min-width: 0; }
 .ext-adv > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); margin-bottom: 8px; }

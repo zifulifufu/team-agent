@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Settings2, TerminalSquare } from "lucide-react";
-import { api, type ExternalOverview, type ExternalProbe } from "../api";
+import { api, type Agent, type ExternalOverview, type ExternalProbe } from "../api";
 import { useData } from "../data";
 import { levelLabel } from "../lib";
 import { useI18n } from "../i18n";
@@ -27,7 +27,21 @@ export default function ExternalPage(_: PageProps) {
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
   const on = settings.external_agents_enabled;
   const eng = ov?.engines[0];
-  const members = agents.filter((a) => !!a.engine);
+  // The list comes from the API that owns it, not from the members list the rest of the app
+  // happens to be holding. Filtering `agents` meant a member could be missing from this page —
+  // and with it the only way into its settings — whenever that list was stale or had not loaded,
+  // while the page reported "none yet" as if there were nothing to configure.
+  const members: Agent[] = (ov?.members ?? []).map((m) => {
+    const known = agents.find((a) => a.id === m.id);
+    return {
+      ...known,
+      id: m.id,
+      name: m.name,
+      engine: m.engine,
+      engine_cfg: m.cfg,
+      avatar: known?.avatar || ov?.engines.find((e) => e.id === m.engine)?.avatar || "\u{1F9F0}",
+    } as Agent;
+  });
   const editing = members.find((a) => a.id === editId);
 
   const test = async (live: boolean) => {
