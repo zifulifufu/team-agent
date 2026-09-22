@@ -385,11 +385,14 @@ def test_an_image_provider_is_not_usable_for_video_and_the_other_way_round(store
     endpoint, which surfaces as a broken server rather than a wrong lookup."""
     image_prov = store.add_provider_from_preset("openai-image")
     video_prov = store.add_provider_from_preset("minimax-h3")
+    meta_prov = store.add_provider_from_preset("metachat-video")
     assert [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)] == [image_prov["id"]]
-    assert [p["id"] for p in media.providers_of_kind(store, video.KINDS)] == [video_prov["id"]]
-    assert set(media.MEDIA_KINDS) == {"minimax_video", "openai_image"}
-    # and neither is offered to a member as a chat model
-    assert [m["id"] for m in store.list_models() if m["provider_id"] in (image_prov["id"], video_prov["id"])] == []
+    # Both video kinds belong to the video tool, and neither of them to the image one.
+    assert [p["id"] for p in media.providers_of_kind(store, video.KINDS)] == [video_prov["id"], meta_prov["id"]]
+    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_video", "openai_image"}
+    # and none of them is offered to a member as a chat model
+    assert [m["id"] for m in store.list_models()
+            if m["provider_id"] in (image_prov["id"], video_prov["id"], meta_prov["id"])] == []
 
 
 def test_a_configured_id_that_no_longer_exists_is_reported_not_replaced(store):

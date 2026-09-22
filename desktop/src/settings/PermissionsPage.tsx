@@ -61,6 +61,15 @@ export default function PermissionsPage({ onTab }: PageProps) {
     return chosen?.models ?? [];
   }, [imageProviders, settings?.image_provider_id]);
 
+  // Same question for video. It matters here because the two kinds answer differently: a
+  // self-hosted H3 has one checkpoint and no model to name, while MetaChat's media API serves two
+  // and needs the name on every call — so the setting is only useful (and only shown) when the
+  // chosen provider actually offers a choice.
+  const videoModels = useMemo(() => {
+    const chosen = videoProviders.find((p) => p.id === settings?.video_provider_id) ?? videoProviders[0];
+    return chosen?.models ?? [];
+  }, [videoProviders, settings?.video_provider_id]);
+
   const checkImage = async () => {
     setChecking(true);
     setImageCheck("");
@@ -229,33 +238,46 @@ export default function PermissionsPage({ onTab }: PageProps) {
 
       <div className="sec">{t("Video generation")}</div>
       <div className="card flush">
-        <Row title={t("Let members generate video")} desc={t("Off by default. When on, members get a generate_video tool that renders a few seconds of video with sound and saves it into the group's own workspace. It is not a chat model: the video server is a separate MiniMax H3 deployment you run yourself with SGLang or vLLM (tens of GB of weights, and the official example uses 4 GPUs). Only 768p is available — 2K and the official prompt shaper are not open source.")}>
+        <Row title={t("Let members generate video")} desc={t("Off by default. When on, members get a generate_video tool that renders a few seconds of video and saves it into the group's own workspace. Two kinds of provider can do it. A self-hosted MiniMax H3 (SGLang or vLLM; tens of GB of weights, and the official example uses 4 GPUs) makes 4-15s clips with sound at 768p, and 2K plus the official prompt shaper are not open source. MetaChat's video API needs no GPU at all — a key and a model name are the whole setup — but its two models generate only from a reference image, so no member can prompt one from text alone.")}>
           <Switch checked={settings.video_enabled} label={t("Let members generate video")} onChange={(v) => void set({ video_enabled: v })} />
         </Row>
         {settings.video_enabled && (
           <>
-            <Row title={t("Video server")} desc={t("Which video provider to render with. Add \"MiniMax H3 (self-hosted video)\" under Model providers and point it at your server; a rented cloud GPU should be marked non-local there, so the offline switch governs it too.")}>
-              <select className="pm-text" value={settings.video_provider_id} aria-label={t("Video server")} onChange={(e) => void set({ video_provider_id: e.target.value })}>
+            <Row title={t("Video service")} desc={t("Which video provider to render with. \"MiniMax H3 (self-hosted video)\" points at your own server (a rented cloud GPU should be marked non-local there, so the offline switch governs it too); \"MetaChat video (open media API)\" is MetaChat's other address, api.mmchat.xyz/open/v1, and uses the same key as its OpenAI-compatible one.")}>
+              <select className="pm-text" value={settings.video_provider_id} aria-label={t("Video service")} onChange={(e) => void set({ video_provider_id: e.target.value })}>
                 <option value="">{t("The first enabled one")}</option>
                 {videoProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </Row>
-            {videoProviders.length === 0 && <div className="pm-note">{t("No video provider has been added yet, so the tool stays hidden from members. Add one under Model providers first — a gateway counts as soon as its model list says it serves video models.")}</div>}
-            <Row title={t("Longest clip")} desc={t("The longest clip a member may ask for. H3 itself accepts 4-15 seconds; a longer request is shortened rather than refused, and the member is told it was.")}>
+            {videoProviders.length === 0 && <div className="pm-note">{t("No video provider has been added yet, so the tool stays hidden from members. Add one under Model providers first. MetaChat's video API is the one that needs no GPU; a provider whose model list says it serves video models is offered here as well.")}</div>}
+            {videoModels.length > 0 && (
+              <Row title={t("Model name")} desc={t("Which of that provider's models to render with. Its list is built into the app rather than fetched: MetaChat's media API publishes no model list to fetch from.")}>
+                <select className="pm-text" value={settings.video_model} aria-label={t("Model name")}
+                        onChange={(e) => void set({ video_model: e.target.value })}>
+                  {videoModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                  {/* Same rule as the image model: a value that is not in the list stays selectable,
+                      so switching providers cannot silently rewrite the setting. */}
+                  {!videoModels.some((m) => m.id === settings.video_model) && (
+                    <option value={settings.video_model}>{settings.video_model || t("(none)")}</option>
+                  )}
+                </select>
+              </Row>
+            )}
+            <Row title={t("Longest clip")} desc={t("The longest clip a member may ask for. H3 accepts 4-15 seconds and MetaChat's API 1-15; a longer request is shortened rather than refused, and the member is told it was.")}>
               <NumInput v={settings.video_max_seconds} min={1} max={15} unit={t("sec")} label={t("Longest clip")} onCommit={(n) => set({ video_max_seconds: n })} />
             </Row>
             <Row title={t("Render timeout")} desc={t("How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.")}>
               <NumInput v={settings.video_timeout} min={30} max={7200} unit={t("sec")} label={t("Render timeout")} onCommit={(n) => set({ video_timeout: n })} />
             </Row>
-            <Row title={t("Output short edge")} desc={t("In pixels. H3 is natively 768; anything larger needs H3-Regenerate-2K, which is not part of the open release.")}>
+            <Row title={t("Output short edge")} desc={t("In pixels. H3 is natively 768; anything larger needs H3-Regenerate-2K, which is not part of the open release. MetaChat's API takes a named resolution instead, so this is mapped for it: 640px or below means 480p, above means 720p.")}>
               <NumInput v={settings.video_short_edge} min={128} max={2048} unit="px" label={t("Output short edge")} onCommit={(n) => set({ video_short_edge: n })} />
             </Row>
             <Row title={t("Largest clip to keep")} desc={t("A downloaded clip bigger than this is refused instead of saved, so one runaway render cannot fill the disk.")}>
               <NumInput v={settings.video_max_mb} min={1} max={4096} unit="MB" label={t("Largest clip to keep")} onCommit={(n) => set({ video_max_mb: n })} />
             </Row>
-            <Row title={t("Is the server reachable?")} desc={t("Asks the video server for a task id that cannot exist, so it renders nothing and costs no GPU time. A live server answers 404, which is enough to know it is up.")}>
+            <Row title={t("Is the service reachable?")} desc={t("Asks for a task id that cannot exist, so it renders nothing and costs nothing. A live server answers 404, which is enough to know it is up; a rejected key is reported as such.")}>
               <div className="row">
-                <button className="btn small" disabled={checking} onClick={checkVideo}>{checking ? t("Checking…") : t("Test the video server")}</button>
+                <button className="btn small" disabled={checking} onClick={checkVideo}>{checking ? t("Checking…") : t("Test the video service")}</button>
                 {videoCheck && <span className={videoCheck.startsWith("✓") ? "ok-text small" : "err small"}>{videoCheck}</span>}
               </div>
             </Row>

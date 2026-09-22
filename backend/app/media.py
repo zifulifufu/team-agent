@@ -21,7 +21,23 @@ from .coderun import inside as _inside
 # list `store.list_models()` filters by, so a member can never be pointed at a generator.
 # Each generator imports its own subset for picking a provider (`video.KINDS`,
 # `imagegen.KINDS`) — add the new kind here **and** to that subset.
-MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "openai_image")
+MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_video", "openai_image")
+
+# The one media API whose model list cannot be asked for.
+#
+# `metachat_video` is MetaChat's *open* media API (`api.mmchat.xyz/open/v1`) — a different host
+# from the OpenAI-compatible address, with its own job shape. It documents `video/generate`,
+# `video/result/{id}` and `image/generate`, and **no listing endpoint at all**
+# (`/open/v1/models`, `/open/v1/video/models`: 404). So there is nothing to refresh against, and
+# the models are shipped here instead — this table is their one definition: the preset seeds from
+# it and `discovery` answers a refresh with it.
+#
+# What it is *not* is a list of everything MetaChat's website offers. Seedance, Sora, Kling and
+# Veo have web pages and no API; only these two are reachable with a key. Two ids, both taken
+# from MetaChat's own model-price page, and both image-to-video (see `video.py`).
+BUILTIN_MEDIA_MODELS: dict[str, tuple[str, ...]] = {
+    "metachat_video": ("grok-imagine-video-1.5-preview", "mj-video-v1"),
+}
 
 # ------------------------------------------------------------------ what a model is for
 #

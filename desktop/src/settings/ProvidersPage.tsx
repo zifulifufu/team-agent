@@ -17,15 +17,16 @@ const KIND_LABEL: Record<string, string> = {
   gemini: "Gemini",
   ollama: "Ollama",
   minimax_video: "Video generation",
+  metachat_video: "Video generation (MetaChat media API)",
 };
 /** Providers that generate media instead of chatting: no model list, no chat endpoint. The
  *  backend keeps them out of the model roster too (`store.list_models`). */
-const MEDIA_KINDS = new Set(["minimax_video"]);
+const MEDIA_KINDS = new Set(["minimax_video", "metachat_video"]);
 const isMedia = (kind: string) => MEDIA_KINDS.has(kind);
 // Only the kinds whose wording actually differs need a Chinese entry; the rest are proper
 // nouns. Read through a plain function (`currentLang()`), not a hook, because AddProvider
 // renders it inside a callback.
-const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容", minimax_video: "视频生成" };  // i18n-keep: the Chinese half of the pair table above
+const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容", minimax_video: "视频生成", metachat_video: "视频生成(MetaChat 媒体接口)" };  // i18n-keep: the Chinese half of the pair table above
 
 const kindLabel = (kind: string): string =>
   pickLang(KIND_LABEL[kind] ?? kind, KIND_LABEL_ZH[kind], currentLang());
@@ -44,6 +45,7 @@ function endpointPreview(kind: string, base: string): string {
   if (kind === "anthropic") return `${b}/v1/messages`;
   if (kind === "ollama") return `${b}/api/chat`;
   if (kind === "minimax_video") return `${b}/v1/videos`;
+  if (kind === "metachat_video") return `${b}/video/generate`;
   return b;
 }
 
@@ -278,10 +280,12 @@ function ProviderDetail({
         <div className="field-block">
           <div className="fb-label">{t("Video generation")}</div>
           <div className="fb-note muted">
-            {t("This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.")}
+            {p.kind === "metachat_video"
+              ? t("This is not a chat model: it goes to MetaChat's own video endpoints, and members reach it through the generate_video tool. Its two models ship with the app — that API publishes no model list to fetch — so there is nothing to add here; pick the model under Permissions & control → Video generation. Both models generate from a reference image. Test the address here.")
+              : t("This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.")}
           </div>
           <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn small" disabled={busy} onClick={checkVideo}>{busy ? t("Checking…") : t("Test the video server")}</button>
+            <button className="btn small" disabled={busy} onClick={checkVideo}>{busy ? t("Checking…") : t("Test the video service")}</button>
           </div>
           {check && <div className={"fb-note " + (check.startsWith("✓") ? "ok-text" : "err")}>{check}</div>}
         </div>

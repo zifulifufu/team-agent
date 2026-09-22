@@ -138,20 +138,22 @@ BUILTIN_SPECS: dict[str, dict] = {
             "required": ["language", "code"]},
     },
     "generate_video": {
-        "description": "Generate a short video with sound through the video-generation model this "
-                       "machine serves (MiniMax H3). Describe what should happen, and write it the "
-                       "way H3 was trained to read it: name the shots, then the sound — for "
-                       "example \"[Shot 1] ... [Shot 2] ... overall_soundscape: ... "
-                       "non_diegetic_music: ...\". A clip is 4-15 seconds and rendering takes a "
-                       "while; the file lands in this group's workspace. Pass the path of an image "
-                       "from the workspace as first_frame to turn it into image-to-video. You "
+        "description": "Generate a short video through this group's video provider, and save it "
+                       "into the group's workspace. Two kinds of provider exist and they differ. A "
+                       "self-hosted MiniMax H3 makes 4-15 second clips with sound and is prompted "
+                       "as shots and then sound (\"[Shot 1] ... overall_soundscape: ... "
+                       "non_diegetic_music: ...\"); a workspace image can be first_frame/last_frame. "
+                       "MetaChat's video API (Grok Video, Midjourney Video) makes 1-15 second clips "
+                       "and generates ONLY from a reference image, which must be an http(s) URL "
+                       "because that service downloads it itself. Rendering takes minutes. You "
                        "cannot watch or hear the result: say what you asked for, never describe "
                        "what came out.",
-        "description_zh": "用本机所服务的视频生成模型(MiniMax H3)生成一段带声音的短视频。描述要发生的事,"
-                          "并写成 H3 被训练来读的格式:先分镜,再说声音 —— 例如「[Shot 1] … [Shot 2] … "
-                          "overall_soundscape: … non_diegetic_music: …」。一段 4-15 秒,渲染需要等一会儿,"
-                          "文件会落在本群工作目录里。把工作目录里某张图片的路径填到 first_frame 可以变成"
-                          "图生视频。你看不到也听不到结果:只说你要求了什么,绝不要描述生成出来的画面。",
+        "description_zh": "用本群配置的视频服务商生成一段短视频,存进本群工作目录。有两类服务商,规矩不同:"
+                          "自建的 MiniMax H3 生成 4-15 秒、带声音的片段,提示词要写成「先分镜、再说声音」"
+                          "(如「[Shot 1] … overall_soundscape: … non_diegetic_music: …」),可以用工作目录里的图片"
+                          "当 first_frame/last_frame;MetaChat 的视频接口(Grok Video、Midjourney Video)"
+                          "生成 1-15 秒的片段,而且只能「按参考图生成」,参考图必须是 http(s) 地址——它自己去下载。"
+                          "渲染需要等几分钟。你看不到也听不到结果:只说你要求了什么,绝不要描述生成出来的画面。",
         # Every built-in carries its own `risk`: it runs something outside this app, so it asks.
         "risk": "exec",
         # Its own budget. Rendering is minutes, while `tool_timeout` is sized for a tool call that
@@ -162,19 +164,19 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "description": "What to generate: shots, then soundscape and music",
                        "description_zh": "要生成什么:分镜,再写声音环境与配乐"},
             "duration_seconds": {"type": "integer",
-                                 "description": f"Clip length, {video.MIN_SECONDS}-{video.MAX_SECONDS} seconds; the longest this group allows is used when omitted",
-                                 "description_zh": f"时长,{video.MIN_SECONDS}-{video.MAX_SECONDS} 秒;不填则用本群允许的最长时长"},
+                                 "description": f"Clip length, {video.MIN_SECONDS}-{video.MAX_SECONDS} seconds, and at most what this group allows; the group's own limit is used when omitted",
+                                 "description_zh": f"时长,{video.MIN_SECONDS}-{video.MAX_SECONDS} 秒,且不超过本群上限;不填则用本群允许的最长时长"},
             "aspect_ratio": {"type": "string", "enum": list(video.ASPECT_RATIOS),
-                             "description": f"One of: {', '.join(video.ASPECT_RATIOS)}; 16:9 by default",
-                             "description_zh": f"可选:{', '.join(video.ASPECT_RATIOS)},默认 16:9"},
+                             "description": f"One of: {', '.join(video.ASPECT_RATIOS)}; omit for the provider's own default. Which of them apply depends on the provider",
+                             "description_zh": f"可选:{', '.join(video.ASPECT_RATIOS)};不填则用服务商自己的默认值。具体哪些可用取决于服务商"},
             "first_frame": {"type": "string",
-                            "description": "Optional image to start from: a path inside the workspace, or an http(s)/file URL",
-                            "description_zh": "可选:起始图片,工作目录内的路径,或 http(s)/file 地址"},
+                            "description": "Reference image: a path inside the workspace on a self-hosted H3 server, an http(s) URL on MetaChat's video API (which fetches it itself, and where it is required)",
+                            "description_zh": "参考图:自建 H3 服务可填工作目录内的路径;MetaChat 的视频接口必须是 http(s) 地址(它自己去取),而且是必填的"},
             "last_frame": {"type": "string",
-                           "description": "Optional image to end on, same forms as first_frame",
-                           "description_zh": "可选:结束图片,写法同 first_frame"},
-            "seed": {"type": "integer", "description": "0 for a random result",
-                     "description_zh": "填 0 表示随机"}},
+                           "description": "Image to end on, same forms as first_frame. Self-hosted H3 only — MetaChat's API generates from a single keyframe and refuses this",
+                           "description_zh": "结束图片,写法同 first_frame。仅自建 H3 支持;MetaChat 的接口只按一张参考图生成,填了会被拒绝"},
+            "seed": {"type": "integer", "description": "0 for a random result; self-hosted H3 only",
+                     "description_zh": "填 0 表示随机;仅自建 H3 支持"}},
             "required": ["prompt"]},
     },
     "generate_image": {
@@ -425,25 +427,64 @@ When it is not supplied, calls needing confirmation are always denied."""
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
             return i18n.pick_now("The prompt was empty, so nothing was generated.", "提示词是空的,没有生成。"), False, []
-        ratio = str(args.get("aspect_ratio") or video.DEFAULT_ASPECT).strip()
-        if ratio not in video.ASPECT_RATIOS:
+        # Which values are even legal depends on the provider, so the shape is read from it rather
+        # than from one shared list: H3 has no `adaptive` and MetaChat's API has no `21:9`, and
+        # refusing a value the server would have taken is its own kind of wrong answer.
+        shape = video.shape_of(prov["kind"])
+        ratio = str(args.get("aspect_ratio") or shape["default_ratio"]).strip()
+        if ratio not in shape["ratios"]:
             return i18n.pick_now(
-                f"\"{ratio}\" is not an aspect ratio this model produces, so nothing was generated. Use one of: {', '.join(video.ASPECT_RATIOS)}.",
-                f"「{ratio}」不是这个模型支持的画幅,没有生成。可用:{', '.join(video.ASPECT_RATIOS)}。",
+                f"\"{ratio}\" is not an aspect ratio \"{prov['name']}\" produces, so nothing was generated. Use one of: {', '.join(shape['ratios'])}.",
+                f"「{ratio}」不是「{prov['name']}」支持的画幅,没有生成。可用:{', '.join(shape['ratios'])}。",
             ), False, []
         # The workspace is created here rather than assumed to exist: this is the first thing a
         # fresh group does with it.
         workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg, ctx.group["id"])
-        try:
-            first = video.frame_uri(str(args.get("first_frame") or ""), workspace)
-            last = video.frame_uri(str(args.get("last_frame") or ""), workspace)
-        except video.VideoError as e:
-            return str(e), False, []
-        seconds, clamped = video.clamp_seconds(args.get("duration_seconds"), int(cfg["video_max_seconds"]))
-        payload = video.build_payload(
-            prompt, short_edge=int(cfg["video_short_edge"]), aspect_ratio=ratio, duration_seconds=seconds,
-            seed=int(args.get("seed") or 0), first_frame=first, last_frame=last,
-        )
+        want_first = str(args.get("first_frame") or "").strip()
+        want_last = str(args.get("last_frame") or "").strip()
+        seconds, clamped = video.clamp_seconds(args.get("duration_seconds"), int(cfg["video_max_seconds"]), prov["kind"])
+        if prov["kind"] == video.META_KIND:
+            model = str(cfg.get("video_model") or "").strip()
+            if not model:
+                return i18n.pick_now(
+                    "Video generation is set to MetaChat's media API, which serves more than one "
+                    "model, but none is chosen — so nothing was generated. Pick one under "
+                    "Permissions & control → Video generation.",
+                    "视频生成用的是 MetaChat 的媒体接口,它有两个模型,但没有选定用哪个,所以没有生成。"
+                    "请在「权限与操控 → 视频生成」里选一个。",
+                ), False, []
+            if want_last:
+                return i18n.pick_now(
+                    f"\"{model}\" generates from a single reference image, so there is no last-frame "
+                    "slot to put that in, and nothing was generated. Pass the picture as first_frame.",
+                    f"「{model}」只按一张参考图生成,没有「结束帧」这个位置,所以没有生成。请把图片填在 first_frame。",
+                ), False, []
+            try:
+                frame = video.image_url(want_first)
+            except video.VideoError as e:
+                return str(e), False, []
+            if not frame:
+                return i18n.pick_now(
+                    f"\"{model}\" generates from a reference image and MetaChat's video API offers no "
+                    "text-only mode, so nothing was generated. Pass the picture as first_frame, as an "
+                    "http(s) URL the service can fetch.",
+                    f"「{model}」要按参考图生成,MetaChat 的视频接口没有纯文生视频的模式,所以没有生成。"
+                    "请把图片填在 first_frame,并用它取得到的 http(s) 地址。",
+                ), False, []
+            payload = video.metachat_payload(
+                prompt, model=model, ratio=ratio, duration_seconds=seconds,
+                short_edge=int(cfg["video_short_edge"]), frame=frame,
+            )
+        else:
+            try:
+                first = video.frame_uri(want_first, workspace)
+                last = video.frame_uri(want_last, workspace)
+            except video.VideoError as e:
+                return str(e), False, []
+            payload = video.build_payload(
+                prompt, short_edge=int(cfg["video_short_edge"]), aspect_ratio=ratio, duration_seconds=seconds,
+                seed=int(args.get("seed") or 0), first_frame=first, last_frame=last,
+            )
         try:
             r = await video.generate(
                 prov, payload, workspace=workspace,
@@ -456,21 +497,34 @@ When it is not supplied, calls needing confirmation are always denied."""
         # reads like something went wrong.
         size = (f"{r['bytes'] / 1024:.0f} KB" if r["bytes"] < 1024 * 1024
                 else f"{r['bytes'] / 1024 / 1024:.1f} MB")
+        # "with sound" is an H3 property, not a promise of the video API: MetaChat's two models do
+        # not document an audio track, and telling the user otherwise would be inventing a feature.
+        sound = i18n.pick_now(" with sound", "、带声音") if prov["kind"] != video.META_KIND else ""
         lines = [
             i18n.pick_now(
-                f"Rendered a {seconds}s {ratio} clip with sound using {prov['name']}: {r['name']} "
+                f"Rendered a {seconds}s {ratio} clip{sound} using {prov['name']}: {r['name']} "
                 f"({size}, took {r['seconds']:.0f}s).",
-                f"用 {prov['name']} 生成了一段 {seconds} 秒、{ratio} 的带声音视频:{r['name']}"
+                f"用 {prov['name']} 生成了一段 {seconds} 秒、{ratio} 的视频{sound}:{r['name']}"
                 f"({size},用了 {r['seconds']:.0f} 秒)。",
             ),
             i18n.pick_now(f"Saved in this group's workspace: {r['path']}", f"已保存在本群工作目录:{r['path']}"),
         ]
+        try:
+            points = int(r.get("points") or 0)
+        except (TypeError, ValueError):
+            points = 0
+        if points:
+            lines.append(i18n.pick_now(
+                f"(The service billed {points} points for it.)",
+                f"(这次生成消耗了 {points} 元点。)",
+            ))
         if clamped:
+            lo, hi = shape["seconds"]
             lines.append(i18n.pick_now(
                 f"(Length was adjusted to {seconds}s: this group's limit is {int(cfg['video_max_seconds'])}s "
-                f"and the model itself accepts {video.MIN_SECONDS}-{video.MAX_SECONDS}s.)",
+                f"and the model itself accepts {lo}-{hi}s.)",
                 f"(时长已调整为 {seconds} 秒:本群上限是 {int(cfg['video_max_seconds'])} 秒,模型本身支持 "
-                f"{video.MIN_SECONDS}-{video.MAX_SECONDS} 秒。)",
+                f"{lo}-{hi} 秒。)",
             ))
         # Without this line the model tends to narrate what "happened" in a video it never saw.
         lines.append(i18n.pick_now(

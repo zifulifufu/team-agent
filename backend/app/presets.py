@@ -11,11 +11,14 @@ kind decides how it maps onto the LiteLLM model string:
                         reaches it only through `app/video.py`. `video.MEDIA_KINDS` is the one
                         list of such kinds, and `store.list_models()` keeps them out of the
                         chat model list.
+  metachat_video     -> the same shape of exception, reached through MetaChat's open media API
+                        (`api.mmchat.xyz/open/v1`) instead of a server you run. Its model list
+                        ships with the app rather than being fetched — that API publishes none.
 """
 
 from __future__ import annotations
 
-from . import channels, i18n
+from . import channels, i18n, media
 
 PRESETS: list[dict] = [
     {
@@ -208,6 +211,34 @@ PRESETS: list[dict] = [
         "hint_zh": "不是对话模型:H3 生成带立体声的视频(4-15 秒、768p)。用 SGLang 或 vLLM 跑起来后,这里填那个服务地址 —— FL2VA 检查点用 30010,Ref2VA 用 30011。之后成员就能用 generate_video 工具。权重几十 GB(精简版也要约 42.5 GB),官方示例用 4 张卡;2K 输出与 H3-Context-IR 提示词预处理未开源。如果跑在租来的云 GPU 上,请把下面的「本地」关掉,让「允许外呼」也能管住它。",
     },
     {
+        # The media kind that needs no GPU and no server: MetaChat's *open media API*, which is a
+        # different host from its OpenAI-compatible one and a different job shape (`app/video.py`
+        # speaks both). One key, and a clip comes back — hence a preset rather than a document.
+        #
+        # The models are seeded rather than fetched: that API publishes no model listing at all,
+        # so there is nothing to refresh against. `media.BUILTIN_MEDIA_MODELS` owns the list and
+        # `discovery` answers a refresh with the same two ids. Only MetaChat's *API* models are
+        # listed — its website also runs Seedance, Sora, Kling and Veo, and a key cannot reach any
+        # of them, which is worth knowing before looking for them in the refresh result.
+        "preset": "metachat-video",
+        "name": "MetaChat video (open media API)", "name_zh": "MetaChat 视频(开放媒体接口)",
+        "kind": "metachat_video",
+        "base_url": "https://api.mmchat.xyz/open/v1",
+        "is_local": False,
+        "models": list(media.BUILTIN_MEDIA_MODELS["metachat_video"]),
+        "hint": "Not a chat model: it answers /video/generate and needs no GPU. Address https://api.mmchat.xyz/open/v1 (backup https://api2.mmchat.xyz/open/v1), same API key as MetaChat's OpenAI-compatible address. Its two models "
+                "— grok-imagine-video-1.5-preview and mj-video-v1 — ship with this preset instead of being fetched, "
+                "because that API has no model-list endpoint to fetch from. Both generate from a reference image, so a "
+                "member has to pass one as an http(s) URL. Pick the model under Permissions & control → Video generation. "
+                "MetaChat's website also runs Seedance, Sora, Kling and Veo; those are web-only and no key reaches them.",
+        "hint_zh": "不是对话模型:它提供 /video/generate,不需要显卡。地址 https://api.mmchat.xyz/open/v1"
+                   "(备用 https://api2.mmchat.xyz/open/v1),与 MetaChat 的 OpenAI 兼容地址是同一把密钥。"
+                   "它的两个模型 —— grok-imagine-video-1.5-preview 与 mj-video-v1 —— 随这个预设内置,而不是查出来的:"
+                   "这个接口根本没有模型清单接口。两者都要参考图,所以成员必须传一个 http(s) 图片地址。"
+                   "模型在「权限与操控 → 视频生成」里选。MetaChat 网站上还有 Seedance、Sora、可灵、Veo,"
+                   "但那些只对网页端开放,任何密钥都调不到。",
+    },
+    {
         # The one media kind that is reached through a *gateway* rather than a self-hosted
         # server: /images/generations is what OpenAI serves, what MetaChat serves on its
         # OpenAI-compatible address (GPT-Image), and what most aggregators implement. A key
@@ -322,14 +353,18 @@ DEFAULT_SETTINGS: dict = {
     # installed"; a command here wins, with {audio} and {out} as placeholders.
     "transcribe_cmd": "",
     "refs_budget": 24000,      # characters of referenced content per round
-    # ---- video generation (MiniMax H3 and anything else speaking the same video API), off by
-    # default. Not a chat model: it is reached through its own video endpoints and is gated like
-    # any other outbound call, which is why a rented GPU box has to be marked non-local at the
-    # provider rather than here.
+    # ---- video generation, off by default. Two shapes reach it: self-hosted MiniMax H3, and
+    # MetaChat's open media API (Grok Video / Midjourney Video, no GPU). Neither is a chat model:
+    # each is reached through its own video endpoints and gated like any other outbound call,
+    # which is why a rented GPU box has to be marked non-local at the provider rather than here.
     "video_enabled": False,
     "video_provider_id": "",   # which video provider to use; empty = the first enabled one
-    "video_short_edge": 768,   # output short edge in pixels (H3 is natively 768; 2K needs a module that is not open source)
-    "video_max_seconds": 15,   # longest clip a member may ask for (H3 itself accepts 4-15)
+    # Which model, for a provider that serves more than one. H3 has a single checkpoint and takes
+    # no model id, so this stays empty there; MetaChat's media API serves two and needs the name on
+    # every call. A setting rather than a provider column, for the same reason as `image_model`.
+    "video_model": "",
+    "video_short_edge": 768,   # output short edge in pixels (H3 is natively 768; 2K needs a module that is not open source). MetaChat's API takes a named resolution instead, so this is mapped onto 480p/720p — see video.resolution_for
+    "video_max_seconds": 15,   # longest clip a member may ask for (H3 accepts 4-15, MetaChat 1-15; the floor is the provider's own)
     "video_timeout": 900,      # how long one generation may take before giving up, in seconds
     "video_max_mb": 512,       # cap on the downloaded file, checked before it is saved
     # ---- image generation through an OpenAI-compatible /images/generations endpoint. Unlike

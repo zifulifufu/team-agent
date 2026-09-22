@@ -1,14 +1,31 @@
-"""Video-and-audio generation through a self-hosted MiniMax H3 server.
+"""Video generation through a self-hosted MiniMax H3 server **or** MetaChat's open media API.
 
-H3-Base is a diffusion transformer, not a language model. It has no chat completions endpoint
-and cannot be a member's model, so it never appears in the model list (see `MEDIA_KINDS`); it
-answers a video API instead, and this module is the only place that talks to it:
+Two shapes live here because they disagree about every parameter, and a request validated
+against the other shape's list would be rejected locally for a value the server accepts:
 
-    POST {base}/v1/videos            -> {"id": "..."}   submit
-    GET  {base}/v1/videos/{id}       -> {"status": "..."}   poll
-    GET  {base}/v1/videos/{id}/content -> the mp4 bytes     download
+    self-hosted H3 (kind `minimax_video`)
+        POST {base}/v1/videos              -> {"id": "..."}          submit
+        GET  {base}/v1/videos/{id}         -> {"status": "..."}      poll
+        GET  {base}/v1/videos/{id}/content -> the mp4 bytes          download
 
-Two things the server will *not* do for us, and which therefore shape this file:
+    MetaChat open media API (kind `metachat_video`; `{base}` is `https://api.mmchat.xyz/open/v1`)
+        POST {base}/video/generate         -> {"data": {"id": ...}}  submit
+        GET  {base}/video/result/{id}      -> {"data": {...}}        poll
+        GET  the `video_url` it reports    -> the mp4 bytes          download
+
+Three things about the MetaChat one are worth stating up front, because they are the API's
+properties and not ours to paper over:
+
+- **Both of its models are image-to-video.** `grok-imagine-video-1.5-preview` says so in as many
+  words ("必须提交 1 张首帧参考图"), and `mj-video-v1` generates from a keyframe too. There is no
+  text-only path to offer, so the tool is not going to pretend there is one.
+- **The reference image must be an http(s) URL**, because MetaChat's servers fetch it. A path
+  inside the workspace cannot be sent — H3 reads local files, this one cannot — so a local frame
+  is refused with the reason rather than uploaded somewhere behind the user's back.
+- **It has no model-listing endpoint** (see `media.BUILTIN_MEDIA_MODELS`), so the model name is a
+  setting rather than something discovered.
+
+Two things the H3 server will *not* do for us, and which therefore shape this file:
 
 - H3-Context-IR (the prompt-shaping module) and H3-Regenerate-2K are not open source, so the
   prompt goes out exactly as written and 768p is the best a local deployment produces. Saying
@@ -24,6 +41,7 @@ and the approval flow), because only it knows the group and the settings.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -41,13 +59,60 @@ MEDIA_KINDS: tuple[str, ...] = media.MEDIA_KINDS
 # ...while this module only drives its own kinds. The two lists were the same thing until a
 # second generator existed; picking a provider by the union would let the video tool select an
 # image provider, which surfaces as a broken server rather than a wrong lookup.
-KINDS: tuple[str, ...] = ("minimax_video",)
+KINDS: tuple[str, ...] = ("minimax_video", "metachat_video")
 
-# H3's own output range. A request outside it is clamped rather than refused, and the clamping is
-# reported back so the caller is not surprised by a 4-second clip.
-MIN_SECONDS, MAX_SECONDS = 4, 15
-ASPECT_RATIOS = ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
-DEFAULT_ASPECT = "16:9"
+H3_KIND = "minimax_video"
+META_KIND = "metachat_video"
+
+# What each shape accepts. Kept per kind rather than as one shared list: the three parameters
+# disagree, and a single union would let the tool send MetaChat a pixel count it does not take,
+# or H3 a named resolution it has never heard of.
+SHAPES: dict[str, dict] = {
+    "minimax_video": {
+        "seconds": (4, 15),                                             # H3's own range
+        "ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        "default_ratio": "16:9",
+        "model": False,      # the server has one checkpoint; no model id in the request
+    },
+    "metachat_video": {
+        "seconds": (1, 15),                                             # documented as 1-15, 5 by default
+        "ratios": ("adaptive", "16:9", "9:16", "4:3", "3:4", "1:1", "3:2", "2:3"),
+        "default_ratio": "adaptive",   # follows the reference image, which is the only input it has
+        "model": True,       # every call names the model: the same host serves two of them
+    },
+}
+
+
+def shape_of(kind: str) -> dict:
+    """The parameter set of one video provider, so a caller never has to know which kind it holds.
+    An unknown kind gets H3's shape, which is what an unset/garbled kind meant before this existed."""
+    return SHAPES.get(kind) or SHAPES[H3_KIND]
+
+
+# The tool's own schema is built before any provider is known, so it advertises the union and the
+# runtime checks against the chosen provider's list — a superset in the schema never forbids a
+# value that some provider accepts, which is the failure that would be hardest to explain.
+MIN_SECONDS = min(s["seconds"][0] for s in SHAPES.values())
+MAX_SECONDS = max(s["seconds"][1] for s in SHAPES.values())
+ASPECT_RATIOS: tuple[str, ...] = tuple(
+    dict.fromkeys(r for s in SHAPES.values() for r in s["ratios"])
+)
+DEFAULT_ASPECT = "16:9"     # what both shapes accept, and what H3 defaults to
+
+# MetaChat's open media API. `{base}` is the API prefix MetaChat's documentation gives for it —
+# `https://api.mmchat.xyz/open/v1` — so these paths are relative to that and not to the host, which
+# is what the user is told to paste into the provider's address field.
+#
+# `video/result/{id}` is the poll, and `/video/fetch` (which reads like the obvious name) answers 404.
+META_GENERATE = "video/generate"
+META_RESULT = "video/result/{vid}"
+# The only two values that API takes. A named resolution rather than a pixel count, so the user's
+# "output short edge" is mapped onto them instead of duplicated as a second setting — at or below
+# this pivot it is the smaller file.
+META_RESOLUTIONS = ("480p", "720p")
+META_RESOLUTION_PIVOT = 640
+# MetaChat also reports what a job cost, in its own points. Worth showing: the price is real.
+META_MODELS: tuple[str, ...] = media.BUILTIN_MEDIA_MODELS[META_KIND]
 
 # Status words. Anything that is neither done nor failed counts as "still working" and the
 # deadline decides when to stop, so a server that invents a new word for "queued" does not make
@@ -99,11 +164,13 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     usable = [p for p in rows if p["enabled"] and (p["base_url"] or "").strip()]
     if not usable:
         return None, i18n.pick_now(
-            "Video generation is on, but no video provider has been added yet. Add "
-            "\"MiniMax H3 (self-hosted video)\" under model providers and point it at your "
-            "SGLang / vLLM server.",
-            "视频生成已开启,但还没有添加视频服务商。请在「模型服务商」里添加"
-            "「MiniMax H3(自建视频生成)」并填上你的 SGLang / vLLM 服务地址。",
+            "Video generation is on, but no video provider has been added yet. Either add "
+            "\"MetaChat video (open media API)\" and paste your key — its two models are "
+            "image-to-video, no GPU involved — or add \"MiniMax H3 (self-hosted video)\" and point "
+            "it at your SGLang / vLLM server.",
+            "视频生成已开启,但还没有添加视频服务商。要么添加「MetaChat 视频(开放媒体接口)」并填上密钥"
+            "(它的两个模型都是图生视频,不需要显卡),要么添加「MiniMax H3(自建视频生成)」"
+            "并填上你的 SGLang / vLLM 服务地址。",
         )
     return usable[0], ""
 
@@ -178,6 +245,71 @@ def build_payload(
     }
 
 
+def resolution_for(short_edge: int) -> str:
+    """The named resolution MetaChat's API takes, from the pixel count the user configured.
+
+    Two values exist and neither of them is a pixel count, so something has to choose. The
+    alternative — a second setting that means almost the same thing as "output short edge" — is a
+    control to keep in sync for no gain, and it would still have to decide which one applies.
+    """
+    try:
+        n = int(short_edge)
+    except (TypeError, ValueError):
+        return META_RESOLUTIONS[1]
+    return META_RESOLUTIONS[1] if n > META_RESOLUTION_PIVOT else META_RESOLUTIONS[0]
+
+
+def metachat_payload(
+    prompt: str, *, model: str, ratio: str, duration_seconds: int, short_edge: int, frame: str = "",
+) -> dict:
+    """The body `POST open/v1/video/generate` documents.
+
+    `prompt`, `model` and `params` are all it defines; a reference image goes in `images` as a URL
+    the service fetches itself. One image, not two: both of its models generate *from a keyframe*,
+    so there is no last-frame slot — `_generate_video` refuses a `last_frame` rather than dropping
+    it, because a member that asked for one and silently did not get it would draw the wrong
+    conclusion from the result.
+
+    Of the fields the documentation's example shows, only `url` is sent: `type`, `size`, `w` and
+    `h` describe the caller's own copy of the picture, and filling them in for a URL we were
+    handed would be making up numbers.
+    """
+    return {
+        "prompt": prompt,
+        "model": model,
+        "params": {
+            "duration": int(duration_seconds),
+            "ratio": ratio,
+            "resolution": resolution_for(short_edge),
+        },
+        "images": [{"url": frame}] if frame else [],
+    }
+
+
+def image_url(value: str) -> str:
+    """An image the *provider* will fetch, for the MetaChat `images` array.
+
+    http(s) only, and that is the whole point: MetaChat downloads the picture itself, so a file on
+    this machine is not something it can be handed — there is no upload endpoint in that API. H3 is
+    the opposite (its server resolves `file://`), which is why this is a separate function rather
+    than a flag on `frame_uri`. Saying so plainly beats sending a URL the other side cannot open
+    and reporting whatever error comes back.
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if re.match(r"^https?://", v, re.I):
+        return v
+    raise VideoError(i18n.pick_now(
+        f"\"{v}\" is a file on this machine, and MetaChat's video API only accepts reference images "
+        "as http(s) URLs — it downloads the picture itself, and it has no upload endpoint. Put the "
+        "image somewhere it can reach (or use a provider whose server reads local files, such as "
+        "the self-hosted H3 one) and pass that URL.",
+        f"「{v}」是本机文件,而 MetaChat 的视频接口只接受 http(s) 的参考图地址——它自己去下载图片,"
+        "也没有上传接口。请把图片放到它取得到的地方(或改用能读本地文件的 H3 自建服务),再填那个地址。",
+    ))
+
+
 def frame_uri(value: str, workspace: Path) -> str:
     """An image reference for `conditions[].uri`.
 
@@ -219,33 +351,50 @@ def frame_uri(value: str, workspace: Path) -> str:
     return f"file://{target}"
 
 
-def clamp_seconds(want: object, cap: int) -> tuple[int, bool]:
-    """(seconds to use, whether the request had to be clamped)."""
+def clamp_seconds(want: object, cap: int, kind: str | None = None) -> tuple[int, bool]:
+    """(seconds to use, whether the request had to be clamped).
+
+    The range is the provider's own: H3 takes 4-15 seconds and MetaChat's API 1-15, so a
+    3-second clip is a perfectly good request on one of them and impossible on the other.
+    """
+    lo_kind, hi_kind = shape_of(kind or H3_KIND)["seconds"]
     try:
-        n = int(want) if want not in (None, "") else MAX_SECONDS
+        n = int(want) if want not in (None, "") else hi_kind
     except (TypeError, ValueError):
-        n = MAX_SECONDS
-    lo, hi = MIN_SECONDS, max(MIN_SECONDS, min(MAX_SECONDS, int(cap)))
+        n = hi_kind
+    lo, hi = lo_kind, max(lo_kind, min(hi_kind, int(cap)))
     used = max(lo, min(hi, n))
     return used, used != n
 
 
 # ------------------------------------------------------------------ HTTP
+@contextlib.asynccontextmanager
+async def _client(client: httpx.AsyncClient | None, timeout: float):
+    """The client for one request, when the caller did not bring its own.
+
+    `trust_env=False` on the one we make: a video server usually sits on the local network, and a
+    system proxy would quietly send that traffic somewhere else.
+    """
+    if client is not None:
+        yield client
+        return
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+        yield c
+
+
 async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None) -> str:
+    if prov.get("kind") == META_KIND:
+        return await _meta_submit(prov, payload, client=client)
     url = media.api_url(prov["base_url"], "v1/videos")
-    try:
-        if client is not None:
-            r = await client.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
-                                  timeout=SUBMIT_TIMEOUT)
-        else:
-            async with httpx.AsyncClient(timeout=SUBMIT_TIMEOUT, trust_env=False) as c:
-                r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
-                                 timeout=SUBMIT_TIMEOUT)
-    except httpx.HTTPError as e:
-        raise VideoError(i18n.pick_now(
-            f"Could not reach the video server at {prov['base_url']}: {type(e).__name__}: {e}",
-            f"连不上视频服务 {prov['base_url']}:{type(e).__name__}: {e}",
-        )) from None
+    async with _client(client, SUBMIT_TIMEOUT) as c:
+        try:
+            r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
+                             timeout=SUBMIT_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Could not reach the video server at {prov['base_url']}: {type(e).__name__}: {e}",
+                f"连不上视频服务 {prov['base_url']}:{type(e).__name__}: {e}",
+            )) from None
     if r.status_code >= 400:
         raise VideoError(i18n.pick_now(
             f"The video server refused the request ({_why(r)})", f"视频服务拒绝了这次请求({_why(r)})"
@@ -267,18 +416,17 @@ async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None 
 
 
 async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None) -> tuple[str, dict]:
+    if prov.get("kind") == META_KIND:
+        return await _meta_status(prov, vid, client=client)
     url = media.api_url(prov["base_url"], f"v1/videos/{vid}")
-    try:
-        if client is not None:
-            r = await client.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
-        else:
-            async with httpx.AsyncClient(timeout=STATUS_TIMEOUT, trust_env=False) as c:
-                r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
-    except httpx.HTTPError as e:
-        raise VideoError(i18n.pick_now(
-            f"Lost contact with the video server while waiting: {type(e).__name__}: {e}",
-            f"等待期间与视频服务失去联系:{type(e).__name__}: {e}",
-        )) from None
+    async with _client(client, STATUS_TIMEOUT) as c:
+        try:
+            r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Lost contact with the video server while waiting: {type(e).__name__}: {e}",
+                f"等待期间与视频服务失去联系:{type(e).__name__}: {e}",
+            )) from None
     if r.status_code >= 400:
         raise VideoError(i18n.pick_now(
             f"Could not read the generation status ({_why(r)})", f"读取生成状态失败({_why(r)})"
@@ -290,19 +438,40 @@ async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = 
     return str((data or {}).get("status") or "").strip().lower(), (data or {})
 
 
-async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncClient | None = None) -> bytes:
-    url = media.api_url(prov["base_url"], f"v1/videos/{vid}/content")
-    try:
-        if client is not None:
-            r = await client.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=DOWNLOAD_TIMEOUT)
-        else:
-            async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, trust_env=False) as c:
-                r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
-    except httpx.HTTPError as e:
-        raise VideoError(i18n.pick_now(
-            f"Could not download the video: {type(e).__name__}: {e}",
-            f"下载视频失败:{type(e).__name__}: {e}",
-        )) from None
+async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncClient | None = None,
+                   url: str = "") -> bytes:
+    """The mp4 bytes.
+
+    Which address they come from differs: H3 serves them off its own task id, while MetaChat
+    returns a link into its object store — so `url` is the caller's answer for that shape, and
+    guessing any other endpoint would be inventing one. The checks afterwards are the same for
+    both, which is the part worth not writing twice.
+    """
+    if prov.get("kind") == META_KIND:
+        if not url:
+            raise VideoError(i18n.pick_now(
+                "MetaChat reported the job as finished but gave no video address, so nothing was "
+                "saved. This is worth reporting to them rather than retrying.",
+                "MetaChat 报告任务已完成,但没有给出视频地址,所以没有保存。这种情况建议反馈给 MetaChat,重试没有意义。",
+            ))
+        # Deliberately no Authorization header: the link points at MetaChat's object storage
+        # (an aliyuncs host), and the key is for MetaChat alone. Sending it there would hand the
+        # credential to a third party for a file that does not need it.
+        headers: dict[str, str] = {}
+        target = url
+        timeout = DOWNLOAD_TIMEOUT
+    else:
+        headers = media.auth_headers(prov.get("api_key", ""))
+        target = media.api_url(prov["base_url"], f"v1/videos/{vid}/content")
+        timeout = DOWNLOAD_TIMEOUT
+    async with _client(client, timeout) as c:
+        try:
+            r = await c.get(target, headers=headers, timeout=timeout)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Could not download the video: {type(e).__name__}: {e}",
+                f"下载视频失败:{type(e).__name__}: {e}",
+            )) from None
     if r.status_code >= 400:
         raise VideoError(i18n.pick_now(
             f"Could not download the video ({_why(r)})", f"下载视频失败({_why(r)})"
@@ -318,6 +487,105 @@ async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncC
     if len(data) > max_bytes:
         raise VideoError(too_big(len(data), max_bytes))
     return data
+
+
+# ------------------------------------------------------------------ MetaChat's open media API
+def _meta_said(body: object) -> str:
+    """The sentence out of MetaChat's envelope.
+
+    It answers 200 even when it refuses, putting the verdict in `status` and the reason in
+    `message`, so `_why` (which reads a status code) has nothing to report and the body is the
+    only place the real reason exists.
+    """
+    if isinstance(body, dict):
+        said = " ".join(str(body.get("message") or "").split())
+        return said[:300] or str(body)[:200]
+    return str(body)[:200]
+
+
+def _meta_ok(body: object) -> bool:
+    """`status: "Success"` means the call worked. An absent one is treated as success: refusing to
+    parse a body that simply does not carry the field would fail over a cosmetic difference."""
+    if not isinstance(body, dict):
+        return False
+    return str(body.get("status") or "").strip().lower() in ("", "success")
+
+
+async def _meta_submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None) -> str:
+    url = media.api_url(prov["base_url"], META_GENERATE)
+    async with _client(client, SUBMIT_TIMEOUT) as c:
+        try:
+            r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
+                             timeout=SUBMIT_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Could not reach MetaChat's video service at {prov['base_url']}: {type(e).__name__}: {e}",
+                f"连不上 MetaChat 的视频服务 {prov['base_url']}:{type(e).__name__}: {e}",
+            )) from None
+    if r.status_code in (401, 403):
+        raise VideoError(i18n.pick_now(
+            "MetaChat rejected the key, so nothing was generated. Check the API key on that provider.",
+            "MetaChat 认为密钥无效,没有生成。请检查那个服务商里的 API Key。",
+        ))
+    if r.status_code >= 400:
+        raise VideoError(i18n.pick_now(
+            f"MetaChat refused the request ({_why(r)})", f"MetaChat 拒绝了这次请求({_why(r)})"
+        ))
+    try:
+        body = r.json()
+    except ValueError:
+        raise VideoError(i18n.pick_now(
+            "MetaChat did not return JSON, so the job could not be read. Check that the address is "
+            "https://api.mmchat.xyz/open/v1.",
+            "MetaChat 没有返回 JSON,读不到任务。请检查地址是不是 https://api.mmchat.xyz/open/v1。",
+        )) from None
+    if not _meta_ok(body):
+        raise VideoError(i18n.pick_now(
+            f"MetaChat did not accept the job ({_meta_said(body)})",
+            f"MetaChat 没有接受这次生成({_meta_said(body)})",
+        ))
+    data = (body or {}).get("data") or {}
+    vid = str((data or {}).get("id") or "").strip()
+    if not vid:
+        raise VideoError(i18n.pick_now(
+            f"MetaChat accepted the job but returned no task id ({str(body)[:200]})",
+            f"MetaChat 收下了请求但没有返回任务 id({str(body)[:200]})",
+        ))
+    return vid
+
+
+async def _meta_status(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None) -> tuple[str, dict]:
+    """(state word, the inner `data` object).
+
+    Returning `data` rather than the envelope is what lets the shared polling loop read a failure
+    reason without knowing which service it is talking to: MetaChat calls it `fail_reason` where
+    H3 calls it `error`, and `_generate` looks for both.
+    """
+    path = META_RESULT.format(vid=urllib.parse.quote(vid, safe=""))
+    url = media.api_url(prov["base_url"], path)
+    async with _client(client, STATUS_TIMEOUT) as c:
+        try:
+            r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Lost contact with MetaChat while waiting: {type(e).__name__}: {e}",
+                f"等待期间与 MetaChat 失去联系:{type(e).__name__}: {e}",
+            )) from None
+    if r.status_code >= 400:
+        raise VideoError(i18n.pick_now(
+            f"Could not read the generation status ({_why(r)})", f"读取生成状态失败({_why(r)})"
+        ))
+    try:
+        body = r.json()
+    except ValueError:
+        body = {}
+    if not _meta_ok(body):
+        raise VideoError(i18n.pick_now(
+            f"MetaChat could not report on the job ({_meta_said(body)})",
+            f"MetaChat 无法汇报任务状态({_meta_said(body)})",
+        ))
+    data = (body or {}).get("data") or {}
+    return str(data.get("status") or "").strip().lower(), (data if isinstance(data, dict) else {})
 
 
 def too_big(size: int, max_bytes: int) -> str:
@@ -349,6 +617,8 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
     base = (prov.get("base_url") or "").strip()
     if not base:
         return False, i18n.pick_now("This provider has no address configured.", "这个服务商没有填地址。")
+    if prov.get("kind") == META_KIND:
+        return await _probe_meta(prov, c)
     key = prov.get("api_key", "")
     try:
         r = await c.get(media.api_url(base, "health"), headers=media.auth_headers(key))
@@ -376,6 +646,40 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
     if r.status_code < 400:
         return True, i18n.pick_now(
             f"{base} answered the video API with {r.status_code}.", f"{base} 的视频接口有响应({r.status_code})。"
+        )
+    return False, i18n.pick_now(f"{base} answered {_why(r)}", f"{base} 返回了 {_why(r)}")
+
+
+async def _probe_meta(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
+    """Is MetaChat's media API there, and does it accept this key? Renders nothing.
+
+    Asking about a task id that cannot exist: that API has no `/health` and no listing to read, and
+    it answers a missing task in its own 200-with-`Fail` envelope. A 401/403 is the one answer that
+    means something is really wrong (the key), and anything else proves the service answered.
+    """
+    base = (prov.get("base_url") or "").strip()
+    url = media.api_url(base, META_RESULT.format(vid="team-agent-probe"))
+    try:
+        r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
+    except httpx.HTTPError as e:
+        return False, i18n.pick_now(
+            f"Could not reach {base}: {type(e).__name__}: {e}", f"连不上 {base}:{type(e).__name__}: {e}"
+        )
+    if r.status_code in (401, 403):
+        return False, i18n.pick_now(
+            f"{base} is up but rejected the key ({r.status_code}). MetaChat's key is created under "
+            "your avatar → API management; the media API uses the same one.",
+            f"{base} 是活的,但密钥被拒绝了({r.status_code})。MetaChat 的密钥在头像 → API 管理里创建,"
+            "媒体接口用的是同一把。",
+        )
+    if r.status_code == 404:
+        return True, i18n.pick_now(
+            f"{base} is reachable: it answered 404 for a task id that does not exist.",
+            f"{base} 可以联通:对不存在的任务 id 返回了 404。",
+        )
+    if r.status_code < 400:
+        return True, i18n.pick_now(
+            f"{base} answered the media API with {r.status_code}.", f"{base} 的媒体接口有响应({r.status_code})。"
         )
     return False, i18n.pick_now(f"{base} answered {_why(r)}", f"{base} 返回了 {_why(r)}")
 
@@ -426,7 +730,10 @@ async def _generate(
         if raw in _DONE:
             break
         if raw in _FAILED:
-            why = " ".join(str(detail.get("error") or detail.get("message") or "").split())[:300]
+            # `fail_reason` is MetaChat's name for it, `error` is H3's; both end up in the message
+            # rather than being flattened into a bare "failed".
+            why = " ".join(str(detail.get("error") or detail.get("fail_reason")
+                               or detail.get("message") or "").split())[:300]
             raise VideoError(i18n.pick_now(
                 f"The video server reported failure{': ' + why if why else ''}",
                 f"视频服务报告生成失败{':' + why if why else ''}",
@@ -442,9 +749,13 @@ async def _generate(
             ))
         await asyncio.sleep(interval)
         interval = min(POLL_MAX, interval * 1.5)
-    data = await download(prov, vid, max_bytes=max_bytes, client=client)
+    data = await download(prov, vid, max_bytes=max_bytes, client=client,
+                          url=str(detail.get("video_url") or ""))
     path = save(data, workspace, str(payload.get("prompt", "")), vid)
     return {
         "id": vid, "path": path, "name": path.name, "bytes": len(data),
         "seconds": round(time.time() - t0, 1), "status": detail,
+        # MetaChat bills in its own points and reports the total; passing it along lets the tool
+        # tell the user what the clip actually cost, which is not something to hide.
+        "points": detail.get("total_points"),
     }

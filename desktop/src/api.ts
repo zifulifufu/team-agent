@@ -436,8 +436,9 @@ export interface Settings {
   perm_deny: string[];             // Tool names set to Always block
   video_enabled: boolean;          // Let members generate video; off by default. The endpoint is not a chat model
   video_provider_id: string;       // Which video provider to use; empty = the first enabled one
-  video_short_edge: number;        // Output short edge in pixels (H3 is natively 768)
-  video_max_seconds: number;       // Longest clip a member may ask for (H3 itself accepts 4-15)
+  video_model: string;             // Which of its models, where it serves more than one; empty for a single-checkpoint H3
+  video_short_edge: number;        // Output short edge in pixels (H3 is natively 768; MetaChat's API takes 480p/720p and this is mapped onto them)
+  video_max_seconds: number;       // Longest clip a member may ask for (H3 accepts 4-15, MetaChat 1-15)
   video_timeout: number;           // How long one generation may take before giving up, in seconds
   video_max_mb: number;
   image_enabled: boolean;            // Let members draw images through an OpenAI-compatible service

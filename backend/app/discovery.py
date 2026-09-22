@@ -8,7 +8,7 @@ a unified list of model IDs.
 
 from __future__ import annotations
 
-from . import i18n
+from . import i18n, media
 
 import os
 from typing import Any
@@ -85,6 +85,14 @@ async def fetch_models(provider: dict, timeout: float = 15.0,
     key = _key(provider)
     headers: dict[str, str] = {}
     params: dict[str, Any] = {}
+
+    if kind in media.BUILTIN_MEDIA_MODELS:
+        # Nothing to ask, and that is the API's doing rather than ours: this service publishes no
+        # model listing at all (`/open/v1/models` answers 404). Answering from the shipped table is
+        # what makes "refresh" do the useful thing here — put those models in the list, marked for
+        # what they are — instead of reporting a 404 the user has no way to act on. The table and
+        # this function are the same fact told twice; `media.BUILTIN_MEDIA_MODELS` owns it.
+        return _merge([{"id": mid, "mode": "video"} for mid in media.BUILTIN_MEDIA_MODELS[kind]])
 
     if kind == "ollama":
         url = (base or OLLAMA_BASE) + "/api/tags"
