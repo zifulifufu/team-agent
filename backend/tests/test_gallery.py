@@ -322,3 +322,21 @@ def test_version_compare_is_numeric_not_string() -> None:
     assert gallery._ver("2.0.0") > gallery._ver("1.99.99")
     assert gallery._ver("") == (0,)
     assert gallery._ver("v1.2.3") == (1, 2, 3)
+
+
+def test_the_gallery_still_answers_when_a_member_is_not_a_built_in_one(tmp_path):
+    """`builtin_for` answers `None` for a member the user made or imported, and the three callers
+    in `gallery.py` are written as `builtin_names(builtin_for(x)) or [x]` — so the crash happened
+    one call *before* the fallback that was meant to handle it. With any such member in the
+    database the whole template gallery answered 500."""
+    from app import gallery
+    from app.store import Store
+
+    store = Store(tmp_path / "data")
+    store.create_agent("My Own Helper", "🧭", "", "p", None, [], [])       # not a built-in name
+    overview = gallery.overview(store)                                     # must not raise
+
+    kinds = {item["kind"] for item in overview["items"]}
+    assert "team" in kinds and "agent" in kinds
+    # The non-built-in member is simply not one of the entries the gallery can install.
+    assert all(item["name"] != "My Own Helper" for item in overview["items"])

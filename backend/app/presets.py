@@ -641,8 +641,16 @@ def builtin_for(name: str | None) -> dict | None:
     return BUILTIN_AGENT_ALIASES.get(name or "")
 
 
-def builtin_names(entry: dict) -> list[str]:
-    """Both spellings of a built-in member's name."""
+def builtin_names(entry: dict | None) -> list[str]:
+    """Both spellings of a built-in member's name.
+
+    `None` — which is what `builtin_for` answers for a member that is *not* built in — gives no
+    names rather than an exception. That is the whole point: three callers in `gallery.py` are
+    written as `builtin_names(builtin_for(x)) or [x]`, and the fallback never ran because the
+    crash happened one call earlier. With any member of the user's own in the database, the whole
+    template gallery answered 500.
+    """
+    entry = entry or {}
     return [n for n in (entry.get("name"), entry.get("name_zh")) if n]
 
 
