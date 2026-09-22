@@ -5,7 +5,7 @@ import { useI18n } from "../i18n";
 import { Switch } from "../ui";
 import { NumInput, Row, useSettingsSaver } from "./rows";
 
-type NumKey = "history_clip" | "tool_output_limit" | "history_limit" | "request_timeout" | "circuit_threshold" | "circuit_cooldown" | "memory_top_k" | "library_top_k" | "upload_max_mb" | "video_frames" | "refs_budget";
+type NumKey = "history_clip" | "tool_output_limit" | "history_limit" | "request_timeout" | "circuit_threshold" | "circuit_cooldown" | "memory_top_k" | "library_top_k" | "upload_max_mb" | "video_frames" | "refs_budget" | "integration_budget";
 /** Bilingual pairs, not `t()` calls: these tables are evaluated at module level, before the i18n provider mounts. */
 interface NumRow { key: NumKey; title: string; titleZh: string; desc: string; descZh: string; min: number; max: number; unit: string; unitZh: string }
 
@@ -24,6 +24,12 @@ const FILE_ROWS: NumRow[] = [
   { key: "video_frames", title: "Stills taken from a video", titleZh: "从视频里抽几帧", desc: "A model that cannot watch a video is shown this many evenly spaced frames instead. Every frame costs context, so a few go a long way.", descZh: "看不了视频的模型会收到这么多均匀抽取的画面。每一帧都要占上下文,少抽几帧通常就够。", min: 1, max: 12, unit: "", unitZh: "帧" },
   { key: "refs_budget", title: "How much referenced content one prompt may add", titleZh: "一次引用最多带入多少内容", desc: "Files, folders, earlier messages and documents the user referred to are inlined up to this many characters in total. Anything past it says it was cut, and the member can read the file itself.", descZh: "用户 @ 引用的文件、文件夹、既往消息与资料,合计最多带入这么多字。超出部分会注明已截断,成员可以直接去读原文件。", min: 1000, max: 200000, unit: "chars", unitZh: "字" },
 ];
+const BUDGET_ROWS: NumRow[] = [
+  { key: "integration_budget", title: "How much of each task reaches the host", titleZh: "每个任务交接给群主的内容量",
+    desc: "When the tasks of a plan are consolidated, their outputs go into the host's prompt up to this many characters in total. Each task keeps at least 800 of it, so a long plan is cut per task rather than draining one pot. Raise it for long reports; it costs context.",
+    descZh: "分工的各个任务汇总时,它们的产出合计最多这么多字进入群主的提示词。每个任务至少保留 800 字,所以任务多时是按任务分摊,而不是先到先得。长报告可以调大;会占用上下文。",
+    min: 2000, max: 200000, unit: "chars", unitZh: "字" },
+];
 const MEM_ROWS: NumRow[] = [
   { key: "memory_top_k", title: "Memories to include each time", titleZh: "每次带入的记忆条数", desc: "Before replying, take up to this many of the most relevant memories into the prompt. 0 means none.", descZh: "回复前按相关度取最多这么多条记忆放进提示词。0 表示不带入。", min: 0, max: 20, unit: "", unitZh: "条" },
   { key: "library_top_k", title: "Library passages returned per search", titleZh: "资料库每次检索返回的片段数", desc: "How many passages a member gets back at most when searching the library.", descZh: "成员检索资料库时最多返回几段。", min: 1, max: 10, unit: "", unitZh: "段" },
@@ -34,7 +40,10 @@ export default function GeneralPage() {
   const { settings, models } = useData();
   const { set, err } = useSettingsSaver();
   const [vision, setVision] = useState<VisionStatus | null>(null);
+  const [caps, setCaps] = useState<{ audio_transcribe: boolean } | null>(null);
   useEffect(() => { void api.vision().then(setVision).catch(() => undefined); }, [settings?.vision_model_id, settings?.vision_cloud]);
+  // Asked again whenever the command changes, so the chip reflects what would actually happen.
+  useEffect(() => { void api.machineCapabilities().then(setCaps).catch(() => undefined); }, [settings?.transcribe_cmd]);
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
 
   const visionText = !vision?.model_id
@@ -90,6 +99,20 @@ export default function GeneralPage() {
             {vision?.model_id ? `${vision.model_name}${vision.is_local ? ` · ${t("local")}` : ` · ${t("cloud")}`}` : t("none available")}
           </span>
         </Row>
+        <Row title={t("Transcribe audio")}
+             desc={t("Speech needs a program, not a model: nothing is bundled and nothing is downloaded for you. Leave this empty to use a transcriber that is already installed; write a command to use your own. {out} is the folder to write the text into, and {audio} is the file — if the command does not mention it, the path is added at the end.")}>
+          <input className="pm-text" value={settings.transcribe_cmd} placeholder={t("(an installed transcriber, if there is one)")}
+                 aria-label={t("Transcribe audio")}
+                 onChange={(e) => void set({ transcribe_cmd: e.target.value })} />
+          <span className={"chip" + (caps?.audio_transcribe ? "" : " warn")} style={{ marginLeft: 8 }}>
+            {caps?.audio_transcribe ? t("ready") : t("nothing found")}
+          </span>
+        </Row>
+      </div>
+
+      <div className="sec">{t("Handing work over")}</div>
+      <div className="card flush">
+        {numRows(BUDGET_ROWS)}
       </div>
     </div>
   );

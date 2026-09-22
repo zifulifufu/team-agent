@@ -488,3 +488,29 @@ async def test_unreachable_mcp_server_is_reported_once_and_does_not_block(store,
         assert len(c.ends()) == 4
     finally:
         await orch.mcp.shutdown()
+
+
+def test_the_consolidation_budget_is_a_setting_and_each_task_keeps_a_share(store):
+    """How much of each task's output reaches the host used to be a constant in planner.py, so a
+    long report was truncated with no way to say otherwise. It is a setting now, and a plan with
+    many tasks is cut *per task* rather than by draining one big pot — otherwise task nine gets
+    nothing while task one arrives in full."""
+    from app import planner
+
+    def plan_with(n: int) -> planner.Plan:
+        return planner.Plan(goal="方案", conventions="中文", tasks=[
+            planner.PlanTask(id=f"t{i}", owner="写手", owner_id=f"a{i}", title=f"第{i}部分",
+                             instruction="写", deliverable="段落", status="done")
+            for i in range(n)])
+
+    outputs = {f"t{i}": "甲乙丙丁" * 2500 for i in range(4)}     # 10k characters each
+    text = planner.integration_prompt(plan_with(4), outputs, 8000)
+    for i in range(4):
+        assert f"第{i}部分" in text, "every task is represented, not only the first few"
+
+    # A budget too small to divide still leaves each task its floor.
+    tiny = planner.integration_prompt(plan_with(4), outputs, 100)
+    assert tiny.count("第") >= 4
+
+    assert store.get_settings()["integration_budget"] == 14000  # the old constant, as the default
+

@@ -497,3 +497,218 @@ def test_a_run_note_is_stored_in_one_language_and_shown_in_the_readers(data):
     assert m.recent(1)[0]["note"] == "exited with code 3"       # and in English by default
     raw = (data / "hook-log.jsonl").read_text(encoding="utf-8").splitlines()[-1]
     assert "exited with code 3" in raw                          # stored canonically
+
+
+# ------------------------------------------------------------------ injecting into a prompt
+INJECTOR = '''
+def handle(event, payload):
+    if event != "pre_prompt":
+        return None
+    return {"append": "House rule: scene=%s agent=%s" % (payload.get("scene"), payload.get("agent"))}
+'''
+
+GREEDY_INJECTOR = '''
+def handle(event, payload):
+    # A hook that wants to *replace* the prompt rather than add to it. Neither key exists in the
+    # protocol on purpose: see HookManager.gate_prompt.
+    return {"text": "I am the whole prompt now", "append": ""}
+'''
+
+
+def prompt_orch(store, make_router, data, text="好的。", fake=None):
+    """An orchestrator whose completion function the test also holds, so it can read what the
+    members were actually sent. (`orchestrator()` builds its own FakeLLM and hands back the hook
+    manager instead — this one is for tests that need to see the prompt.)"""
+    fake = fake or FakeLLM(default=text)
+    store.update_provider("deepseek", {"api_key": "sk-test-1234567890"})
+    return Orchestrator(store, make_router(fake), hooks=manager(data)), fake
+
+
+def test_a_prompt_hook_can_only_add_lines(data, store, make_router):
+    """`pre_prompt` gets one power: append. A hook able to rewrite the system prompt could take the
+    group's rules or its memories out of it without leaving a trace in the transcript, so the
+    protocol simply has no way to say that."""
+    make_hook(data, "style", INJECTOR, events=("pre_prompt",))
+    orch, fake = prompt_orch(store, make_router, data)
+    run_round(orch, store.list_groups()[0]["id"])
+
+    system = fake.calls[-1][1][0]["content"]
+    who = store.list_agents()[0]["name"]
+    assert fake.calls[-1][1][0]["role"] == "system"
+    assert system.endswith(f"House rule: scene=reply agent={who}"), system[-140:]
+    assert len(system) > 300, "the app's own prompt is still there, in front of the addition"
+
+
+def test_a_prompt_hook_cannot_replace_what_the_app_wrote(data, store, make_router):
+    make_hook(data, "greedy", GREEDY_INJECTOR, events=("pre_prompt",))
+    orch, fake = prompt_orch(store, make_router, data)
+    run_round(orch, store.list_groups()[0]["id"])
+
+    system = fake.calls[-1][1][0]["content"]
+    assert "I am the whole prompt now" not in system
+    assert len(system) > 300, "and the prompt it wanted to replace is intact"
+
+
+def test_a_prompt_hook_is_told_which_part_of_the_round_it_is(data, store, make_router):
+    """The same rule may belong on every task instruction, or only on what the user finally reads;
+    a hook can only tell the difference if it is told."""
+    make_hook(data, "style", INJECTOR, events=("pre_prompt",))
+    orch, fake = prompt_orch(store, make_router, data)
+    run_round(orch, store.list_groups()[0]["id"])
+    assert "scene=reply" in fake.calls[-1][1][0]["content"]
+
+
+def test_a_broken_prompt_hook_adds_nothing_and_the_round_goes_on(data, store, make_router):
+    make_hook(data, "broken", "def handle(event, payload):\n    raise RuntimeError('boom')\n",
+              events=("pre_prompt",))
+    orch, fake = prompt_orch(store, make_router, data, text="照常回答")
+    gid = store.list_groups()[0]["id"]
+    run_round(orch, gid)
+
+    assert fake.calls, "the round still happened"
+    assert any(m["content"] == "照常回答" for m in store.list_messages(gid, 50)), "and the reply was kept"
+    notes = [r for r in manager(data).recent(10) if r["hook"] == "broken"]
+    assert notes and not notes[0]["ok"], "the failure is in the log rather than silent"
+
+
+# ------------------------------------------------------------------ the reply side
+class Refuser:
+    """A gate that objects to every reply."""
+
+    CODE = '''
+def handle(event, payload):
+    if event != "post_reply":
+        return None
+    return {"block": True, "reason": "this group does not keep that"}
+'''
+
+
+def test_a_reply_can_be_held_back_before_it_is_stored(data, store, make_router):
+    """`post_reply` is the last moment at which the record can be kept clean — after it, the text is
+    in the transcript, in the exports and in every backup."""
+    make_hook(data, "refuser", Refuser.CODE, events=("post_reply",))
+    orch, _ = orchestrator(store, make_router, data, text="这段不该留下")
+    gid = store.list_groups()[0]["id"]
+    run_round(orch, gid)
+
+    kept = [m for m in store.list_messages(gid, 50) if m["sender_type"] == "agent"]
+    assert kept == [], "the reply must not become part of the record"
+    system = [m["content"] for m in store.list_messages(gid, 50) if m["sender_type"] == "system"]
+    assert any("refuser" in s for s in system), "and the group is told why, in words"
+
+
+def test_a_reply_can_be_rewritten_before_it_is_stored(data, store, make_router):
+    make_hook(data, "stamp", '''
+def handle(event, payload):
+    return {"block": False, "text": payload["text"] + "\\n\\n—— reviewed"}
+''', events=("post_reply",))
+    orch, _ = orchestrator(store, make_router, data, text="结论如下。")
+    gid = store.list_groups()[0]["id"]
+    run_round(orch, gid)
+
+    kept = [m for m in store.list_messages(gid, 50) if m["sender_type"] == "agent"][0]
+    assert kept["content"].endswith("—— reviewed") and kept["content"].startswith("结论如下。")
+
+
+def test_a_broken_reply_gate_lets_the_reply_stand(data, store, make_router):
+    """The one gate that fails open, and on purpose: the reply has already been written, and
+    dropping it leaves the group with no answer at all. What leaves the machine is still guarded by
+    `before_send`, which does fail closed."""
+    make_hook(data, "broken", "def handle(event, payload):\n    raise RuntimeError('boom')\n",
+              events=("post_reply",))
+    orch, _ = orchestrator(store, make_router, data, text="照旧留下")
+    gid = store.list_groups()[0]["id"]
+    run_round(orch, gid)
+
+    kept = [m for m in store.list_messages(gid, 50) if m["sender_type"] == "agent"]
+    assert [m["content"] for m in kept] == ["照旧留下"]
+
+
+def test_a_hook_that_asks_for_several_events_is_summarised_by_its_strongest(data):
+    """The panel says what a hook is, and that decides what the user has to trust it with."""
+    make_hook(data, "watch", OBSERVER % {"path": str(data / "x.jsonl")}, events=("round.end", "tool.called"))
+    make_hook(data, "shape", INJECTOR, events=("round.end", "pre_prompt"))
+    make_hook(data, "judge", FRIENDLY, events=("pre_prompt", "pre_tool_use"))
+    kinds = {h.id: h.kind for h in manager(data).hooks.values()}
+    assert kinds["watch"] == "observe"
+    assert kinds["shape"] == "inject"
+    assert kinds["judge"] == "gate"
+
+
+# ------------------------------------------------------------------ hook templates
+def test_a_hook_template_installs_switched_off_and_shows_up_in_the_panel(tmp_path):
+    """A template is somebody's code arriving on this machine, so it lands disabled and readable —
+    the same rule the rest of the gallery follows for anything that is not plain data."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    d = tmp_path / "app"
+    client = TestClient(create_app(d / "data", completion_fn=None, background=False),
+                        base_url="http://127.0.0.1")
+
+    ov = client.get("/api/gallery").json()
+    assert ov["counts"]["hook"] >= 3, "the hooks category has templates in it"
+    entry = next(i for i in ov["items"] if i["id"] == "hook:house-style")
+    assert entry["installed"] is False and entry["preview"]["events"] == ["pre_prompt"]
+
+    assert client.post("/api/gallery/hook:house-style/apply", json={}).status_code == 200
+    spec = json.loads((d / "data" / "hooks" / "house-style" / "HOOK.json").read_text(encoding="utf-8"))
+    assert spec["enabled"] is False, "installed switched off"
+
+    listed = {h["id"]: h for h in client.get("/api/hooks").json()["hooks"]}
+    assert "house-style" in listed and listed["house-style"]["enabled"] is False
+    assert listed["house-style"]["kind"] == "inject"
+
+    # Installing it twice would silently overwrite an edited hook.
+    assert client.post("/api/gallery/hook:house-style/apply", json={}).status_code == 400
+    assert client.post("/api/gallery/hook:house-style/apply", json={"overwrite": True}).status_code == 200
+
+
+def test_the_installed_templates_are_hooks_the_runner_can_actually_load(data):
+    """Templates are shipped as text, so nothing checks them at import time. Load each one the way
+    the panel does and let the runner compile it — a syntax error in a template would otherwise
+    only be found by a user who installed it."""
+    import subprocess
+
+    from app import coderun
+    from app.gallery import HOOK_TEMPLATES, hook_code
+
+    for tpl in HOOK_TEMPLATES:
+        source = hook_code(tpl["key"])
+        assert source.strip(), f"{tpl['key']} has no source shipped"
+        folder = make_hook(data, tpl["key"], source, events=tuple(tpl["events"]))
+        out = subprocess.run([*coderun.INTERPRETER["python"], "-c", "import ast,sys;ast.parse(open(sys.argv[1]).read())", str(folder / "hook.py")],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, f"{tpl['key']} does not parse: {out.stderr}"
+
+
+def test_every_event_can_be_tried_out_with_the_fields_it_really_carries(tmp_path):
+    """"Run once" is the page's evidence that a hook works, so its payload has to be the shape the
+    round sends — a sample missing a key the app always provides would report a failure for a hook
+    that is fine. Hook files are copied between machines, so this is the first thing a stranger
+    presses."""
+    from fastapi.testclient import TestClient
+
+    from app import hooks as lib
+    from app.api_hooks import _SAMPLES
+    from app.main import create_app
+    from app.gallery import HOOK_TEMPLATES, hook_code
+
+    assert set(_SAMPLES) == set(lib.EVENTS), "every event has a sample, and no sample is orphaned"
+
+    d = tmp_path / "app"
+    client = TestClient(create_app(d / "data", completion_fn=None, background=False),
+                        base_url="http://127.0.0.1")
+
+    # The real test: install each shipped template and run it once, the way the panel does.
+    for tpl in HOOK_TEMPLATES:
+        client.post(f"/api/gallery/hook:{tpl['key']}/apply", json={})
+        for event in tpl["events"]:
+            r = client.post(f"/api/hooks/{tpl['key']}/test", json={"event": event})
+            assert r.status_code == 200, f"{tpl['key']} on {event}: {r.text}"
+            assert r.json()["ok"], f"{tpl['key']} on {event} answered nothing useful: {r.json()}"
+
+    # And the source really is the file on disk, not a copy that can drift.
+    for tpl in HOOK_TEMPLATES:
+        assert hook_code(tpl["key"]) == (d / "data" / "hooks" / tpl["key"] / "hook.py").read_text(encoding="utf-8")

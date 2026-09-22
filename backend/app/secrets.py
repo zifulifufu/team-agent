@@ -22,9 +22,22 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 from typing import Any
+
+# What a field name has to look like before its value is treated as a secret.
+#
+# One regex, in the one module that has no other imports, because three different places need to
+# agree on it: settings keys, the arguments a hook is shown, and the `env` / `headers` of an MCP
+# server. Two implementations would eventually disagree, and the disagreement would be a key
+# written to disk in the clear by whichever path kept the older list.
+SENSITIVE_NAME = re.compile(r"(api[_-]?key|token|secret|password|passwd|pwd|credential|authorization)", re.I)
+
+
+def is_sensitive_name(name: object) -> bool:
+    return bool(SENSITIVE_NAME.search(str(name)))
 
 SERVICE = "team-agent"
 REF_PREFIX = "keychain:"          # stored in the DB as this prefix, meaning the real value lives in the keychain

@@ -402,6 +402,7 @@ def create_app(
               "code_timeout": (5, 600), "vision_max_mb": (1, 64),
               # files: an upload may be a video, and a referenced folder can be worth a lot of text
               "upload_max_mb": (1, 1024), "video_frames": (1, 12), "refs_budget": (1000, 200000),
+              "integration_budget": (2000, 200000),
               # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
               "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
               # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
@@ -844,7 +845,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
 
     app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
     app.include_router(build_external_router(store, orch.external))
-    app.include_router(build_gallery_router(store))
+    app.include_router(build_gallery_router(store, hooks))
     app.include_router(build_hooks_router(store, hooks))
     app.include_router(build_import_router(store))
     # Chat channels: the inbound webhook lives outside /api on purpose. Token middleware does

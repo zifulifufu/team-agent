@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import i18n, library
@@ -87,6 +88,79 @@ def tool(name: str) -> str | None:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
+
+
+# ------------------------------------------------------------------ speech
+# Local speech-to-text, when the user happens to have one installed. Nothing is bundled and
+# **nothing is downloaded on their behalf**: a whisper model is a few hundred megabytes, and
+# fetching one silently while somebody waits for an answer is not a decision this app gets to make.
+# With nothing installed the honest answer is used instead — "this was not transcribed" — which the
+# members are told, rather than a summary of audio nobody listened to.
+#
+# Both entries are CLIs that fetch their own model into the user's cache. whisper.cpp is absent on
+# purpose: it refuses to run without a model file path that only the user knows, and a guess there
+# would look like a bug. `transcribe_cmd` in the settings overrides all of this — see
+# `transcriber()`.
+#
+# The arguments are each CLI's documented spelling; they are written once here so a version that
+# renames a flag is one line to fix.
+_TRANSCRIBERS: dict[str, list[str]] = {
+    "mlx_whisper": ["{audio}", "--output-dir", "{out}", "--output-format", "txt"],
+    "whisper": ["{audio}", "--output_format", "txt", "--output_dir", "{out}", "--verbose", "False"],
+}
+TRANSCRIBE_TIMEOUT = 600              # a long file is slow; it is done once and remembered
+
+
+def transcriber(settings: dict | None = None) -> tuple[str, list[str]] | None:
+    """The speech-to-text command this machine will use, if any: `(exe, arguments)`.
+
+    A command set by hand wins over the built-in list, so any transcriber — including one this app
+    has never heard of — can be wired in by writing `transcribe_cmd`. `{out}` is the folder to write
+    the `.txt` into; put `{audio}` where the file goes (the two built-ins above do), and if the
+    command does not mention it the path is added at the end — the shape most tools expect.
+    """
+    custom = str((settings or {}).get("transcribe_cmd") or "").strip()
+    if custom:
+        parts = custom.split()
+        return parts[0], parts[1:]
+    for name, args in _TRANSCRIBERS.items():
+        exe = tool(name)
+        if exe:
+            return exe, list(args)
+    return None
+
+
+def transcribe(path: Path, settings: dict | None = None) -> str | None:
+    """What an audio file says, or `None` when nothing here can listen.
+
+    `None` also covers "it tried and it failed": a transcription that did not happen has to leave
+    the caller saying *not transcribed*, never *transcribed as nothing* — the difference matters,
+    because the first tells a member to go and read the file itself.
+    """
+    found = transcriber(settings)
+    if not found:
+        return None
+    exe, args = found
+    out = Path(tempfile.mkdtemp(prefix="team-agent-speech-"))
+    try:
+        # The audio file goes exactly where the arguments say it goes. Appending it blindly (as this
+        # first did) put it *between* a command and its own flags, which works for the two built-ins
+        # and silently breaks every hand-written command — the one case this escape hatch exists for.
+        words = [a.replace("{audio}", str(path)).replace("{out}", str(out)) for a in args]
+        cmd = [exe, *words, str(path)] if "{audio}" not in " ".join(args) else [exe, *words]
+        try:
+            p = subprocess.run(cmd, cwd=str(out), capture_output=True, text=True,
+                               timeout=TRANSCRIBE_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if p.returncode != 0:
+            return None
+        written = sorted(out.glob("*.txt"))
+        if not written:
+            return None
+        return written[0].read_text(encoding="utf-8", errors="replace").strip() or None
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def human_size(n: int) -> str:

@@ -34,6 +34,33 @@ class TestIn(BaseModel):
     group_id: str | None = None
 
 
+# One sample per event, carrying the fields that event really carries.
+#
+# Not a generic fixture on purpose: "run once" is the page's evidence that a hook works, and a
+# payload missing a key the round always sends would report a failure for a hook that is fine —
+# a test that lies is worse than no test. Every key here is one the app itself puts in.
+_SAMPLES: dict[str, dict[str, Any]] = {
+    "round.start": {"sender": "me", "chars": 12, "read_only": False, "files": 0},
+    "round.end": {"sender": "me", "entries": 2, "seconds": 3.5,
+                  "agents": ["sample member"], "answer_chars": 120},
+    "agent.reply": {"agent": "sample member", "model": "sample/model", "fallback_from": "",
+                    "chars": 120, "tools": ["current_time"], "latency_ms": 800},
+    "tool.called": {"agent": "sample member", "tool": "current_time", "source": "builtin",
+                    "args": {}, "ok": True, "ms": 12, "text": "12:00"},
+    "pre_prompt": {"agent": "sample member", "role": "Coordinator", "model": "sample/model",
+                   "scene": "reply"},
+    "pre_tool_use": {"tool": "current_time", "source": "builtin", "risk": "read", "args": {}},
+    "post_reply": {"agent": "sample member", "model": "sample/model", "text": "sample reply"},
+    "before_send": {"text": "sample message"},
+}
+
+
+def sample_payload(event: str, group: dict) -> dict[str, Any]:
+    """What `POST /test` hands a hook: this event's own fields, plus which group it is about."""
+    return {"group_id": group.get("id", ""), "group_name": group.get("name", ""),
+            "at": time.time(), **_SAMPLES.get(event, {})}
+
+
 def build_hooks_router(store: Store, manager: hooks_lib.HookManager) -> APIRouter:
     r = APIRouter()
 
@@ -87,10 +114,6 @@ def build_hooks_router(store: Store, manager: hooks_lib.HookManager) -> APIRoute
         if not group:
             existing = store.list_groups()
             group = existing[0] if existing else {}
-        payload: dict[str, Any] = {"group_id": group.get("id", ""), "group_name": group.get("name", ""),
-                                   "at": time.time(), "entries": 1, "seconds": 0.0,
-                                   "tool": "current_time", "args": {}, "text": "sample message",
-                                   "agent": "sample member", "content": "sample reply", "ok": True}
-        return await manager.test(hid, wanted, payload)
+        return await manager.test(hid, wanted, sample_payload(wanted, group))
 
     return r

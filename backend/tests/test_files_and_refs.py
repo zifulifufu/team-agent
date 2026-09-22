@@ -12,6 +12,7 @@ import asyncio
 import io
 import json
 import pathlib
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -266,7 +267,10 @@ def test_nothing_is_made_up_when_nobody_can_look_at_the_picture(store, make_rout
     assert "ollama pull" in sent, "the reader is told what to do about it, not just that it failed"
 
 
-def test_an_audio_file_is_named_and_not_pretended_to_have_been_read(store, make_router):
+def test_an_audio_file_is_named_and_not_pretended_to_have_been_read(store, make_router, monkeypatch):
+    """Speech needs a program, not a model, and this app bundles none. With nothing installed the
+    honest sentence is used — a member must never write a summary of audio nobody listened to."""
+    monkeypatch.setattr(attachments, "tool", lambda name: None)
     fake = FakeLLM(default="好")
     orch, group = setup(store, make_router, fake)
     row = _file_in_workspace(store, group["id"], "录音.mp3", b"ID3\x03\x00" + b"\x00" * 64)
@@ -274,7 +278,69 @@ def test_an_audio_file_is_named_and_not_pretended_to_have_been_read(store, make_
     asyncio.run(orch.handle_user_message(group["id"], "听一下", Collector(),
                                          files=[{"id": row["id"], "name": row["name"], "kind": "audio"}]))
     sent = member_call(fake)
-    assert "录音.mp3" in sent and "not transcribed" in sent
+    assert "录音.mp3" in sent and "could transcribe it" in sent
+    assert store.get_attachment(row["id"])["text"] in (None, ""), "nothing was stored as its content"
+
+
+FAKE_STT = """import pathlib, sys
+out = pathlib.Path(sys.argv[sys.argv.index("--out") + 1])
+out.mkdir(parents=True, exist_ok=True)
+(out / "spoken.txt").write_text("转写:血压 128/80,心率 72。", encoding="utf-8")
+"""
+
+
+def test_an_audio_file_is_read_when_a_transcriber_is_named(store, make_router, tmp_path):
+    """The escape hatch: any command can be named, so a transcriber this app has never heard of —
+    including one that runs a model locally — can be wired in without a code change."""
+    fake_stt = tmp_path / "fake_stt.py"
+    fake_stt.write_text(FAKE_STT, encoding="utf-8")
+    store.update_settings({"transcribe_cmd": f"{sys.executable} {fake_stt} --out {{out}}"})
+
+    fake = FakeLLM(default="好")
+    orch, group = setup(store, make_router, fake)
+    row = _file_in_workspace(store, group["id"], "录音.mp3", b"ID3\x03\x00" + b"\x00" * 64)
+
+    asyncio.run(orch.handle_user_message(group["id"], "听一下", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "audio"}]))
+    sent = member_call(fake)
+    assert "血压 128/80" in sent
+    assert "this machine" in sent, "and it is clear where the words came from"
+    assert store.get_attachment(row["id"])["text"].startswith("转写"), "transcribed once, then remembered"
+
+    # Second time round it is a text attachment: no transcriber is started again.
+    (tmp_path / "fake_stt.py").unlink()
+    fake.calls.clear()
+    asyncio.run(orch.handle_user_message(group["id"], "再听一次", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "audio"}]))
+    assert "血压 128/80" in member_call(fake)
+
+
+def test_a_transcriber_that_fails_leaves_the_audio_unread_rather_than_empty(store, make_router, tmp_path):
+    """`None` and "it produced nothing" are different answers: the first sends the member to the
+    file, the second would look like a recording with no words in it."""
+    broken = tmp_path / "broken.py"
+    broken.write_text("import sys; sys.exit(2)\n", encoding="utf-8")
+    store.update_settings({"transcribe_cmd": f"{sys.executable} {broken}"})
+    fake = FakeLLM(default="好")
+    orch, group = setup(store, make_router, fake)
+    row = _file_in_workspace(store, group["id"], "录音.m4a", b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 32)
+
+    asyncio.run(orch.handle_user_message(group["id"], "听", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "audio"}]))
+    assert "could transcribe it" in member_call(fake)
+
+
+def test_the_transcriber_is_reported_only_when_one_is_really_there(store, monkeypatch):
+    """The settings page says whether transcription works, so it has to ask the same question the
+    transcription path does — a hard-coded False here would be a lie in the other direction."""
+    monkeypatch.setattr(attachments, "tool", lambda name: None)
+    assert attachments.transcriber(store.get_settings()) is None
+    monkeypatch.setattr(attachments, "tool", lambda name: "/usr/local/bin/whisper" if name == "whisper" else None)
+    exe, args = attachments.transcriber(store.get_settings())
+    assert exe.endswith("whisper") and "--output_dir" in args
+    store.update_settings({"transcribe_cmd": "/opt/mine/stt --write {out}"})
+    exe, args = attachments.transcriber(store.get_settings())
+    assert exe == "/opt/mine/stt" and args == ["--write", "{out}"]
 
 
 # ------------------------------------------------------------------ @ references

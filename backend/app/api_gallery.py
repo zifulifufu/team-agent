@@ -12,6 +12,8 @@ database and the skills directory.
 
 from __future__ import annotations
 
+from typing import Any
+
 from . import i18n
 
 from fastapi import APIRouter, HTTPException
@@ -27,7 +29,7 @@ class ApplyIn(BaseModel):
     overwrite: bool = False          # skill / prompt: whether to overwrite an existing entry with the template version
 
 
-def build_gallery_router(store: Store) -> APIRouter:
+def build_gallery_router(store: Store, hooks: Any = None) -> APIRouter:
     r = APIRouter()
 
     @r.get("/api/gallery")
@@ -44,8 +46,14 @@ def build_gallery_router(store: Store) -> APIRouter:
     @r.post("/api/gallery/{item_id}/apply")
     async def apply_template(item_id: str, body: ApplyIn) -> dict:
         try:
-            return gallery.apply(store, item_id, body.model_dump())
+            out = gallery.apply(store, item_id, body.model_dump())
         except gallery.GalleryError as e:
             raise HTTPException(400, str(e)) from None
+        # A hook template is just two files written to the hooks directory, so the manager has to
+        # be told to look again — otherwise the entry says "installed" while the panel does not
+        # list it, which is exactly the kind of half-done state this app tries to avoid.
+        if out.get("kind") == "hook" and hooks is not None:
+            hooks.load()
+        return out
 
     return r

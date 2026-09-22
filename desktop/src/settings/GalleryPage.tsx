@@ -123,6 +123,7 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
     if (it.kind === "agent") return join ? t("Create and join a group") : t("Create a member");
     if (it.kind === "skill") return it.installed ? t("Import again") : t("Import the skill");
     if (it.kind === "prompt") return it.installed ? t("Overwrite with the template version") : t("Save to the prompt library");
+    if (it.kind === "hook") return it.installed ? t("Install again (overwrites)") : t("Write the files (switched off)");
     return t("Add (disabled)");
   };
 
@@ -169,6 +170,12 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
             <pre className="gl-body">{S(d.def.content)}</pre>
           </>
         )}
+        {it.kind === "hook" && (
+          <>
+            <div className="gl-line">{t("Runs on:")} {A(d.preview.events).join(" · ")}</div>
+            <pre className="gl-body">{S(d.preview.code)}</pre>
+          </>
+        )}
         {it.kind === "mcp" && (
           <>
             <code className="gl-cmd">{[S(d.def.command), ...A(d.def.args)].join(" ")}</code>
@@ -204,6 +211,7 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
           {res.kind === "skill" && <button className="btn small" onClick={() => onTab("skills")}>{t("Go and tick the skills")}</button>}
           {res.kind === "prompt" && <button className="btn small" onClick={() => onTab("prompts")}>{t("Go and attach prompts")}</button>}
           {res.kind === "mcp" && <button className="btn small" onClick={() => onTab("mcp")}>{t("Review and enable")}</button>}
+          {res.kind === "hook" && <button className="btn small" onClick={() => onTab("hooks")}>{t("Read it, then switch it on")}</button>}
         </div>
       )}
 
@@ -290,7 +298,7 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
           <>
             <div className="gl-line small">
               {t("Supported")} <code>kind</code>{t(": team / agent / skill / prompt.")}
-              <b>{t("the command kind (MCP) is not accepted")}</b>{t(" — that would let one JSON file decide what runs on this machine; add those yourself on the MCP page. The kind of a prompt goes in ")}<code>prompt_kind</code> {t("(general or group); the optional")} <code>requires</code> {t("gives the minimum required catalog version.")}
+              <b>{t("the command kind (MCP) and Hooks are not accepted")}</b>{t(" — either would let one JSON file put something that runs on this machine; add those yourself on the MCP or Hooks page. The kind of a prompt goes in ")}<code>prompt_kind</code> {t("(general or group); the optional")} <code>requires</code> {t("gives the minimum required catalog version.")}
             </div>
             <pre className="gl-body">{SAMPLE}</pre>
           </>

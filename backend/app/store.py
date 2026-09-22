@@ -480,6 +480,36 @@ otherwise (fall back to plaintext, never lose the key)."""
         got = secrets_store.get(secrets_store.parse_ref(stored))
         return got if got is not None else ""
 
+    # ------------------------------------------------- sensitive values inside a map
+    # `providers.api_key` is one whole column, so `_secret_on` is enough for it. An MCP server keeps
+    # a map instead (`env`, `headers`), and only *some* of those entries are secrets — PATH and
+    # LOG_LEVEL belong in the database where they can be read, while GITHUB_TOKEN does not. So the
+    # decision is per entry, by name, and the value is replaced by a reference.
+    def _secrets_on(self, scope: str, values: dict[str, Any]) -> dict[str, Any]:
+        """A map with its secret-looking values replaced by keychain references."""
+        if not secrets_store.backend_available():
+            return dict(values or {})
+        out = dict(values or {})
+        for key, value in list(out.items()):
+            if not isinstance(value, str) or not value or secrets_store.is_ref(value):
+                continue
+            if not secrets_store.is_sensitive_name(key):
+                continue
+            ref = f"{scope}:{key}"
+            if secrets_store.put(ref, value):
+                out[key] = secrets_store.make_ref(ref)
+        return out
+
+    def _secrets_off(self, values: dict[str, Any]) -> dict[str, Any]:
+        """A map with its references resolved. An entry that cannot be read back becomes empty,
+        the same as an unconfigured provider: showing `keychain:...` as if it were the key would be
+        worse than showing nothing."""
+        out = dict(values or {})
+        for key, value in list(out.items()):
+            if secrets_store.is_ref(value):
+                out[key] = self._secret_off(value)
+        return out
+
     def secret_backend(self) -> str:
         """Where keys are stored: `keychain` = the system keychain, `plaintext` = fell back to
 plaintext (non-macOS / keychain unavailable)."""
@@ -542,6 +572,45 @@ plaintext (non-macOS / keychain unavailable)."""
                         self._x("UPDATE settings SET value=? WHERE key='github_token'",
                                 (json.dumps(secrets_store.make_ref(ref)),))
                         moved += 1
+        return moved + self._move_mcp_keys_to_keychain()
+
+    def _move_mcp_keys_to_keychain(self) -> int:
+        """Move the MCP `env` / `headers` values that an older database stored in plaintext into the
+        keychain. Same rule as above, and the same reason: **read back before rewriting**. A
+        reference whose value cannot be read would look like a configured server that quietly fails
+        to authenticate, which is harder to diagnose than a plaintext key it replaced.
+        """
+        if not secrets_store.backend_available():
+            return 0
+        moved = 0
+        for row in self._q("SELECT id, env, headers FROM mcp_servers"):
+            updates: dict[str, str] = {}
+            for field in ("env", "headers"):
+                try:
+                    values = json.loads(row[field] or "{}")
+                except ValueError:
+                    continue
+                if not isinstance(values, dict):
+                    continue
+                changed = False
+                for key, value in list(values.items()):
+                    if not isinstance(value, str) or not value or secrets_store.is_ref(value):
+                        continue
+                    if not secrets_store.is_sensitive_name(key):
+                        continue
+                    ref = f"mcp:{row['id']}:{key}"
+                    if not secrets_store.put(ref, value):
+                        continue
+                    secrets_store.forget_cache(ref)
+                    if secrets_store.get(ref) != value:
+                        continue
+                    values[key] = secrets_store.make_ref(ref)
+                    changed = True
+                    moved += 1
+                if changed:
+                    updates[field] = json.dumps(values, ensure_ascii=False)
+            for field, blob in updates.items():
+                self._x(f"UPDATE mcp_servers SET {field}=? WHERE id=?", (blob, row["id"]))
         return moved
 
     # ---------------------------------------------------------------- providers
@@ -1099,8 +1168,10 @@ by default."""
         rows = self._q("SELECT * FROM mcp_servers ORDER BY rowid")
         for r in rows:
             r["args"] = json.loads(r["args"])
-            r["env"] = json.loads(r["env"])
-            r["headers"] = json.loads(r.get("headers") or "{}")
+            # The values a server needs, with the keychain references resolved. Callers see the
+            # real thing and need not know how it is stored, exactly like `providers.api_key`.
+            r["env"] = self._secrets_off(json.loads(r["env"]))
+            r["headers"] = self._secrets_off(json.loads(r.get("headers") or "{}"))
             r["enabled"] = bool(r["enabled"])
         return rows
 
@@ -1114,8 +1185,9 @@ by default."""
         self._x(
             "INSERT INTO mcp_servers(id,name,command,args,env,url,enabled,transport,headers,description) "
             "VALUES(?,?,?,?,?,?,1,?,?,?)",
-            (mid, name, command, json.dumps(args or []), json.dumps(env or {}), url, transport,
-             json.dumps(headers or {}), description),
+            (mid, name, command, json.dumps(args or []),
+             json.dumps(self._secrets_on(f"mcp:{mid}", env or {})), url, transport,
+             json.dumps(self._secrets_on(f"mcp:{mid}", headers or {})), description),
         )
         return self.get_mcp(mid)  # type: ignore[return-value]
 
@@ -1125,10 +1197,27 @@ by default."""
                 self._x(f"UPDATE mcp_servers SET {k}=? WHERE id=?", (patch[k], mid))
         for k in ("args", "env", "headers"):
             if patch.get(k) is not None:
-                self._x(f"UPDATE mcp_servers SET {k}=? WHERE id=?", (json.dumps(patch[k], ensure_ascii=False), mid))
+                value = patch[k]
+                # A key belongs in the keychain no matter which door it came through — typed into
+                # the form, imported from another app's config, or restored from a backup.
+                if k in ("env", "headers"):
+                    value = self._secrets_on(f"mcp:{mid}", value)
+                self._x(f"UPDATE mcp_servers SET {k}=? WHERE id=?", (json.dumps(value, ensure_ascii=False), mid))
         if patch.get("enabled") is not None:
             self._x("UPDATE mcp_servers SET enabled=? WHERE id=?", (int(bool(patch["enabled"])), mid))
         return self.get_mcp(mid)
 
     def delete_mcp(self, mid: str) -> None:
+        # Read the *stored* row, not `get_mcp`: that one has already resolved the references, and an
+        # entry that is no longer named anywhere is an entry nobody will ever clean up.
+        row = self._one("SELECT env, headers FROM mcp_servers WHERE id=?", (mid,))
+        if row:
+            for field in ("env", "headers"):
+                try:
+                    values = json.loads(row[field] or "{}")
+                except ValueError:
+                    continue
+                for value in values.values():
+                    if secrets_store.is_ref(value):
+                        secrets_store.delete(secrets_store.parse_ref(value))
         self._x("DELETE FROM mcp_servers WHERE id=?", (mid,))

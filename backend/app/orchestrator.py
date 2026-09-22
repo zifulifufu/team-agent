@@ -62,6 +62,18 @@ _ALL_RE = re.compile(r"(?<![A-Za-z0-9_.])@(?:所有人|all(?![A-Za-z0-9_]))", re
 _AUDIO_MARK = "\x00audio\x00"
 
 
+def _scene(extra_meta: dict | None) -> str:
+    """Which part of a round this turn is: a plain reply, one task, or the consolidation.
+
+    Handed to the `pre_prompt` hooks so they can act on the right one — "answer in the group's
+    house style" may belong on every task instruction, or only on the answer the user reads.
+    """
+    tid = (extra_meta or {}).get("task_id")
+    if not tid:
+        return "reply"
+    return "integration" if tid == "final" else "task"
+
+
 def _mime_of(path: Path) -> str:
     """The type of a picture on disk. Only ever called for what we took out of a video or an
     upload we already classified, so the extension is enough."""
@@ -365,10 +377,24 @@ class Orchestrator:
             text, pictures = await self._visual_text(row, path, frames, workspace, sees, run, header, kind)
             return (f"{text}\n{note}".strip() if note else text), pictures
         if kind == attachments_lib.AUDIO:
+            # Speech is read once, on this machine, and remembered on the row — the same deal as a
+            # document: one slow first turn, then it is text like any other, for every member.
+            words = row.get("text") or ""
+            if not words:
+                words = await asyncio.to_thread(attachments_lib.transcribe, path,
+                                                self.store.get_settings()) or ""
+                if words and row.get("id") and not str(row["id"]).startswith("file:"):
+                    self.store.set_attachment_text(str(row["id"]), words)
+            if words:
+                tail = i18n.pick_now(" (transcribed on this machine; the audio itself was not sent anywhere)",
+                                     "(由本机转写的文字;音频本身没有发到任何地方)")
+                return f"{header}\n{clip_middle(words, self.REF_FILE_CHARS)}{tail}", []
             return _AUDIO_MARK + i18n.pick_now(
-                f"{header} — audio; its content is not transcribed here. A member can read the file "
-                f"itself from the workspace if a tool for it is available.",
-                f"{header} —— 音频;这里不转写内容。工作目录里有这个文件,成员若装了相应工具可以自己处理。",
+                f"{header} — audio; nothing on this machine could transcribe it, so what it says was "
+                f"not read. A member can open the file from the workspace, and a transcriber can be "
+                f"named under Settings → General → Files in a group chat.",
+                f"{header} —— 音频;这台机器上没有能转写它的工具,所以内容没有被读到。成员可以在工作目录里打开它;"
+                f"装了转写工具后,可在「设置 → 通用 → 群聊里的文件」里填上命令。",
             ), []
         return i18n.pick_now(
             f"{header} — not a format that can be read as text; the file is in the workspace.",
@@ -792,7 +818,11 @@ protocol and should not decide what the others do."""
             await push()
             final = await self._agent_turn(
                 group, host, members, emit, run,
-                extra_user=planner.integration_prompt(plan, outputs),
+                # How much of each task's output reaches the host is a setting rather than a
+                # constant in this file: a long report gets truncated at the default, and the
+                # number that is right for a five-line brief is wrong for a research dossier.
+                extra_user=planner.integration_prompt(plan, outputs,
+                                                      int(self.store.get_settings()["integration_budget"])),
                 exclude_plan_id=plan.message_id,
                 extra_meta={"plan_id": plan.message_id, "task_id": "final", "task_title": i18n.pick_now("Consolidate", "整合")},
             )
@@ -905,9 +935,19 @@ protocol and should not decide what the others do."""
                 memory_block = self.memory.block(
                     self.memory.recall(group["id"], agent["id"], run.user_text + " " + (extra_user or "")[:300])
                 )
+            extra_system = run.refs_block
+            # The inject side of the hooks: extra lines for this prompt only. Added here rather
+            # than to the conversation so it reads as context, and add-only so a hook can never
+            # take the group's own rules out of the prompt.
+            if self.hooks:
+                added = await self.hooks.gate_prompt(group["id"], {
+                    "agent": agent["name"], "role": agent.get("role") or "",
+                    "model": agent.get("model_id") or "", "scene": _scene(extra_meta),
+                })
+                extra_system = f"{extra_system}\n\n{added}".strip() if extra_system else added
             messages = self.build_messages(
                 group, agent, members, memory_block=memory_block,
-                tools_block=tools_prompt(ctx.specs()) if ctx.tools else "", extra_system=run.refs_block,
+                tools_block=tools_prompt(ctx.specs()) if ctx.tools else "", extra_system=extra_system,
                 extra_user=extra_user, exclude_plan_id=exclude_plan_id,
                 files=await self._files_for_turn(group, agent, run),
             )
@@ -984,6 +1024,16 @@ protocol and should not decide what the others do."""
         content = "\n\n".join(visible_parts).strip()
         if not content:
             content = empty_fallback or (i18n.pick_now("(a tool was called; there was no further explanation)", "(已调用工具,没有额外说明)") if trace else res.text.strip())
+        # The reply side of the hooks, before it becomes part of the record: the last moment at
+        # which a group can be stopped from keeping something it should not keep.
+        if self.hooks:
+            reason, content = await self.hooks.gate_reply(
+                group["id"], {"name": agent["name"], "model": res.model_id}, content)
+            if reason:
+                await emit({"type": "message_discard", "message_id": mid})
+                await self._system(group["id"], reason, emit)
+                run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
+                return None
         meta = {"attempts": attempts, **(extra_meta or {})}
         if trace:
             meta["tools"] = trace
@@ -1043,8 +1093,17 @@ protocol and should not decide what the others do."""
             memory_block = self.memory.block(
                 self.memory.recall(gid, agent["id"], run.user_text + " " + (extra_user or "")[:300])
             )
+        extra_system = run.refs_block
+        # An external agent is a member too, so the same injections apply: a group's house style
+        # or today's date must not depend on which kind of member is answering.
+        if self.hooks:
+            added = await self.hooks.gate_prompt(group["id"], {
+                "agent": name, "role": agent.get("role") or "", "model": f"ext:{engine}",
+                "scene": _scene(extra_meta),
+            })
+            extra_system = f"{extra_system}\n\n{added}".strip() if extra_system else added
         messages = self.build_messages(
-            group, agent, members, memory_block=memory_block, extra_system=run.refs_block,
+            group, agent, members, memory_block=memory_block, extra_system=extra_system,
             extra_user=extra_user, exclude_plan_id=exclude_plan_id,
             # An external engine is a command line, not a vision endpoint: it gets descriptions of
             # the pictures rather than the pictures themselves (its own model chain decides, and
@@ -1103,6 +1162,11 @@ protocol and should not decide what the others do."""
 
         await flush_ext_delta()   # wrap up: send the last incomplete batch of deltas
         content = res.text.strip() or empty_fallback or i18n.pick_now("(no reply content)", "(没有回复内容)")
+        if self.hooks:
+            reason, content = await self.hooks.gate_reply(
+                gid, {"name": name, "model": f"ext:{agent['engine']}"}, content)
+            if reason:
+                return await fail(reason)
         meta: dict = {"engine": agent["engine"], "level": ecfg["level"], **(extra_meta or {})}
         info = {k: v for k, v in (("cost_usd", res.cost_usd), ("duration_ms", res.duration_ms),
                                   ("num_turns", res.num_turns), ("model", res.model)) if v not in (None, "")}

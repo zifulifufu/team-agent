@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,61 @@ MCP_TEMPLATES: list[dict] = [
      "note_zh": "读取指定 Git 仓库的历史和差异。把最后的路径换成你的仓库。需要 uv(uvx)。"},
 ]
 
+HOOK_TEMPLATES: list[dict] = [
+    # Metadata only. The source of each hook is a real file under app/data/hook-templates/, not a
+    # string in this module: it is Python that has to *run* in a subprocess, so it deserves to be
+    # checked by the same tools as everything else — and nesting it in a literal here had silently
+    # turned every `\n` inside it into a line break, which the test that loads each template
+    # through the runner is what caught.
+    #
+    # They are starting points, not finished policies: short, readable, and meant to be edited.
+    # English is the canonical text written to disk (the panel shows it that way); `<field>_zh` is
+    # the Chinese wording for the gallery itself.
+    {"key": "house-style", "name": "House style", "name_zh": "本群规范",
+     "icon": "📐", "events": ["pre_prompt"], "timeout_ms": 500,
+     "summary": "Append this group's own rules to every prompt a member sends — the same lines for a plain reply, a task, or the consolidation.",
+     "summary_zh": "在成员每次调用模型前,把这群的规范追加进提示词——普通回复、任务、整合一视同仁。"},
+    {"key": "hold-back-secrets", "name": "Keep secrets out of the transcript",
+     "name_zh": "别把密钥写进对话", "icon": "🔒", "events": ["post_reply"], "timeout_ms": 1000,
+     "summary": "Hold back a reply whose text quotes a key, a password or an ID number, before it becomes part of the record that exports and backups carry.",
+     "summary_zh": "回复里出现密钥、口令或身份证号时,在它变成对话记录(会被导出与备份带上)之前拦下来。"},
+    {"key": "no-pii-out", "name": "Check before a message leaves the machine",
+     "name_zh": "外发前检查", "icon": "📤", "events": ["before_send"], "timeout_ms": 1000,
+     "summary": "Before a reply goes out to a chat channel, hold it back if it carries a phone number or an ID number.",
+     "summary_zh": "回复要发到站外聊天通道前,若带手机号或身份证号则拦住。"},
+    {"key": "audit-trail", "name": "Audit trail", "name_zh": "审计留痕",
+     "icon": "📋", "events": ["round.end", "tool.called"], "timeout_ms": 1500,
+     "summary": "Append one line per finished round and per tool call to audit.jsonl, in this hook's own folder. The starting point for a log you can actually read later.",
+     "summary_zh": "每轮结束与每次工具调用各追加一行到 audit.jsonl(在这个钩子自己的目录里)。想事后查账,从这里起步。"},
+]
+
+_HOOK_DIR = Path(__file__).parent / "data" / "hook-templates"
+
+
+@lru_cache(maxsize=None)
+def hook_code(key: str) -> str:
+    """The source of a built-in hook template, or "" when the file is not there."""
+    try:
+        return (_HOOK_DIR / f"{key}.py").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+_HOOK_ALIASES: dict[str, dict] = {}
+for _h in HOOK_TEMPLATES:
+    for _name in (_h.get("key"), _h.get("name"), _h.get("name_zh")):
+        if _name:
+            _HOOK_ALIASES.setdefault(_name, _h)
+
+
+def hook_names(name: str | None) -> list[str]:
+    """Every spelling a template-installed hook id might appear as."""
+    entry = _HOOK_ALIASES.get(name or "")
+    if not entry:
+        return [name] if name else []
+    return [n for n in (entry.get("key"), entry.get("name"), entry.get("name_zh")) if n]
+
+
 CATEGORIES: list[dict] = [
     {"id": "team", "label": "Teams", "label_zh": "团队",
      "hint": "One click builds a group chat: the members, the host, the group rules, and the skills they need are all installed together.",
@@ -127,6 +183,9 @@ CATEGORIES: list[dict] = [
     {"id": "prompt", "label": "Prompts", "label_zh": "提示词",
      "hint": "Prompt snippets: keep them in the library, then attach one to a group or make it global.",
      "hint_zh": "常用提示词:存进提示词库后,可挂给某个群或设为全局。"},
+    {"id": "hook", "label": "Hooks", "label_zh": "钩子",
+     "hint": "Your own code at a few fixed points of a round: append to a prompt, object to a tool call, or stop a reply from being kept. Installed switched off — read it, then turn it on.",
+     "hint_zh": "把你自己的一小段代码挂在群聊的几个固定节点上:往提示词里追加内容、否决工具调用、或拦下不该留下的回复。装进来是关闭状态——先读一遍,再打开。"},
     {"id": "mcp", "label": "MCP", "label_zh": "MCP",
      "hint": "How to wire in an external tool: it is imported disabled, so check the command and fill in the keys before you enable it.",
      "hint_zh": "外部工具的接入写法:导入后一律停用,核对命令并填好密钥再启用。"},
@@ -158,14 +217,14 @@ def mcp_names(name: str | None) -> list[str]:
 
 
 KINDS: tuple[str, ...] = tuple(c["id"] for c in CATEGORIES)
-CUSTOM_KINDS: tuple[str, ...] = ("team", "agent", "skill", "prompt")   # custom templates may not use mcp
+CUSTOM_KINDS: tuple[str, ...] = ("team", "agent", "skill", "prompt")   # data only: see _custom_row
 
 _TEAM_ICONS: dict[str, str] = {
     "office": "🏢", "video": "🎬", "writing": "✍️", "brainstorm": "💡", "review": "🧐",
     "research": "📚", "code": "💻", "data": "📊", "translate": "🌐", "proposal": "📑",
     "report": "📄", "clinical": "🩺",
 }
-_ICONS = {"team": "🧩", "agent": "🤖", "skill": "🧠", "prompt": "💬", "mcp": "🔌"}
+_ICONS = {"team": "🧩", "agent": "🤖", "skill": "🧠", "prompt": "💬", "mcp": "🔌", "hook": "🪝"}
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -318,8 +377,29 @@ def _mcp_rows() -> list[dict]:
     return out
 
 
+def _hook_rows() -> list[dict]:
+    out = []
+    for h in HOOK_TEMPLATES:
+        code = hook_code(h["key"])
+        if not code.strip():
+            continue                       # no source shipped: better absent than broken
+        out.append({
+            "id": f"hook:{h['key']}", "kind": "hook",
+            "name": h["name"], "name_zh": h.get("name_zh", ""),
+            "summary": h.get("summary", ""), "summary_zh": h.get("summary_zh", ""),
+            "icon": h.get("icon") or _ICONS["hook"],
+            "tags": ["Installed switched off"], "tags_zh": ["装进来是关闭的"],
+            "source": "builtin",
+            "preview": {"events": list(h.get("events", [])), "timeout_ms": h.get("timeout_ms", 1500),
+                        "code": code},
+            "def": {"key": h["key"], "events": list(h.get("events", [])),
+                    "timeout_ms": h.get("timeout_ms", 1500), "code": code},
+        })
+    return out
+
+
 def _builtin_rows() -> list[dict]:
-    return [*_team_rows(), *_agent_rows(), *_skill_rows(), *_prompt_rows(), *_mcp_rows()]
+    return [*_team_rows(), *_agent_rows(), *_skill_rows(), *_prompt_rows(), *_mcp_rows(), *_hook_rows()]
 
 
 # --------------------------------------------------------------------- custom templates
@@ -402,8 +482,15 @@ def _custom_row(raw: Any, seen: set[str]) -> tuple[dict | None, str]:
     if not isinstance(rid, str) or not _ID_RE.match(rid):
         return None, i18n.pick_now("id must be 1-64 characters of letters, digits, dot, underscore or dash, starting with a letter or a digit", "id 必须是 1~64 位、以字母或数字开头的字母数字 . _ - 组合")
     kind = raw.get("kind")
-    if kind == "mcp":
-        return None, i18n.pick_now("custom templates do not support kind=mcp (add command-based servers yourself on the MCP page)", "自定义模板不支持 kind=mcp(命令类请到「MCP」页自己添加)")
+    if kind in ("mcp", "hook"):
+        # Both of these make the machine *do* something rather than hold data, and a hook does it on
+        # every round. One JSON file dropped into a folder must not be able to install code that
+        # runs later, so they are out of the custom format on purpose; install them through the
+        # panel, where the file is shown before it is switched on.
+        page = "MCP" if kind == "mcp" else "Hooks"
+        return None, i18n.pick_now(
+            f"custom templates do not support kind={kind} (it would let one JSON file install something that runs on this machine — add it yourself on the {page} page)",
+            f"自定义模板不支持 kind={kind}(那等于让一个 JSON 文件往这台机器上装会运行的东西;请到「{'MCP' if kind == 'mcp' else '钩子'}」页自己添加)")
     if kind not in CUSTOM_KINDS:
         return None, i18n.pick_now(f"kind must be one of {' / '.join(CUSTOM_KINDS)}", f"kind 只能是 {' / '.join(CUSTOM_KINDS)}")
     fid = f"{kind}:{rid}"
@@ -537,6 +624,7 @@ def _states(store: Store) -> dict:
         "skills": {n for s in list_skills(store.data_dir / "skills") for n in skill_names(s.name)},
         "prompts": {n for p in store.list_prompts() for n in prompt_titles(p["title"])},
         "mcp": {n for m in store.list_mcp() for n in mcp_names(m["name"])},
+        "hooks": {d.name for d in (store.data_dir / "hooks").glob("*") if d.is_dir() and not d.name.startswith(".")},
     }
 
 
@@ -560,6 +648,8 @@ def _spellings(item: dict) -> list[str]:
         return prompt_titles(item["name"]) or [item["name"]]
     if kind == "mcp":
         return mcp_names(item["name"]) or [item["name"]]
+    if kind == "hook":
+        return hook_names(item["name"]) or [item["name"]]
     return [item["name"]]
 
 
@@ -578,6 +668,9 @@ def _state(item: dict, st: dict) -> tuple[bool, str]:
     if kind == "prompt":
         ok = any(nm in st["prompts"] for nm in names)
         return (ok, i18n.pick_now("Already in the prompt library", "已在提示词库") if ok else "")
+    if kind == "hook":
+        ok = any(nm in st["hooks"] for nm in names)
+        return (ok, i18n.pick_now("Already in the hooks directory", "已在钩子目录里") if ok else "")
     ok = any(nm in st["mcp"] for nm in names)
     return (ok, i18n.pick_now("Already added", "已添加") if ok else "")
 
@@ -716,7 +809,7 @@ def apply(store: Store, item_id: str, opts: dict | None = None) -> dict:
         raise GalleryError(i18n.pick_now("That template no longer exists (it may just have been removed).",
                                          "模板不存在(可能刚被移除)"))
     fn = {"team": _apply_team, "agent": _apply_agent, "skill": _apply_skill,
-          "prompt": _apply_prompt, "mcp": _apply_mcp}[item["kind"]]
+          "prompt": _apply_prompt, "mcp": _apply_mcp, "hook": _apply_hook}[item["kind"]]
     with _APPLY_LOCK:
         return fn(store, item, opts)
 
@@ -885,6 +978,42 @@ def _apply_prompt(store: Store, item: dict, opts: dict) -> dict:
         "Prompts page.",
         f"已存入提示词库:「{label}」。到「提示词」页可以挂给某个群或设为全局。"),
         added=[i18n.pick_now(f"Prompt: {label}", f"提示词:{label}")])
+
+
+def _apply_hook(store: Store, item: dict, opts: dict) -> dict:
+    """Unpack a hook template into the hooks directory — switched off.
+
+    Off, like every other import in this gallery, and more so here: every other kind is data the
+    app interprets, while a hook is a program that runs on this machine every round. What the user
+    gets is a readable draft they turn on themselves (Settings → Hooks → Run once is right there
+    to try it first).
+
+    The two files are the whole format — HOOK.json plus hook.py — so "installing" is writing them
+    and then telling the manager to look again; nothing about it is special-cased in the app.
+    """
+    src = item["def"]
+    key = str(src.get("key") or item["id"].split(":", 1)[-1])
+    folder = Path(store.data_dir) / "hooks" / key
+    if folder.exists() and not opts.get("overwrite"):
+        raise GalleryError(i18n.pick_now(
+            f"A folder named \"{key}\" is already in the hooks directory. Rename or remove it "
+            "first, or ask to overwrite.",
+            f"钩子目录里已经有一个叫「{key}」的文件夹了。请先改名或移除,或者选择覆盖。"))
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "hook.py").write_text(str(src.get("code") or ""), encoding="utf-8")
+        (folder / "HOOK.json").write_text(json.dumps({
+            "name": item["name"], "description": item.get("summary", ""),
+            "events": list(src.get("events") or []), "enabled": False,
+            "timeout_ms": int(src.get("timeout_ms") or 1500), "on_error": "auto", "groups": [],
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as e:
+        raise GalleryError(i18n.pick_now(f"Could not write the hook: {e}", f"写不了这个钩子:{e}")) from e
+    return _result(item, i18n.pick_now("Hook installed, switched off", "钩子已装好,处于关闭状态"),
+                   notes=[i18n.pick_now(
+                       "Read it before turning it on: Settings → Hooks → Run once tries it against a "
+                       "sample payload, and the file is plain Python you can edit in place.",
+                       "打开之前先读一遍:「设置 → 钩子 → 跑一次」会用示例数据试跑,文件就是普通的 Python,可以就地改。")])
 
 
 def _apply_mcp(store: Store, item: dict, opts: dict) -> dict:

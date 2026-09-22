@@ -15,6 +15,25 @@ import "../styles/hooks.css";
  *  installed" and "it works" are different claims and this page should not ask for belief in the
  *  first one.
  */
+/** What a hook of each kind may change, in one place. Three kinds, three different powers:
+ *  an observer is told and ignored, an injector may only add lines to a prompt, a gate may object
+ *  or rewrite the thing it stands in front of. The label says which, because it decides what the
+ *  user has to trust that hook with. */
+function kindOf(kind: string): { label: string; title: string; warn: boolean } {
+  if (kind === "gate") {
+    return { label: "Gate",
+             title: "Asked before something irreversible happens: it may object or rewrite, never grant",
+             warn: true };
+  }
+  if (kind === "inject") {
+    return { label: "Adds to the prompt",
+             title: "May add lines to a prompt and nothing else — it cannot replace or remove what the app wrote",
+             warn: false };
+  }
+  return { label: "Observer", title: "Told what happened; its answer is ignored", warn: false };
+}
+
+
 export default function HooksPage() {
   const { t } = useI18n();
   const { groups } = useData();
@@ -93,11 +112,8 @@ export default function HooksPage() {
               <b>{h.name || h.id}</b>
               <div className="muted small">{h.id}</div>
             </div>
-            <span className={"chip" + (h.kind === "gate" ? " warn" : "")}
-                  title={h.kind === "gate"
-                    ? t("Asked before something irreversible happens: it may object or rewrite, never grant")
-                    : t("Told what happened; its answer is ignored")}>
-              {h.kind === "gate" ? t("Gate") : t("Observer")}
+            <span className={"chip" + (kindOf(h.kind).warn ? " warn" : "")} title={t(kindOf(h.kind).title)}>
+              {t(kindOf(h.kind).label)}
             </span>
             <Switch checked={h.enabled} label={t("Enable {name}", { name: h.name || h.id })}
                     onChange={(v) => void act(h.id, () => api.patchHook(h.id, { enabled: v }))} />

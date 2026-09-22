@@ -184,3 +184,61 @@ def test_real_keychain_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         secrets_store.delete(ref)
         secrets_store.forget_cache(ref)
         assert secrets_store.get(ref) is None
+
+
+# --------------------------------------------- an MCP server's own env / headers
+def test_mcp_keys_are_stored_as_references_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An MCP server keeps a map, not a column, and those maps routinely carry a key: a GitHub
+    token, an API key for a hosted endpoint. Sitting in the clear in the database means travelling
+    into every backup and every copied .db file, which is the same problem the provider keys had."""
+    kc = _FakeKeychain().install(monkeypatch)
+    st = Store(tmp_path / "data")
+    mid = st.add_mcp("github", "npx", ["-y", "server-github"],
+                     {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_live_abcdefghijkl", "PATH": "/usr/bin"},
+                     headers={"Authorization": "Bearer live-token", "X-Trace": "on"})["id"]
+
+    stored = st._one("SELECT env, headers FROM mcp_servers WHERE id=?", (mid,))
+    assert "ghp_live" not in stored["env"] and "live-token" not in stored["headers"]
+    assert "PATH" in stored["env"], "a setting that is not a secret stays readable in the database"
+    assert json.loads(stored["env"])["PATH"] == "/usr/bin"
+    assert kc.items[f"mcp:{mid}:GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_live_abcdefghijkl"
+
+    back = st.get_mcp(mid)                       # callers see the real values, as with api_key
+    assert back["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_live_abcdefghijkl"
+    assert back["headers"]["Authorization"] == "Bearer live-token"
+
+    # Editing the server keeps the key where it belongs, whichever value the form sent back.
+    st.update_mcp(mid, {"env": {**back["env"], "LOG_LEVEL": "debug"}})
+    stored = st._one("SELECT env FROM mcp_servers WHERE id=?", (mid,))["env"]
+    assert "ghp_live" not in stored and json.loads(stored)["LOG_LEVEL"] == "debug"
+    assert st.get_mcp(mid)["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_live_abcdefghijkl"
+
+    st.delete_mcp(mid)
+    assert not kc.items, "an entry nothing references any more must not be left in the keychain"
+
+
+def test_mcp_keys_an_older_database_left_in_plaintext_are_moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upgrading has to fix what is already on disk, not only what is written from now on."""
+    st = Store(tmp_path / "data")
+    mid = st.add_mcp("legacy", "npx", [], {"SOME_API_KEY": "sk-old-abcdef123456"}, "")["id"]
+    assert "sk-old" in st._one("SELECT env FROM mcp_servers WHERE id=?", (mid,))["env"]  # no keychain in tests
+
+    kc = _FakeKeychain().install(monkeypatch)
+    assert st._move_keys_to_keychain() == 1
+    assert "sk-old" not in st._one("SELECT env FROM mcp_servers WHERE id=?", (mid,))["env"]
+    assert kc.items[f"mcp:{mid}:SOME_API_KEY"] == "sk-old-abcdef123456"
+    assert st.get_mcp(mid)["env"]["SOME_API_KEY"] == "sk-old-abcdef123456"
+    assert st._move_keys_to_keychain() == 0, "and it is idempotent"
+
+
+def test_a_key_the_keychain_cannot_take_stays_where_it_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rule the provider keys already follow: a value is only rewritten once it has been read
+    back. A reference pointing at nothing would look like a configured server that silently fails
+    to authenticate — worse to diagnose than the plaintext it replaced."""
+    st = Store(tmp_path / "data")
+    mid = st.add_mcp("locked", "npx", [], {"SOME_API_KEY": "sk-locked-123456"}, "")["id"]
+
+    kc = _FakeKeychain().install(monkeypatch)
+    kc.fail_write = True
+    assert st._move_keys_to_keychain() == 0
+    assert "sk-locked-123456" in st._one("SELECT env FROM mcp_servers WHERE id=?", (mid,))["env"]

@@ -93,7 +93,9 @@ def main() -> int:
                 frozen.append(f"{rel}:{i}: {line.strip()}")
 
     for key, where in sorted(missing.items()):
-        print(f"[missing zh] {key[:120]!r}  <- {', '.join(sorted(set(where)))}")
+        # Printed whole, never truncated: a clipped key looks like a complete one and gets copied
+        # into the dictionary as-is, so the entry never matches what the code asks for.
+        print(f"[missing zh] {key!r}  <- {', '.join(sorted(set(where)))}")
     for line in frozen:
         print(f"[frozen tr]  {line}")
     print("missing %d · frozen %d" % (len(missing), len(frozen)))

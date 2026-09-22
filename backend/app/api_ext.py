@@ -1076,7 +1076,7 @@ def build_router(c: Ctx) -> APIRouter:
             "vision": st,
             "documents": ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv", "json", "html"],
             "video_frames": bool(attachments_lib.tool("ffmpeg")),
-            "audio_transcribe": False,          # nothing here transcribes speech yet
+            "audio_transcribe": bool(attachments_lib.transcriber(store.get_settings())),
             "upload_max_mb": int(store.get_settings()["upload_max_mb"]),
         }
 

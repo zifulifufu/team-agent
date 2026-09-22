@@ -5,10 +5,11 @@ A hook lives in the data directory and is one small program:
     hooks/<id>/HOOK.json    which events it wants, its timeout, whether it may block
     hooks/<id>/hook.py      `def handle(event, payload): ...` — one JSON in, one JSON out
 
-Six events, in two kinds. **Observers** are told what happened and their answer is ignored:
-`round.start`, `round.end`, `agent.reply`, `tool.called`. **Gates** are asked a question before
-something irreversible happens: `pre_tool_use` (may object, or change the arguments) and
-`before_send` (may object, or change the text leaving this machine).
+Eight events, in three kinds. **Observers** are told what happened and their answer is ignored:
+`round.start`, `round.end`, `agent.reply`, `tool.called`. **Injectors** may add text to a prompt —
+and only add: `pre_prompt`. **Gates** are asked a question before something irreversible happens:
+`post_reply` (a reply, before it becomes part of the record), `pre_tool_use` (before a tool runs)
+and `before_send` (before anything leaves this machine).
 
 Four decisions worth knowing before changing any of this:
 
@@ -16,6 +17,9 @@ Four decisions worth knowing before changing any of this:
   first, and a hook has no way to turn a `deny` into a run — there is deliberately no "allow"
   in its vocabulary, only "object". Other people's hook files get copied around; the one thing
   they must never be able to do is open a hole.
+* **An injector cannot subtract.** `pre_prompt` adds lines; it cannot rewrite or remove what the
+  app itself assembled. Otherwise a hook could take the group's rules or memories out of the
+  prompt without leaving a trace in the transcript.
 * **Everything runs in a subprocess** with the same trimmed environment `coderun` gives a
   member's program: no `TEAM_AGENT_TOKEN`, no API keys inherited from this process, its own
   process group, and a timeout that kills the whole group. A hook that hangs cannot hang the
@@ -23,8 +27,8 @@ Four decisions worth knowing before changing any of this:
 * **Off unless switched on**, and the panel says so: a hook is somebody's code running on this
   machine, so its state belongs in the list rather than buried in a dialog.
 * **A failure is never silent but never fatal**: a broken hook writes a line to the hook log
-  and, for a gate, falls back by `on_error` (default: let read-only tools through, hold back
-  anything that writes or sends — the same instinct as `perm_mode`).
+  and falls back by `on_error` (default: let read-only tools through, hold back anything that
+  writes or sends, and let a reply stand — the same instinct as `perm_mode`).
 
 The hook log (`hook-log.jsonl` in the data directory) keeps one line per run, so "why did it
 not fire" is answerable without a debugger.
@@ -44,17 +48,31 @@ from . import i18n
 from .approvals import risk_of
 from .coderun import INTERPRETER, child_env, kill_group
 from .router import redact
+from .secrets import SENSITIVE_NAME
 
 # Event -> (kind, default timeout in ms). Names follow the events the chat UI already receives,
 # so there is one vocabulary rather than two.
+#
+# Three kinds, and the difference between them is *how much a hook may change*:
+#
+#   observe  told what happened, its answer is ignored
+#   inject   may add text to a prompt — and only add
+#   gate     may object, or rewrite the thing it is standing in front of
+#
+# A hook's kind is the strongest one among its events, so a hook that both logs and judges is a
+# gate. The panel says which, because it decides what the user has to trust that hook with.
 EVENTS: dict[str, tuple[str, int]] = {
     "round.start": ("observe", 1500),
     "round.end": ("observe", 1500),
     "agent.reply": ("observe", 1500),
     "tool.called": ("observe", 1500),
+    "pre_prompt": ("inject", 500),
     "pre_tool_use": ("gate", 1000),
+    "post_reply": ("gate", 1000),
     "before_send": ("gate", 1000),
 }
+# Strongest kind first: used to summarise a hook that asked for several events.
+_KIND_RANK = {"observe": 0, "inject": 1, "gate": 2}
 # A hook may ask for longer, but not without a ceiling: every gate sits in front of a reply the
 # user is waiting for.
 MAX_TIMEOUT_MS = 5000
@@ -62,7 +80,11 @@ MAX_OUTPUT = 4000                     # characters of a hook's stdout we are wil
 # Argument names a gate never sees. A hook judging a tool call needs the real arguments (the
 # program about to delete a file has to be readable) but never needs a credential, and a copied
 # hook must not be able to harvest one out of a payload.
-SECRET_ARG = re.compile(r"(api[_-]?key|token|secret|password|passwd|pwd|credential|authorization)", re.I)
+#
+# The pattern itself lives in `secrets`, where the MCP `env` / `headers` reader uses the same one:
+# two lists of "what counts as a key" would drift apart, and the cost of that is a key written to
+# disk in the clear by whichever path kept the older list.
+SECRET_ARG = SENSITIVE_NAME
 
 GUIDE = """A hook is one folder with two files:
 
@@ -88,14 +110,21 @@ hook.py — `handle(event, payload)` receives one dict, and whatever it returns 
 
 Events you can ask for:
 
-    round.start   round.end   agent.reply   tool.called
-    pre_tool_use  before_send
+    round.start   round.end   agent.reply   tool.called     told, answer ignored
+    pre_prompt                                            add lines to a prompt
+    pre_tool_use  post_reply  before_send                 asked, may object
+
+Observers may return nothing at all.
+
+Injectors return the lines to add — they cannot replace or remove anything:
+
+    {"append": "Today is 2026-09-23."}
 
 Gates return one dict:
 
     {"block": false, "args": {"pattern": "*.md"}}   pre_tool_use: replace these arguments
-    {"block": true, "reason": "why"}                object: the call is not made
-    {"block": false, "text": "..."}                 before_send: replace the message
+    {"block": true, "reason": "why"}                object: the call / the reply is not kept
+    {"block": false, "text": "..."}                 post_reply / before_send: replace the text
 
 There is no way to *allow* something from a hook: a gate can only object or rewrite, and the
 user's own permission settings still decide everything else. Turn a hook on in Settings → Hooks.
@@ -126,14 +155,21 @@ hook.py —— `handle(event, payload)` 收到一个 dict,它返回什么就是�
 
 可以登记的事件:
 
-    round.start   round.end   agent.reply   tool.called
-    pre_tool_use  before_send
+    round.start   round.end   agent.reply   tool.called     只被告知,返回值被忽略
+    pre_prompt                                            往提示词里追加内容
+    pre_tool_use  post_reply  before_send                 会被询问,可以否决
+
+旁观者可以不返回任何东西。
+
+注入类只能**追加**,不能替换或删除已有内容:
+
+    {"append": "今天是 2026-09-23。"}
 
 闸门返回一个 dict:
 
     {"block": false, "args": {"pattern": "*.md"}}   pre_tool_use:改写这次调用的参数
-    {"block": true, "reason": "为什么"}              否决:这次调用不会发生
-    {"block": false, "text": "..."}                 before_send:替换要发出去的正文
+    {"block": true, "reason": "为什么"}              否决:这次调用/这条回复不留下
+    {"block": false, "text": "..."}                 post_reply / before_send:替换正文
 
 钩子**无法**批准任何东西:闸门只能否决或改写,其余一切仍然由你自己的权限设置决定。
 在「设置 → 钩子」里打开它。
@@ -212,7 +248,8 @@ class HookInfo:
 
     @property
     def kind(self) -> str:
-        return "gate" if any(EVENTS.get(e, ("", 0))[0] == "gate" for e in self.events) else "observe"
+        return max((EVENTS.get(e, ("observe", 0))[0] for e in self.events),
+                   key=lambda k: _KIND_RANK.get(k, 0), default="observe")
 
     def to_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "description": self.description,
@@ -437,7 +474,7 @@ class HookManager:
             hook.last = {"ok": not note, "note": note, "at": time.time()}
             self.log(hook.id, "pre_tool_use", gid, note, answer, tool=spec.get("name"))
             if answer is None:
-                if self._fails_closed(hook, risk_of(spec)):
+                if self._fails_closed(hook, "pre_tool_use", risk_of(spec)):
                     return i18n.pick_now(
                         f"Hook \"{hook.id}\" could not judge this call ({note}), and it is set to block when that happens.",
                         f"钩子「{hook.id}」无法判断这次调用({note}),而它设成这种情况下要拦截。"), args
@@ -453,12 +490,76 @@ class HookManager:
                 args = {**args, **patch, **keep}
         return "", args
 
-    def _fails_closed(self, hook: HookInfo, risk: str) -> bool:
+    def _fails_closed(self, hook: HookInfo, event: str, risk: str = "read") -> bool:
+        """What a broken hook means at this point in the round.
+
+        `auto` errs towards holding back anything that writes or leaves the machine, which is the
+        same instinct as `perm_mode`. `post_reply` is the exception, and deliberately so: the reply
+        has already been written by the time it is asked, and dropping it leaves the group with no
+        answer at all — worse than storing one sentence the user can read and delete. What goes off
+        the machine is still guarded by `before_send`, which does fail closed.
+        """
         if hook.on_error == "closed":
             return True
         if hook.on_error == "open":
             return False
-        return risk != "read"                 # auto: a broken gate may not let a write through
+        return event != "post_reply" and risk != "read"
+
+    async def gate_prompt(self, gid: str, scene: dict) -> str:
+        """Text the hooks want added to the prompt a member is about to send.
+
+        **Only ever added.** A hook cannot replace or remove what the app itself put in the prompt,
+        and that restriction is the whole point of this event: injection is the one power that
+        leaves no trace — a hook able to rewrite the system prompt could quietly take the group's
+        own rules or its memories away, and nothing in the transcript would show it. Adding is
+        enough for what this is for: today's date, a house style, a fact the app does not know.
+
+        The payload carries who is speaking and about what, but *not* the prompt itself. A hook
+        does not need to read the prompt in order to append to it, and not copying it over means a
+        hook that is careless with what it receives cannot leak the group's memories with it.
+
+        Failure adds nothing. An injection that cannot be computed is a missing sentence, not a
+        reason to stop a reply.
+        """
+        parts: list[str] = []
+        for hook in self._for("pre_prompt", gid):
+            answer, note = await self._run(hook, "pre_prompt", {"group_id": gid, **scene})
+            hook.last = {"ok": not note, "note": note, "at": time.time()}
+            self.log(hook.id, "pre_prompt", gid, note, answer)
+            if answer is None:
+                continue
+            added = answer.get("append")
+            if isinstance(added, str) and added.strip():
+                parts.append(added.strip())
+        return "\n\n".join(parts)
+
+    async def gate_reply(self, gid: str, who: dict, text: str) -> tuple[str, str]:
+        """Ask the gates about a reply that is about to be stored. `(reason_to_drop, text)`.
+
+        This is where a group can be stopped from keeping something: a reply that quotes a
+        credential, or states something the team is not allowed to write down, can be held back or
+        rewritten *before* it becomes part of the transcript (and of every export and backup).
+
+        Unlike the other two gates it fails open — see `_fails_closed`. That is why `before_send`
+        still exists and still fails closed: this one guards the record, that one guards the door.
+        """
+        for hook in self._for("post_reply", gid):
+            answer, note = await self._run(hook, "post_reply",
+                                           {"group_id": gid, "agent": who.get("name", ""),
+                                            "model": who.get("model", ""), "text": text})
+            hook.last = {"ok": not note, "note": note, "at": time.time()}
+            self.log(hook.id, "post_reply", gid, note, answer, agent=who.get("name", ""))
+            if answer is None:
+                if self._fails_closed(hook, "post_reply"):
+                    return i18n.pick_now(
+                        f"Hook \"{hook.id}\" could not read this reply ({note}), and it is set to drop it when that happens.",
+                        f"钩子「{hook.id}」没能读到这条回复({note}),而它设成这种情况下要丢掉。"), text
+                continue
+            if answer.get("block"):
+                return _blocked("post_reply", hook, answer, "没有让这条回复留下来", "did not let this reply be kept"), text
+            if isinstance(answer.get("text"), str):
+                text = answer["text"]
+        return "", text
 
     async def gate_outgoing(self, gid: str, text: str) -> tuple[str, str]:
         """Ask the gates about text that is about to leave this machine. `(reason, text)`.

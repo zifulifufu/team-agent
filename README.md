@@ -111,7 +111,7 @@ to keep it that way, and removing that variable is what makes the real keychain 
 
 ## Hooks
 
-*Sidebar → Tools → **Hooks***. Your own code at six fixed points of a group chat. A hook is one
+*Sidebar → Tools → **Hooks***. Your own code at eight fixed points of a group chat. A hook is one
 folder with two files, and it is **off until you switch it on**:
 
 ```
@@ -124,19 +124,29 @@ hooks/my-hook/hook.py       def handle(event, payload): ...
 | `round.start` / `round.end` | observer | One user message in, one answer out: log it, count it, push it somewhere |
 | `agent.reply` | observer | One member finished a reply (who, which model, how long, which tools) |
 | `tool.called` | observer | A tool ran: name, arguments, ok, how long, a cut-down result |
+| `pre_prompt` | injector | Before a member's prompt goes out: add lines to it (`{"append": "…"}`) |
+| `post_reply` | gate | Before a reply is stored: object, or rewrite it — the last moment the *record* can be kept clean |
 | `pre_tool_use` | gate | Before a tool runs: object (`{"block": true, "reason": …}`) or rewrite the arguments |
 | `before_send` | gate | Before text leaves this machine (chat channels): object, or replace the text |
+
+**Templates**: *Settings → Template gallery → Hooks* ships four readable starting points
+(house style, keep secrets out of the transcript, check before a message leaves the machine, audit
+trail). They are installed switched off and written to `hooks/<name>/`, so they are yours to edit.
 
 Four things are enforced rather than documented, because a hook file gets copied between machines:
 
 - **A gate can only tighten.** Your permission settings are consulted first, and a hook has no
   vocabulary for granting anything — there is no "allow", only "object". A hook that echoes the
   whole payload back cannot turn a value it was never shown into the real one either.
+- **An injector can only add.** `pre_prompt` appends; it cannot replace or remove what the app
+  assembled, so a hook cannot quietly take the group's rules or memories out of the prompt. And it
+  is handed who is speaking and about what — never the prompt itself.
 - **It runs in a subprocess** with the trimmed environment members' code gets: no app token, no
   inherited API keys, its own process group, and a timeout that kills the group.
 - **A failure is recorded, never fatal.** The reason appears on the Hooks page and in
   `hook-log.jsonl` next to the data directory. By default a broken gate lets read-only tools
-  through and holds back writes and outgoing messages.
+  through, holds back writes and outgoing messages, and lets a reply stand — dropping a reply that
+  has already been written would leave the group with no answer at all.
 - **It can be run once from the page** with a sample payload — installed and working are different
   claims, and the page shows the second one.
 
@@ -154,7 +164,8 @@ Attachments are any kind of file. The kind is decided by the file's own bytes, n
 | Documents (pdf, docx, xlsx, pptx, txt, md, csv, json, html) | The text, extracted on this machine when the file is uploaded. **No vision model is involved**, so this works with any model. |
 | Images | Given to the model directly when the answering member's model can see; otherwise described once by the *vision model*, and the description is what members read. |
 | Video | Duration and resolution, plus a few evenly spaced stills (ffmpeg), treated like images. The audio track is not transcribed. |
-| Audio, anything else | Named with its size, and available in the workspace for a member to open with its own tools. |
+| Audio | Transcribed on this machine when a transcriber is installed (see below). With none, named with its size and left in the workspace. |
+| Anything else | Named with its size, and available in the workspace for a member to open with its own tools. |
 
 Two switches decide where a picture may go, and they are separate on purpose: **cloud calls** under
 Permissions & control (`external_calls_enabled`), and **cloud vision** (`vision_cloud`). With cloud
@@ -162,6 +173,15 @@ vision off, a picture is looked at by a local vision model if one exists, and ne
 machine. If no model here can look at a picture, the members are told exactly that — they say they
 cannot see it instead of inventing content, and the settings page tells you what to install
 (`ollama pull qwen2.5vl:3b` is a good local choice).
+
+**Speech is the one kind that needs a program rather than a model.** Nothing is bundled and nothing
+is downloaded on your behalf: a whisper model is a few hundred megabytes, and fetching one silently
+while somebody waits for an answer is not a decision this app gets to make. If `mlx_whisper` or
+`whisper` is already on the machine it is used, and *Settings → General → Files in a group chat* lets
+you name any other transcriber — `{out}` is the folder for the text and `{audio}` marks where the
+file goes. The words are read once and remembered on the attachment. With nothing installed, the
+members are told the audio was not read, rather than being handed a summary of something nobody
+listened to.
 
 Referencing something with `@` in the composer offers members, files, folders and documents, and
 inserts a token the backend understands:

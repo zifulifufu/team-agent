@@ -156,3 +156,11 @@ def test_dev_mode_blocks_foreign_origins_and_hosts(tmp_path):
         with pytest.raises(Denied):
             with c.websocket_connect(f"ws://127.0.0.1/ws/groups/{gid}", headers={"Origin": "https://evil.example"}):
                 pass
+
+
+def test_the_consolidation_setting_is_bounded(client):
+    """A number the UI can set has to be a number the backend accepts — the two drifting apart is
+    how a settings page ends up returning 400 for its own value."""
+    assert client.put("/api/settings", json={"integration_budget": 10}).status_code == 400
+    assert client.put("/api/settings", json={"integration_budget": 50000}).status_code == 200
+    assert client.get("/api/settings").json()["integration_budget"] == 50000

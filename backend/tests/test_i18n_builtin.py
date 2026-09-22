@@ -59,8 +59,8 @@ def test_group_templates_are_one_language_at_a_time(client) -> None:
 # ---------------------------------------------------------------- the gallery
 def test_gallery_items_are_one_language_at_a_time(client) -> None:
     en_ov, zh_ov = en(client, "/api/gallery"), zh(client, "/api/gallery")
-    assert [c["label"] for c in en_ov["categories"]] == ["Teams", "Roles", "Skills", "Prompts", "MCP"]
-    assert [c["label"] for c in zh_ov["categories"]] == ["团队", "角色", "技能", "提示词", "MCP"]
+    assert [c["label"] for c in en_ov["categories"]] == ["Teams", "Roles", "Skills", "Prompts", "Hooks", "MCP"]
+    assert [c["label"] for c in zh_ov["categories"]] == ["团队", "角色", "技能", "提示词", "钩子", "MCP"]
     assert en_ov["categories"][0]["hint"].startswith("One click builds")
     assert zh_ov["categories"][0]["hint"].startswith("一键建成群聊")
 
@@ -73,6 +73,7 @@ def test_gallery_items_are_one_language_at_a_time(client) -> None:
         ("skill:risk-check", "Risk self-check", "风险自查清单"),
         ("prompt:handoff", "Hand off to the next member", "交接给下一位"),
         ("mcp:playwright", "Browser (Playwright)", "浏览器(Playwright)"),
+        ("hook:house-style", "House style", "本群规范"),
     ]:
         assert pick(en_ov, ident)["name"] == en_name
         assert pick(zh_ov, ident)["name"] == zh_name

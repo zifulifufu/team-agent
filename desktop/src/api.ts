@@ -164,7 +164,7 @@ export interface ExternalProbe {
   live: null | { ok: boolean; reply?: string; error?: string; seconds: number; model?: string; cost_usd?: number | null };
 }
 /** An entry in the template gallery (Settings → Template gallery). kind decides what happens when you click Use. */
-export type GalleryKind = "team" | "agent" | "skill" | "prompt" | "mcp";
+export type GalleryKind = "team" | "agent" | "skill" | "prompt" | "hook" | "mcp";
 export interface GalleryMember { name: string; avatar: string; role: string }
 export interface GalleryItem {
   id: string;                        // Carries a category prefix such as team:office / agent:reviewer / skill:xxx
@@ -183,6 +183,9 @@ export interface GalleryItem {
     description?: string; scope?: string; body?: string;
     kind?: string; content?: string;
     command?: string; args?: string[]; env_keys?: string[]; note?: string;
+    // Hook templates: which events it wants and the source itself, so it can be read on the card
+    // before anything is written to the hooks directory.
+    events?: string[]; code?: string; timeout_ms?: number;
   };
 }
 export interface GalleryOverview {
@@ -412,6 +415,8 @@ export interface Settings {
   upload_max_mb: number;           // Biggest file a user may attach (any kind, a video included)
   video_frames: number;            // Stills taken from an attached video for a model that cannot watch it
   refs_budget: number;             // Characters of referenced files allowed in one prompt
+  integration_budget: number;      // Characters of task output allowed into the consolidation prompt
+  transcribe_cmd: string;          // Speech-to-text command; empty = whichever known transcriber is installed
   // Chat channels (whatsapp_*, telegram_*, wecom_*, feishu_*, dingtalk_*, slack_*) are NOT
   // listed here on purpose: the backend's channel catalogue declares every field with its
   // label, bounds and value, so /api/channels is the single source and adding a platform

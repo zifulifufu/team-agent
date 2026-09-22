@@ -283,6 +283,9 @@ DEFAULT_SETTINGS: dict = {
 # first; off = never delegate (@ hand-off only)
     "plan_mode": "auto",
     "plan_max_tasks": 8,
+    # Characters of task output allowed into the consolidation prompt. Each task keeps at least
+    # 800 of it, so a plan with many tasks is cut per task rather than total.
+    "integration_budget": 14000,
     # ---- tool calls: how many tool rounds one reply may run at most (0 = tool calls off),
 # and the timeout of a single tool (seconds)
     "tool_rounds": 4,
@@ -311,6 +314,10 @@ DEFAULT_SETTINGS: dict = {
     # with its ordinary tools. `refs_budget` bounds what referenced files may add to one prompt.
     "upload_max_mb": 128,
     "video_frames": 6,         # stills taken from an attached video, for a model that cannot watch it
+    # Speech is the one kind that needs a program, not a model: nothing is bundled, and nothing is
+    # downloaded behind the user's back. Empty means "use whichever of the known transcribers is
+    # installed"; a command here wins, with {audio} and {out} as placeholders.
+    "transcribe_cmd": "",
     "refs_budget": 24000,      # characters of referenced content per round
     # ---- video generation (MiniMax H3 and anything else speaking the same video API), off by
     # default. Not a chat model: it is reached through its own video endpoints and is gated like
