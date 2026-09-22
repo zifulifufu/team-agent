@@ -43,11 +43,15 @@ export default function WhatsAppPage() {
   }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setAllowed((settings?.whatsapp_allowed ?? []).join(", ")); }, [settings?.whatsapp_allowed]);
+  // Re-read once the public host changes: the callback URL is assembled by the backend and only
+  // read back here, so "what do I paste into Meta" has one implementation rather than two that
+  // can disagree — which is exactly how a missing path or a doubled slash gets shipped.
+  useEffect(() => { void load(); }, [load, settings?.whatsapp_public_host]);
 
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
   const on = settings.whatsapp_enabled;
   const host = settings.whatsapp_public_host.trim();
-  const url = host ? (host.includes("://") ? host : `https://${host}`) : "";
+  const url = status?.public_url ?? "";
 
   const ready: { ok: boolean; what: string }[] = [
     { ok: !!settings.whatsapp_group_id, what: t("A group chat has been chosen") },
@@ -146,7 +150,7 @@ export default function WhatsAppPage() {
       <div className="sec">{t("Getting messages delivered")}</div>
       <div className="card flush">
         <Row title={t("Callback URL")} desc={t("Paste this into the Meta console under WhatsApp → Configuration → Webhook, together with the verify token above.")}>
-          <span className={url ? "mono" : "muted"}>{url ? `${url}/hooks/whatsapp` : t("Fill in the public hostname first")}</span>
+          <span className={url ? "mono" : "muted"}>{url || (host ? t("Reading status…") : t("Fill in the public hostname first"))}</span>
         </Row>
         <Row title={t("Public hostname")} desc={t("The tunnel or server that forwards to this app — cloudflared, ngrok, or your own VPS. Meta rejects localhost and private addresses, so one is required. Restart the app after changing this.")}>
           <input className="ext-input" defaultValue={settings.whatsapp_public_host} disabled={saving} aria-label={t("Public hostname")}

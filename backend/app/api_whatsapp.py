@@ -69,10 +69,23 @@ def build_whatsapp_router(store: Any, orch: Any, hub: Any) -> APIRouter:
         return store.get_settings()
 
     def public_url(settings: dict) -> str:
-        host = str(settings.get("whatsapp_public_host") or "").strip().rstrip("/")
+        """The URL to hand to Meta, built from whatever was typed as the public host.
+
+        Four shapes all have to work, because all four are things people actually type: a bare
+        hostname, a hostname with a scheme, one with a trailing slash, and the whole callback URL
+        pasted back in. Getting it wrong is invisible until Meta's verification request never
+        arrives — the endpoint simply looks dead — so the path is always appended here rather
+        than trusted to be present, and a repeated one is removed first.
+        """
+        host = str(settings.get("whatsapp_public_host") or "").strip()
         if not host:
             return ""
-        return host if "://" in host else f"https://{host}{WEBHOOK_PATH}"
+        if "://" not in host:
+            host = f"https://{host}"
+        host = host.rstrip("/")
+        if host.endswith(WEBHOOK_PATH):
+            host = host[: -len(WEBHOOK_PATH)].rstrip("/")
+        return host + WEBHOOK_PATH
 
     async def _system(gid: str, text: str) -> None:
         try:

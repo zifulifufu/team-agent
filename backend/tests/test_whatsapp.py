@@ -123,7 +123,11 @@ def channel(tmp_path, fake_reply: str = "我看过了,建议先核对剂量。",
     gid = seed(tmp_path, **over)
     fake = FakeLLM(default=fake_reply)
     app = create_app(tmp_path / "data", completion_fn=fake)
-    with TestClient(app, base_url=f"http://{HOOK_HOST}") as cl:
+    # Talk to the app on whichever host it was configured to accept: with no public host set, the
+    # middleware only allows loopback, so a test of the empty case has to use 127.0.0.1.
+    host = str(over.get("whatsapp_public_host", HOOK_HOST) or "127.0.0.1").strip()
+    host = host.split("://")[-1].split("/")[0].split(":")[0].strip()
+    with TestClient(app, base_url=f"http://{host or '127.0.0.1'}") as cl:
         yield cl, app, gid, fake
 
 
@@ -314,6 +318,28 @@ def test_a_rejected_reply_is_recorded_rather_than_lost(tmp_path, monkeypatch):
                                      ["last_reply"] or {}).get("ok") is False)
             last = cl.get("/api/whatsapp/status").json()["counters"]["last_reply"]
             assert "24 hours" in last["detail"], "the 24-hour window has to be named as the reason"
+
+
+@pytest.mark.parametrize("typed,want", [
+    ("hook.example.com", "https://hook.example.com/hooks/whatsapp"),
+    ("hook.example.com/", "https://hook.example.com/hooks/whatsapp"),
+    ("  hook.example.com  ", "https://hook.example.com/hooks/whatsapp"),
+    ("https://hook.example.com", "https://hook.example.com/hooks/whatsapp"),
+    ("https://hook.example.com/", "https://hook.example.com/hooks/whatsapp"),
+    ("http://a.example.com/base/", "http://a.example.com/base/hooks/whatsapp"),
+    ("https://hook.example.com/hooks/whatsapp", "https://hook.example.com/hooks/whatsapp"),
+    ("https://hook.example.com/hooks/whatsapp/", "https://hook.example.com/hooks/whatsapp"),
+    ("", ""),
+])
+def test_the_callback_url_is_built_from_whatever_was_typed(tmp_path, typed, want):
+    """Every shape in this list is something a real person types, and a wrong URL here stays
+    invisible until Meta's verification request never arrives — the endpoint just looks dead.
+
+    Regression: a scheme-bearing value used to be returned as-is, so "https://host/" produced
+    "https://host" with the whole path missing, and the page appended the path a second time.
+    """
+    with channel(tmp_path, whatsapp_public_host=typed) as (cl, _app, _gid, _fake):
+        assert cl.get("/api/whatsapp/status").json()["public_url"] == want
 
 
 def test_the_status_reports_what_arrived_and_what_was_ignored(tmp_path):
