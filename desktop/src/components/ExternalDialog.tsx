@@ -243,6 +243,11 @@ export default function ExternalDialog(props: Props) {
                   )}
                 </div>
 
+                <label className="check ext-native">
+                  <input type="checkbox" checked={cfg.native} onChange={(e) => set({ native: e.target.checked })} />
+                  {t("Use the application's own configuration (load its MCP connectors, no turn limit, and keep one continuing session so it remembers its earlier turns) — off by default, because this is what makes its answers match running it by hand, and it is also what gives it the reach it has there")}
+                </label>
+
                 <label className="field">
                   <span>{t("Working directory (the scope it may read and write within; empty = an empty folder created for it under this app's data directory)")}</span>
                   <span className="ext-dir">
@@ -250,11 +255,6 @@ export default function ExternalDialog(props: Props) {
                     {pick && <button type="button" className="btn small" onClick={async () => { const p = await pick(); if (p) set({ cwd: p }); }}><FolderOpen size={13} /> {t("Choose…")}</button>}
                   </span>
                   {cfg.level !== "read" && !cfg.cwd.trim() && <span className="muted small">{t("It is set to {level} right now: it can only touch things inside its own empty folder. To let it work on your project, pick a specific project folder (not the root, and not your whole home directory).", { level: cfg.level === "edit" ? t("Edit files") : t("Full") })}</span>}
-                </label>
-
-                <label className="check ext-native">
-                  <input type="checkbox" checked={cfg.native} onChange={(e) => set({ native: e.target.checked })} />
-                  {t("Use the application's own configuration (load its MCP connectors, no turn limit, and keep one continuing session so it remembers its earlier turns) — off by default, because this is what makes its answers match running it by hand, and it is also what gives it the reach it has there")}
                 </label>
 
                 <label className="check">
