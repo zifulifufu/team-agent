@@ -23,6 +23,7 @@ import os
 import re
 import signal
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import i18n
@@ -97,6 +98,42 @@ def scratch_dir(workspace: Path, name: str) -> tuple[Path | None, str]:
     return target, ""
 
 
+def safe_slug(text: str, fallback: str) -> str:
+    """A folder name for a task, from its title.
+
+    CJK is kept — the user's own words are the best label — and an id is appended by the caller,
+    so two tasks with the same title never share a folder.
+    """
+    cleaned = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "-", (text or "").strip()).strip("-._")
+    cleaned = cleaned[:40] or fallback
+    return f"{cleaned}-{fallback}"
+
+
+def make_dir(workspace: Path, target: Path) -> bool:
+    """Create a directory inside the workspace. Refuses to create it *through* a link.
+
+    Returns whether it created anything (False when it was already there), and raises on a path
+    that leaves the workspace — the caller has usually checked already, this is the second look
+    that every other write in this module also takes.
+    """
+    if not inside(workspace, target):
+        raise ValueError(f"outside the workspace: {target}")
+    parts = [p for p in target.relative_to(workspace).parts if p not in ("", ".")]
+    walked = workspace
+    for name in parts:
+        walked = walked / name
+        if walked.is_symlink():
+            raise OSError(f"{walked} is a symlink")
+        if walked.is_dir():
+            continue
+        if walked.exists():
+            raise OSError(f"{walked} is a file, not a folder")
+        walked.mkdir()
+    if not inside(workspace, target):
+        raise ValueError(f"resolves outside the workspace: {target}")
+    return bool(parts)
+
+
 def write_exclusive(path: Path, data: str) -> None:
     """Create a file without following a link that already sits at that name.
 
@@ -133,6 +170,26 @@ def workspace_dir(data_dir: Path, settings: dict, gid: str = "") -> Path:
     if not inside(base_dir(data_dir, settings), base):
         raise ValueError(f"workspace escapes its base: {base}")
     return base
+
+
+def ensure_workspaces(data_dir: Path, settings: dict, group_ids: Iterable[str]) -> int:
+    """Give every group a workspace; returns how many were missing.
+
+    Groups used to get their folder only when a member first ran code, so most had none and "the
+    group's workspace" was a promise the app never kept. Called when a group is created, and once
+    at startup for the groups that already existed (the same shape as the other backfills).
+    """
+    made = 0
+    for gid in group_ids:
+        try:
+            if not safe_gid(gid):
+                continue
+            if not workspace_path(data_dir, settings, gid).is_dir():
+                workspace_dir(data_dir, settings, gid)
+                made += 1
+        except (OSError, ValueError):
+            continue
+    return made
 
 
 def resolve_cwd(workspace: Path, sub: str) -> tuple[Path | None, str]:

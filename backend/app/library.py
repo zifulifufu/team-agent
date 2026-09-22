@@ -120,10 +120,81 @@ def extract_text(filename: str, data: bytes) -> tuple[str, str]:
             for row in t.rows:
                 parts.append(" | ".join(c.text.strip() for c in row.cells))
         return "docx", "\n".join(parts)
-    raise LibraryError(i18n.pick_now(f"{ext} files are not supported yet (convert to txt / md / pdf / docx first)", f"暂不支持 {ext} 格式(可以先转成 txt / md / pdf / docx)"))
+    if ext == ".xlsx":
+        return "xlsx", _xlsx_text(data)
+    if ext == ".pptx":
+        return "pptx", _pptx_text(data)
+    if ext in (".xls", ".ppt"):
+        raise LibraryError(i18n.pick_now(
+            f"The old binary format ({ext}) cannot be read; save it as {ext}x (or csv) first",
+            f"旧版二进制格式({ext})读不了,请先另存为 {ext}x(或 csv)格式"))
+    raise LibraryError(i18n.pick_now(f"{ext} files are not supported yet (convert to txt / md / pdf / docx / xlsx / pptx first)", f"暂不支持 {ext} 格式(可以先转成 txt / md / pdf / docx / xlsx / pptx)"))
 
 
-DIR_EXT = TEXT_EXT | {".html", ".htm", ".pdf", ".docx"}
+def _xlsx_text(data: bytes) -> str:
+    """Every sheet as rows. Capped per sheet: a workbook can hold a million rows, and the model
+    only ever sees a clipped prefix anyway — better a readable first page than a 30MB string."""
+    try:
+        import openpyxl
+    except ImportError:
+        raise LibraryError(i18n.pick_now("Reading xlsx files needs openpyxl: pip install openpyxl", "读取 xlsx 需要安装 openpyxl:pip install openpyxl")) from None
+    try:
+        book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise LibraryError(i18n.pick_now(f"Could not parse the workbook: {e}", f"表格解析失败:{e}")) from None
+    out: list[str] = []
+    try:
+        for sheet in book.worksheets:
+            out.append(f"## {sheet.title}")
+            rows = 0
+            for row in sheet.iter_rows(values_only=True):
+                cells = ["" if c is None else str(c) for c in row]
+                while cells and not cells[-1]:
+                    cells.pop()
+                if cells:
+                    out.append(" | ".join(cells))
+                    rows += 1
+                if rows >= XLSX_MAX_ROWS:
+                    out.append(i18n.pick_now(f"(first {XLSX_MAX_ROWS} rows only)", f"(只取了前 {XLSX_MAX_ROWS} 行)"))
+                    break
+    finally:
+        book.close()
+    text = "\n".join(out).strip()
+    if not text:
+        raise LibraryError(i18n.pick_now("This workbook has no readable cells", "这个表格里没有可读的内容"))
+    return text
+
+
+def _pptx_text(data: bytes) -> str:
+    """Each slide's body text, then its tables. Speaker notes are included: they often carry the
+    actual argument when the slide itself is one line."""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        raise LibraryError(i18n.pick_now("Reading pptx files needs python-pptx: pip install python-pptx", "读取 pptx 需要安装 python-pptx:pip install python-pptx")) from None
+    try:
+        deck = Presentation(io.BytesIO(data))
+    except Exception as e:  # noqa: BLE001
+        raise LibraryError(i18n.pick_now(f"Could not parse the presentation: {e}", f"演示文稿解析失败:{e}")) from None
+    out: list[str] = []
+    for i, slide in enumerate(deck.slides, 1):
+        out.append(f"## {i}")
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                out.append(shape.text_frame.text.strip())
+            if getattr(shape, "has_table", False) and shape.has_table:
+                for row in shape.table.rows:
+                    out.append(" | ".join(c.text.strip() for c in row.cells))
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
+            out.append(i18n.pick_now("(notes) ", "(备注) ") + slide.notes_slide.notes_text_frame.text.strip())
+    text = "\n".join(out).strip()
+    if not text:
+        raise LibraryError(i18n.pick_now("This presentation has no readable text", "这个演示文稿里没有可读的文字"))
+    return text
+
+
+XLSX_MAX_ROWS = 500
+DIR_EXT = TEXT_EXT | {".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx"}
 MAX_DIR_FILES = 300
 MAX_URL_BYTES = 5 * 1024 * 1024
 

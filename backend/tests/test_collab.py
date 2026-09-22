@@ -387,10 +387,10 @@ async def test_hash_refs_inline_document_text(store, make_router):
     orch.library.add_text("差旅制度", "出差住宿标准:一线城市每晚不超过 600 元。", kb_id=orch.library.shared_kb()["id"])
     await orch.handle_user_message(g["id"], "@Copywriter 按 #差旅制度 总结一下", Collector())
     s = fake.calls[0][1][0]["content"]
-    assert "[Documents the user referenced]" in s and "不超过 600 元" in s
+    assert "[What the user referenced]" in s and "不超过 600 元" in s
     fake.calls.clear()
     await orch.handle_user_message(g["id"], "@Copywriter 按 #不存在的文档 总结", Collector())
-    assert "[Documents the user referenced]" not in fake.calls[0][1][0]["content"]
+    assert "[What the user referenced]" not in fake.calls[0][1][0]["content"]
 
 
 async def test_memory_injected_scoped_and_toggleable_and_saved_by_tool(store, make_router):

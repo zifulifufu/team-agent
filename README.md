@@ -84,10 +84,12 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Area | What you get |
 | --- | --- |
 | Group chat | Members, a host, `@`-hand-off, role statements, and a live task board |
+| Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
+| Workspace | Every group has one, created with the group; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
 | Tools | Text-protocol calls (max 3 per reply), five built-ins, Python plugins, MCP over stdio / SSE / HTTP |
-| Library | txt, md, csv, json, html, pdf, docx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references |
+| Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
 | Template gallery | 51 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
@@ -137,6 +139,44 @@ Four things are enforced rather than documented, because a hook file gets copied
   through and holds back writes and outgoing messages.
 - **It can be run once from the page** with a sample payload — installed and working are different
   claims, and the page shows the second one.
+
+## Files, the workspace, and pictures
+
+Every group has a workspace, created when the group is created. It is the one directory a member's
+tool calls may use as their working directory, and it is where everything a group produces lands —
+including one folder per task (`tasks/<task>/`), so two tasks running in one plan do not write over
+each other. The workspace button in the chat header lists what is in there and downloads it.
+
+Attachments are any kind of file. The kind is decided by the file's own bytes, not by its name:
+
+| Kind | What the members get |
+| --- | --- |
+| Documents (pdf, docx, xlsx, pptx, txt, md, csv, json, html) | The text, extracted on this machine when the file is uploaded. **No vision model is involved**, so this works with any model. |
+| Images | Given to the model directly when the answering member's model can see; otherwise described once by the *vision model*, and the description is what members read. |
+| Video | Duration and resolution, plus a few evenly spaced stills (ffmpeg), treated like images. The audio track is not transcribed. |
+| Audio, anything else | Named with its size, and available in the workspace for a member to open with its own tools. |
+
+Two switches decide where a picture may go, and they are separate on purpose: **cloud calls** under
+Permissions & control (`external_calls_enabled`), and **cloud vision** (`vision_cloud`). With cloud
+vision off, a picture is looked at by a local vision model if one exists, and never leaves the
+machine. If no model here can look at a picture, the members are told exactly that — they say they
+cannot see it instead of inventing content, and the settings page tells you what to install
+(`ollama pull qwen2.5vl:3b` is a good local choice).
+
+Referencing something with `@` in the composer offers members, files, folders and documents, and
+inserts a token the backend understands:
+
+```
+@file:reports/q3.xlsx     one file from the workspace, inlined (text clipped to the budget)
+@dir:reports/             a folder listing with the first lines of each file
+@msg:<id>                 an earlier message of this conversation, quoted whole
+@doc:<id>                 a document from a knowledge base this group can reach
+#title                    the same thing by title, the older shorthand
+```
+
+Paths are resolved inside the group's workspace and re-checked after resolving links, so a
+reference cannot reach outside it. How much referenced content one prompt may carry is
+`refs_budget` under Settings → General.
 
 ## External agents
 

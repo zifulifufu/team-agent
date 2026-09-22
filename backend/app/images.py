@@ -96,10 +96,16 @@ def read(data_dir: Path, meta: dict) -> tuple[str, bytes] | None:
 
 
 def sweep(store, data_dir: Path, days: int = 7) -> int:
-    """Drop uploads the user never sent. Returns how many files went."""
+    """Drop uploads the user never sent. Returns how many files went.
+
+    Files uploaded since attachments became general live in the group's workspace, older ones
+    still under `<data dir>/attachments/`; both are asked for their real location.
+    """
+    from . import attachments
+
     gone = 0
     for row in store.stale_attachments(time.time() - days * 86400):
-        f = find_file(data_dir, row["id"])
+        f = attachments.path_for_row(store, row)
         if f:
             try:
                 f.unlink()

@@ -1,10 +1,11 @@
-import type { Settings } from "../api";
+import { useEffect, useState } from "react";
+import { api, type Settings, type VisionStatus } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import { Switch } from "../ui";
 import { NumInput, Row, useSettingsSaver } from "./rows";
 
-type NumKey = "history_clip" | "tool_output_limit" | "history_limit" | "request_timeout" | "circuit_threshold" | "circuit_cooldown" | "memory_top_k" | "library_top_k";
+type NumKey = "history_clip" | "tool_output_limit" | "history_limit" | "request_timeout" | "circuit_threshold" | "circuit_cooldown" | "memory_top_k" | "library_top_k" | "upload_max_mb" | "video_frames" | "refs_budget";
 /** Bilingual pairs, not `t()` calls: these tables are evaluated at module level, before the i18n provider mounts. */
 interface NumRow { key: NumKey; title: string; titleZh: string; desc: string; descZh: string; min: number; max: number; unit: string; unitZh: string }
 
@@ -18,6 +19,11 @@ const CTX_ROWS: NumRow[] = [
   { key: "history_clip", title: "Most kept of one history message", titleZh: "单条历史消息最多带入", desc: "When an older message is too long, keep its beginning and end and drop the middle, so one long text cannot fill the context. The newest message is untouched.", descZh: "过去的某条消息太长时,只保留开头和结尾、省掉中间,防止一篇长文占满上下文。最新的一条不受影响。", min: 200, max: 20000, unit: "chars", unitZh: "字" },
   { key: "tool_output_limit", title: "Most tool output fed back", titleZh: "工具结果最多回填", desc: "When a tool (search, web fetch, …) returns too much, cut it to this many characters before feeding it back to the model.", descZh: "工具(检索、抓取网页等)返回的内容太长时,回填给模型前截到这么多字。", min: 500, max: 50000, unit: "chars", unitZh: "字" },
 ];
+const FILE_ROWS: NumRow[] = [
+  { key: "upload_max_mb", title: "Biggest file a member may attach", titleZh: "单个附件大小上限", desc: "Any kind of file can be attached: a screenshot, a PDF, a spreadsheet, a video, an archive. Documents are read on this machine, so no model has to be able to see them.", descZh: "任何文件都能作为附件:截图、PDF、表格、视频、压缩包。文档在本机直接读取内容,不需要模型「看图」。", min: 1, max: 1024, unit: "MB", unitZh: "MB" },
+  { key: "video_frames", title: "Stills taken from a video", titleZh: "从视频里抽几帧", desc: "A model that cannot watch a video is shown this many evenly spaced frames instead. Every frame costs context, so a few go a long way.", descZh: "看不了视频的模型会收到这么多均匀抽取的画面。每一帧都要占上下文,少抽几帧通常就够。", min: 1, max: 12, unit: "", unitZh: "帧" },
+  { key: "refs_budget", title: "How much referenced content one prompt may add", titleZh: "一次引用最多带入多少内容", desc: "Files, folders, earlier messages and documents the user referred to are inlined up to this many characters in total. Anything past it says it was cut, and the member can read the file itself.", descZh: "用户 @ 引用的文件、文件夹、既往消息与资料,合计最多带入这么多字。超出部分会注明已截断,成员可以直接去读原文件。", min: 1000, max: 200000, unit: "chars", unitZh: "字" },
+];
 const MEM_ROWS: NumRow[] = [
   { key: "memory_top_k", title: "Memories to include each time", titleZh: "每次带入的记忆条数", desc: "Before replying, take up to this many of the most relevant memories into the prompt. 0 means none.", descZh: "回复前按相关度取最多这么多条记忆放进提示词。0 表示不带入。", min: 0, max: 20, unit: "", unitZh: "条" },
   { key: "library_top_k", title: "Library passages returned per search", titleZh: "资料库每次检索返回的片段数", desc: "How many passages a member gets back at most when searching the library.", descZh: "成员检索资料库时最多返回几段。", min: 1, max: 10, unit: "", unitZh: "段" },
@@ -25,9 +31,17 @@ const MEM_ROWS: NumRow[] = [
 
 export default function GeneralPage() {
   const { t, pick } = useI18n();
-  const { settings } = useData();
+  const { settings, models } = useData();
   const { set, err } = useSettingsSaver();
+  const [vision, setVision] = useState<VisionStatus | null>(null);
+  useEffect(() => { void api.vision().then(setVision).catch(() => undefined); }, [settings?.vision_model_id, settings?.vision_cloud]);
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
+
+  const visionText = !vision?.model_id
+    ? vision?.blocked_cloud
+      ? t("A model here can see, but sending images to a cloud model is switched off (see Permissions & control).")
+      : t("No model here can look at images. Pull a local vision model in Ollama (for example `ollama pull qwen2.5vl:3b`) and pick it above, or connect a cloud provider and allow cloud vision.")
+    : t("Attached pictures and video frames are looked at by this model; members whose own model cannot see get its description.");
 
   const numRows = (rows: NumRow[]) =>
     rows.map((r) => {
@@ -59,6 +73,23 @@ export default function GeneralPage() {
           <Switch checked={settings.memory_auto_extract} label={t("Tidy up memories after a group chat")} onChange={(v) => void set({ memory_auto_extract: v })} />
         </Row>
         {numRows(MEM_ROWS)}
+      </div>
+
+      <div className="sec">{t("Files in a group chat")}</div>
+      <div className="card flush">
+        {numRows(FILE_ROWS)}
+        <Row title={t("Which model looks at pictures")} desc={t("Attached images and video frames go to a model that can actually see them. Members whose own model cannot look get a description from this one instead — so a spreadsheet, a PDF or a picture all reach every member. Leave it on automatic to use any usable vision model, local first.", { name: vision?.model_name || "" })}>
+          <select className="pm-text" value={settings.vision_model_id} aria-label={t("Which model looks at pictures")}
+            onChange={(e) => void set({ vision_model_id: e.target.value })}>
+            <option value="">{t("Automatic (local first)")}</option>
+            {models.filter((m) => m.enabled).map((m) => <option key={m.id} value={m.id}>{m.display_name || m.model_name}</option>)}
+          </select>
+        </Row>
+        <Row title={t("Vision model")} desc={visionText}>
+          <span className={"chip" + (vision?.model_id ? "" : " warn")}>
+            {vision?.model_id ? `${vision.model_name}${vision.is_local ? ` · ${t("local")}` : ` · ${t("cloud")}`}` : t("none available")}
+          </span>
+        </Row>
       </div>
     </div>
   );

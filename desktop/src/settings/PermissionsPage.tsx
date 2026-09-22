@@ -181,7 +181,7 @@ export default function PermissionsPage({ onTab }: PageProps) {
 
       <div className="sec">{t("Images in the group chat")}</div>
       <div className="card flush">
-        <Row title={t("Send attached images to cloud models")} desc={t("Off by default, and separate from allowing outbound calls on purpose: sending text off this machine and sending a picture you attached are different decisions. With it off, only local models that can look at images receive them — every other member is told an image is there that it cannot see, and says so instead of guessing. A message never carries more than {n} images; PNG, JPEG, GIF and WebP up to {mb} MB each.", { n: 10, mb: settings.vision_max_mb })}>
+        <Row title={t("Send attached images to cloud models")} desc={t("Off by default, and separate from allowing outbound calls on purpose: sending text off this machine and sending a picture you attached are different decisions. With it off, only local models that can look at images receive them, and where none can, a local vision model is asked to describe the picture instead — so the member still gets an answer without the picture leaving the machine. Pictures over {mb} MB are shrunk before they are sent.", { mb: settings.vision_max_mb })}>
           <Switch checked={settings.vision_cloud} label={t("Send attached images to cloud models")} onChange={(v) => void set({ vision_cloud: v })} />
         </Row>
       </div>

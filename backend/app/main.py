@@ -29,7 +29,10 @@ from .api_channels import build_channels
 from .api_hooks import build_hooks_router
 from .api_import import build_import_router
 from .approvals import Approvals
+from . import attachments
+from .attachments import MAX_PER_MESSAGE as MAX_ATTACHMENTS
 from . import channels
+from . import coderun
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
 from .hooks import HookManager, ensure_example_hooks
@@ -124,8 +127,11 @@ class MemberIn(BaseModel):
 
 class MessageIn(BaseModel):
     text: str
-    # Ids returned by POST /api/groups/{gid}/attachments. A message may carry images with no
-    # text at all ("have a look at this"), but not the other way round.
+    # Ids returned by POST /api/groups/{gid}/attachments: any kind of file, not only images. A
+    # message may carry files with no text at all ("have a look at this"), but not the reverse.
+    # `images` is the name this field had when attachments were images only; kept so an older
+    # client (and a replay of an older request) still lands somewhere sensible.
+    attachments: list[str] = []
     images: list[str] = []
 
 
@@ -236,6 +242,10 @@ def create_app(
     # rather than as `updater.…`: `updater` is a local variable further down this function.
     backfill_notice_languages(store)
     drop_stale_check_snapshot(store)
+    # Every group has a workspace. Groups made before this existed get theirs now, so a
+    # member asked to "put it in the workspace" always has somewhere to put it.
+    coderun.ensure_workspaces(store.data_dir, store.get_settings(),
+                              [g["id"] for g in store.list_groups()])
     router = ModelRouter(store, completion_fn)
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
@@ -351,18 +361,19 @@ def create_app(
             raise HTTPException(404, i18n.pick_now(f"{what} not found", f"{what}不存在"))
         return x
 
-    def images_for(gid: str, ids: list[str]) -> list[dict]:
+    def files_for(gid: str, ids: list[str]) -> list[dict]:
         """Descriptors for the attachment ids a message references.
 
         An id belonging to another group, or one whose file has gone, is dropped rather than
-        trusted: the client is not the authority on what an image is or where it came from.
+        trusted: the client is not the authority on what a file is or where it came from.
         """
         out: list[dict] = []
-        for aid in list(dict.fromkeys(ids))[:10]:          # a message carries at most ten
+        for aid in list(dict.fromkeys(ids))[:MAX_ATTACHMENTS]:        # a message carries a limited number
             row = store.get_attachment(aid)
-            if not row or row["group_id"] != gid or not images.find_file(store.data_dir, aid):
+            if not row or row["group_id"] != gid or not attachments.path_for_row(store, row):
                 continue
-            out.append({"id": aid, "name": row["name"], "mime": row["mime"], "bytes": row["bytes"]})
+            out.append({"id": aid, "name": row["name"], "mime": row["mime"], "bytes": row["bytes"],
+                        "kind": row["kind"] or "image"})
         return out
 
     # -------------------------------------------------------------- misc
@@ -389,6 +400,8 @@ def create_app(
               "library_top_k": (1, 10), "max_hops": (1, 30), "history_limit": (1, 200), "history_clip": (200, 20000), "tool_output_limit": (500, 50000), "update_interval_hours": (1, 168),
               "perm_timeout": (10, 600), "request_timeout": (5, 600), "circuit_threshold": (1, 10), "circuit_cooldown": (5, 600),
               "code_timeout": (5, 600), "vision_max_mb": (1, 64),
+              # files: an upload may be a video, and a referenced folder can be worth a lot of text
+              "upload_max_mb": (1, 1024), "video_frames": (1, 12), "refs_budget": (1000, 200000),
               # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
               "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
               # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
@@ -709,8 +722,15 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         if any(i not in known for i in [*body.member_ids, *([body.host_agent_id] if body.host_agent_id else [])]):
             raise HTTPException(400, i18n.pick_now("A member or the host does not exist", "成员或群主不存在"))
         check_host(body.host_agent_id)
-        return templates.group_view(
-            store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt))
+        created = store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt)
+        # The workspace is made with the group, not when someone first runs code: a group that has
+        # a workspace only sometimes is a group where "put the file in your workspace" is a
+        # promise the app cannot keep.
+        try:
+            coderun.workspace_dir(store.data_dir, store.get_settings(), created["id"])
+        except (OSError, ValueError) as e:  # noqa: BLE001 — a group without a folder is still usable
+            print("could not create the group workspace:", e)
+        return templates.group_view(created)
 
     def check_host(host_id: str | None) -> None:
         host = store.get_agent(host_id) if host_id else None
@@ -759,7 +779,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     async def send_message(gid: str, body: MessageIn) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         text = body.text.strip()
-        picked = images_for(gid, body.images)
+        picked = files_for(gid, [*body.attachments, *body.images])
         if not text and not picked:
             raise HTTPException(400, i18n.pick_now("A message cannot be empty", "消息不能为空"))
 
@@ -768,7 +788,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
 
         async def run() -> None:
             try:
-                await orch.handle_user_message(gid, text, emit, images=picked)
+                await orch.handle_user_message(gid, text, emit, files=picked)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — what went wrong has to be visible in the UI, not just printed in the background

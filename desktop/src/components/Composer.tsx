@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowUp, AtSign, Cloud, ImagePlus, Lock, Square, X } from "lucide-react";
-import { api, type Attachment } from "../api";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowUp, AtSign, Cloud, FileText, FolderOpen, Lock, Paperclip, Square, X } from "lucide-react";
+import { api, type Attachment, type WorkspaceFile } from "../api";
 import { useI18n } from "../i18n";
 import MessageImage from "./MessageImage";
+import "../styles/files.css";
 
 interface Mentionable {
   name: string;
@@ -11,6 +12,8 @@ interface Mentionable {
   /** Text to insert for this entry. Defaults to "@" + name; the "everyone" entry overrides it because
    *  the backend accepts both "@all" and "@所有人" and we want the one that matches the UI language. */
   insert?: string;
+  /** Which band of the picker this belongs to: members, files, folders, documents. */
+  group?: "member" | "file" | "folder" | "document";
 }
 
 interface Props {
@@ -30,9 +33,9 @@ interface Props {
   error?: string;
   /** Extra control at the bottom-left of the box (the home page uses it for "send to which group") */
   extra?: ReactNode;
-  /** Images already uploaded and waiting to be sent with the next message */
-  images?: Attachment[];
-  onImages?: (next: Attachment[]) => void;
+  /** Files already uploaded and waiting to be sent with the next message */
+  files?: Attachment[];
+  onFiles?: (next: Attachment[]) => void;
   /** Where uploads go. Without a group there is nothing to attach to, so the button stays hidden. */
   groupId?: string;
 }
@@ -41,48 +44,80 @@ interface Props {
 export default function Composer(p: Props) {
   const { t, lang } = useI18n();
   const [mention, setMention] = useState<{ q: string; idx: number } | null>(null);
-  const [imgErr, setImgErr] = useState("");
+  const [err, setErr] = useState("");
   const [uploading, setUploading] = useState(0);
   const [over, setOver] = useState(false);
+  const [tree, setTree] = useState<WorkspaceFile[]>([]);
+  const [docs, setDocs] = useState<{ id: string; title: string }[]>([]);
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const images = p.images ?? [];
-  const canAttach = !!p.groupId && !!p.onImages;
+  const files = p.files ?? [];
+  const canAttach = !!p.groupId && !!p.onFiles;
 
   /** Upload picks, one file at a time. A rejected file reports and does not block the others. */
-  const addFiles = async (files: File[]) => {
-    if (!canAttach || !files.length) return;
-    setImgErr("");
-    setUploading((n) => n + files.length);
-    for (const file of files.slice(0, 10)) {
+  const addFiles = async (picked: File[]) => {
+    if (!canAttach || !picked.length) return;
+    setErr("");
+    setUploading((n) => n + picked.length);
+    for (const file of picked.slice(0, 20)) {
       try {
         const got = await api.uploadImage(p.groupId!, file);
-        p.onImages!([...(p.images ?? []), got]);
+        p.onFiles!([...(p.files ?? []), got]);
       } catch (e) {
-        setImgErr((e as Error).message);
+        setErr((e as Error).message);
       } finally {
         setUploading((n) => n - 1);
       }
     }
   };
 
-  const removeImage = (id: string) => {
-    p.onImages?.(images.filter((i) => i.id !== id));
+  const removeFile = (id: string) => {
+    p.onFiles?.(files.filter((i) => i.id !== id));
     void api.dropImage(id).catch(() => undefined);      // best effort: the sweep gets it later
   };
 
-  const sendable = !p.disabled && !p.busy && (!!p.value.trim() || images.length > 0);
+  const sendable = !p.disabled && !p.busy && (!!p.value.trim() || files.length > 0);
+
+  /** What the @ picker can offer: members, then the files and folders of this group's workspace,
+   *  then the documents its knowledge bases hold. Loaded when the picker opens (and only then) —
+   *  a chat that never references a file pays nothing for the tree. */
+  useEffect(() => {
+    if (!mention || !p.groupId) return;
+    let live = true;
+    void api.workspace(p.groupId).then((w) => { if (live) setTree(w.files); }).catch(() => undefined);
+    void api.library({ group: p.groupId }).then((r) => {
+      if (live) setDocs(r.docs.map((d) => ({ id: d.id, title: d.title })));
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [mention !== null, p.groupId]);      // eslint-disable-line react-hooks/exhaustive-deps
 
   const candidates = useMemo(() => {
     if (!mention) return [];
-    const all: Mentionable = {
+    const q = mention.q.toLowerCase();
+    const hit = (s: string) => !q || s.toLowerCase().includes(q);
+    const everyone: Mentionable = {
       name: t("Everyone"),
       insert: lang === "zh" ? "@所有人" : "@all",
       avatar: "👥",
       role: t("Everyone speaks in turn"),
+      group: "member",
     };
-    return [all, ...p.members].filter((a) => a.name.includes(mention.q) || a.name.toLowerCase().includes(mention.q.toLowerCase()));
-  }, [mention, p.members, t, lang]);
+    const people = [everyone, ...p.members].filter((a) => hit(a.name)).map((m) => ({ ...m, group: "member" as const }));
+    const folders = new Set(tree.map((f) => f.folder).filter(Boolean));
+    const folderEntries: Mentionable[] = [...folders]
+      .filter(hit)
+      .slice(0, 6)
+      .map((f) => ({ name: `${f}/`, insert: `@dir:${f} `, avatar: "", role: t("folder"), group: "folder" as const }));
+    const fileEntries: Mentionable[] = tree
+      .filter((f) => hit(f.path))
+      .slice(0, 12)
+      .map((f) => ({ name: f.path, insert: `@file:${f.path} `, avatar: "", role: f.kind, group: "file" as const }));
+    const docEntries: Mentionable[] = docs
+      .filter((d) => hit(d.title))
+      .slice(0, 8)
+      .map((d) => ({ name: d.title, insert: `@doc:${d.id} `, avatar: "", role: t("document"), group: "document" as const }));
+    return [...people, ...folderEntries, ...fileEntries, ...docEntries];
+  }, [mention, p.members, tree, docs, t, lang]);
 
   const onInput = (v: string) => {
     p.onChange(v);
@@ -132,22 +167,22 @@ export default function Composer(p: Props) {
   };
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = [...e.clipboardData.items]
-      .filter((i) => i.kind === "file" && i.type.startsWith("image/"))
+    const picked = [...e.clipboardData.items]
+      .filter((i) => i.kind === "file")
       .map((i) => i.getAsFile())
       .filter((f): f is File => !!f);
-    if (files.length) {
-      e.preventDefault();                                // a screenshot pastes as an image, not as a filename
-      void addFiles(files);
+    if (picked.length) {
+      e.preventDefault();                                // a screenshot pastes as a file, not as a filename
+      void addFiles(picked);
     }
   };
 
   const onDrop = (e: React.DragEvent) => {
-    const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
+    const picked = [...e.dataTransfer.files];
     setOver(false);
-    if (files.length) {
+    if (picked.length) {
       e.preventDefault();
-      void addFiles(files);
+      void addFiles(picked);
     }
   };
 
@@ -156,25 +191,35 @@ export default function Composer(p: Props) {
       {mention && candidates.length > 0 && (
         <div className="mention-pop" role="listbox">
           {candidates.map((c, i) => (
-            <button key={c.name} role="option" aria-selected={i === mention.idx} className={i === mention.idx ? "on" : ""} onMouseDown={(e) => { e.preventDefault(); chooseMention(c); }}>
-              <span className="mp-ava">{c.avatar}</span>
+            <button key={`${c.group}-${c.name}`} role="option" aria-selected={i === mention.idx}
+              className={(i === mention.idx ? "on " : "") + "mp-" + (c.group ?? "member")}
+              onMouseDown={(e) => { e.preventDefault(); chooseMention(c); }}>
+              <span className="mp-ava">{c.avatar || (c.group === "folder" ? <FolderOpen size={13} /> : <FileText size={13} />)}</span>
               <b>{c.name}</b>
               <span className="muted">{c.role}</span>
             </button>
           ))}
         </div>
       )}
-      {(p.error || imgErr) && <div className="err composer-err">{p.error || imgErr}</div>}
+      {(p.error || err) && <div className="err composer-err">{p.error || err}</div>}
       <div className={"composer-box" + (over ? " over" : "")}
         onDragOver={(e) => { if (canAttach) { e.preventDefault(); setOver(true); } }}
         onDragLeave={() => setOver(false)}
         onDrop={onDrop}>
-        {(images.length > 0 || uploading > 0) && (
+        {(files.length > 0 || uploading > 0) && (
           <div className="composer-imgs">
-            {images.map((im) => (
-              <span key={im.id} className="ci-thumb">
-                <MessageImage id={im.id} name={im.name} alt={im.name} />
-                <button className="ci-x" title={t("Remove this image")} aria-label={t("Remove {name}", { name: im.name })} onClick={() => removeImage(im.id)}>
+            {files.map((f) => (
+              <span key={f.id} className={"ci-thumb ci-" + (f.kind ?? "image")}>
+                {!f.kind || f.kind === "image"
+                  ? <MessageImage id={f.id} name={f.name} alt={f.name} />
+                  : (
+                    <span className="ci-file">
+                      <FileText size={15} />
+                      <span className="ci-name" title={f.name}>{f.name}</span>
+                      <span className="ci-size">{humanSize(f.bytes)}</span>
+                    </span>
+                  )}
+                <button className="ci-x" title={t("Remove this file")} aria-label={t("Remove {name}", { name: f.name })} onClick={() => removeFile(f.id)}>
                   <X size={11} />
                 </button>
               </span>
@@ -194,15 +239,15 @@ export default function Composer(p: Props) {
           aria-label={t("Message input")}
         />
         <div className="composer-bar">
-          <button className="round-btn" title={t("@-mention a member")} aria-label={t("@-mention a member")} onClick={insertAt}>
+          <button className="round-btn" title={t("Mention a member, a file, a folder or a document")} aria-label={t("@-mention")} onClick={insertAt}>
             <AtSign size={16} />
           </button>
           {canAttach && (
             <>
-              <button className="round-btn" title={t("Attach an image")} aria-label={t("Attach an image")} disabled={p.busy || uploading > 0} onClick={() => fileRef.current?.click()}>
-                <ImagePlus size={16} />
+              <button className="round-btn" title={t("Add a file, image or video")} aria-label={t("Add a file")} disabled={p.busy || uploading > 0} onClick={() => fileRef.current?.click()}>
+                <Paperclip size={16} />
               </button>
-              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden
+              <input ref={fileRef} type="file" multiple hidden
                 onChange={(e) => { const picked = [...(e.target.files ?? [])]; e.target.value = ""; void addFiles(picked); }} />
             </>
           )}
@@ -227,4 +272,11 @@ export default function Composer(p: Props) {
       </div>
     </div>
   );
+}
+
+export function humanSize(n: number): string {
+  for (const [unit, size] of [["GB", 1024 ** 3], ["MB", 1024 ** 2], ["KB", 1024]] as const) {
+    if (n >= size) return `${(n / size).toFixed(1)} ${unit}`;
+  }
+  return `${n} B`;
 }

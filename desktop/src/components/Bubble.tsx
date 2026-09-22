@@ -1,11 +1,11 @@
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import MessageImage from "./MessageImage";
+import MessageFile from "./MessageFile";
 import MessageVideo from "./MessageVideo";
 import MessageImageGen from "./MessageImageGen";
 import remarkGfm from "remark-gfm";
-import { Check, ChevronDown, ChevronRight, CornerUpLeft, Lock, LoaderCircle, Megaphone, ShieldAlert, ShieldOff, Wrench, X } from "lucide-react";
-import { modelLabel, type Agent, type Message, type Model, type ToolCall } from "../api";
+import { Check, ChevronDown, ChevronRight, CornerUpLeft, Lock, LoaderCircle, Megaphone, Quote, ShieldAlert, ShieldOff, Wrench, X } from "lucide-react";
+import { modelLabel, type Agent, type Attachment, type Message, type Model, type ToolCall } from "../api";
 import { pick, useI18n } from "../i18n";
 import { levelLabel } from "../lib";
 import "../styles/chat.css";
@@ -127,9 +127,12 @@ interface Props {
   /** Tool name → source (builtin / plugin / mcp), used to label plugin tools */
   toolSources?: Map<string, string>;
   highlight?: boolean;
+  /** Put a reference to this message into the composer (`@msg:<id>`), so the members read it
+   *  again instead of relying on it still being inside the context window. */
+  onQuote?: (m: Message) => void;
 }
 
-function Bubble({ m, agent, models, toolSources, highlight }: Props) {
+function Bubble({ m, agent, models, toolSources, highlight, onQuote }: Props) {
   const { t } = useI18n();
   if (m.sender_type === "system") {
     return <div className="sys-msg">{m.content}</div>;
@@ -146,7 +149,9 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
       : a.status === "skipped" ? t("Skipped ({detail})", { detail: a.detail ?? "" }) : t("Failed ({detail})", { detail: a.detail ?? "" })))
     .join("\n");
   const { decl, rest } = mine ? { decl: null, rest: m.content } : splitDeclaration(m.content, !!m.streaming);
-  const pics = m.meta?.images ?? [];
+  // `files` since attachments became any kind of file; `images` is what a message stored
+  // before that is called, and both have to keep rendering.
+  const pics: Attachment[] = m.meta?.files ?? m.meta?.images ?? [];
   const taskChip = m.meta?.task_id
     ? m.meta.task_id === "final"
       ? t("Consolidated")
@@ -162,7 +167,7 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
       <div className="avatar">{agent?.avatar ?? "🤖"}</div>
       <div className="msg-body">
         <div className="msg-name">{m.sender_name}{agent?.role && <span className="msg-role">{agent.role}</span>}</div>
-        <div className="msg-imgs">{pics.map((im) => <MessageImage key={im.id} id={im.id} name={im.name} />)}</div>
+        <div className="msg-files">{pics.map((f) => <MessageFile key={f.id} file={f} />)}</div>
       </div>
     </div>
   );
@@ -174,6 +179,12 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
           {m.sender_name}
           {!mine && agent?.role && <span className="msg-role">{agent.role}</span>}
           {taskChip && <span className={"chip task-chip" + (m.meta?.task_id === "final" ? " final" : "")} title={m.meta?.task_title}>{taskChip}</span>}
+          {onQuote && (
+            <button className="quote-btn" title={t("Reference this message in the next one")}
+              aria-label={t("Reference this message")} onClick={() => onQuote(m)}>
+              <Quote size={12} />
+            </button>
+          )}
         </div>
         {decl !== null && (
           <div className={"decl-bar" + (showBubble ? "" : " alone")}>
@@ -185,7 +196,7 @@ function Bubble({ m, agent, models, toolSources, highlight }: Props) {
         {showBubble && (
           <div className={"bubble" + (decl !== null ? " under-decl" : "")}>
             {pics.length > 0 && (
-              <div className="msg-imgs">{pics.map((im) => <MessageImage key={im.id} id={im.id} name={im.name} />)}</div>
+              <div className="msg-files">{pics.map((f) => <MessageFile key={f.id} file={f} />)}</div>
             )}
             {mine ? (
               <span style={{ whiteSpace: "pre-wrap" }}>{m.content}</span>

@@ -310,7 +310,8 @@ export interface Message {
     attempts?: Attempt[];
     tools?: ToolCall[];
     /** Images the user attached to this message; only a model that can look at images receives them */
-    images?: Attachment[];
+    files?: Attachment[];           // Attachments since they became any kind of file
+  images?: Attachment[];           // What a message stored before that is called
     plan_id?: string;              // Which plan board this message belongs to
     task_id?: string;              // Task ID; "final" = the host's synthesis
     task_title?: string;
@@ -406,7 +407,11 @@ export interface Settings {
   code_timeout: number;            // Seconds one run may take before it is killed
   code_workdir: string;            // Empty = <data dir>/workspace
   vision_cloud: boolean;           // May attached images reach a cloud model? Separate from external_calls_enabled
-  vision_max_mb: number;           // Per-image size cap, checked before anything is written to disk
+  vision_max_mb: number;           // Biggest picture sent inline; a larger one is shrunk first
+  vision_model_id: string;         // Which model looks at pictures; empty = any usable one, local first
+  upload_max_mb: number;           // Biggest file a user may attach (any kind, a video included)
+  video_frames: number;            // Stills taken from an attached video for a model that cannot watch it
+  refs_budget: number;             // Characters of referenced files allowed in one prompt
   // Chat channels (whatsapp_*, telegram_*, wecom_*, feishu_*, dingtalk_*, slack_*) are NOT
   // listed here on purpose: the backend's channel catalogue declares every field with its
   // label, bounds and value, so /api/channels is the single source and adding a platform
@@ -462,12 +467,52 @@ export interface ChannelInfo {
     poller: string;     // "", "running", "stopped" — only for channels this app fetches
   };
 }
-/** One image attached to a message. `bytes` is the stored size, `mime` what the server sniffed. */
+/** One file attached to a message — any kind, not only images. `bytes` is the stored size, `mime`
+ *  what the server sniffed, and `kind` is what it decided the file *is* (image / video /
+ *  document / audio / other): the UI renders by kind rather than by extension. */
 export interface Attachment {
   id: string;
   name: string;
   mime: string;
   bytes: number;
+  kind?: string;
+  rel_path?: string;
+  url?: string;
+  source?: string;
+  has_text?: boolean;
+  has_vision?: boolean;
+}
+/** A file inside a group's workspace: where a member's work actually lands. */
+export interface WorkspaceFile {
+  path: string;
+  name: string;
+  size: number;
+  modified: number;
+  kind: string;
+  folder: string;
+}
+export interface WorkspaceTask {
+  name: string;
+  path: string;
+  files: number;
+  bytes: number;
+  modified: number;
+}
+export interface WorkspaceView {
+  path: string;
+  base: string;
+  files: WorkspaceFile[];
+  tasks: WorkspaceTask[];
+}
+/** Which model looks at pictures, and what to do when none can. */
+export interface VisionStatus {
+  model_id: string;
+  model_name: string;
+  is_local: boolean;
+  configured: string;
+  vision_cloud: boolean;
+  candidates: { id: string; name: string; is_local: boolean }[];
+  blocked_cloud: boolean;
 }
 export interface ObsidianReport {
   ok: boolean;
@@ -1080,7 +1125,8 @@ export const api = {
   /** Whether a collaboration round is running in this group (used after a page refresh or WebSocket reconnect to restore the sending state) */
   groupStatus: (gid: string) => get<{ busy: boolean }>(`/api/groups/${gid}/status`),
   clearMessages: (gid: string) => del(`/api/groups/${gid}/messages`),
-  send: (gid: string, text: string, images: string[] = []) => post(`/api/groups/${gid}/messages`, { text, images }),
+  /** `files` are ids from `uploadImage` — any kind of file, not only pictures. */
+  send: (gid: string, text: string, files: string[] = []) => post(`/api/groups/${gid}/messages`, { text, attachments: files }),
   stop: (gid: string) => post(`/api/groups/${gid}/stop`),
   // ---- Skills / plugins / MCP (kept separate)
   skills: () => get<Skill[]>("/api/skills"),
@@ -1133,12 +1179,25 @@ export const api = {
   /** The request body is the file's raw bytes (txt/md/csv/json/html/pdf/docx) */
   uploadDoc: (file: File, scope: { kb?: string; group?: string } = {}) =>
     postRaw<LibraryDoc>(`/api/library/upload${qs({ filename: file.name, kb_id: scope.kb, group_id: scope.group })}`, file),
-  // ---- Images attached to a message
-  /** Raw bytes, like the library upload. The server decides the type from the bytes, not the name. */
+  // ---- Files attached to a message (any kind: a screenshot, a PDF, a spreadsheet, a video)
+  /** Raw bytes, like the library upload. The server decides the kind from the bytes, not the name. */
   uploadImage: (gid: string, file: File) => postRaw<Attachment>(`/api/groups/${gid}/attachments${qs({ filename: file.name })}`, file),
   dropImage: (id: string) => del<{ ok: boolean }>(`/api/attachments/${id}`),
   /** The bytes, fetched with the token in a header — see `getBlob` for why an <img src> will not do. */
   imageBytes: (id: string) => getBlob(`/api/attachments/${id}`),
+  /** Everything ever added to this group, newest first. */
+  groupFiles: (gid: string) => get<{ attachments: Attachment[] }>(`/api/groups/${gid}/attachments`),
+  /** Attach a document the group can already reach, without copying it into the workspace. */
+  attachDoc: (gid: string, docId: string) => post<Attachment>(`/api/groups/${gid}/attachments/from-library`, { doc_id: docId }),
+  /** The group's workspace: what the members have written, and one folder per task. */
+  workspace: (gid: string) => get<WorkspaceView>(`/api/groups/${gid}/workspace`),
+  workspaceBytes: (gid: string, path: string) => getBlob(`/api/groups/${gid}/workspace/file${qs({ path })}`),
+  makeFolder: (gid: string, path: string) => post<{ ok: boolean; path: string }>(`/api/groups/${gid}/workspace/folder`, { path }),
+  /** Who can look at pictures; the settings page shows this instead of failing quietly. */
+  vision: () => get<VisionStatus>("/api/vision"),
+  /** What this machine can do with files: which document kinds are read locally, whether
+   *  ffmpeg is there for video frames, and who can look at pictures. */
+  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; upload_max_mb: number }>("/api/capabilities"),
   /** A clip a member generated, out of that group's own workspace. Same header problem, so the
    *  bytes come through the API and are turned into an object URL (`MessageVideo`). */
   videoBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/video/${encodeURIComponent(name)}`),

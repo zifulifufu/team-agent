@@ -20,7 +20,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, imagegen, images, media, modelopts, presets, strengths as strength_lib, updater, video
+from . import coderun, i18n, imagegen, media, modelopts, presets, strengths as strength_lib, updater, video
+from . import attachments as attachments_lib
+from . import vision
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
@@ -223,6 +225,19 @@ class ApprovalIn(BaseModel):
     remember: bool = False   # only applies to allow: never ask again for this tool
 
 
+class AttachmentFromLibrary(BaseModel):
+    """Attaching a document the group can already reach: the text travels, the file does not."""
+    doc_id: str = ""
+
+
+class WorkspaceFolder(BaseModel):
+    path: str = ""
+
+
+class OpenInFinder(BaseModel):
+    path: str = ""
+
+
 @dataclass
 class Ctx:
     store: Store
@@ -252,7 +267,11 @@ def _need_octet(request: Request) -> None:
         raise HTTPException(415, i18n.pick_now("The request must be application/octet-stream", "请求需要是 application/octet-stream"))
 
 
-MAX_UPLOAD_BYTES = 64 * 1024 * 1024       # above vision_max_mb's ceiling, below "a whole video"
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024       # the library route's own ceiling (documents, not media)
+# Attachments may be any file now, videos included, so this is a hard stop well above the
+# configurable limit — it exists to refuse a runaway body before it is buffered, not to decide
+# what the user may upload.
+UPLOAD_HARD_BYTES = 512 * 1024 * 1024
 MAX_RESTORE_BYTES = 1024 * 1024 * 1024    # a local SQLite backup: generous, but not unbounded
 
 
@@ -274,6 +293,65 @@ def _refuse_oversized(request: Request, limit: int) -> None:
 
 def _mask(d: dict[str, str]) -> dict[str, str]:
     return {k: (MASK if v else "") for k, v in d.items()}
+
+
+WORKSPACE_SKIP = {".runs", ".tmp", ".extract"}
+WORKSPACE_MAX_FILES = 500
+
+
+def attachment_view(row: dict) -> dict:
+    """An attachment as the UI wants it: no absolute path, and the kind spelled out."""
+    return {"id": row["id"], "name": row["name"], "mime": row["mime"], "bytes": row["bytes"],
+            "kind": row.get("kind") or "image", "created_at": row["created_at"],
+            "source": row.get("source") or "upload", "doc_id": row.get("doc_id") or "",
+            "url": f"/api/attachments/{row['id']}",
+            "has_text": bool(row.get("text")), "has_vision": bool(row.get("vision_text"))}
+
+
+def workspace_files(root: Path) -> list[dict]:
+    """Everything in the workspace, newest first, without the app's own scratch directories.
+
+    A walk rather than a listing: members create files inside folders they make themselves, and a
+    panel that only showed the top level would hide exactly the work the user wants to find.
+    """
+    out: list[dict] = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if any(part in WORKSPACE_SKIP or part.startswith(".runs") for part in rel.parts):
+            continue
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            stat = path.stat()
+        except OSError:
+            continue
+        out.append({"path": str(rel), "name": path.name, "size": stat.st_size,
+                    "modified": stat.st_mtime, "kind": attachments_lib.kind_of_name(path.name),
+                    "folder": str(rel.parent) if str(rel.parent) != "." else ""})
+        if len(out) >= WORKSPACE_MAX_FILES:
+            break
+    out.sort(key=lambda f: f["modified"], reverse=True)
+    return out
+
+
+def workspace_tasks(root: Path) -> list[dict]:
+    """The per-task folders, so the panel can show that a task has a place of its own."""
+    tasks_root = root / "tasks"
+    out: list[dict] = []
+    if not tasks_root.is_dir():
+        return out
+    for folder in sorted(tasks_root.iterdir()):
+        if not folder.is_dir() or folder.is_symlink():
+            continue
+        files = [f for f in folder.rglob("*") if f.is_file()]
+        try:
+            modified = max((f.stat().st_mtime for f in files), default=folder.stat().st_mtime)
+        except OSError:
+            continue
+        out.append({"name": folder.name, "path": f"tasks/{folder.name}", "files": len(files),
+                    "bytes": sum(f.stat().st_size for f in files if f.exists()), "modified": modified})
+    out.sort(key=lambda t: t["modified"], reverse=True)
+    return out
 
 
 def _unmask(new: dict[str, str], old: dict[str, str]) -> dict[str, str]:
@@ -975,43 +1053,159 @@ def build_router(c: Ctx) -> APIRouter:
                 store.update_group(g["id"], {"ext": {"skills": [x for x in g["ext"]["skills"] if x != name]}})
         return {"ok": True}
 
-    # ============================================================ attachments (images)
+    # ============================================================ files the model can read
+    @r.get("/api/vision")
+    async def vision_status() -> dict:
+        """Who looks at pictures, and what to do when nobody can.
+
+        The settings page shows this rather than leaving the user to infer it: an attached image
+        that no model can see used to fail silently, which reads exactly like a broken feature.
+        """
+        return vision.status(store, c.router)
+
+    @r.get("/api/capabilities")
+    async def machine_capabilities() -> dict:
+        """What this machine can actually do with the files a user attaches — the honest list.
+
+        Documents are read locally and need nothing. Pictures need a model that can see, and video
+        additionally needs ffmpeg on the machine. Reporting that here means the UI can say
+        "videos: key frames only, ffmpeg missing" instead of a green tick that lies.
+        """
+        st = vision.status(store, c.router)
+        return {
+            "vision": st,
+            "documents": ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv", "json", "html"],
+            "video_frames": bool(attachments_lib.tool("ffmpeg")),
+            "audio_transcribe": False,          # nothing here transcribes speech yet
+            "upload_max_mb": int(store.get_settings()["upload_max_mb"]),
+        }
+
+    # ============================================================ attachments (any file)
+    # Attachments were images only. They are now any file the user drops in: a screenshot, a PDF,
+    # a spreadsheet, a video, an archive. The kind comes from the bytes; the file lands inside the
+    # group's workspace so a member can open it with its ordinary tools; and text is pulled out
+    # here, once, so nothing has to re-parse a PDF on every turn.
     @r.post("/api/groups/{gid}/attachments")
-    async def attachment_upload(request: Request, gid: str, filename: str = "image.png") -> dict:
-        """Raw bytes, like the library upload. The image is checked before it is written."""
+    async def attachment_upload(request: Request, gid: str, filename: str = "file") -> dict:
+        """Raw bytes, like the library upload. The size is checked before anything is written."""
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         _need_octet(request)
-        _refuse_oversized(request, MAX_UPLOAD_BYTES)
+        cfg = store.get_settings()
+        limit = min(int(cfg["upload_max_mb"]) * 1024 * 1024, UPLOAD_HARD_BYTES)
+        _refuse_oversized(request, limit)
         data = await request.body()
-        problem = images.check(data, store.get_settings())
+        problem = attachments_lib.check(data, cfg) if len(data) <= UPLOAD_HARD_BYTES else i18n.pick_now(
+            "That file is too large.", "文件太大。")
         if problem:
             raise HTTPException(400, problem)
-        found = images.sniff(data)
-        assert found is not None                      # `check` already refused anything else
-        mime, ext = found
+        kind, mime, ext = attachments_lib.classify(data, filename)
         aid = new_id()
-        images.path_for(store.data_dir, aid, ext).write_bytes(data)
-        row = store.add_attachment(gid, aid, images.display_name(filename), mime, len(data))
+        workspace = coderun.workspace_dir(store.data_dir, cfg, gid)
+        try:
+            rel = attachments_lib.save(workspace, aid, filename, ext, data)
+        except (OSError, ValueError) as e:
+            raise HTTPException(400, i18n.pick_now(f"Could not store the file: {e}", f"文件存不下:{e}")) from None
+        text = None
+        meta: dict = {}
+        path = workspace / rel
+        if kind == attachments_lib.DOCUMENT:
+            text = (await asyncio.to_thread(attachments_lib.extract_text, filename, data))[:attachments_lib.TEXT_MAX_CHARS] or None
+        elif kind in (attachments_lib.VIDEO, attachments_lib.AUDIO):
+            meta = await asyncio.to_thread(attachments_lib.probe, path)
+        row = store.add_attachment(gid, aid, attachments_lib.display_name(filename), mime, len(data),
+                                   kind=kind, rel_path=rel, text=text, meta=meta)
+        return {**row, "url": f"/api/attachments/{aid}"}
+
+    @r.get("/api/groups/{gid}/attachments")
+    async def attachment_list(gid: str) -> dict:
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        return {"attachments": [attachment_view(row) for row in store.list_attachments(gid)]}
+
+    @r.post("/api/groups/{gid}/attachments/from-library")
+    async def attachment_from_library(gid: str, body: AttachmentFromLibrary) -> dict:
+        """Attach a document the group can already reach, without copying it into the workspace.
+
+        The row holds the text, so the model reads it like any other attachment; the file itself
+        stays where the knowledge base keeps it.
+        """
+        group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        allowed = c.library.scope_ids(group["ext"]["library"], gid)
+        doc = _need(store.get_doc(body.doc_id), i18n.pick_now("Document", "文档"))
+        if allowed is not None and doc["id"] not in allowed:
+            raise HTTPException(403, i18n.pick_now("This group cannot reach that document",
+                                                   "本群看不到这份文档"))
+        text = c.library.read(doc["id"], 0, attachments_lib.TEXT_MAX_CHARS)
+        aid = new_id()
+        row = store.add_attachment(gid, aid, attachments_lib.display_name(f"{doc['title']}.md"),
+                                   "text/markdown", len(text["text"].encode("utf-8")),
+                                   kind=attachments_lib.DOCUMENT, text=text["text"],
+                                   source="library", doc_id=doc["id"])
         return {**row, "url": f"/api/attachments/{aid}"}
 
     @r.get("/api/attachments/{aid}")
     async def attachment_get(aid: str) -> Response:
         row = store.get_attachment(aid)
-        f = images.find_file(store.data_dir, aid) if row else None
+        f = attachments_lib.path_for_row(store, row) if row else None
         if not row or not f:
-            raise HTTPException(404, i18n.pick_now("This image is no longer available", "这张图片已经不在了"))
+            raise HTTPException(404, i18n.pick_now("This file is no longer available", "这个文件已经不在了"))
+        name = urllib.parse.quote(row["name"])
+        inline = (row["kind"] or "") == attachments_lib.IMAGE
         return Response(f.read_bytes(), media_type=row["mime"],
-                        headers={"Cache-Control": "private, max-age=86400"})
+                        headers={"Cache-Control": "private, max-age=86400",
+                                 "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{name}"})
 
     @r.delete("/api/attachments/{aid}")
     async def attachment_delete(aid: str) -> dict:
         row = store.get_attachment(aid)
         if row:
-            f = images.find_file(store.data_dir, aid)
+            f = attachments_lib.path_for_row(store, row)
             if f:
                 f.unlink(missing_ok=True)
             store.delete_attachment(aid)
         return {"ok": True}
+
+    # ============================================================ the group workspace
+    # Every group has one, created with the group. These routes only ever read: listing what is in
+    # there and handing a file back. Nothing here accepts a path it has not resolved inside it.
+    @r.get("/api/groups/{gid}/workspace")
+    async def workspace_list(gid: str) -> dict:
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        cfg = store.get_settings()
+        root = coderun.workspace_dir(store.data_dir, cfg, gid)
+        return {"path": str(root), "base": str(coderun.base_dir(store.data_dir, cfg)),
+                "files": await asyncio.to_thread(workspace_files, root),
+                "tasks": await asyncio.to_thread(workspace_tasks, root)}
+
+    @r.get("/api/groups/{gid}/workspace/file")
+    async def workspace_file(gid: str, path: str) -> Response:
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        cfg = store.get_settings()
+        root = coderun.workspace_dir(store.data_dir, cfg, gid)
+        target = attachments_lib.resolve(root, path)
+        if not target or not target.is_file():
+            raise HTTPException(404, i18n.pick_now("No such file in this workspace",
+                                                   "工作目录里没有这个文件"))
+        name = urllib.parse.quote(target.name)
+        return Response(target.read_bytes(), media_type="application/octet-stream",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+
+    @r.post("/api/groups/{gid}/workspace/folder")
+    async def workspace_folder(gid: str, body: WorkspaceFolder) -> dict:
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        cfg = store.get_settings()
+        root = coderun.workspace_dir(store.data_dir, cfg, gid)
+        rel = (body.path or "").strip().strip("/")
+        if not rel:
+            raise HTTPException(400, i18n.pick_now("A folder needs a name", "文件夹要有名字"))
+        target = attachments_lib.resolve(root, rel)
+        if not target:
+            raise HTTPException(400, i18n.pick_now("That is not a path inside the workspace",
+                                                   "这个路径不在工作目录里"))
+        try:
+            created = coderun.make_dir(root, target)
+        except OSError as e:
+            raise HTTPException(400, i18n.pick_now(f"Could not create it: {e}", f"建不了:{e}")) from None
+        return {"ok": True, "created": created, "path": rel}
 
     # ============================================================ library
     # "The group's library" is now "the knowledge bases this group can reach"; a document is

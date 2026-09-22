@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Eraser, PanelRight } from "lucide-react";
+import { Download, Eraser, FolderOpen, PanelRight } from "lucide-react";
 import { api, downloadChat, downloadTasks, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
 import { useData } from "../data";
 import { useRoute } from "../hooks";
@@ -10,6 +10,7 @@ import Composer from "../components/Composer";
 import ApprovalBar from "../components/ApprovalBar";
 import PlanCard from "../components/PlanCard";
 import GroupPanel, { useCapabilities, type PanelTab } from "../components/GroupPanel";
+import WorkspacePanel from "../components/WorkspacePanel";
 import AddMemberButton from "../components/members/AddMemberButton";
 import "../styles/members.css";
 import type { SettingsTab } from "../settings/SettingsModal";
@@ -30,12 +31,13 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   const route = useRoute();
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [text, setText] = useState("");
-  const [images, setImages] = useState<Attachment[]>([]);
+  const [files, setFiles] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [wsUp, setWsUp] = useState(false);
   const [panel, setPanel] = useState(() => window.innerWidth >= 1100);
   const [panelTab, setPanelTab] = useState<PanelTab>("ext");
   const [hl, setHl] = useState<string | null>(null);
+  const [ws, setWs] = useState(false);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [err, setErr] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,13 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   };
 
+  /** Reference an earlier message: the token goes in the composer, and the backend inlines that
+   *  message's text into the prompt — so quoting an old turn never depends on it still fitting in
+   *  the context window. */
+  const quote = useCallback((m: Message) => {
+    setText((cur) => `${cur}${cur && !/\s$/.test(cur) ? " " : ""}@msg:${m.id} `);
+  }, []);
+
   /** Clicking a row on the plan card: scroll to that message and flash it briefly. */
   const jumpTo = useCallback((mid: string) => {
     const el = listRef.current?.querySelector(`[data-mid="${mid}"]`);
@@ -163,11 +172,11 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   useGroupSocket(gid, onEvent, setWsUp);
 
   const sendText = useCallback(
-    async (body: string, imageIds: string[] = []): Promise<boolean> => {
+    async (body: string, fileIds: string[] = []): Promise<boolean> => {
       setErr("");
       setBusy(true);
       try {
-        await api.send(gid, body, imageIds);
+        await api.send(gid, body, fileIds);
         return true;
       } catch (e) {
         setBusy(false);
@@ -190,15 +199,15 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
 
   const send = () => {
     const body = text.trim();
-    const ids = images.map((i) => i.id);
+    const ids = files.map((i) => i.id);
     if ((!body && !ids.length) || busy) return;
     setText("");
-    setImages([]);
+    setFiles([]);
     void sendText(body, ids).then((ok) => {
       if (!ok) {
-        // Not sent: give the text and the images back to the user
+        // Not sent: give the text and the files back to the user
         setText((cur) => cur || body);
-        setImages((cur) => (cur.length ? cur : images));
+        setFiles((cur) => (cur.length ? cur : files));
       }
     });
   };
@@ -234,6 +243,10 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
             >
               <Eraser size={16} />
             </button>
+            <button className={"icon-btn" + (ws ? " on" : "")} title={t("Workspace")} aria-label={t("Workspace")}
+              aria-pressed={ws} onClick={() => setWs((v) => !v)}>
+              <FolderOpen size={16} />
+            </button>
             <ExportMenu gid={gid} />
             <AddMemberButton group={group} align="right" label={t("Add member")} className="icon-btn" />
             <button className={"icon-btn" + (panel ? " on" : "")} title={t("Skills / plugins / MCP and prompts")} aria-label={t("Skills, plugins, MCP and prompts panel")} aria-pressed={panel} onClick={() => setPanel((p) => !p)}>
@@ -261,6 +274,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
                   models={models}
                   toolSources={toolSources}
                   highlight={hl === m.id}
+                  onQuote={quote}
                 />
               ),
             )}
@@ -283,12 +297,14 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
             rows={2}
             error={err}
             groupId={gid}
-            images={images}
-            onImages={setImages}
+            files={files}
+            onFiles={setFiles}
           />
           <div className="composer-hint">{t(busy ? "Members are working — you can stop at any time" : "With no @mention, the group host answers")}</div>
         </div>
       </section>
+
+      {ws && <WorkspacePanel gid={gid} onClose={() => setWs(false)} />}
 
       {panel && (
         <GroupPanel

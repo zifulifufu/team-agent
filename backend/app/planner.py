@@ -38,13 +38,14 @@ class PlanTask:
     status: str = "pending"
     message_id: str = ""
     error: str = ""
+    dir: str = ""          # workspace-relative folder this task delivers into (set when it runs)
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "owner": self.owner, "owner_id": self.owner_id, "title": self.title,
             "instruction": self.instruction, "needs": self.needs, "strengths": self.strengths,
             "tools": self.tools, "deliverable": self.deliverable, "status": self.status,
-            "message_id": self.message_id, "error": self.error,
+            "message_id": self.message_id, "error": self.error, "dir": self.dir,
         }
 
 

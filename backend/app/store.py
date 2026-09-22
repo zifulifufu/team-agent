@@ -239,6 +239,16 @@ class Store(ExtStore):
             ("mcp_servers", "description", "TEXT NOT NULL DEFAULT ''"),
             # Knowledge bases: documents moved from "a group's library" to "a knowledge base"
             ("library_docs", "kb_id", "TEXT NOT NULL DEFAULT ''"),
+            # Attachments used to be images only, kept by id under <data dir>/attachments/. They
+            # are now any file, kept inside the group's workspace; `rel_path` is what a row
+            # written since then carries, and an empty one means "look it up by id" (old rows).
+            ("attachments", "kind", "TEXT NOT NULL DEFAULT 'image'"),
+            ("attachments", "rel_path", "TEXT NOT NULL DEFAULT ''"),
+            ("attachments", "text", "TEXT"),                                   # extracted document text
+            ("attachments", "vision_text", "TEXT"),                            # cached description of an image/video
+            ("attachments", "meta", "TEXT NOT NULL DEFAULT '{}'"),             # duration, pixel size, codecs
+            ("attachments", "source", "TEXT NOT NULL DEFAULT 'upload'"),       # upload | library
+            ("attachments", "doc_id", "TEXT NOT NULL DEFAULT ''"),             # the library document this row points at
         ]
         for table, col, decl in adds:
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
@@ -913,12 +923,26 @@ already exists, otherwise create it (name and strengths are both taken from the 
         return n
 
     # ------------------------------------------------------------------ attachments
-    def add_attachment(self, gid: str, aid: str, name: str, mime: str, nbytes: int) -> dict:
+    def add_attachment(self, gid: str, aid: str, name: str, mime: str, nbytes: int, *,
+                       kind: str = "image", rel_path: str = "", text: str | None = None,
+                       meta: dict | None = None, source: str = "upload", doc_id: str = "") -> dict:
         self._x(
-            "INSERT INTO attachments(id,group_id,name,mime,bytes,created_at) VALUES(?,?,?,?,?,?)",
-            (aid, gid, name, mime, nbytes, time.time()),
+            "INSERT INTO attachments(id,group_id,name,mime,bytes,created_at,kind,rel_path,text,meta,source,doc_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (aid, gid, name, mime, nbytes, time.time(), kind, rel_path, text,
+             json.dumps(meta or {}, ensure_ascii=False), source, doc_id),
         )
         return self.get_attachment(aid)  # type: ignore[return-value]
+
+    def set_attachment_text(self, aid: str, text: str | None) -> None:
+        """Cache the extracted (or described) content, so it is worked out once per file."""
+        self._x("UPDATE attachments SET text=? WHERE id=?", (text, aid))
+
+    def set_attachment_vision(self, aid: str, text: str | None) -> None:
+        self._x("UPDATE attachments SET vision_text=? WHERE id=?", (text, aid))
+
+    def list_attachments(self, gid: str) -> list[dict]:
+        return self._q("SELECT * FROM attachments WHERE group_id=? ORDER BY created_at DESC", (gid,))
 
     def get_attachment(self, aid: str) -> dict | None:
         return self._one("SELECT * FROM attachments WHERE id=?", (aid,))

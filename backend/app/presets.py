@@ -298,13 +298,20 @@ DEFAULT_SETTINGS: dict = {
     # tool, so with the default perm_mode the user is asked before every single run.
     "code_enabled": False,
     "code_timeout": 60,        # how long one run may take before it is killed (seconds)
-    "code_workdir": "",        # empty = <data dir>/workspace; only this directory is reachable as cwd
+    "code_workdir": "",        # empty = <data dir>/workspaces; each group gets a folder in it
     # ---- images. `vision_cloud` is deliberately separate from `external_calls_enabled`:
     # sending text off the machine and sending a picture the user chose to attach are
     # different decisions, so the second one needs its own yes. Local vision models are
     # never affected by it.
     "vision_cloud": False,
     "vision_max_mb": 8,        # per-image cap, checked before anything is written to disk
+    "vision_model_id": "",     # which model looks at pictures; empty = any usable vision model, local first
+    # ---- files in a group chat. `upload_max_mb` is what a user may attach (any kind of file, a
+    # video included); everything is kept inside the group's workspace, so a member can open it
+    # with its ordinary tools. `refs_budget` bounds what referenced files may add to one prompt.
+    "upload_max_mb": 128,
+    "video_frames": 6,         # stills taken from an attached video, for a model that cannot watch it
+    "refs_budget": 24000,      # characters of referenced content per round
     # ---- video generation (MiniMax H3 and anything else speaking the same video API), off by
     # default. Not a chat model: it is reached through its own video endpoints and is gated like
     # any other outbound call, which is why a rented GPU box has to be marked non-local at the

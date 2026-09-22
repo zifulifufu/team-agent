@@ -22,10 +22,13 @@ import asyncio
 import re
 import time
 from collections import deque
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from . import external, planner, scoring
+from . import external, planner, scoring, vision
+from . import attachments as attachments_lib
+from . import coderun
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
 from .library import Library
@@ -52,6 +55,19 @@ DELTA_BATCH_SECONDS = 0.06
 # an @ preceded by alphanumerics (an address like me@x.com) is not a mention; @all followed
 # by letters (@Allen) is not one either
 _ALL_RE = re.compile(r"(?<![A-Za-z0-9_.])@(?:所有人|all(?![A-Za-z0-9_]))", re.IGNORECASE)  # i18n-keep: accepts @all and @所有人 in any language
+
+
+# An audio file has no text to give, and no frames to look at: its line is kept apart so the
+# prompt can say "there is sound here" without pretending it was read.
+_AUDIO_MARK = "\x00audio\x00"
+
+
+def _mime_of(path: Path) -> str:
+    """The type of a picture on disk. Only ever called for what we took out of a video or an
+    upload we already classified, so the extension is enough."""
+    ext = path.suffix.lower()
+    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp"}.get(ext.lstrip("."), "image/jpeg")
 
 
 def _mention_re(name: str) -> "re.Pattern[str]":
@@ -129,6 +145,13 @@ class RunState:
     final_text: str = ""
     refs_block: str = ""
     warned: set[str] = field(default_factory=set)
+    # The files this message carries, as descriptors ({id, name, kind, mime, bytes}). The content
+    # they contribute is prepared per member in `_files_for_turn`, because whether a member reads a
+    # description or looks at the picture depends on its own model.
+    files: list[dict] = field(default_factory=list)
+    # Descriptions worked out during this round, keyed by attachment id, so two members asking in
+    # the same round do not describe the same picture twice.
+    described: dict[str, str] = field(default_factory=dict)
     # Set for rounds whose trigger came from outside this machine (the WhatsApp channel).
     # It restricts the tool list to read-risk tools only: such a message can ask questions
     # but never reaches exec/write tools, and nobody local is watching the approval prompt
@@ -141,6 +164,18 @@ class TurnOut:
     text: str          # visible content stored in the chat record
     raw: str           # raw model output of each round (including <plan> / <tool_call>)
     message: dict
+
+
+@dataclass
+class TurnFiles:
+    """What a member is told about the files of the message it is answering.
+
+    `block` is the part it reads: extracted document text, media metadata, and a description of
+    anything it cannot look at. `pictures` are attached to the request directly, when the member's
+    own model can see them — then no description is needed and none is paid for.
+    """
+    block: str = ""
+    pictures: list[dict] = field(default_factory=list)      # content parts: image_url
 
 
 class Orchestrator:
@@ -189,6 +224,7 @@ class Orchestrator:
     def build_messages(
         self, group: dict, agent: dict, members: list[dict], *, memory_block: str = "", tools_block: str = "",
         extra_system: str = "", extra_user: str | None = None, exclude_plan_id: str | None = None,
+        files: "TurnFiles | None" = None,
     ) -> list[dict]:
         cfg = self.store.get_settings()
         history = self.store.list_messages(group["id"], int(cfg["history_limit"]))
@@ -220,45 +256,9 @@ class Orchestrator:
         convo[-1]["content"] += i18n.pick_now(f"\n\n(it is now your turn, {agent['name']})", f"\n\n(现在轮到你「{agent['name']}」发言)")
         if extra_user:
             convo[-1]["content"] += "\n\n" + extra_user
-        self._attach_images(convo[-1], history, agent)
+        if files is not None:
+            self._attach_files(convo[-1], files)
         return [{"role": "system", "content": sysmsg}] + convo
-
-    def _attach_images(self, turn: dict, history: list[dict], agent: dict) -> None:
-        """Attach the user's images to the turn being answered, if this member may see them.
-
-        Where they come from: the most recent user message that carries any. That covers both
-        the immediate reply and a later hand-off (the host delegates to another member inside
-        the same user turn), while keeping the cost to one message's worth of images — older
-        images are never re-uploaded on every reply.
-
-        Whether they are sent: the model that will actually be tried first has to be able to
-        look at images (the `multimodal` strength, which the catalog, the model-name hints and
-        the user's own tagging all feed). A cloud model additionally needs `vision_cloud`:
-        sending text off the machine and sending a picture the user attached are different
-        decisions, so they have separate switches.
-        """
-        source = next((h for h in reversed(history) if h["sender_type"] == "user" and h["meta"].get("images")), None)
-        images = list(source["meta"]["images"]) if source else []
-        if not images:
-            return
-        cfg = self.store.get_settings()
-        head = self._head_model(agent)
-        if not self._may_see_images(head, cfg):
-            # Say so rather than letting the member guess what the picture shows
-            turn["content"] += "\n\n" + i18n.pick_now(
-                "(the user attached an image, but you cannot see it — do not guess its content; say so, and let a member that can look at images answer)",
-                "(用户附了一张图片,但你看不到它——不要猜内容,直接说明,并让能看图的成员来回答)",
-            )
-            return
-        parts: list[dict] = [{"type": "text", "text": turn["content"]}]
-        for meta in images:
-            got = images_lib.read(self.store.data_dir, meta)
-            if not got:
-                continue
-            mime, data = got
-            parts.append({"type": "image_url", "image_url": {"url": images_lib.data_uri(data, mime)}})
-        if len(parts) > 1:
-            turn["content"] = parts
 
     def _head_model(self, agent: dict) -> dict | None:
         """The model this member will try first — the one that decides whether images fit."""
@@ -270,27 +270,284 @@ class Orchestrator:
             return False
         return bool(model.get("is_local")) or bool(cfg["vision_cloud"])
 
-    def _refs_block(self, group: dict, text: str) -> str:
-        """`#document-title` references in the user message: the beginning of those documents goes
-straight into the context."""
-        if group["ext"]["library"]["mode"] == "off":
+    # ------------------------------------------------------------------ files the model reads
+    REF_FILE_CHARS = 4000        # per document, whether attached or referenced
+    REF_DIR_FILES = 60           # entries listed for a referenced folder
+
+    def _attach_files(self, turn: dict, files: "TurnFiles") -> None:
+        """Put the prepared files into the turn: what it reads, and the pictures it looks at.
+
+        The content only becomes a list of parts when there really are pictures — a text-only turn
+        stays a plain string, which is what every provider handles best.
+        """
+        if files.block:
+            turn["content"] += "\n\n" + files.block
+        if files.pictures:
+            turn["content"] = [{"type": "text", "text": turn["content"]}, *files.pictures]
+
+    async def _files_for_turn(self, group: dict, agent: dict, run: "RunState") -> "TurnFiles":
+        """What this member should know about the files in the message it is answering.
+
+        Two shapes, decided by the member's own model: pictures it can look at are attached to the
+        request as content parts, and pictures nobody can look at are described first — the
+        description is cached on the attachment, so one screenshot is described once however many
+        members then discuss it. Documents need neither: they are text, extracted at upload.
+        """
+        cfg = self.store.get_settings()
+        sees = self._may_see_images(self._head_model(agent), cfg)
+        out = TurnFiles()
+        lines: list[str] = []
+        workspace = self.workspace(group["id"])
+
+        for meta in run.files:
+            row = self.store.get_attachment(str(meta.get("id") or ""))
+            if not row or row["group_id"] != group["id"]:
+                continue
+            path = attachments_lib.path_for_row(self.store, row)
+            if path is None:
+                lines.append(i18n.pick_now(f"[{row['name']}] the file is gone from disk",
+                                           f"【{row['name']}】文件已不在磁盘上"))
+                continue
+            text, pictures = await self._file_parts(group, row, path, workspace, sees, run)
+            if text:
+                lines.append(text)
+            out.pictures += pictures
+
+        for rel, path in self._referenced_files(run, workspace):
+            row = {"id": f"file:{rel}", "name": path.name, "kind": attachments_lib.kind_of_name(path.name),
+                   "bytes": path.stat().st_size if path.exists() else 0, "meta": "{}"}
+            text, pictures = await self._file_parts(group, row, path, workspace, sees, run, rel=rel)
+            if text:
+                lines.append(text)
+            out.pictures += pictures
+
+        audio = [line for line in lines if line.startswith(_AUDIO_MARK)]
+        lines = [line for line in lines if not line.startswith(_AUDIO_MARK)]
+        if lines:
+            out.block = i18n.pick_now("[Files in this message]\n", "【这条消息里的文件】\n") + "\n\n".join(lines)
+        if audio:
+            out.block += ("\n\n" if out.block else "") + "\n".join(audio)
+        # The same budget the other references answer to, applied to the whole block: ten files
+        # that are each within their own limit still add up to a prompt nobody asked for.
+        budget = int(cfg["refs_budget"])
+        if len(out.block) > budget:
+            keep = max(0, budget - 200)
+            out.block = out.block[:keep] + "\n\n" + i18n.pick_now(
+                "(the rest was cut to keep this prompt within its budget; read the files from the "
+                "workspace if you need them)",
+                "(其余内容因超出预算已截断;需要的话请直接从工作目录读取文件)")
+        return out
+
+    async def _file_parts(self, group: dict, row: dict, path: Path, workspace: Path, sees: bool,
+                          run: "RunState", rel: str = "") -> tuple[str, list[dict]]:
+        """One file -> (the text a member reads, the pictures it is handed)."""
+        kind = row.get("kind") or attachments_lib.kind_of_name(row.get("name") or "")
+        name = row.get("name") or path.name
+        where = rel or (row.get("rel_path") or "")
+        header = f"[{attachments_lib.heading(row)}]" + (f" @ {where}" if where else "")
+        if kind == attachments_lib.DOCUMENT:
+            text = row.get("text") or ""
+            if not text:
+                text = await asyncio.to_thread(attachments_lib.text_of_file, workspace, path)
+                if row.get("id") and not str(row["id"]).startswith("file:"):
+                    self.store.set_attachment_text(str(row["id"]), text or None)
+            body = clip_middle(text, self.REF_FILE_CHARS) if text else ""
+            tail = i18n.pick_now(" (excerpt; read the whole file in the workspace if you need it)",
+                                 "(节选,需要完整内容可在工作目录里读)")
+            return f"{header}\n{body}{tail if text else ''}".strip(), []
+        if kind == attachments_lib.IMAGE:
+            return await self._visual_text(row, path, [path], workspace, sees, run, header, kind)
+        if kind == attachments_lib.VIDEO:
+            frames = await asyncio.to_thread(self._video_frames, workspace, str(row.get("id") or name), path, int(
+                self.store.get_settings()["video_frames"]))
+            note = (i18n.pick_now("(key frames were taken from it; the audio track is not transcribed)",
+                                  "(已抽取关键帧;音轨不做转写)") if not frames else "")
+            text, pictures = await self._visual_text(row, path, frames, workspace, sees, run, header, kind)
+            return (f"{text}\n{note}".strip() if note else text), pictures
+        if kind == attachments_lib.AUDIO:
+            return _AUDIO_MARK + i18n.pick_now(
+                f"{header} — audio; its content is not transcribed here. A member can read the file "
+                f"itself from the workspace if a tool for it is available.",
+                f"{header} —— 音频;这里不转写内容。工作目录里有这个文件,成员若装了相应工具可以自己处理。",
+            ), []
+        return i18n.pick_now(
+            f"{header} — not a format that can be read as text; the file is in the workspace.",
+            f"{header} —— 不是可读为文本的格式;文件就在工作目录里。"), []
+
+    async def _visual_text(self, row: dict, path: Path, pictures: list[Path], workspace: Path,
+                           sees: bool, run: "RunState", header: str, kind: str) -> tuple[str, list[dict]]:
+        """Pictures: handed over when the model can look, described when it cannot."""
+        blobs: list[tuple[str, bytes]] = []
+        for picture in pictures:
+            try:
+                blobs.append((_mime_of(picture), picture.read_bytes()))
+            except OSError:
+                continue
+        if not blobs:
+            return i18n.pick_now(f"{header} — the file could not be read.",
+                                 f"{header} —— 文件读不出来。"), []
+        if sees:
+            limit = int(self.store.get_settings()["vision_max_mb"]) * 1024 * 1024
+            parts = []
+            for mime, data in blobs:
+                if kind == attachments_lib.IMAGE:
+                    mime, data = await asyncio.to_thread(attachments_lib.shrink_image, data, mime, limit)
+                else:
+                    mime, data = "image/jpeg", data
+                parts.append({"type": "image_url", "image_url": {"url": images_lib.data_uri(data, mime)}})
+            return "", parts
+        key = f"file:{row.get('rel_path') or path.name}"
+        text = run.described.get(key) or (row.get("vision_text") or None)
+        if not text:
+            text = await self._describe(row, workspace, key, path.name, kind, blobs, run)
+        if not text:
+            return f"{header} — {vision.reason_missing(self.store, self.router)}", []
+        return f"{header}\n{text}", []
+
+    async def _describe(self, row: dict, workspace: Path, key: str, name: str, kind: str,
+                        blobs: list[tuple[str, bytes]], run: "RunState") -> str:
+        """Ask the vision model once, remember it on the row (or in the workspace cache)."""
+        try:
+            text = await vision.describe(self.store, self.router, blobs,
+                                         attachments_lib.describe_prompt(name, kind))
+        except Exception as e:  # noqa: BLE001 — a picture nobody could look at must not fail the round
+            print("vision description failed:", repr(e))
             return ""
-        allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
-        out = []
-        for m in re.finditer(r"#([^\s#@,,。;;::!!??]{2,40})", text):  # i18n-keep: hashtag regex; the CJK punctuation set is the delimiter list
-            doc = self.library.find_by_title(m.group(1))
-            if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed) and all(doc["title"] not in o for o in out):
-                r = self.library.read(doc["id"], 0, 2500)
-                more = i18n.pick_now("(excerpt; use library_read to read the rest)", "(节选,完整内容可用 library_read 继续读)") if r["end"] < r["total"] else ""
-                out.append(i18n.pick_now(f"[{doc['title']}]{more}\n{r['text']}", f"《{doc['title']}》{more}\n{r['text']}"))
-            if len(out) >= 3:
-                break
-        return (i18n.pick_now("[Documents the user referenced]\n", "【用户引用的资料】\n") + "\n\n".join(out)) if out else ""
+        run.described[key] = text
+        aid = str(row.get("id") or "")
+        if aid and not aid.startswith("file:"):
+            self.store.set_attachment_vision(aid, text or None)
+        elif text:
+            attachments_lib.remember(workspace, attachments_lib.file_key(workspace, workspace / key), "desc", text)
+        return text
+
+    def _video_frames(self, workspace: Path, aid: str, path: Path, count: int) -> list[Path]:
+        """Frames for a video, kept under the workspace so the work is done once.
+
+        The folder is named after the attachment, and `attachments.frames` writes numbered files
+        into it rather than reading it — so a second round re-uses the stills instead of running
+        ffmpeg again over the same film.
+        """
+        picked = sorted((workspace / ".frames" / aid).glob("f*.jpg"))
+        return picked[:count] if picked else attachments_lib.frames(path, workspace / ".frames" / aid, count)
+
+    # ------------------------------------------------------------------ references
+    def _parse_refs(self, text: str) -> list[dict]:
+        """The reference tokens in a user message.
+
+        The whole grammar, most of it written by the picker rather than remembered by the user:
+          `@name`            a member speaks (handled by find_mentions, deliberately not here)
+          `@file:<path>`     a file in this group's workspace
+          `@dir:<path>`      a folder in it
+          `@msg:<id>`        an earlier message of this group
+          `@doc:<id>`        a document this group can reach
+          `#<title>`         the same document by title (the long-standing shorthand)
+        """
+        found: list[dict] = []
+        for m in re.finditer(r"@(file|dir|msg|doc):(\"[^\"]+\"|[^\s,，。;；]+)", text):
+            value = m.group(2)
+            found.append({"kind": m.group(1), "value": value[1:-1] if value.startswith('"') else value})
+        return found
+
+    def _referenced_files(self, run: "RunState", workspace: Path) -> list[tuple[str, Path]]:
+        """Workspace files named with `@file:`, resolved and checked to be inside the workspace."""
+        out: list[tuple[str, Path]] = []
+        for ref in self._parse_refs(run.user_text):
+            if ref["kind"] != "file":
+                continue
+            target = attachments_lib.resolve(workspace, ref["value"])
+            if target and target.is_file():
+                out.append((ref["value"], target))
+        return out
+
+    def _refs_block(self, group: dict, text: str, workspace: Path) -> str:
+        """What the user asked for by reference, as text.
+
+        Documents the knowledge base can reach, files and folders in this group's workspace, and
+        earlier messages of this conversation. Everything is clipped into a budget, and whatever is
+        clipped says so together with the path, because the member can go and read the rest.
+        """
+        budget = int(self.store.get_settings()["refs_budget"])
+        out: list[str] = []
+        used = 0
+
+        def take(chunk: str) -> bool:
+            nonlocal used
+            if used + len(chunk) > budget:
+                return False
+            out.append(chunk)
+            used += len(chunk)
+            return True
+
+        allowed = None
+        if group["ext"]["library"]["mode"] != "off":
+            allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
+            for m in re.finditer(r"#([^\s#@,,。;;::!!??]{2,40})", text):   # i18n-keep: hashtag regex; the CJK punctuation set is the delimiter list
+                doc = self.library.find_by_title(m.group(1))
+                if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed):
+                    take(self._library_chunk(doc))
+                if len(out) >= 3:
+                    break
+
+        for ref in self._parse_refs(text):
+            if ref["kind"] == "doc":
+                doc = self.store.get_doc(ref["value"])
+                if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed):
+                    take(self._library_chunk(doc))
+            elif ref["kind"] == "msg":
+                chunk = self._message_chunk(group, ref["value"])
+                if chunk:
+                    take(chunk)
+            elif ref["kind"] == "dir":
+                chunk = self._folder_chunk(workspace, ref["value"])
+                if chunk:
+                    take(chunk)
+        if not out:
+            return ""
+        head = i18n.pick_now("[What the user referenced]\n", "【用户引用的内容】\n")
+        return head + "\n\n".join(out)
+
+    def _library_chunk(self, doc: dict) -> str:
+        r = self.library.read(doc["id"], 0, 2500)
+        more = i18n.pick_now("(excerpt; use library_read to read the rest)",
+                             "(节选,完整内容可用 library_read 继续读)") if r["end"] < r["total"] else ""
+        return i18n.pick_now(f"[{doc['title']}]{more}\n{r['text']}", f"《{doc['title']}》{more}\n{r['text']}")
+
+    def _message_chunk(self, group: dict, mid: str) -> str:
+        """An earlier message of this conversation, quoted whole."""
+        row = next((m for m in self.store.list_messages(group["id"], 2000) if m["id"] == mid), None)
+        if not row:
+            return ""
+        when = time.strftime("%m-%d %H:%M", time.localtime(row["created_at"]))
+        files = row["meta"].get("files") or row["meta"].get("images") or []
+        note = i18n.pick_now(f" (with {len(files)} file(s))", f"(附带 {len(files)} 个文件)") if files else ""
+        return i18n.pick_now(
+            f"[earlier message · {row['sender_name']} · {when}]{note}\n{clip_middle(row['content'], self.REF_FILE_CHARS)}",
+            f"【既往消息 · {row['sender_name']} · {when}】{note}\n{clip_middle(row['content'], self.REF_FILE_CHARS)}")
+
+    def _folder_chunk(self, workspace: Path, rel: str) -> str:
+        """A folder as a listing with a first taste of each file — enough to decide what to open."""
+        folder = attachments_lib.resolve(workspace, rel)
+        if not folder or not folder.is_dir():
+            return ""
+        rows: list[str] = []
+        for path in sorted(folder.rglob("*"))[: self.REF_DIR_FILES]:
+            if not path.is_file() or path.is_symlink():
+                continue
+            kind = attachments_lib.kind_of_name(path.name)
+            taste = ""
+            if kind == attachments_lib.DOCUMENT:
+                text = attachments_lib.text_of_file(workspace, path)
+                taste = " — " + clip_middle(text, 200).replace("\n", " ") if text else ""
+            rows.append(f"- {path.relative_to(workspace)} ({attachments_lib.human_size(path.stat().st_size)}){taste}")
+        if not rows:
+            return i18n.pick_now(f"[folder {rel}/] it is empty", f"【文件夹 {rel}/】里面是空的")
+        return i18n.pick_now(f"[folder {rel}/ · {len(rows)} file(s)]\n", f"【文件夹 {rel}/ · {len(rows)} 个文件】\n") + "\n".join(rows)
 
     # ------------------------------------------------------------- entrypoint
     async def handle_user_message(self, gid: str, text: str, emit: Emit,
                                sender_name: str | None = None,
-                               images: list[dict] | None = None,
+                               files: list[dict] | None = None,
                                read_only: bool = False) -> None:
         # The name the user is labelled with in the transcript; resolved per request
         # rather than as a default argument, which is evaluated once at import time.
@@ -299,7 +556,7 @@ straight into the context."""
         if not group:
             return
         user_msg = self.store.add_message(gid, "user", "user", sender_name, text,
-                                          meta={"images": images} if images else None)
+                                          meta={"files": files} if files else None)
         await emit({"type": "message", "message": user_msg})
         # `add_message` and the broadcast stay outside the lock so the sender sees their own message
         # immediately — which means another message can land while this round waits for the group
@@ -311,10 +568,12 @@ straight into the context."""
             if self.store.has_later_user_message(gid, user_msg["id"]):
                 return
             run = RunState(gid, text, read_only=read_only)
-            run.refs_block = self._refs_block(group, text)
+            run.files = list(files or [])
+            workspace = self.workspace(gid)
+            run.refs_block = self._refs_block(group, text, workspace)
             self._notify("round.start", gid, group,
                          {"sender": sender_name, "chars": len(text),
-                          "read_only": read_only, "images": len(images or [])})
+                          "read_only": read_only, "files": len(files or [])})
             await self._run_turns(group, text, emit, run)
             self._after_run(group, run)
         await self._announce(gid, run)
@@ -324,6 +583,42 @@ straight into the context."""
             "agents": [s.get("agent") for s in run.steps],
             "answer_chars": len(run.final_text or ""),
         })
+
+    def workspace(self, gid: str) -> Any:
+        """The group's workspace, created if it is somehow missing.
+
+        A group always has one — it is made when the group is made, and `ensure_workspaces` fills
+        in the ones that existed before that. This is the third guarantee, for the case that
+        matters most: a member is about to run code, and there would be nowhere to run it.
+        """
+        return coderun.workspace_dir(self.store.data_dir, self.store.get_settings(), gid)
+
+    # ------------------------------------------------------------------ per-task folders
+    def _task_dir(self, group: dict, task: Any) -> str:
+        """The folder this task delivers into, inside the group's workspace.
+
+        A task is a unit of work, so it gets a place of its own: two tasks running in parallel write
+        into different folders instead of overwriting each other's files, and the user can see
+        which part of the result came from which part of the plan.
+        """
+        workspace = self.workspace(group["id"])
+        rel = f"tasks/{coderun.safe_slug(task.title or task.id, task.id)}"
+        try:
+            coderun.make_dir(workspace, workspace / rel)
+        except (OSError, ValueError) as e:
+            print("could not create the task folder:", e)
+            return ""
+        return rel
+
+    def _task_dir_note(self, task: Any) -> str:
+        """Tell the member where its own files go — and that everyone shares the workspace."""
+        if not getattr(task, "dir", ""):
+            return ""
+        return i18n.pick_now(
+            f"\n\n[Your folder] `{task.dir}/` inside the group workspace. Put anything you produce "
+            "there, and mention the paths in your answer so the others can pick them up.",
+            f"\n\n【你的交付目录】群工作目录下的 `{task.dir}/`。你产出的文件放这里,并在回答里写明路径,"
+            "方便其他人接手。")
 
     def _notify(self, event: str, gid: str, group: dict, payload: dict) -> None:
         """Tell the observers about a round. A no-op when no hook is switched on, so the hot path
@@ -478,11 +773,12 @@ protocol and should not decide what the others do."""
                     task.status, task.error = "failed", i18n.pick_now("the member has left the group", "成员已不在群里")
                     await push()
                     continue
+                task.dir = await asyncio.to_thread(self._task_dir, group, task)
                 task.status = "running"
                 await push()
                 out = await self._agent_turn(
                     group, agent, members, emit, run,
-                    extra_user=planner.task_prompt(plan, task, outputs, i),
+                    extra_user=planner.task_prompt(plan, task, outputs, i) + self._task_dir_note(task),
                     exclude_plan_id=plan.message_id,
                     extra_meta={"plan_id": plan.message_id, "task_id": task.id, "task_title": task.title},
                 )
@@ -613,6 +909,7 @@ protocol and should not decide what the others do."""
                 group, agent, members, memory_block=memory_block,
                 tools_block=tools_prompt(ctx.specs()) if ctx.tools else "", extra_system=run.refs_block,
                 extra_user=extra_user, exclude_plan_id=exclude_plan_id,
+                files=await self._files_for_turn(group, agent, run),
             )
 
             for rnd in range(rounds + 1):
@@ -749,6 +1046,10 @@ protocol and should not decide what the others do."""
         messages = self.build_messages(
             group, agent, members, memory_block=memory_block, extra_system=run.refs_block,
             extra_user=extra_user, exclude_plan_id=exclude_plan_id,
+            # An external engine is a command line, not a vision endpoint: it gets descriptions of
+            # the pictures rather than the pictures themselves (its own model chain decides, and
+            # `_may_see_images` says no for an agent without a routed model).
+            files=await self._files_for_turn(group, agent, run),
         )
         # The addendum explains a working directory and a permission level, neither of which a chat
         # gateway has — asking for its workspace would even create that directory for nothing.

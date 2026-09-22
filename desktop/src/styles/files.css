@@ -1,0 +1,127 @@
+/* Files in a group chat: attachments in a bubble, the @ picker's extra bands, and the workspace
+   panel. Everything takes its colours from the shared theme variables, so it follows the light /
+   dark switch without a second set of rules. */
+
+/* ---- attachments in a bubble ------------------------------------------------------------------ */
+.msg-files { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.msg-files + *:not(:empty) { margin-top: 10px; }
+
+.msg-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-sub);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.msg-file .mf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.msg-file .mf-size { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.msg-file .mf-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--ok);
+  font-size: 11px;
+}
+.msg-file .mf-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 6px;
+  color: var(--text-2);
+}
+.msg-file .mf-btn:hover { background: var(--hover); color: var(--text); }
+.msg-file .mf-err { color: var(--danger); font-size: 11.5px; }
+
+.msg-audio { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.msg-audio audio { height: 32px; max-width: 260px; }
+
+/* ---- the @ picker: files, folders, documents next to members ---------------------------------- */
+.mention-pop .mp-file .mp-ava, .mention-pop .mp-folder .mp-ava, .mention-pop .mp-document .mp-ava {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  color: var(--text-3);
+}
+.mention-pop .mp-file b, .mention-pop .mp-folder b { font-weight: 500; }
+.mention-pop .mp-document .mp-ava { color: var(--ok); }
+
+/* ---- attachments waiting to be sent ----------------------------------------------------------- */
+.ci-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 64px;
+  max-width: 190px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-sub);
+  font-size: 12px;
+}
+.ci-file .ci-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-file .ci-size { color: var(--text-3); }
+
+/* ---- referencing an earlier message ----------------------------------------------------------- */
+.quote-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  margin-left: 2px;
+  border-radius: 5px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.msg:hover .quote-btn, .quote-btn:focus-visible { opacity: 1; }
+.quote-btn:hover { background: var(--hover); color: var(--text); }
+
+/* ---- the group workspace --------------------------------------------------------------------- */
+.ws-back {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.ws-panel {
+  width: min(720px, 92vw);
+  max-height: 78vh;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 14px 16px 18px;
+}
+.ws-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ws-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;          /* the tail of the path is the informative end */
+  text-align: left;
+  font-size: 11.5px;
+}
+.ws-section { margin-top: 12px; }
+.ws-title { font-size: 12px; color: var(--text-3); margin-bottom: 4px; }
+.ws-empty { font-size: 12.5px; padding: 6px 0; }
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.ws-row:hover { background: var(--hover); }
+.ws-row .ws-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-row .ws-meta { color: var(--text-3); font-variant-numeric: tabular-nums; }
