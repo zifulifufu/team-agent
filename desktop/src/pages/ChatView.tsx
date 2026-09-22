@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Eraser, PanelRight } from "lucide-react";
-import { api, downloadChat, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
+import { api, downloadChat, downloadTasks, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
 import { useData } from "../data";
 import { useRoute } from "../hooks";
 import { useConfirm, useOutside } from "../ui";
@@ -306,8 +306,8 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   );
 }
 
-/** Export the chat: download Markdown, or write it straight into the Obsidian vault
- * when one is configured (into a _chat-log subfolder, so it is not read as memory). */
+/** Export the chat: the whole log as Markdown, every task board as a table, or straight into the
+ * Obsidian vault when one is configured (into a _chat-log subfolder, so it is not read as memory). */
 function ExportMenu({ gid }: { gid: string }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -325,15 +325,18 @@ function ExportMenu({ gid }: { gid: string }) {
   };
   return (
     <div className="gp-addmenu" ref={ref}>
-      <button className="icon-btn" title={t("Export chat history")} aria-label={t("Export chat history")} aria-haspopup="menu" aria-expanded={open} onClick={() => {
+      <button className="icon-btn" title={t("Export")} aria-label={t("Export")} aria-haspopup="menu" aria-expanded={open} onClick={() => {
         if (!open) api.obsidian().then((o) => setHasObsidian(!!o.dir && o.exists)).catch(() => setHasObsidian(false));
         setOpen((o) => !o);
       }}>
         <Download size={16} />
       </button>
       {open && (
-        <div className="gp-addmenu-pop" role="menu" aria-label={t("Export chat history")} style={{ right: 0, left: "auto" }}>
+        <div className="gp-addmenu-pop" role="menu" aria-label={t("Export")} style={{ right: 0, left: "auto" }}>
           <button role="menuitem" onClick={() => void run(async () => { await downloadChat(gid); return t("Markdown file downloaded"); })}><span>{t("Download as Markdown")}</span></button>
+          <button role="menuitem" onClick={() => void run(async () => { await downloadTasks(gid); return t("Task list downloaded"); })}>
+            <span>{t("Download every task list")}</span><small>{t("One row per task, across all task boards")}</small>
+          </button>
           {hasObsidian && (
             <button role="menuitem" onClick={() => void run(async () => t("Written to Obsidian: {path}", { path: (await api.exportChatObsidian(gid)).path }))}><span>{t("Write to Obsidian")}</span><small>{t("The _chat-log folder in your vault")}</small></button>
           )}

@@ -4,7 +4,9 @@ plugins / MCP / skills, the library, memory, prompting, and updates."""
 from __future__ import annotations
 
 import asyncio
+import csv
 import functools
+import io
 import json
 import os
 import re
@@ -452,6 +454,39 @@ def build_router(c: Ctx) -> APIRouter:
         await c.mcp.shutdown()   # after a restore the MCP config may have changed, so the old connections no longer match
         return res
 
+    # Task-board statuses, as a reader should see them. They live next to the export because the
+    # export is the only place they are rendered from bare machine values — inside the app the
+    # chat UI has its own labels (PlanCard.tsx) and they follow the interface language there.
+    PLAN_STATUS = {
+        "running": ("In progress", "进行中"),
+        "integrating": ("Host is consolidating", "群主整合中"),
+        "done": ("Finished", "已完成"),
+        "stopped": ("Stopped", "已停止"),
+        "failed": ("Failed", "失败"),
+    }
+    TASK_STATUS = {
+        "pending": ("Not started", "未开始"),
+        "running": ("In progress", "进行中"),
+        "done": ("Done", "已完成"),
+        "failed": ("Failed", "失败"),
+        "stopped": ("Stopped", "已停止"),
+        "skipped": ("Skipped", "已跳过"),
+    }
+
+    def status_label(rows: dict[str, tuple[str, str]], key: str) -> str:
+        pair = rows.get(key)
+        return i18n.pick_now(*pair) if pair else key
+
+    def task_boards(gid: str) -> list[tuple[dict, float]]:
+        """Every task board this group has run, oldest first, with the time it was written.
+
+        A board is one message of type `plan` whose `meta` carries the goal, the overall status
+        and the tasks; the orchestrator keeps that message up to date as the work proceeds, so
+        what is read here is the final state of each round rather than what was planned.
+        """
+        return [(m["meta"], m["created_at"]) for m in store.list_messages(gid, 1_000_000)
+                if m["sender_type"] == "plan" and (m["meta"] or {}).get("tasks")]
+
     def chat_markdown(gid: str) -> tuple[dict, str]:
         g = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         agents = {a["id"]: a for a in member_view(store.list_agents())}
@@ -463,8 +498,15 @@ def build_router(c: Ctx) -> APIRouter:
                 out += [i18n.pick_now(f"> System · {when}: {m['content']}", f"> 系统 · {when}:{m['content']}"), ""]
             elif m["sender_type"] == "plan":
                 board = m["meta"] or {}
-                out += [i18n.pick_now(f"**Task board** · {when}: {board.get('goal', '')}", f"**任务板** · {when}:{board.get('goal', '')}")]
-                out += [f"- [{t.get('status', '')}] {t.get('owner', '')}:{t.get('title', '')}" for t in board.get("tasks", [])] + [""]
+                board_state = status_label(PLAN_STATUS, board.get("status", ""))
+                out += [i18n.pick_now(f"**Task board** · {when} · {board_state}: {board.get('goal', '')}",
+                                      f"**任务板** · {when} · {board_state}:{board.get('goal', '')}")]
+                for t in board.get("tasks", []):
+                    line = f"- [{status_label(TASK_STATUS, t.get('status', ''))}] {t.get('owner', '')}:{t.get('title', '')}"
+                    if t.get("error"):
+                        line += i18n.pick_now(f" — {t['error']}", f" —— {t['error']}")
+                    out.append(line)
+                out.append("")
             else:
                 out += [f"**{m['sender_name']}** · {when}", "", m["content"], ""]
                 for t in (m["meta"] or {}).get("tools", []):
@@ -478,6 +520,33 @@ def build_router(c: Ctx) -> APIRouter:
         g, text = chat_markdown(gid)
         name = urllib.parse.quote(f"{g['name']}-{time.strftime('%Y%m%d')}.md")
         return Response(text, media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+
+    @r.get("/api/groups/{gid}/export-tasks")
+    async def group_export_tasks(gid: str) -> Response:
+        """Every task of every board this group has run, as one table.
+
+        The markdown export carries the boards as part of the conversation, which is what you want
+        when reading the round back; this is the same information as a table, for when the question
+        is "what is still open" rather than "what happened". One row per task, oldest board first.
+        """
+        g = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow([i18n.pick_now(*pair) for pair in (
+            ("Board time", "任务板时间"), ("Board", "任务板状态"), ("Goal", "目标"),
+            ("Task", "任务编号"), ("Owner", "负责人"), ("What", "任务内容"),
+            ("Status", "状态"), ("Deliverable", "交付物"), ("Note", "备注"))])
+        for board, at in task_boards(gid):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+            state = status_label(PLAN_STATUS, board.get("status", ""))
+            for t in board.get("tasks", []):
+                w.writerow([when, state, board.get("goal", ""), t.get("id", ""), t.get("owner", ""),
+                            t.get("title", ""), status_label(TASK_STATUS, t.get("status", "")),
+                            t.get("deliverable", ""), t.get("error", "")])
+        name = urllib.parse.quote(f"{g['name']}-tasks-{time.strftime('%Y%m%d')}.csv")
+        # The BOM is for Excel: without it a spreadsheet opens a UTF-8 CSV as mojibake.
+        return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
 
     @r.post("/api/groups/{gid}/export-obsidian")

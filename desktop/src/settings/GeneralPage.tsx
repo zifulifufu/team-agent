@@ -14,7 +14,7 @@ const BASE_ROWS: NumRow[] = [
   { key: "circuit_cooldown", title: "Circuit breaker: cooldown", titleZh: "熔断:冷却时间", desc: "How long to wait before giving that model another chance.", descZh: "熔断后隔多久再给这个模型一次机会。", min: 5, max: 600, unit: "s", unitZh: "秒" },
 ];
 const CTX_ROWS: NumRow[] = [
-  { key: "history_limit", title: "History messages to include", titleZh: "带入的历史消息条数", desc: "How many of the most recent group-chat messages accompany each model call. More flows better and costs more tokens.", descZh: "每次调用模型时附带的最近群聊消息数量。越多越连贯,也越耗 token。", min: 4, max: 100, unit: "", unitZh: "条" },
+  { key: "history_limit", title: "History messages to include", titleZh: "带入的历史消息条数", desc: "How many of the most recent group-chat messages accompany each model call. More flows better and costs more tokens. This is the whole of a member's memory of the conversation, so a long collaboration wants a large number.", descZh: "每次调用模型时附带的最近群聊消息数量。越多越连贯,也越耗 token。这就是成员对整段对话的记忆范围,长任务建议调大。", min: 1, max: 200, unit: "", unitZh: "条" },
   { key: "history_clip", title: "Most kept of one history message", titleZh: "单条历史消息最多带入", desc: "When an older message is too long, keep its beginning and end and drop the middle, so one long text cannot fill the context. The newest message is untouched.", descZh: "过去的某条消息太长时,只保留开头和结尾、省掉中间,防止一篇长文占满上下文。最新的一条不受影响。", min: 200, max: 20000, unit: "chars", unitZh: "字" },
   { key: "tool_output_limit", title: "Most tool output fed back", titleZh: "工具结果最多回填", desc: "When a tool (search, web fetch, …) returns too much, cut it to this many characters before feeding it back to the model.", descZh: "工具(检索、抓取网页等)返回的内容太长时,回填给模型前截到这么多字。", min: 500, max: 50000, unit: "chars", unitZh: "字" },
 ];

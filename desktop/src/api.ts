@@ -1205,6 +1205,8 @@ async function download(path: string, fallbackName: string, what: string): Promi
 
 export const downloadBackup = (includeKeys: boolean) => download(`/api/data/export?include_keys=${includeKeys}`, "team-agent-backup.db", tr("Export"));
 export const downloadChat = (gid: string) => download(`/api/groups/${gid}/export`, "chat.md", tr("Export"));
+/** Every task of every board this group has run, as one table. */
+export const downloadTasks = (gid: string) => download(`/api/groups/${gid}/export-tasks`, "tasks.csv", tr("Export"));
 
 /** Pull an Ollama model, reporting progress line by line; returns whether it succeeded. */
 export async function pullLocalModel(

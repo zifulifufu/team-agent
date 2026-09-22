@@ -143,3 +143,43 @@ def test_export_chat_markdown_and_obsidian(tmp_path):
     assert "_chat-log" in p and open(p, encoding="utf-8").read().startswith("# ")
     r = c.post("/api/obsidian/sync").json()
     assert r["imported"] == 0 and store.list_memories() == []                          # exported chats are not re-imported as memories
+
+
+def test_export_every_task_list_as_one_table(tmp_path):
+    """The boards also travel inside the markdown export, as part of the conversation. This is the
+    same information as a table, for the question "what is still open" rather than "what happened":
+    one row per task, across every board the group has run."""
+    import csv
+    import io
+
+    c, app = make(tmp_path)
+    store = app.state.store
+    g = store.list_groups()[0]
+    store.add_message(g["id"], "user", None, "我", "做个发布会方案")
+    store.add_message(g["id"], "plan", None, "任务板", "分工", meta={
+        "kind": "plan", "goal": "发布会方案", "status": "done",
+        "tasks": [
+            {"id": "t1", "owner": "文案", "title": "写开场白", "status": "done", "deliverable": "一段开场白"},
+            {"id": "t2", "owner": "校对", "title": "检查错别字", "status": "failed", "error": "模型调用失败"},
+        ]})
+
+    r = c.get(f"/api/groups/{g['id']}/export-tasks")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert "filename*=UTF-8''" in r.headers["content-disposition"] and "tasks" in r.headers["content-disposition"]
+    body = r.content.decode("utf-8")
+    assert body.startswith("\ufeff"), "without a BOM, Excel opens a UTF-8 CSV as mojibake"
+    rows = list(csv.reader(io.StringIO(body.lstrip("\ufeff"))))
+    assert rows[0][:6] == ["Board time", "Board", "Goal", "Task", "Owner", "What"]
+    assert len(rows) == 3                                   # a header and one row per task
+    assert rows[1][3:7] == ["t1", "文案", "写开场白", "Done"]
+    assert rows[2][6] == "Failed" and rows[2][8] == "模型调用失败"
+
+    # Task states are machine values in the database; the table says them in the reader's language.
+    zh = c.get(f"/api/groups/{g['id']}/export-tasks?lang=zh").content.decode("utf-8")
+    zh_rows = list(csv.reader(io.StringIO(zh.lstrip("\ufeff"))))
+    assert zh_rows[0][0] == "任务板时间" and zh_rows[1][6] == "已完成"
+
+    # The markdown export says them the same way, and shows why a task failed.
+    md = c.get(f"/api/groups/{g['id']}/export").text
+    assert "[Done] 文案:写开场白" in md and "[Failed] 校对:检查错别字 — 模型调用失败" in md
+    assert c.get("/api/groups/nope/export-tasks").status_code == 404
