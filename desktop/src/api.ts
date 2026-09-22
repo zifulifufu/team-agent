@@ -109,6 +109,10 @@ export interface ModelOptions {
   new_count: number;
   models: ModelOption[];
 }
+/** Where a member came from. Empty for one made here by hand; `model` for one created by
+ *  pulling a model in; `workbuddy:<slug>` for one imported from an expert package, which is
+ *  also what makes a second import of the same package a skip. */
+export type AgentOrigin = "" | "model" | `workbuddy:${string}`;
 export interface Agent {
   id: string;
   name: string;
@@ -118,7 +122,7 @@ export interface Agent {
   model_id: string | null;         // null = pick a model automatically from the strength tags
   skills: string[];
   tags: Tag[];                     // Strengths this role needs; used to pick models for the member and to split work
-  origin?: "" | "model";           // "model" = a member created automatically when a model from My models was pulled into the group (the member is that model itself)
+  origin?: AgentOrigin;            // "model" = a member created automatically when a model from My models was pulled into the group (the member is that model itself); "workbuddy:<slug>" = imported from an expert package
   engine?: string;                 // Non-empty = an external agent member (e.g. workbuddy): it bypasses model routing and speaks through its own CLI engine
   engine_cfg?: ExternalCfg;
 }
@@ -638,7 +642,7 @@ export interface McpTemplate {
 export interface ImportSource {
   key: string;
   app: string;
-  kind: "mcp" | "skill";
+  kind: "mcp" | "skill" | "expert";
   format: string;
   notes: string;
   found: boolean;
@@ -649,7 +653,7 @@ export interface ImportSource {
 /** One importable thing. For an MCP server the credential-bearing fields come back masked:
  *  the import re-reads the source file on the server, so a key never has to reach here. */
 export interface ImportItem {
-  kind: "mcp" | "skill";
+  kind: "mcp" | "skill" | "expert";
   source: string;
   app: string;
   name: string;
@@ -668,6 +672,12 @@ export interface ImportItem {
   // skill
   folder?: string;
   chars?: number;
+  // expert: `name` is the package's stable key, `label` is what the package calls itself —
+  // four shipped experts share one display name, so the two are not interchangeable
+  label?: string;
+  role?: string;
+  avatar?: string;
+  bundled_skills?: number;
 }
 export interface ImportScan {
   items: ImportItem[];
@@ -758,7 +768,7 @@ export interface Capabilities {
     model: { id: string; display_name: string; strengths: Tag[]; is_local: boolean } | null;
     manual_model: boolean;
     strengths: Tag[];              // Member role strengths ∪ strengths of the models used (at most 6)
-    origin: "" | "model";
+    origin: AgentOrigin;
     engine?: string;               // Non-empty = an external agent
     model_problem: string;         // Why the assigned model is unusable right now (another model is used instead); empty = fine
   }[];
@@ -1059,6 +1069,10 @@ export const api = {
     post<{ added: string[]; skipped: string[] }>("/api/import/mcp", { source, names }),
   importSkillsFrom: (source: string, names: string[]) =>
     post<{ added: string[]; skipped: string[] }>("/api/import/skills", { source, names }),
+  /** Expert packages become members. No model is pinned and no skill is attached — that is
+   *  a decision for whoever reads what the package actually says. */
+  importExpertsFrom: (source: string, names: string[]) =>
+    post<{ added: string[]; skipped: string[]; notes?: string[] }>("/api/import/experts", { source, names }),
   mcpImportParse: (text: string) => post<McpImportPreview>("/api/mcp/import/parse", { text }),
   mcpImport: (text: string, names: string[]) => post<{ added: McpServer[]; skipped: string[] }>("/api/mcp/import", { text, names }),
   addMcp: (b: Record<string, unknown>) => post<McpServer>("/api/mcp", b),

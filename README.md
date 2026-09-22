@@ -148,9 +148,9 @@ webhook's usual symptom is silence.
 
 ## Bringing definitions in from other AI apps
 
-*Settings → MCP servers / Skills → **From another app*** reads the configuration those
-applications already keep on this machine and imports what they contain, instead of asking
-you to copy a config by hand.
+*Settings → MCP servers / Skills → **From another app***, and *Members → **Import experts***,
+read the definitions those applications already keep on this machine and import what they
+contain, instead of asking you to copy a config by hand.
 
 **What travels, and what does not.** MCP has become the shared standard for "a plugin" —
 Claude Desktop, Claude Code, Codex, Cursor, Windsurf, Cline, Roo Code, Continue, LM Studio
@@ -161,10 +161,31 @@ application produces; a ChatGPT GPT is a prompt plus authenticated actions behin
 a Cursor or VS Code extension is TypeScript against a different host API. The importer says
 so rather than offering buttons that would silently import nothing.
 
+**WorkBuddy, if you also run it.** Three of its assets map onto something that exists here,
+and each is kept in a different shape on disk, so all three are read:
+
+| What | Where it is read from | What it becomes |
+| --- | --- | --- |
+| Skills | `~/.workbuddy/skills`, plus the `skills/` of the plugins it has installed | a skill (same `SKILL.md`, so the text moves unchanged) |
+| Experts | the `agents/*.md` of the installed plugins and of the expert packages | a member: the package's name, profession and prompt |
+| Connectors | `~/.workbuddy/connectors/*/mcp.json`, plus its whole connector catalogue | an MCP server (remote), imported disabled |
+
+Two things deliberately do not travel. An expert package's picture, because avatars here are
+a single emoji — one is picked from what the expert is about instead. And the **authorization**
+on a connector: that lives in WorkBuddy, so an imported connector will refuse its first call
+until you supply a credential of your own. Every imported connector says so on the row, and
+the catalogue is kept out of a full scan because it runs to hundreds of entries — ask for it
+by name. Some agent files are a one-line template include (`{% include … %}`) whose real text
+is somewhere else; those are counted and reported rather than imported as a member that would
+say nothing.
+
 **How it reads.** Only a fixed list of paths (the ten applications above, plus the skills and
-MCP servers bundled inside installed Claude Code plugins). No walking of the home directory,
-no following symlinks, a size cap per file, and a cap on how many entries are handled. A scan
-reports a broken config instead of failing.
+MCP servers bundled inside installed Claude Code or WorkBuddy plugins). No walking of the home
+directory, no following symlinks, a size cap per file, and a cap on how many entries are
+handled. WorkBuddy's installed-plugin paths come from its own record rather than a wildcard —
+that is also what keeps a plugin stored at three versions from being offered three times — and
+any path in that record pointing outside the home directory is ignored. A scan reports a broken
+config instead of failing.
 
 **Nothing runs.** A scan reads text; an import writes rows. Secrets in a source config
 (`env`, `headers`) are masked in the preview and never sent to the UI — the import re-reads

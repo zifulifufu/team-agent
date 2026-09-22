@@ -475,7 +475,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .chan-dot.on { color: var(--success, var(--chart-1)); }
 .chan-dot.warn { color: var(--warning, var(--danger)); }
 
-/* 从其他 AI 应用导入:条目列表与勾选 */
+/* Importing from another AI application: the item list and its tick boxes */
 .ia .setting-row { align-items: flex-start; }
 .ia-pick { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .ia-pick input { margin: 0; }

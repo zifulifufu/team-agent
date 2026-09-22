@@ -10,6 +10,11 @@ because the honest answer is narrower than "install plugins from other AI apps":
   imports.
 * **Skills — yes**, when they are Claude-style `SKILL.md` folders: this project's own
   skills use the same frontmatter-plus-markdown format, so the text moves across as-is.
+* **WorkBuddy's own experts, skills and connectors — yes**, and this is the common case
+  when this app is installed next to WorkBuddy. It keeps them in three separate shapes on
+  disk — a skill folder, an expert package whose `agents/*.md` is the prompt, and
+  `mcp.json` for connectors — and each one maps onto something that already exists here
+  (a skill, a member, an MCP server). `SOURCES` below says where each one lives.
 * **This project's own plugins — no.** A plugin here is a Python file calling
   `register()`. No other application produces that, so there is nothing to import; the
   plugin format stays hand-written on purpose (see README, "Plugins").
@@ -40,13 +45,23 @@ from typing import Any
 
 from . import i18n
 from .mcp_client import parse_mcp_json
+from .tools import frontmatter_value
 
 # Bounds: a config file is a few kilobytes, and a skill is a document. Anything larger is
 # not what this is looking for, and a home directory is not something to walk unbounded.
 MAX_FILE_BYTES = 512 * 1024
 MAX_SKILL_BYTES = 256 * 1024
-MAX_ITEMS = 200
+# The ceiling on one source's entries and on a whole scan. It has to sit above a real total: a
+# single WorkBuddy connector record holds 227 servers, and the connector catalogue is another
+# 226, so a lower number would quietly present a shorter list than the machine actually has.
+MAX_ITEMS = 600
 MAX_SKILL_DEPTH = 4
+# How many of another application's installed plugins are looked at. Its own record of what
+# is installed is the only thing read, so this is a sanity bound rather than a search limit.
+MAX_PLUGINS = 400
+# What an expert's prompt is allowed to be. Expert packages are documents, but one of them
+# being a megabyte would mean it is not a prompt.
+MAX_EXPERT_BYTES = 256 * 1024
 
 SECRET_KEY = re.compile(r"(key|token|secret|password|passwd|credential|auth)", re.I)
 # Characters that turn an argument list into something a shell would interpret. An MCP
@@ -65,6 +80,51 @@ def _expand(raw: str) -> Path:
     if s.startswith("~"):
         s = str(_home()) + s[1:]
     return Path(s)
+
+
+# ------------------------------------------------------- what another app has installed
+# WorkBuddy keeps every version of a plugin side by side under `plugins/cache`
+# (`…/sheetagent/5.5.6-…` next to `…/sheetagent/0.1.1784877812`), so globbing that tree would
+# offer the same expert three times over. Its own `installed_plugins.json` says which copy is
+# the installed one — one entry per plugin, no duplicates — so that record is what is read.
+WORKBUDDY_PLUGINS = "~/.workbuddy/plugins/installed_plugins.json"
+
+
+def installed_plugins() -> list[dict]:
+    """Every plugin another WorkBuddy-style app records as installed: `{key, marketplace, path}`.
+
+    Paths come out of a file this program does not control, so two things are enforced here
+    rather than trusted: the record itself has to be inside the home directory, and every
+    install path it names has to resolve into the home directory as well. A plugin list is
+    not a reason to read anywhere else on the disk.
+    """
+    out: list[dict] = []
+    root = _home().resolve()
+    record = _expand(WORKBUDDY_PLUGINS)
+    try:
+        if record.is_symlink() or not record.is_file() or record.stat().st_size > MAX_FILE_BYTES:
+            return []
+        data = json.loads(record.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, ValueError):
+        return []
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return []
+    for key, entries in list(plugins.items())[:MAX_PLUGINS]:
+        for e in entries if isinstance(entries, list) else []:
+            raw = str((e or {}).get("installPath") or "") if isinstance(e, dict) else ""
+            if not raw:
+                continue
+            p = Path(raw)
+            try:
+                real = p.resolve()
+                if p.is_symlink() or not real.is_dir() or not real.is_relative_to(root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            out.append({"key": str(key), "marketplace": str(key).split("@")[-1], "path": real})
+            break                      # one install per plugin: the record can hold several
+    return out
 
 
 # ------------------------------------------------------------------ the table
@@ -150,6 +210,48 @@ SOURCES: list[dict[str, Any]] = [
      "notes": ("Skills bundled inside installed plugins (found by glob, so the marketplace and "
                "plugin names do not have to be known in advance).",
                "已安装插件里附带的技能(用通配符找,所以不必预先知道市场与插件的名字)。")},
+
+    # --------------------------------------------------------------- WorkBuddy itself
+    # Three assets, three shapes on disk, three destinations here:
+    #   * a skill      ~/.workbuddy/skills/<name>/SKILL.md              -> a skill
+    #   * an expert    <installed plugin>/agents/<name>.md              -> a member
+    #   * a connector  ~/.workbuddy/connectors/<workspace>/mcp.json     -> an MCP server
+    {"key": "workbuddy-skills", "app": "WorkBuddy skills", "kind": "skill", "format": "tree",
+     "root": "~/.workbuddy/skills",
+     "notes": ("The skills kept in WorkBuddy's own skills folder. Same SKILL.md format, so the "
+               "text moves across unchanged.",
+               "WorkBuddy 技能目录里的技能。SKILL.md 格式相同,文本可原样搬过来。")},
+    {"key": "workbuddy-plugin-skills", "app": "WorkBuddy plugin skills", "kind": "skill",
+     "format": "installed", "sub": "skills", "root": "~/.workbuddy/plugins",
+     "notes": ("Skills that the plugins installed in WorkBuddy ship with. Read from its own "
+               "record of what is installed, so a plugin kept at several versions is offered once.",
+               "WorkBuddy 里已安装插件附带的技能。按它自己的已安装记录读取,所以同一个插件存了多个版本也只出现一次。")},
+    {"key": "workbuddy-experts", "app": "WorkBuddy experts", "kind": "expert",
+     "format": "installed", "sub": "agents", "glob": "*.md", "root": "~/.workbuddy/plugins",
+     "notes": ("Expert packages: each `agents/*.md` is a name, a profession and the prompt, and "
+               "becomes a member here. The prompt is kept in the language its author wrote it in, "
+               "and the package's picture is not carried over — avatars here are emoji.",
+               "专家包:每个 `agents/*.md` 就是名称、专业方向与提示词,在这里变成一个成员。提示词保持作者原来的语言;"
+               "专家包里的头像图不会带过来——本应用的头像是 emoji。")},
+    {"key": "workbuddy-connectors", "app": "WorkBuddy connectors", "kind": "mcp", "format": "glob",
+     "glob": "~/.workbuddy/connectors/*/mcp.json", "json_keys": ["mcpServers"],
+     "risks": [("It is authorized inside WorkBuddy, which is where the credential lives — this app "
+                "does not have it, so the server will refuse the first call until you supply one",
+                "它在 WorkBuddy 里是已授权的,凭据留在那边——本应用没有这份凭据,不补上之前第一次调用就会被拒")],
+     "notes": ("The connectors this machine has set up. They are remote services, so the name and "
+               "address travel but the authorization does not.",
+               "本机已经配置过的连接器。它们是远端服务,所以名称和地址能搬过来,授权不能。")},
+    {"key": "workbuddy-connector-catalog", "app": "WorkBuddy connector catalogue", "kind": "mcp",
+     "format": "glob", "bulk": True,
+     "glob": "~/.workbuddy/connectors-marketplace/connectors/*/mcp.json", "json_keys": ["mcpServers"],
+     "risks": [("From WorkBuddy's connector catalogue rather than your own list: it is a name and an "
+                "address, with no authorization attached — most of these need an account before "
+                "they will answer",
+                "来自 WorkBuddy 的连接器目录,而不是你自己配好的那一批:只有名称和地址,不带授权——"
+                "其中大多数要先有账号才会应答")],
+     "notes": ("Every connector WorkBuddy's catalogue knows about (it is a long list, so it is left "
+               "out of a full scan and only read when you ask for it by name).",
+               "WorkBuddy 连接器目录里的全部条目(数量很多,所以不参与整体扫描,只有点名看它时才读)。")},
 ]
 
 BY_KEY = {s["key"]: s for s in SOURCES}
@@ -171,12 +273,27 @@ def paths_of(src: dict) -> list[Path]:
     A `tree` source may use a wildcard (`…/marketplaces/*/plugins/*/skills`), because the
     marketplace and plugin names are not known in advance — so it is expanded here rather
     than looked up as a literal directory.
+
+    An `installed` source has no fixed path at all: the directories are whatever the other
+    application's plugin record says is installed, joined with the subdirectory this source
+    cares about (`skills`, `agents`).
     """
     if src["format"] == "tree":
         raw = str(src["root"])
         if "*" in raw:
             return sorted((Path(p) for p in glob.glob(str(_expand(raw)))), key=str)[:MAX_ITEMS]
         return [_expand(raw)]
+    if src["format"] == "installed":
+        sub = str(src.get("sub") or "")
+        found = []
+        for pl in installed_plugins():
+            d = (pl["path"] / sub) if sub else pl["path"]
+            try:
+                if not d.is_symlink() and d.is_dir():
+                    found.append(d)
+            except OSError:
+                continue
+        return found[:MAX_ITEMS]
     if src["format"] == "glob":
         return []                                    # resolved by `_files_of` instead
     out = []
@@ -309,6 +426,213 @@ def _skill_items(src: dict, store: Any) -> list[dict]:
     return out
 
 
+# ------------------------------------------------------------- expert packages
+# A WorkBuddy expert package is a folder holding `agents/<name>.md` (the prompt, with the
+# name and the profession in frontmatter), `avatars/<name>.png`, and sometimes `skills/`.
+# It becomes an ordinary member here. Two parts of it cannot travel: the picture, because
+# avatars in this app are a single emoji, and the bundled skills, which are offered by the
+# skill sources instead of being smuggled in with the expert.
+EXPERT_AVATARS: list[tuple[tuple[str, ...], str]] = [
+    (("writ", "paper", "academic", "thesis", "essay", "proofread", "editor", "写", "论文", "编辑", "校对"), "✍️"),
+    (("image", "design", "poster", "slide", "video", "图", "设计", "海报", "视频"), "🎨"),
+    (("code", "program", "software", "engineer", "代码", "开发", "编程"), "💻"),
+    (("data", "statist", "analytic", "metric", "数据", "统计", "分析"), "📊"),
+    (("financ", "invest", "stock", "account", "金融", "投资", "财务", "股票"), "📈"),
+    (("legal", "law", "compliance", "contract", "法律", "合规", "合同"), "⚖️"),
+    (("medic", "clinic", "health", "医学", "临床", "健康"), "🩺"),
+    (("research", "science", "literature", "文献", "研究", "科研"), "🔬"),
+    (("translat", "language", "english", "翻译", "英语", "语言"), "🌐"),
+    (("teach", "tutor", "course", "教学", "课程", "教育"), "🎓"),
+    (("market", "brand", "sales", "growth", "营销", "品牌", "增长"), "📣"),
+    (("product", "project", "manager", "plan", "产品", "项目", "计划", "管理"), "🧭"),
+]
+
+
+def expert_avatar(*texts: str) -> str:
+    """The emoji that stands in for an expert package's picture.
+
+    Deterministic and explainable rather than clever: the first group of keywords that
+    appears in the expert's name, profession or summary wins, and an expert about none of
+    them gets the generic one. Picking a picture is not worth a model call.
+    """
+    blob = " ".join(t.lower() for t in texts if t)
+    for words, emoji in EXPERT_AVATARS:
+        if any(w in blob for w in words):
+            return emoji
+    return "🧑‍🔬"
+
+
+def _parse_expert(text: str, default_name: str, path: str = "") -> dict:
+    """Read one expert package's agent file: frontmatter plus the body, which is the prompt.
+
+    Deliberately not `parse_skill_text`, because the two frontmatters differ in the way that
+    matters here: its reader treats an indented line as a nested key to skip, which would
+    quietly reduce `displayName: {en, zh}` to nothing and leave the expert named after its
+    folder. The scalar reader *is* shared, so `description: >` behaves the same in both.
+    """
+    out = {"name": default_name, "description": "", "display_en": "", "display_zh": "",
+           "profession_en": "", "profession_zh": "", "body": (text or "").strip(), "path": path}
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text or "", re.S)
+    if not m:
+        return out
+    out["body"] = m.group(2).strip()
+    lines = m.group(1).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        if line.startswith((" ", "\t")):          # indented without its parent key
+            i += 1
+            continue
+        key, _, rest = line.partition(":")
+        key, rest = key.strip(), rest.strip()
+        if not rest:                              # a one-level nested map follows
+            block: dict[str, str] = {}
+            i += 1
+            while i < len(lines) and (lines[i].startswith((" ", "\t")) or not lines[i].strip()):
+                sub = lines[i].strip()
+                i += 1
+                if sub:
+                    sk, _, sv = sub.partition(":")
+                    block[sk.strip()] = sv.strip().strip("'\"")
+            field = {"displayName": "display", "profession": "profession"}.get(key)
+            if field:
+                for lang in ("en", "zh"):
+                    if block.get(lang):
+                        out[f"{field}_{lang}"] = block[lang]
+            continue
+        value, i = frontmatter_value(lines, i)
+        if key == "name" and value:
+            out["name"] = value
+        elif key == "description":
+            out["description"] = value
+    return out
+
+
+def _slug(value: str) -> str:
+    """A stable, language-independent key for an expert package."""
+    return re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")[:60]
+
+
+def _is_template_body(body: str) -> bool:
+    """Is this body nothing but template directives?
+
+    A few of the shipped agents are a one-line include — `{% include "…/prompt.tpl" %}` —
+    while the text they stand for lives in a separate template file. Importing one would
+    create a member whose entire prompt is that directive: a member that says nothing, while
+    the list of what was found claims it is there. They are skipped, and the count is
+    reported, so the difference between "not on this machine" and "not a prompt" stays visible.
+    """
+    rest = re.sub(r"\{%.*?%\}|\{\{.*?\}\}", "", body or "", flags=re.S)
+    return not rest.strip()
+
+
+def expert_label(ex: dict, lang: str, fallback: str = "") -> str:
+    """What to call this expert in `lang`: its own name for itself if it has one, else the
+    other language's, else whatever it was filed under."""
+    if lang == "zh":
+        return ex.get("display_zh") or ex.get("display_en") or fallback or ex.get("name") or ""
+    return ex.get("display_en") or ex.get("display_zh") or fallback or ex.get("name") or ""
+
+
+def _expert_items(src: dict, store: Any, notes: list[str] | None = None) -> list[dict]:
+    """Expert packages found under this source, as members-to-be. Read-only."""
+    pattern = str(src.get("glob") or "*.md")
+    agents = store.list_agents()
+    out: list[dict] = []
+    stubs = 0
+    for root in paths_of(src):
+        try:
+            found = sorted(root.glob(pattern))[:MAX_ITEMS]
+        except OSError:
+            continue
+        for path in found:
+            try:
+                if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_EXPERT_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            ex = _parse_expert(text, path.stem, str(path))
+            body = (ex["body"] or "").strip()
+            if not body:
+                continue                          # a package with no prompt is not an expert
+            if _is_template_body(body):
+                stubs += 1
+                continue
+            slug = _slug(ex["name"]) or _slug(path.stem)
+            if not slug:
+                continue
+            label = expert_label(ex, i18n.current(), path.stem)
+            out.append({"kind": "expert", "source": src["key"], "app": src["app"],
+                        "name": slug, "label": label,
+                        "role": (ex["profession_zh"] if i18n.current() == "zh" else ex["profession_en"])
+                                or ex["profession_en"] or ex["profession_zh"] or "",
+                        "description": ex["description"], "chars": len(body),
+                        "avatar": expert_avatar(label, ex["profession_en"], ex["profession_zh"],
+                                                ex["description"], body[:400]),
+                        "bundled_skills": _bundled_skills(path),
+                        "path": str(path), "exists": _expert_exists(agents, slug)})
+    if stubs and notes is not None:
+        notes.append(i18n.pick_now(
+            f"{src['app']}: {stubs} agent file(s) are template stubs whose prompt lives in a "
+            "separate template file, so there is nothing to import from them",
+            f"{src['app']}:有 {stubs} 个 agent 文件只是模板片段(真正的提示词在另一个模板文件里),没有可导入的内容"))
+    # One pack ships four experts that all call themselves "PCXX AI Expert". A list where four
+    # rows read identically is a list nobody can choose from, so the package name is added
+    # where the display name is not unique. It is only the label: the member keeps the name
+    # the package chose for itself.
+    counts: dict[str, int] = {}
+    for it in out:
+        counts[it["label"]] = counts.get(it["label"], 0) + 1
+    for it in out:
+        if counts[it["label"]] > 1:
+            it["label"] = f'{it["label"]} ({it["name"]})'
+    return out
+
+
+def _bundled_skills(agent_file: Path) -> int:
+    """How many skills the package carries beside the expert. Counted, not imported: the
+    skill sources are the ones that install skills."""
+    try:
+        d = agent_file.parent.parent / "skills"
+        if d.is_dir() and not d.is_symlink():
+            return len(list(d.rglob("SKILL.md"))[:MAX_ITEMS])
+    except OSError:
+        pass
+    return 0
+
+
+def _expert_exists(agents: list[dict], slug: str) -> bool:
+    """Has this package already been imported?
+
+    Keyed on `origin` alone, which records the package rather than the name: the same expert
+    imported twice must be a skip, but a member that merely happens to share a display name
+    must not block it — one pack ships four experts that all call themselves the same thing.
+    """
+    return any((a.get("origin") or "") == f"workbuddy:{slug}" for a in agents)
+
+
+def unique_member_name(store: Any, wanted: str, slug: str) -> str:
+    """A free member name, because `agents.name` is unique.
+
+    Two packages can claim one display name (four shipped experts in a row call themselves
+    "PCXX AI Expert"), so the package's own slug is appended instead of letting the second
+    import fail on a constraint. Readable, and it says where the member came from.
+    """
+    taken = {a["name"] for a in store.list_agents()}
+    if wanted not in taken:
+        return wanted
+    alt = f"{wanted} ({slug})"
+    n = 2
+    while alt in taken:
+        alt = f"{wanted} ({slug} {n})"
+        n += 1
+    return alt
+
+
 def sources(store: Any) -> list[dict[str, Any]]:
     """Every source, with what was found on this machine. Read-only."""
     out = []
@@ -323,12 +647,26 @@ def sources(store: Any) -> list[dict[str, Any]]:
             item["files"] = [str(p) for p in files[:5]]
             if src["kind"] == "skill":
                 item["count"] = len(_skill_items(src, store))
+            elif src["kind"] == "expert":
+                item["count"] = len(_expert_items(src, store))
             else:
-                total = 0
+                # Counted by name, so "N found" is the number of rows the list will show rather
+                # than the number of definitions across its files (one connector can be in two
+                # of them). A single unreadable file does not blank the source either — the
+                # count is what parsed, and if nothing parsed at all, that file's reason is
+                # what the row says.
+                names: set[str] = set()
+                first_error = ""
                 for f in files:
-                    servers, _ = _read_at(src, f)
-                    total += len(servers)
-                item["count"] = total
+                    try:
+                        servers, _ = _read_at(src, f)
+                    except ValueError as e:
+                        first_error = first_error or str(e)
+                        continue
+                    names.update(s["name"] for s in servers)
+                item["count"] = len(names)
+                if not names and first_error:
+                    item["error"] = first_error[:200]
         except Exception as e:  # noqa: BLE001 — a source that cannot be read is reported, not fatal
             item["error"] = f"{type(e).__name__}: {e}"[:200]
         out.append(item)
@@ -346,14 +684,29 @@ def scan(store: Any, only: list[str] | None = None) -> dict:
 
     MCP servers come back with `env` / `headers` masked: the import step re-reads the file
     server-side, so the browser never has to hold a credential in order to move it.
+
+    A source marked `bulk` is skipped unless it is named explicitly. One of them is a
+    catalogue of every connector an application knows about — useful to search, wrong to
+    pour into the default list, where it would bury the handful of things that are actually
+    installed on this machine.
     """
-    wanted = [s for s in SOURCES if not only or s["key"] in only]
+    if only:
+        wanted = [s for s in SOURCES if s["key"] in only]
+    else:
+        wanted = [s for s in SOURCES if not s.get("bulk")]
     items: list[dict] = []
     notes: list[str] = []
     for src in wanted:
         if src["kind"] == "skill":
             items.extend(_skill_items(src, store))
             continue
+        if src["kind"] == "expert":
+            items.extend(_expert_items(src, store, notes))
+            continue
+        # Anything this source says about *all* of its servers goes first: on a remote
+        # connector it is the important part (the authorization stayed behind), and a
+        # per-server heuristic has nothing to say about it.
+        src_risks = [i18n.pick_now(en, zh) for en, zh in (src.get("risks") or [])]
         for path in _files_of(src):
             try:
                 servers, warns = _read_at(src, path)
@@ -367,15 +720,37 @@ def scan(store: Any, only: list[str] | None = None) -> dict:
                               "env_keys": sorted(s["env"]), "header_keys": sorted(s["headers"]),
                               "env": _mask(s["env"]), "headers": _mask(s["headers"]),
                               "description": s["description"], "enabled": s["enabled"],
-                              "path": str(path), "risks": risk_notes(s)})
+                              "path": str(path), "risks": src_risks + risk_notes(s)})
             for w in warns:
                 notes.append(f"{src['app']}: {w}")
     have_mcp = {m["name"] for m in store.list_mcp()}
     for it in items:
         if it["kind"] == "mcp":
             it["exists"] = it["name"] in have_mcp
-    return {"items": items[:MAX_ITEMS], "notes": notes[:20],
-            "truncated": len(items) > MAX_ITEMS}
+    # One application can define the same thing twice: WorkBuddy keeps a connector record per
+    # workspace, and two of them list the same connector. The list is keyed by name — ticking a
+    # row ticks that name — so a duplicate renders as two rows that move together, and only one
+    # of them could ever be imported. Keep the first and say what was folded away. Two *different*
+    # applications offering the same name is a different thing and stays visible: those are
+    # different definitions, and the import is per source.
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict] = []
+    folded: list[str] = []
+    for it in items:
+        key = (it["source"], it["kind"], it["name"])
+        if key in seen:
+            folded.append(it["name"])
+            continue
+        seen.add(key)
+        unique.append(it)
+    if folded:
+        shown = ", ".join(sorted(set(folded))[:3])
+        notes.append(i18n.pick_now(
+            f"{len(folded)} entry/entries are listed once because the same application defines "
+            f"them in more than one file: {shown}",
+            f"有 {len(folded)} 条同名条目只列一次,因为它们所属的同一个应用在多个文件里定义了它们:{shown}"))
+    return {"items": unique[:MAX_ITEMS], "notes": notes[:20],
+            "truncated": len(unique) > MAX_ITEMS}
 
 
 def import_mcp(store: Any, source: str, names: list[str]) -> dict:
@@ -428,3 +803,58 @@ def import_skills(store: Any, source: str, names: list[str]) -> dict:
         write_skill(store.data_dir / "skills", skill.name, skill.description, skill.body, "member")
         added.append(skill.name)
     return {"added": added, "skipped": skipped}
+
+
+def import_experts(store: Any, source: str, names: list[str]) -> dict:
+    """Import the named expert packages as members. Existing members are skipped, never touched.
+
+    The member is named and described in the language of this request — that is the name the
+    picker will show — while the prompt is copied exactly as the package wrote it. Translating
+    an expert's instructions would be inventing an expert, and the package is the only thing
+    here that knows what it is supposed to say.
+
+    `origin` records the package a member came from (`workbuddy:<slug>`). That is what makes a
+    second import a skip instead of a duplicate, and it stays true if the user renames them.
+    """
+    src = BY_KEY.get(source)
+    if not src or src["kind"] != "expert":
+        raise ValueError(i18n.pick_now("That is not an expert source", "这不是一个专家来源"))
+    lang = i18n.current()
+    added: list[str] = []
+    skipped: list[str] = []
+    notes: list[str] = []
+    for item in _expert_items(src, store):
+        if item["name"] not in names:
+            continue
+        label = item["label"] or item["name"]
+        if item["exists"]:
+            skipped.append(label)
+            continue
+        try:
+            text = Path(item["path"]).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            skipped.append(label)
+            continue
+        ex = _parse_expert(text, Path(item["path"]).stem, item["path"])
+        body = (ex["body"] or "").strip()
+        if not body:
+            skipped.append(label)
+            continue
+        wanted = expert_label(ex, lang, Path(item["path"]).stem)
+        name = unique_member_name(store, wanted, item["name"])
+        if name != wanted:
+            notes.append(i18n.pick_now(
+                f'A member named "{wanted}" is already here, so this one is called "{name}" — '
+                "rename it whenever you like",
+                f"已有名为「{wanted}」的成员,所以这一位叫「{name}」——随时可以改名"))
+        role = ((ex["profession_zh"] if lang == "zh" else ex["profession_en"])
+                or ex["profession_en"] or ex["profession_zh"] or "")
+        store.create_agent(name, item["avatar"], role, body, None, [], [],
+                           origin=f"workbuddy:{item['name']}")
+        added.append(name)
+        if item["bundled_skills"]:
+            notes.append(i18n.pick_now(
+                f"{name} ships {item['bundled_skills']} skill(s) of its own — import those from the "
+                "skill sources, so you can see what they contain before installing them",
+                f"「{name}」自带了 {item['bundled_skills']} 个技能——请到技能来源里单独导入,这样你能先看清内容再装"))
+    return {"added": added, "skipped": skipped, "notes": notes}

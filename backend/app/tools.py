@@ -303,13 +303,16 @@ def safe_skill_name(name: str) -> str:
     return n[:60]
 
 
-def _frontmatter_value(lines: list[str], i: int) -> tuple[str, int]:
+def frontmatter_value(lines: list[str], i: int) -> tuple[str, int]:
     """Read one frontmatter value starting at line `i`, returning (value, next index).
 
     Handles the YAML block scalars (`>` folded, `|` literal) as well as a plain or quoted
     one-liner. That matters because the two notations are equally common in the wild — a
     Claude-style skill whose description is written as `description: >` would otherwise be
     read as the literal string ">", and importing it would look like it worked.
+
+    Public because a second reader (the expert packages imported from WorkBuddy) has the
+    same problem with the same notation, and a rule that exists in two places drifts.
     """
     key, sep, rest = lines[i].partition(":")
     if not sep:
@@ -339,7 +342,7 @@ def parse_skill_text(text: str, default_name: str, path: str = "") -> Skill:
                 i += 1
                 continue                       # blank, comment, or a nested key we do not use
             key = line.partition(":")[0].strip()
-            value, i = _frontmatter_value(lines, i)
+            value, i = frontmatter_value(lines, i)
             if key == "name" and value:
                 name = value
             elif key == "description":

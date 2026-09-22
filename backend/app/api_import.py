@@ -1,8 +1,8 @@
 """The routes behind "import from another AI application".
 
 Read-only discovery, then an explicit import of what was ticked. Nothing here starts a
-process or enables a server: an imported MCP server lands disabled, and importing a skill
-only writes text.
+process or enables a server: an imported MCP server lands disabled, importing a skill only
+writes text, and importing an expert only creates a member.
 
 Splitting discovery from import is deliberate. The scan reports what is on the machine; the
 import is a separate request that names exactly what to take, and it re-reads the source
@@ -65,6 +65,19 @@ def build_import_router(store: Any) -> APIRouter:
             raise HTTPException(400, i18n.pick_now("Nothing was selected", "没有选中任何条目"))
         try:
             got = import_sources.import_skills(store, body.source, body.names)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return got
+
+    @r.post("/api/import/experts")
+    async def take_experts(body: TakeIn) -> dict:
+        """Expert packages become members. They arrive with no model pinned and no skills
+        attached: the member is the package's prompt, and what it should use here is a
+        decision for whoever reads it."""
+        if not body.names:
+            raise HTTPException(400, i18n.pick_now("Nothing was selected", "没有选中任何条目"))
+        try:
+            got = import_sources.import_experts(store, body.source, body.names)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         return got

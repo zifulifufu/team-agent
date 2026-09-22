@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, ChevronRight, Cpu, Crown, Settings2, TerminalSquare, UserMinus } from "lucide-react";
+import { AlertTriangle, ChevronRight, Cpu, Crown, GraduationCap, Settings2, TerminalSquare, UserMinus } from "lucide-react";
 import { api, type Capabilities, type Group } from "../../api";
 import { useData } from "../../data";
 import { useConfirm } from "../../ui";
@@ -66,6 +66,7 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
               ? t("External agent: replies come from a chat gateway you configured, not through this app's model routing")
               : t("External agent: replies come from a command-line engine of its own, not through this app's model routing")}><TerminalSquare size={10} /> {t("External")}</span>}
             {m.origin === "model" && <span className="chip mc-model-chip" title={t("Added to the group from \"Models I added\"")}><Cpu size={10} /> {t("Model")}</span>}
+            {m.origin?.startsWith("workbuddy:") && <span className="chip mc-model-chip" title={t("Imported from an expert package in WorkBuddy — the prompt is that package's own text")}><GraduationCap size={10} /> {t("Expert")}</span>}
           </span>
           <span className="mc-sub">{m.role || t("Member")}{modelText ? ` · ${modelText}` : ""}</span>
         </span>

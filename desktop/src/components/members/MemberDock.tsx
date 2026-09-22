@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useData } from "../../data";
-import type { Group } from "../../api";
+import type { AgentOrigin, Group } from "../../api";
 import { useCapabilities } from "../GroupPanel";
 import MemberCard, { type MemberRow } from "./MemberCard";
 import { useI18n } from "../../i18n";
@@ -22,7 +22,7 @@ export default function MemberDock({ group }: { group: Group }) {
       .map((a) => ({
         agent_id: a.id, name: a.name, avatar: a.avatar, role: a.role, tags: a.tags,
         is_host: group.host_agent_id === a.id, skills: a.skills, model: null, manual_model: !!a.model_id, strengths: a.tags,
-        origin: (a.origin ?? "") as "" | "model", engine: a.engine ?? "", model_problem: "",
+        origin: (a.origin ?? "") as AgentOrigin, engine: a.engine ?? "", model_problem: "",
       }));
   }, [caps, group, agents]);
 

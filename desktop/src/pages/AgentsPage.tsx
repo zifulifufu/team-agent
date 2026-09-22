@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Plus, Settings2, Trash2 } from "lucide-react";
+import { GraduationCap, Plus, Settings2, Trash2 } from "lucide-react";
 import { api, type Agent, type AgentPreset, type Model, type PromptItem, type Skill } from "../api";
 import { useData } from "../data";
 import { useBusy, useConfirm, useFlash } from "../ui";
 import { StrengthChips, StrengthPicker } from "../components/Strengths";
 import { ModelSelect } from "../components/Health";
 import ExternalDialog from "../components/ExternalDialog";
+import ImportFromApps from "../components/ImportFromApps";
 import type { SettingsTab } from "../settings/SettingsModal";
 import { pick, useI18n } from "../i18n";
 import "../styles/models.css";
@@ -16,6 +17,8 @@ export default function AgentsPage({ onSettings }: { onSettings: (tab: SettingsT
   const { t } = useI18n();
   const { agents, reload } = useData();
   const [sel, setSel] = useState<string | "new" | null>(null);
+  const [fromApps, setFromApps] = useState(false);
+  const [flash, setFlash] = useState("");
   const creating = sel === "new";
   const cur = creating ? null : agents.find((a) => a.id === sel) ?? (sel === null ? agents[0] : null) ?? null;
 
@@ -24,8 +27,12 @@ export default function AgentsPage({ onSettings }: { onSettings: (tab: SettingsT
       <aside className="page-list">
         <div className="page-list-head">
           <h2>{t("Members")}</h2>
+          <button className="btn small" onClick={() => setFromApps(true)} title={t("Read the expert packages another AI application has on this machine")}>
+            <GraduationCap size={14} /> {t("Import experts")}
+          </button>
           <button className="btn small" onClick={() => setSel("new")}><Plus size={14} /> {t("New")}</button>
         </div>
+        {flash && <div className="ok-text small" style={{ padding: "6px 10px" }}>{flash}</div>}
         <div className="page-list-body">
           {agents.map((a) => (
             <button key={a.id} className={"list-item" + (!creating && cur?.id === a.id ? " on" : "")} onClick={() => setSel(a.id)}>
@@ -48,6 +55,17 @@ export default function AgentsPage({ onSettings }: { onSettings: (tab: SettingsT
           <div className="empty big">{t("No members yet — create one first")}</div>
         )}
       </section>
+      {fromApps && (
+        <ImportFromApps kind="expert" onClose={() => setFromApps(false)}
+                        onDone={async (added, skipped) => {
+                          setFromApps(false);
+                          await reload();
+                          setFlash(t("Imported {n} expert(s){skipped}.", {
+                            n: added,
+                            skipped: skipped ? t(", {n} already here", { n: skipped }) : "",
+                          }));
+                        }} />
+      )}
     </div>
   );
 }

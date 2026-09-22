@@ -36,6 +36,13 @@ def pick_transport(cfg: dict) -> str:
     return "sse" if re.search(r"/sse/?$", url) else "http"
 
 
+# A config file's own contents bound how many servers can be in it, and the 200KB text limit
+# above is the real guard. This is the backstop for a pathological paste. It has to sit well
+# above what a real file holds: WorkBuddy's connector record for one workspace is 227 entries,
+# and a cap of 50 there meant importing "your connectors" quietly offered a fifth of them.
+MAX_SERVERS_PER_FILE = 1000
+
+
 def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
     """Parse an MCP config JSON exported elsewhere (the mcpServers form shared by Claude
     Desktop / Cherry Studio / Cursor and others). Parsing only: nothing is saved or run.
@@ -56,7 +63,7 @@ def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
     if not isinstance(servers, dict) or not servers:
         raise ValueError(i18n.pick_now("No mcpServers found", "没有找到 mcpServers"))
     out: list[dict] = []
-    for name, cfg in list(servers.items())[:50]:
+    for name, cfg in list(servers.items())[:MAX_SERVERS_PER_FILE]:
         label = name or i18n.pick_now("Untitled", "未命名")
         if not isinstance(cfg, dict):
             warnings.append(i18n.pick_now(f"the configuration for \"{label}\" is not an object, so it was skipped", f"「{label}」的配置不是对象,已跳过"))
@@ -90,8 +97,9 @@ def parse_mcp_json(text: str) -> tuple[list[dict], list[str]]:
         })
     if not out:
         raise ValueError(i18n.pick_now("There are no servers to import", "没有可导入的服务器") + (":" + ";".join(warnings) if warnings else ""))
-    if len(servers) > 50:
-        warnings.append(i18n.pick_now("Only the first 50 are handled", "只处理前 50 个"))
+    if len(servers) > MAX_SERVERS_PER_FILE:
+        warnings.append(i18n.pick_now(f"Only the first {MAX_SERVERS_PER_FILE} are handled",
+                                      f"只处理前 {MAX_SERVERS_PER_FILE} 个"))
     return out, warnings
 
 
