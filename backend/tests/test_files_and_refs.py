@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import pathlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -400,3 +401,12 @@ def test_a_media_tool_is_found_even_when_the_app_was_started_from_the_finder(mon
     monkeypatch.setattr(_shutil, "which", lambda name: None)
     missing = attachments.tool("definitely-not-a-real-binary")
     assert missing is None, "and a tool that really is absent still reports as absent"
+
+
+def test_the_readers_of_the_new_file_kinds_are_declared_as_dependencies():
+    """They are imported lazily, so a missing one does not break the app — it just makes a
+    spreadsheet or a presentation "not supported yet", silently, on a fresh install. Declaring
+    them is the difference between working out of the box and looking broken."""
+    declared = (pathlib.Path(__file__).resolve().parents[1] / "requirements.txt").read_text(encoding="utf-8")
+    for package in ("openpyxl", "python-pptx", "pillow"):
+        assert package in declared, f"{package} is used but not declared in requirements.txt"

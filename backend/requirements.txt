@@ -7,3 +7,6 @@ pypdf>=4
 python-docx>=1.1
 pytest>=8
 pytest-asyncio>=0.23
+openpyxl>=3.1         # reading xlsx attachments and documents (.xlsx)
+python-pptx>=1.0      # reading pptx attachments and documents (.pptx)
+pillow>=10            # shrinking a picture before it is sent to a model
