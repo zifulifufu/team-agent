@@ -232,12 +232,24 @@ class _Conn:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         return " · ".join(lines[-keep:])[:300]
 
+    def with_output(self, message: str) -> str:
+        """`message`, plus what the child printed.
+
+        A server that dies while starting explains itself there and nowhere else — Resolve not
+        running, a module that is not installed, an argument it did not like — and without this the
+        report is just "Connection closed", which describes our end of a problem that happened at
+        the other one.
+        """
+        said = self.said()
+        if not said:
+            return message
+        return (message + i18n.pick_now(f" — the process printed: {said}",
+                                        f" —— 那个进程输出了:{said}"))[:600]
+
     def timeout_message(self, timeout: float) -> str:
         base = i18n.pick_now(f"Connection timed out ({int(timeout)}s)", f"连接超时({int(timeout)} 秒)")
-        said = self.said()
-        if said:
-            return base + i18n.pick_now(f" — the process printed: {said}",
-                                        f" —— 但那个进程输出了:{said}")
+        if self.said():
+            return self.with_output(base)
         # Nothing at all is its own diagnosis: a program that never speaks is not a server that is
         # slow, and sending the reader off to check their network would be advice that cannot work.
         return base + i18n.pick_now(
@@ -320,7 +332,7 @@ class _Conn:
             raise
         except BaseException as e:  # noqa: BLE001 — ExceptionGroup has to be caught as well
             self.state.status = "error"
-            self.state.error = _describe(e)
+            self.state.error = self.with_output(_describe(e))
         finally:
             self.session = None
             if self.state.status != "error":

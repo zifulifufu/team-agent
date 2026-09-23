@@ -400,6 +400,25 @@ async def test_a_stdio_command_that_never_answers_is_quoted_back(store, make_rou
     await mgr.disconnect("q")
 
 
+async def test_a_server_that_dies_at_startup_explains_itself(store, make_router):
+    """The other half of the same report: a server that exits instead of going quiet. It never
+    reaches the timeout branch, so quoting its output on the failure path is what turns "Connection
+    closed" — which describes our end — into the reason it gave on its own way out. A video-editing
+    server that cannot find the application it drives fails exactly like this."""
+    from app.mcp_client import McpManager
+
+    mgr = McpManager()
+    st = await mgr.connect(
+        {"id": "d", "name": "dies", "command": "/bin/sh",
+         "args": ["-c", "echo 'ImportError: no DaVinciResolveScript' 1>&2; exit 3"],
+         "env": {}, "url": "", "transport": "stdio", "headers": {}},
+        timeout=20,
+    )
+    assert st.status == "error"
+    assert "no DaVinciResolveScript" in st.error, st.error
+    await mgr.disconnect("d")
+
+
 # ------------------------------------------------------------------- plugins
 def test_plugins_listing_reload_source_delete_and_group_enablement(client):
     pdir = client.data / "plugins"
