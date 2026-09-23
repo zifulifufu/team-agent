@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, ExternalLink, FolderOpen, Loader2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ExternalLink, FolderOpen, Loader2, Server, ShieldAlert } from "lucide-react";
 import { api, type Agent, type ExternalCfg, type ExternalLevel, type ExternalOverview, type ExternalProbe, type Group } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
@@ -43,6 +43,14 @@ export default function ExternalDialog(props: Props) {
 
   const eng = ov?.engines.find((e) => e.id === engine) ?? ov?.engines[0];
   const isHttp = eng?.kind === "http";
+  // Non-null = this engine talks through a model provider (MetaChat): the address, the key and the
+  // model list are that provider's, so the dialog asks for none of them — only the model, picked
+  // from what the provider offers.
+  const bound = eng?.provider ?? null;
+  // An engine that lives on a provider is not something to *add*: its models join a group as
+  // ordinary members from "Models I added", so offering it here would be the second way in that
+  // this change removes. Members already using it stay listed and editable in Settings.
+  const pickable = ov?.engines.filter((e) => !e.provider) ?? [];
   const set = (p: Partial<ExternalCfg>) => setCfg((c) => (c ? { ...c, ...p } : c));
   const wasFull = edit?.engine_cfg?.level === "full";
   const needAck = !!cfg && cfg.level === "full" && !wasFull;
@@ -57,9 +65,12 @@ export default function ExternalDialog(props: Props) {
     setTesting(live ? "live" : "quick");
     setErr("");
     try {
-      // With a saved member the backend uses its stored key; before it is saved, whatever is typed here is used.
-      const body = { live, engine, agent_id: edit?.id, cli_path: cfg?.cli_path || undefined };
-      setProbe(await api.externalTest(edit ? body : { ...body, base_url: cfg?.base_url || undefined, api_key: cfg?.api_key || undefined }));
+      // With a saved member the backend uses its stored settings; before it is saved, whatever is
+      // typed here is used. A bound engine has no address or key to pass — the backend reads those
+      // from the provider — so only the model goes along.
+      const body = { live, engine, agent_id: edit?.id, cli_path: cfg?.cli_path || undefined, model: cfg?.model || undefined };
+      setProbe(await api.externalTest(edit || bound ? body
+        : { ...body, base_url: cfg?.base_url || undefined, api_key: cfg?.api_key || undefined }));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -69,6 +80,11 @@ export default function ExternalDialog(props: Props) {
 
   const payload = (): Partial<ExternalCfg> => {
     const c = cfg!;
+    if (bound) {
+      // Nothing of the provider's is copied into the member: only what the provider has no opinion
+      // about. The backend clears base_url/api_key here anyway; not sending them keeps that obvious.
+      return { model: c.model, timeout: c.timeout, handoff: c.handoff };
+    }
     if (isHttp) {
       return { model: c.model.trim(), timeout: c.timeout, handoff: c.handoff,
                base_url: c.base_url.trim(),
@@ -105,7 +121,7 @@ export default function ExternalDialog(props: Props) {
       actions={
         <>
           <button className="btn" onClick={props.onClose}>{t("Cancel")}</button>
-          <button className="btn primary" disabled={busy || blocked || !cfg || (needAck && !ack)} onClick={() => void submit()}>
+          <button className="btn primary" disabled={busy || blocked || !cfg || (needAck && !ack) || (!!bound && !cfg.model)} onClick={() => void submit()}>
             {props.mode === "create" ? (props.group ? t("Create and add to this group") : t("Create")) : t("Save")}
           </button>
         </>
@@ -116,7 +132,7 @@ export default function ExternalDialog(props: Props) {
           <div className="field">
             <span>{t("Which one should join?")}</span>
             <div className="ext-engines" role="radiogroup" aria-label={t("Which one should join?")}>
-              {ov.engines.map((e) => (
+              {pickable.map((e) => (
                 <label key={e.id} className={"ext-engine" + (engine === e.id ? " on" : "")}>
                   <input type="radio" name="ext-engine" checked={engine === e.id} onChange={() => setEngine(e.id)} />
                   <span className="ext-engine-body">
@@ -158,7 +174,9 @@ export default function ExternalDialog(props: Props) {
 
         <div className="ext-status">
           {!eng ? <span className="muted small">{t("Checking…")}</span> : isHttp ? (
-            <span className={cfg?.base_url || eng.base_url ? "ext-ok" : "ext-bad"}><CheckCircle2 size={14} /> {t("Chat gateway · {url}", { url: cfg?.base_url || eng.base_url })}</span>
+            <span className={(() => { const u = bound ? bound.base_url : cfg?.base_url || eng.base_url; return u ? "ext-ok" : "ext-bad"; })()}>
+              <CheckCircle2 size={14} /> {t("Chat gateway · {url}", { url: (bound ? bound.base_url : cfg?.base_url || eng.base_url) || t("no address yet") })}
+            </span>
           ) : eng.found ? (
             <span className="ext-ok"><CheckCircle2 size={14} /> {t("Command-line engine found")}{probe?.version ? t(" · version {v}", { v: String(probe.version) }) : ""}<small title={eng.path}>{eng.path}</small></span>
           ) : (
@@ -189,30 +207,70 @@ export default function ExternalDialog(props: Props) {
 
             {isHttp ? (
               <>
-                <label className="field">
-                  <span>{t("API address (empty = the default for this engine)")}</span>
-                  <input value={cfg.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder={eng?.base_url ?? ""} spellCheck={false} />
-                </label>
-                <label className="field">
-                  <span>{t("API key")}</span>
-                  <input type="password" value={cfg.api_key} onChange={(e) => set({ api_key: e.target.value })} spellCheck={false}
-                         placeholder={cfg.has_key ? t("A key is stored already — leave this empty to keep it") : ""} />
-                  {eng?.key_hint && (
-                    <span className="muted small">
-                      {t("Where to get a key:")} {eng.key_hint}
-                      {eng.docs ? <> · <a href={eng.docs} target="_blank" rel="noreferrer">{t("Open the documentation")} <ExternalLink size={11} aria-hidden /></a></> : null}
-                    </span>
-                  )}
-                </label>
-                <label className="field">
-                  <span>{t("Model to call (required: a gateway has to be told which model to run)")}</span>
-                  <input value={cfg.model} onChange={(e) => set({ model: e.target.value })} placeholder="gpt-5 / claude-sonnet-4-6 / …" spellCheck={false} />
-                </label>
+                {bound ? (
+                  <>
+                    <div className={"ext-bound" + (bound.missing ? " bad" : "")}>
+                      <Server size={15} aria-hidden />
+                      <div>
+                        <b>{t("Model provider: {name}", { name: bound.name })}</b>
+                        <small>{bound.missing
+                          ? t("There is no provider with that id any more, so this member has nothing to talk to. Add it back under Settings → Providers and it will work again.")
+                          : t("{address}{key} — the address, the key and the models all come from that provider, so they are set once, there.", {
+                              address: bound.base_url || t("no address set"),
+                              key: bound.has_key ? t(" · a key is set") : t(" · no key yet"),
+                            })}</small>
+                      </div>
+                    </div>
+                    <label className="field">
+                      <span>{t("Model to call (from this provider's models)")}</span>
+                      <select value={bound.models.some((m) => m.name === cfg.model) ? cfg.model : ""}
+                              onChange={(e) => set({ model: e.target.value })}>
+                        <option value="">{t("Choose one…")}</option>
+                        {bound.models.map((m) => <option key={m.name} value={m.name}>{m.display_name || m.name}</option>)}
+                      </select>
+                      {bound.models.length === 0 ? (
+                        <span className="muted small">{t("That provider has no enabled models yet — add one under Settings → Providers.")}</span>
+                      ) : !cfg.model ? (
+                        <span className="muted small">{t("Pick one before saving: the gateway has to be told which model to run.")}</span>
+                      ) : null}
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>{t("API address (empty = the default for this engine)")}</span>
+                      <input value={cfg.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder={eng?.base_url ?? ""} spellCheck={false} />
+                    </label>
+                    <label className="field">
+                      <span>{t("API key")}</span>
+                      <input type="password" value={cfg.api_key} onChange={(e) => set({ api_key: e.target.value })} spellCheck={false}
+                             placeholder={cfg.has_key ? t("A key is stored already — leave this empty to keep it") : ""} />
+                      {eng?.key_hint && (
+                        <span className="muted small">
+                          {t("Where to get a key:")} {eng.key_hint}
+                          {eng.docs ? <> · <a href={eng.docs} target="_blank" rel="noreferrer">{t("Open the documentation")} <ExternalLink size={11} aria-hidden /></a></> : null}
+                        </span>
+                      )}
+                    </label>
+                    <label className="field">
+                      <span>{t("Model to call (required: a gateway has to be told which model to run)")}</span>
+                      <input value={cfg.model} onChange={(e) => set({ model: e.target.value })} placeholder="gpt-5 / claude-sonnet-4-6 / …" spellCheck={false} />
+                    </label>
+                  </>
+                )}
                 <label className="check">
                   <input type="checkbox" checked={cfg.handoff} onChange={(e) => set({ handoff: e.target.checked })} />
                   {t("When its reply @mentions another member, that member speaks next")}
                 </label>
-                <p className="muted small">{t("This engine only exchanges messages: there is no working directory and no permission level to set.")}</p>
+                <details className="ext-adv">
+                  <summary>{t("Other settings")}</summary>
+                  <div className="form-row">
+                    <label className="field" style={{ width: 150 }}><span>{t("Timeout per turn (seconds)")}</span><input type="number" min={30} max={3600} value={cfg.timeout} onChange={(e) => set({ timeout: Number(e.target.value) || 600 })} /></label>
+                  </div>
+                </details>
+                <p className="muted small">{bound
+                  ? t("This engine only exchanges messages: there is no working directory and no permission level to set, and nothing about the provider is duplicated here.")
+                  : t("This engine only exchanges messages: there is no working directory and no permission level to set.")}</p>
               </>
             ) : (
               <>

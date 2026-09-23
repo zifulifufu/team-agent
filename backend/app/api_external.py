@@ -11,11 +11,45 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import external
+from . import external, presets
 from .store import Store
 
 NAME_BAD = re.compile(r"[\s@]")
 MASK = "***"          # what the UI is shown instead of a stored API key
+
+
+def provider_view(store: Store, engine: str) -> dict | None:
+    """The provider an engine is bound to, shaped for the interface.
+
+    Returns None for an engine that carries its own address and key (Cherry Studio), in which case
+    the dialog keeps asking for them. For a bound engine (MetaChat) this is where the address, the
+    model list and "is a key set" come from — the provider row is the only copy, so the dialog no
+    longer offers a second one. The key itself never leaves the backend.
+    """
+    pid = external.bound_provider(engine)
+    if not pid:
+        return None
+    prov = store.get_provider(pid)
+    if not prov:
+        return {"id": pid, "missing": True, "name": pid, "base_url": "", "has_key": False, "models": []}
+    shown = presets.localize_provider(prov, i18n.current())
+    return {
+        "id": pid,
+        "missing": False,
+        "name": shown.get("name") or pid,
+        "base_url": prov.get("base_url") or "",
+        "has_key": bool(prov.get("api_key")),
+        "models": [{"name": m["model_name"], "display_name": m["display_name"]}
+                   for m in store.list_models() if m["provider_id"] == pid and m["enabled"]],
+    }
+
+
+def provider_model_names(store: Store, engine: str) -> list[str]:
+    """The model names a bound engine is allowed to be pointed at (empty for an unbound one)."""
+    pid = external.bound_provider(engine)
+    if not pid:
+        return []
+    return [m["model_name"] for m in store.list_models() if m["provider_id"] == pid and m["enabled"]]
 
 
 class ExternalCreate(BaseModel):
@@ -36,6 +70,7 @@ class ExternalProbe(BaseModel):
     cli_path: str = ""
     base_url: str = ""               # for a chat gateway that has not been saved yet
     api_key: str = ""
+    model: str = ""                  # likewise; an engine bound to a provider takes it from there
 
 
 def build_external_router(store: Store, runner: external.ExternalRunner) -> APIRouter:
@@ -51,8 +86,18 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
     def cfg_of(agent: dict, *, reveal: bool = False) -> dict:
         """The member's settings with the API key resolved. With `reveal=False` (everything the UI
         sees) the key itself is left out and only `has_key` says whether one is stored — the same
-        rule model provider keys follow."""
+        rule model provider keys follow.
+
+        An engine bound to a provider owns none of the three: the address and the key are the
+        provider's, and the model is one of its models. Reporting the member's own leftovers here is
+        what made the dialog look as if it still kept them."""
         cfg = {**external.DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
+        if external.provider_bound(engine_of(agent)):
+            bound = provider_view(store, engine_of(agent)) or {}
+            cfg["base_url"] = ""
+            cfg["api_key"] = ""
+            cfg["has_key"] = bool(bound.get("has_key"))
+            return cfg
         stored = str(cfg.get("api_key") or "")
         if reveal:
             cfg["api_key"] = store._secret_off(stored)
@@ -60,6 +105,24 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
             cfg["api_key"] = ""
             cfg["has_key"] = bool(stored)
         return cfg
+
+    def binding_of(agent: dict) -> dict:
+        """What the member actually resolves to, minus the key: the provider it talks through, the
+        model it will run, and whether that model is one the user chose or one we fell back to.
+        Empty for an engine that is not bound to a provider."""
+        engine = engine_of(agent)
+        if not external.provider_bound(engine):
+            return {}
+        cfg, info = runner.resolve(engine, {**external.DEFAULT_CFG, **(agent.get("engine_cfg") or {})})
+        prov = store.get_provider(info["provider_id"])
+        return {
+            "provider_id": info["provider_id"],
+            "provider_name": (presets.localize_provider(prov, i18n.current())["name"]
+                              if prov else info["provider_id"]),
+            "model": str(cfg.get("model") or ""),
+            "model_default": bool(info["model_default"]),
+            "problem": info["problem"],
+        }
 
     def keep_key(raw: dict, cur: dict) -> dict:
         """A `***` coming back means "I did not touch the key" — it is the placeholder we sent."""
@@ -86,6 +149,11 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
                             "role": shown["role"], "kind": external.kind_of(eid),
                             "base_url": shown.get("base_url", ""), "docs": shown.get("docs", ""),
                             "key_hint": shown.get("key_hint", ""),
+                            # Non-null = the engine talks through a provider, and this is that
+                            # provider: its address, its models, whether it has a key. The dialog
+                            # asks for none of those itself, and the add-member list leaves the
+                            # engine out entirely (its models join as ordinary members).
+                            "provider": provider_view(store, eid),
                             **runner.describe(eid)})
         return {
             "enabled": bool(s["external_agents_enabled"]),
@@ -95,6 +163,7 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
             "defaults": external.DEFAULT_CFG,
             "members": [
                 {"id": a["id"], "name": a["name"], "engine": engine_of(a), "cfg": cfg_of(a),
+                 "binding": binding_of(a),
                  # a chat gateway has no working directory, and asking for one would create it
                  "workspace": (str(runner.workspace(a))
                                if s["external_agents_enabled"] and external.kind_of(engine_of(a)) == "cli" else "")}
@@ -109,7 +178,8 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         if not eng:
             raise HTTPException(400, i18n.pick_now("Unsupported external agent type", "不支持的外部智能体类型"))
         try:
-            cfg = external.clean_cfg(body.cfg, engine=body.engine)
+            cfg = external.clean_cfg(body.cfg, engine=body.engine,
+                                    models=provider_model_names(store, body.engine))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         # An engine's display name may contain a space ("Cherry Studio") while a member name may
@@ -145,7 +215,8 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
         engine = engine_of(agent)
         current = cfg_of(agent, reveal=True)
         try:
-            cfg = external.clean_cfg(keep_key(body.cfg, current), current, engine=engine)
+            cfg = external.clean_cfg(keep_key(body.cfg, current), current, engine=engine,
+                                    models=provider_model_names(store, engine))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         return save(agent, cfg)
@@ -154,15 +225,20 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
     async def test(body: ExternalProbe) -> dict:
         engine = body.engine or "workbuddy"
         cfg = {**external.DEFAULT_CFG, "cli_path": body.cli_path, "base_url": body.base_url,
-               "api_key": body.api_key}
+               "api_key": body.api_key, "model": body.model}
         if body.agent_id:
             agent = store.get_agent(body.agent_id)
             if not agent or not agent.get("engine"):
                 raise HTTPException(404, i18n.pick_now("That external agent member does not exist", "外部智能体成员不存在"))
             engine = engine_of(agent)
             cfg = cfg_of(agent, reveal=True)
+        # A bound engine has no model of its own to be tested with until the user picks one, and the
+        # dialog may be testing before anything is saved: resolving first turns the provider's first
+        # model into the one under test, so "Check" answers something useful instead of refusing.
+        if external.provider_bound(engine):
+            cfg, _ = runner.resolve(engine, {**external.DEFAULT_CFG, **cfg})
         try:
-            cfg = external.clean_cfg(cfg, engine=engine)
+            cfg = external.clean_cfg(cfg, engine=engine, models=provider_model_names(store, engine))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         need_enabled()   # detection really starts a command line (to read the version), so it is skipped when the

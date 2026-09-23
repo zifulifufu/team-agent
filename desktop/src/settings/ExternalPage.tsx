@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Settings2, TerminalSquare } from "lucide-react";
-import { api, type Agent, type ExternalOverview, type ExternalProbe } from "../api";
+import { api, type Agent, type ExternalBinding, type ExternalOverview, type ExternalProbe } from "../api";
 import { useData } from "../data";
 import { levelLabel } from "../lib";
 import { useI18n } from "../i18n";
@@ -31,7 +31,7 @@ export default function ExternalPage(_: PageProps) {
   // happens to be holding. Filtering `agents` meant a member could be missing from this page —
   // and with it the only way into its settings — whenever that list was stale or had not loaded,
   // while the page reported "none yet" as if there were nothing to configure.
-  const members: Agent[] = (ov?.members ?? []).map((m) => {
+  const members: (Agent & { binding?: ExternalBinding })[] = (ov?.members ?? []).map((m) => {
     const known = agents.find((a) => a.id === m.id);
     return {
       ...known,
@@ -39,8 +39,9 @@ export default function ExternalPage(_: PageProps) {
       name: m.name,
       engine: m.engine,
       engine_cfg: m.cfg,
+      binding: m.binding,
       avatar: known?.avatar || ov?.engines.find((e) => e.id === m.engine)?.avatar || "\u{1F9F0}",
-    } as Agent;
+    } as Agent & { binding?: ExternalBinding };
   });
   const editing = members.find((a) => a.id === editId);
 
@@ -93,15 +94,23 @@ export default function ExternalPage(_: PageProps) {
           {members.map((a) => {
             // A chat gateway has no permission level and no working directory: show what it does have.
             const gateway = a.engine !== "workbuddy";
+            const bound = a.binding?.provider_id ? a.binding : null;
             return (
               <div key={a.id} className="setting-row pad">
                 <div>
                   <div className="sr-title">{a.avatar} {a.name}</div>
-                  <div className="sr-desc">{gateway ? (
+                  <div className="sr-desc">{bound ? (
+                    // Everything about the address, the key and the models belongs to the provider,
+                    // so what is worth showing here is which provider and which model it will run —
+                    // plus a nudge when that model is not one the user picked.
+                    <>{t("Provider:")} {bound.provider_name} · {t("Model")}: {bound.model || t("Not set")}
+                      {bound.model_default ? <em className="ext-flag">{t(" · default — please confirm")}</em> : null}</>
+                  ) : gateway ? (
                     <>{t("Model")}: {a.engine_cfg?.model || t("Not set")} · {t("Address")}: {a.engine_cfg?.base_url || t("Not set")}</>
                   ) : (
                     <>{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")} · {t("Configuration:")} {a.engine_cfg?.native ? t("the application's own") : t("isolated")}</>
                   )}</div>
+                  {bound?.problem && <div className="sr-desc ext-warn"><AlertTriangle size={12} aria-hidden /> {bound.problem}</div>}
                 </div>
                 <button className="btn small" onClick={() => setEditId(a.id)}><Settings2 size={12} /> {t("Settings")}</button>
               </div>

@@ -51,3 +51,14 @@
 .ext-denied { margin-top: 6px; font-size: 12px; line-height: 1.6; color: #b64a00; }
 .chip.ext-lv { color: var(--text-2); }
 .mc-path { min-width: 0; overflow-wrap: anywhere; }
+/* An engine that takes its address, key and models from a model provider (MetaChat): the dialog
+   shows that provider instead of asking for a second copy of them. Reads as one informational
+   block — not as empty fields waiting to be filled in, which is what it replaces. */
+.ext-bound { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.ext-bound > svg { flex: none; margin-top: 2px; color: var(--text-3); }
+.ext-bound b { display: block; font-weight: 600; font-size: 12.5px; }
+.ext-bound small { display: block; margin-top: 3px; font-size: 12px; line-height: 1.6; color: var(--text-3); overflow-wrap: anywhere; }
+.ext-bound.bad { border-color: color-mix(in srgb, #d9534f 45%, var(--border)); background: color-mix(in srgb, #d9534f 8%, var(--surface-2)); }
+.ext-flag { font-style: normal; color: #b64a00; }
+.ext-warn { display: flex; align-items: flex-start; gap: 5px; color: #b64a00; margin-top: 4px; }
+.ext-warn > svg { flex: none; margin-top: 3px; }

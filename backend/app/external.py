@@ -112,10 +112,14 @@ ENGINES: dict[str, dict] = {
         "role": "External agent · MetaChat",
         "role_zh": "外部智能体 · MetaChat",
         "tags": ["chat"],
-        "base_url": "https://llm-api.mmchat.xyz/v1",
+        # This gateway is not configured here at all: MetaChat is a model provider, and members set
+        # up under Providers already carry the address, the key and the model list. Asking for them
+        # a second time is what left one member holding a model name that the provider had never
+        # heard of. `provider` names the provider row this engine talks through; the address and the
+        # key are read from it (`ExternalRunner.resolve`), and the model is picked from its models.
+        # No `base_url` or `key_hint` here on purpose — a second copy is what we are removing.
+        "provider": "metachat",
         "docs": "https://metachat.apifox.cn/",
-        "key_hint": "an API key created under API management on the MetaChat site (it needs credit there)",
-        "key_hint_zh": "在 MetaChat 官网「API 管理」里创建的密钥(需要先充值 API 元点)",
         "prompt": (
             "You are MetaChat, taking part as a member of the group chat through its "
             "OpenAI-compatible gateway — you are whichever model the user configured there, so you "
@@ -174,6 +178,21 @@ def kind_of(engine: str) -> str:
 def engine_meta(engine: str) -> dict:
     """The engine's own defaults: display text plus, for http engines, the endpoint to talk to."""
     return ENGINES.get(engine) or ENGINES["workbuddy"]
+
+
+def bound_provider(engine: str) -> str:
+    """The provider id this engine talks through, or "" when it carries its own address.
+
+    An engine with a provider does not own an address, a key or a model list: those already exist
+    under Providers, and the member's settings only hold the few things the provider has no opinion
+    about. See `ExternalRunner.resolve` for how they are put together.
+    """
+    return str(ENGINES.get(engine, {}).get("provider") or "")
+
+
+def provider_bound(engine: str) -> bool:
+    """Whether this engine's settings come from a provider rather than from the member."""
+    return bool(bound_provider(engine))
 
 
 def level_view(key: str) -> dict:
@@ -268,10 +287,15 @@ def _dir(path: str, what: str) -> str:
     return str(p.resolve())
 
 
-def clean_cfg(raw: Any, base: dict | None = None, engine: str = "workbuddy") -> dict:
+def clean_cfg(raw: Any, base: dict | None = None, engine: str = "workbuddy",
+              *, models: list[str] | None = None) -> dict:
     """Merge the config submitted by the user into base and validate it. Raises ValueError (with
 a Chinese message). Unknown fields are ignored outright. `engine` decides which fields are
-actually used — a chat gateway has no command line, and a command-line engine has no endpoint."""
+actually used — a chat gateway has no command line, and a command-line engine has no endpoint.
+
+`models` is the list of model names the bound provider offers, and only matters for an engine
+bound to a provider (see `bound_provider`): there the model must be one of them, and the address
+and the key are not accepted at all because the provider already holds them."""
     kind = kind_of(engine)
     cur = {**DEFAULT_CFG, **(base or {})}
     if not isinstance(raw, dict):
@@ -325,18 +349,38 @@ actually used — a chat gateway has no command line, and a command-line engine 
         # A chat gateway: an address to talk to and a key to talk with. Neither is required at save
         # time — an empty base_url means "the engine's own default" — but a half-filled address is
         # rejected rather than turned into a confusing failure on the first turn.
-        if "base_url" in raw:
-            v = str(raw["base_url"] or "").strip().rstrip("/")
-            if v and not re.match(r"^https?://[^\s/]+", v):
-                raise ValueError(i18n.pick_now("The address must start with http:// or https:// — for example http://127.0.0.1:23333/v1", "地址需要以 http:// 或 https:// 开头——例如 http://127.0.0.1:23333/v1"))
-            if len(v) > 200:
-                raise ValueError(i18n.pick_now("That address is too long", "这个地址太长了"))
-            out["base_url"] = v
-        if "api_key" in raw:
-            v = str(raw["api_key"] or "").strip()
-            if len(v) > 300 or any(c in v for c in "\r\n"):
-                raise ValueError(i18n.pick_now("That API key does not look right", "这个 API key 看起来不对"))
-            out["api_key"] = v
+        #
+        # An engine bound to a provider is the exception: MetaChat already *is* a provider row, so
+        # its address, its key and its model list live there. Nothing here accepts a second copy —
+        # the caller passes the provider's model names in `models`, and the model has to be one of
+        # them. This is what stops a member being saved with a model name the gateway has never
+        # heard of, which is exactly how the older member ended up replying to nothing.
+        if provider_bound(engine):
+            out["base_url"] = ""
+            out["api_key"] = ""
+            chosen = str(out.get("model") or "").strip()
+            known = [str(m) for m in (models or [])]
+            if not chosen:
+                raise ValueError(i18n.pick_now(
+                    "Pick a model for this member — the gateway has to be told which one to run, and this engine takes its models from its provider",
+                    "请为这个成员选一个模型——网关需要知道运行哪个模型,而这个引擎的模型来自它绑定的服务商"))
+            if known and chosen not in known:
+                raise ValueError(i18n.pick_now(
+                    f"That model is not one of this provider's models: {chosen}. Pick one from the list, or add it under Providers first",
+                    f"这个模型不在该服务商的模型列表里:{chosen}。请从列表里选一个,或先在「服务商」里加上它"))
+        else:
+            if "base_url" in raw:
+                v = str(raw["base_url"] or "").strip().rstrip("/")
+                if v and not re.match(r"^https?://[^\s/]+", v):
+                    raise ValueError(i18n.pick_now("The address must start with http:// or https:// — for example http://127.0.0.1:23333/v1", "地址需要以 http:// 或 https:// 开头——例如 http://127.0.0.1:23333/v1"))
+                if len(v) > 200:
+                    raise ValueError(i18n.pick_now("That address is too long", "这个地址太长了"))
+                out["base_url"] = v
+            if "api_key" in raw:
+                v = str(raw["api_key"] or "").strip()
+                if len(v) > 300 or any(c in v for c in "\r\n"):
+                    raise ValueError(i18n.pick_now("That API key does not look right", "这个 API key 看起来不对"))
+                out["api_key"] = v
     if out["level"] in ("edit", "full"):
         for d in [out["cwd"], *out["add_dirs"]]:
             if d and (Path(d) == Path(Path(d).anchor) or Path(d) == Path.home().resolve()):
@@ -777,8 +821,67 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
 
 
 class ExternalRunner:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, *, store: Any = None):
+        # `store` stays optional so the runner can still be built from just a data directory (the
+        # tests, and anything that only needs a workspace). An engine bound to a provider does need
+        # it: that is where the address, the key and the model list live. Typed loosely on purpose —
+        # this module deliberately does not import the store.
         self.data_dir = Path(data_dir)
+        self.store = store
+
+    def provider_models(self, pid: str) -> list[dict]:
+        """One provider's enabled chat models, in the order that provider lists them."""
+        if not self.store or not pid:
+            return []
+        return [m for m in self.store.list_models() if m["provider_id"] == pid and m["enabled"]]
+
+    def resolve(self, engine: str, cfg: dict) -> tuple[dict, dict]:
+        """Put together what the engine actually uses, plus what the interface should say about it.
+
+        For an engine bound to a provider (`bound_provider`), the address and the key are read from
+        that provider and the model is taken from its model list — the member holds none of the
+        three, which is the whole point: MetaChat used to be configured here *and* under Providers,
+        and the two copies drifted.
+
+        A model that is empty (a member saved before this existed) or that the provider no longer
+        offers falls back to the provider's first enabled model, and `model_default` says so. That
+        keeps an old member working while still telling the user it is running something they did
+        not pick, instead of silently choosing for them.
+        """
+        out = dict(cfg)
+        pid = bound_provider(engine)
+        info = {"provider_id": pid, "provider_name": "", "address": "",
+                "model_default": False, "problem": ""}
+        if not pid:
+            return out, info
+        prov = self.store.get_provider(pid) if self.store else None
+        if not prov:
+            info["problem"] = i18n.pick_now(
+                f"This member talks through a model provider called “{pid}”, and there is no longer a provider with that id. Add it back under Settings → Providers.",
+                f"这个成员通过名为「{pid}」的服务商对话,而服务商里已经没有它了。请在「设置 → 服务商」里把它加回来。")
+            return out, info
+
+        info["provider_name"] = str(prov.get("name") or pid)
+        info["address"] = str(prov.get("base_url") or "")
+        out["base_url"] = info["address"]
+        out["api_key"] = str(prov.get("api_key") or "")   # `get_provider` hands back the real key, never the reference
+
+        names = [str(m["model_name"]) for m in self.provider_models(pid)]
+        chosen = str(out.get("model") or "").strip()
+        if chosen and chosen in names:
+            pass
+        elif names:
+            out["model"] = names[0]
+            info["model_default"] = True
+            if chosen:
+                info["problem"] = i18n.pick_now(
+                    f"The model this member was set to ({chosen}) is not one of {info['provider_name']}'s models any more, so the first one is being used instead. Pick a model in its settings to confirm.",
+                    f"这个成员原先选的模型({chosen})已经不在「{info['provider_name']}」的模型列表里,暂时改用第一个。请在它的设置里重新选一个确认。")
+        else:
+            info["problem"] = i18n.pick_now(
+                f"{info['provider_name']} has no enabled models yet, so this member has nothing to run. Add one under Settings → Providers.",
+                f"「{info['provider_name']}」还没有启用任何模型,这个成员没有可用的模型。请先在「设置 → 服务商」里添加。")
+        return out, info
 
     def workspace(self, agent: dict) -> Path:
         cfg = {**DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
@@ -964,6 +1067,9 @@ class ExternalRunner:
         engine = str(agent.get("engine") or "workbuddy")
         cfg = {**DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
         if kind_of(engine) == "http":
+            # Address, key and model come from the provider this engine is bound to, not from the
+            # member; one place decides that, so a saved member and a probe cannot disagree.
+            cfg, _ = self.resolve(engine, cfg)
             return await self._run_http(engine, cfg, system=system, prompt=prompt, on_delta=on_delta)
         lc = find_launcher(cfg["cli_path"])
         if not lc:
@@ -988,14 +1094,20 @@ class ExternalRunner:
             self.remember_session(agent, out.session_id)
         return out
 
-    async def _probe_http(self, engine: str, cfg: dict, *, live: bool) -> dict:
+    async def _probe_http(self, engine: str, cfg: dict, *, live: bool, binding: dict | None = None) -> dict:
         """A chat gateway has no version to read. The useful checks are whether its /models endpoint
-        answers, and whether one short message actually comes back."""
+        answers, and whether one short message actually comes back.
+
+        `binding` is what `resolve` made of the member's settings, so a provider that has gone
+        missing, or one with no models to run, is reported as such instead of as a bare
+        "fill in the model"."""
         meta = engine_meta(engine)
         name = meta["name"]
         base = (cfg["base_url"] or meta.get("base_url") or "").rstrip("/")
         info: dict = {"found": True, "path": base, "via": "http", "hint": "", "version": ""}
-        if not cfg["model"]:
+        if binding and binding.get("problem"):
+            info["hint"] = binding["problem"]
+        elif not cfg["model"]:
             info["hint"] = i18n.pick_now("Fill in the model name to call — a gateway has to be told which model to run", "请填上要调用的模型名——网关需要知道运行哪个模型")
         if live:
             headers = {"Authorization": f"Bearer {cfg['api_key']}"} if cfg.get("api_key") else {}
@@ -1029,7 +1141,8 @@ network). A chat gateway: ask its /models endpoint, and with live=True send one 
 (this calls a cloud model)."""
         cfg = {**DEFAULT_CFG, **cfg}
         if kind_of(engine) == "http":
-            return await self._probe_http(engine, cfg, live=live)
+            cfg, binding = self.resolve(engine, cfg)
+            return await self._probe_http(engine, cfg, live=live, binding=binding)
         lc = find_launcher(cfg["cli_path"])
         info = self.describe(engine, cfg["cli_path"])
         if not lc:

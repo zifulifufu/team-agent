@@ -38,9 +38,17 @@ def test_the_engine_list_has_a_command_line_and_two_gateways():
     assert kind_of("some-future-engine") == "cli"
     for eid in ("cherry", "metachat"):
         meta = external.ENGINES[eid]
-        assert meta["base_url"].startswith("http") and meta["avatar"]
+        assert meta["avatar"]
         # both languages, like the workbuddy entry, so the member is created in the right one
         assert meta["prompt"] and meta["prompt_zh"] and meta["role_zh"]
+    # Cherry Studio is a gateway this app has to be told about: it keeps its own address and key.
+    assert external.ENGINES["cherry"]["base_url"].startswith("http")
+    assert not external.provider_bound("cherry")
+    # MetaChat is a model provider first, so its engine carries none of that: the address, the key
+    # and the models all come from the provider row (this is what stops the two copies drifting).
+    assert external.provider_bound("metachat") and external.bound_provider("metachat") == "metachat"
+    assert "base_url" not in external.ENGINES["metachat"]
+    assert "key_hint" not in external.ENGINES["metachat"]
 
 
 def test_the_overview_offers_each_engine_with_its_kind_and_address(tmp_path):
@@ -50,8 +58,14 @@ def test_the_overview_offers_each_engine_with_its_kind_and_address(tmp_path):
     assert engines["workbuddy"]["kind"] == "cli"
     assert engines["cherry"]["kind"] == "http"
     assert engines["cherry"]["base_url"].endswith(":23333/v1")
-    assert engines["metachat"]["base_url"].startswith("https://")
     assert engines["cherry"]["key_hint"]                     # tells the user where the key comes from
+    assert engines["cherry"]["provider"] is None             # nothing to bind to: the dialog asks
+    # MetaChat points at the provider it talks through instead of carrying an address of its own.
+    # A fresh database has no such provider yet, so the engine says so rather than showing an empty
+    # address the user would try to fill in.
+    meta = engines["metachat"]
+    assert meta["base_url"] == "" and meta["key_hint"] == ""
+    assert meta["provider"]["id"] == "metachat" and meta["provider"]["missing"] is True
 
 
 # ------------------------------------------------------------------ config validation
@@ -65,13 +79,13 @@ def test_a_gateway_config_checks_the_address_and_the_key():
     with pytest.raises(ValueError):
         clean_cfg({"api_key": "line\nbreak"}, engine="cherry")
     with pytest.raises(ValueError):
-        clean_cfg({"base_url": "https://" + "x" * 300}, engine="metachat")
+        clean_cfg({"base_url": "https://" + "x" * 300}, engine="cherry")
 
 
 def test_a_command_line_path_is_ignored_for_a_gateway():
     """A gateway has no command line, so a path that would be rejected for the CLI engine is simply
     not looked at — and it is not carried into the gateway member's settings either."""
-    c = clean_cfg({"cli_path": "/definitely/not/here/codebuddy"}, engine="metachat")
+    c = clean_cfg({"cli_path": "/definitely/not/here/codebuddy", "model": "gpt-5"}, engine="metachat")
     assert c["cli_path"] == ""
     assert clean_cfg({}, engine="cherry")["level"] == "read"
 
@@ -179,7 +193,8 @@ def test_the_gateway_key_is_never_returned(tmp_path):
 def test_creating_a_gateway_member_names_it_after_the_engine(tmp_path):
     cl, app = _client(tmp_path)
     app.state.store.update_settings({"external_agents_enabled": True})
-    assert cl.post("/api/external/agents", json={"engine": "metachat"}).json()["name"] == "MetaChat"
+    # MetaChat takes its model from its provider, so a member needs one to be created at all.
+    assert cl.post("/api/external/agents", json={"engine": "metachat", "cfg": {"model": "gpt-5"}}).json()["name"] == "MetaChat"
     # a member name may not contain a space, so the engine's display name is squeezed into one
     assert cl.post("/api/external/agents", json={"engine": "cherry"}).json()["name"] == "CherryStudio"
 
@@ -188,3 +203,106 @@ def test_an_unknown_engine_is_refused(tmp_path):
     cl, app = _client(tmp_path)
     app.state.store.update_settings({"external_agents_enabled": True})
     assert cl.post("/api/external/agents", json={"engine": "nope"}).status_code == 400
+
+
+# ------------------------------------------------- an engine bound to a model provider (MetaChat)
+def _metachat(tmp_path, base_url: str, models=("gpt-5", "claude-sonnet-4-6"), name="data"):
+    """MetaChat's engine takes its address, its key and its models from the provider row, so the
+    tests have to create one — pointed at the fake gateway rather than the real service."""
+    cl, app = _client(tmp_path, name=name)
+    store = app.state.store
+    store.update_settings({"external_agents_enabled": True, "external_calls_enabled": True})
+    prov = store.add_provider("MetaChat", "openai_compatible", base_url, "mc-secret", pid="metachat")
+    for m in models:
+        store.add_model(prov["id"], m)
+    return cl, app, store
+
+
+def test_a_bound_engine_takes_its_address_key_and_model_from_the_provider(tmp_path):
+    with FakeServer(openai_like("来自 MetaChat 的回答")) as srv:
+        cl, app, store = _metachat(tmp_path, f"{srv.url}/v1")
+        r = cl.post("/api/external/agents", json={"engine": "metachat", "cfg": {"model": "gpt-5"}})
+        assert r.status_code == 200, r.text
+        # nothing of the provider's is copied onto the member: the provider stays the only copy
+        assert r.json()["engine_cfg"]["base_url"] == ""
+        assert r.json()["engine_cfg"]["api_key"] == ""
+
+        agent = store.get_agent(r.json()["id"])
+        cfg, info = app.state.orch.external.resolve("metachat", agent["engine_cfg"])
+        assert cfg["base_url"] == f"{srv.url}/v1" and cfg["api_key"] == "mc-secret"
+        assert info["provider_name"] == "MetaChat" and info["model_default"] is False
+
+        # …and a real turn goes through that address, with that key, to that model
+        out = asyncio.run(app.state.orch.external.run(agent, system="", prompt="你好"))
+    assert "来自 MetaChat 的回答" in out.text and out.model == "gpt-5"
+
+
+def test_the_providers_key_never_reaches_the_interface(tmp_path):
+    with FakeServer(openai_like("OK")) as srv:
+        cl, app, store = _metachat(tmp_path, f"{srv.url}/v1")
+        cl.post("/api/external/agents", json={"engine": "metachat", "cfg": {"model": "gpt-5"}})
+        listed = cl.get("/api/external").json()
+    assert "mc-secret" not in json.dumps(listed, ensure_ascii=False)
+    member = listed["members"][0]
+    assert member["cfg"]["has_key"] is True                  # the provider's key, reported as "set"
+    assert member["binding"]["provider_name"] == "MetaChat"
+    assert member["binding"]["model"] == "gpt-5" and member["binding"]["model_default"] is False
+
+
+def test_a_member_saved_before_this_existed_borrows_the_providers_first_model(tmp_path):
+    """The member this change exists for: saved with an empty model, which the old dialog allowed
+    and which then failed at the gateway. It keeps working, and the interface is told to ask."""
+    with FakeServer(openai_like("OK")) as srv:
+        cl, app, store = _metachat(tmp_path, f"{srv.url}/v1", models=("claude-sonnet-4-6", "gpt-5"))
+        aid = cl.post("/api/external/agents", json={"engine": "metachat", "cfg": {"model": "gpt-5"}}).json()["id"]
+        store.update_agent(aid, {"engine_cfg": {**store.get_agent(aid)["engine_cfg"], "model": ""}})
+        assert store.get_agent(aid)["engine_cfg"]["model"] == ""       # the database keeps the truth
+        member = cl.get("/api/external").json()["members"][0]
+    assert member["binding"]["model"] == "claude-sonnet-4-6"           # the provider's first, in its order
+    assert member["binding"]["model_default"] is True
+    assert member["binding"]["problem"] == ""
+
+
+def test_a_model_the_provider_no_longer_offers_is_flagged(tmp_path):
+    with FakeServer(openai_like("OK")) as srv:
+        cl, app, store = _metachat(tmp_path, f"{srv.url}/v1", models=("gpt-5",))
+        aid = cl.post("/api/external/agents", json={"engine": "metachat", "cfg": {"model": "gpt-5"}}).json()["id"]
+        store.update_agent(aid, {"engine_cfg": {**store.get_agent(aid)["engine_cfg"], "model": "gone-model"}})
+        member = cl.get("/api/external").json()["members"][0]
+    assert member["binding"]["model"] == "gpt-5" and member["binding"]["model_default"] is True
+    assert "gone-model" in member["binding"]["problem"]
+
+
+def test_a_bound_engine_insists_on_a_model_from_its_provider():
+    # empty: a gateway has to be told which model to run
+    with pytest.raises(ValueError):
+        clean_cfg({}, engine="metachat")
+    # not one of the provider's: refused here rather than after the first turn fails
+    with pytest.raises(ValueError):
+        clean_cfg({"model": "not-a-model"}, engine="metachat", models=["gpt-5"])
+    assert clean_cfg({"model": "gpt-5"}, engine="metachat", models=["gpt-5"])["model"] == "gpt-5"
+    # the address and the key are not accepted from the member at all
+    c = clean_cfg({"model": "gpt-5", "base_url": "https://elsewhere.example/v1", "api_key": "x"},
+                  engine="metachat", models=["gpt-5"])
+    assert c["base_url"] == "" and c["api_key"] == ""
+
+
+def test_a_missing_provider_is_reported_rather_than_guessed(tmp_path):
+    cl, app = _client(tmp_path)                       # no MetaChat provider row at all
+    app.state.store.update_settings({"external_agents_enabled": True})
+    r = cl.post("/api/external/agents", json={"engine": "metachat", "cfg": {"model": "gpt-5"}})
+    assert r.status_code == 200, r.text               # it can be saved now, the provider added later
+    binding = cl.get("/api/external").json()["members"][0]["binding"]
+    assert binding["provider_id"] == "metachat"
+    assert binding["model"] == "gpt-5"                 # the member's own value: nothing to compare it against
+    assert "provider" in binding["problem"].lower() or "服务商" in binding["problem"]
+
+
+def test_checking_a_bound_engine_works_before_anything_is_saved(tmp_path):
+    """The dialog offers "Check" while the member is still being set up: with no model chosen yet the
+    provider's first one is used for the test, so the answer is useful instead of a refusal."""
+    with FakeServer(openai_like("OK")) as srv:
+        cl, app, _ = _metachat(tmp_path, f"{srv.url}/v1")
+        r = cl.post("/api/external/test", json={"engine": "metachat", "live": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["live"]["ok"] is True and "OK" in r.json()["live"]["reply"]
