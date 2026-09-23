@@ -27,6 +27,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import i18n
+from .bindirs import search_path
 
 SUFFIX = {"python": ".py", "shell": ".sh"}
 INTERPRETER = {"python": [sys.executable], "shell": ["/bin/sh", "-c"]}
@@ -280,6 +281,13 @@ def child_env(tmp_dir: Path) -> dict[str, str]:
     keep = ("PATH", "HOME", "LANG", "LC_ALL", "TZ")
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+    # The inherited PATH is the group's, and when this app was started from the Finder that is
+    # launchd's minimal one, on which `node`, `npx`, `uvx` and `ffmpeg` are all absent however
+    # well they are installed — the same trap `bindirs` exists for. It matters here because a
+    # member writing a video project runs `npx remotion render`, and "command not found" is not
+    # an answer to a machine that has the tool. This widens convenience, not permission: the
+    # child is a program the member wrote, and it may already call any of these by absolute path.
+    env["PATH"] = search_path(env["PATH"])
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["TMPDIR"] = str(tmp_dir)

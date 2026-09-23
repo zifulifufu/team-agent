@@ -155,8 +155,12 @@ def test_mcp_templates_are_bilingual(client) -> None:
     assert [m["name"] for m in en_m][0] == "Filesystem"
     assert [m["name"] for m in zh_m][0] == "文件系统"
     assert all(not HAN.search(m["name"] + m["note"]) for m in en_m)
-    # the command itself is identical in every language, otherwise importing breaks
-    assert [m["args"] for m in en_m] == [m["args"] for m in zh_m]
+    # the command itself is identical in every language, otherwise importing breaks. A template
+    # reached over the network has no command — it has an address, and that has to survive the
+    # translation just as literally.
+    assert [m.get("args") for m in en_m] == [m.get("args") for m in zh_m]
+    assert [m.get("url") for m in en_m] == [m.get("url") for m in zh_m]
+    assert all(m.get("command") or m.get("url") for m in en_m)
 
 
 # --------------------------------------------------------------- stable reason codes

@@ -226,6 +226,9 @@ export interface GalleryItem {
     description?: string; scope?: string; body?: string;
     kind?: string; content?: string;
     command?: string; args?: string[]; env_keys?: string[]; note?: string;
+    // MCP servers reached over the network instead of by starting a program: the URL and the
+    // headers it wants (an empty one means the reader has to paste a token in).
+    url?: string; transport?: string; headers?: Record<string, string>; needs?: string[];
     // Hook templates: which events it wants and the source itself, so it can be read on the card
     // before anything is written to the hooks directory.
     events?: string[]; code?: string; timeout_ms?: number;
@@ -774,8 +777,14 @@ export interface McpServer {
 export interface McpTemplate {
   name: string;
   command: string;
-  args: string[];
+  args?: string[];                 // absent on a template reached over the network
   note: string;
+  // Servers this app does not start: it connects to an address instead. An empty header value is
+  // one the reader has to paste in (a token), and `header_keys` lists exactly those.
+  url?: string;
+  transport?: string;
+  headers?: Record<string, string>;
+  header_keys?: string[];
 }
 /** One other AI application this machine has, and how much of it could be imported.
  *  Discovery only reads the fixed paths the backend knows about. */

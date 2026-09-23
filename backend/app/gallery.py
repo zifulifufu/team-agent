@@ -60,7 +60,7 @@ from .tools import (
     write_skill,
 )
 
-CATALOG_VERSION = "2.0.0"      # semantic version of the catalog contents: bump it when templates are added or changed
+CATALOG_VERSION = "2.1.0"      # semantic version of the catalog contents: bump it when templates are added or changed
 SCHEMA_VERSION = 1            # file format version of custom templates
 CUSTOM_DIRNAME = "templates"  # subdirectory of the data directory holding custom templates
 CUSTOM_MAX_BYTES = 512 * 1024
@@ -70,6 +70,15 @@ PLACEHOLDER_DIR = "/path/to/allowed/dir"
 # the MCP usage list (single source of truth; api_ext's /api/mcp/templates reads it too).
 # These are only "prefilled forms": you have to check the command and arguments yourself,
 # and everything is imported in a disabled state.
+#
+# A server is reached one of two ways, and a template says which by what it fills in:
+#   * `command` + `args` — stdio: this app starts that program;
+#   * `url` (+ optional `transport` and `headers`) — the program is already running somewhere,
+#     on this machine or on the internet. `headers` may hold a fixed value (a client id, say)
+#     or an empty one, which means "you paste this in": an empty value is listed as something
+#     to fill in, exactly like `env_keys`. Anything whose *name* looks like a credential is
+#     moved to the keychain on the way in (`secrets.SENSITIVE_NAME`), so a Bearer token never
+#     lands in the database in the clear.
 MCP_TEMPLATES: list[dict] = [
     # Pre-filled forms, not a one-click install: the command and arguments are yours to
     # check, and anything imported this way starts disabled. English is the canonical
@@ -113,6 +122,52 @@ MCP_TEMPLATES: list[dict] = [
      "env_keys": [],
      "note": "Read the history and diffs of a Git repository. Replace the trailing path with your repository. Requires uv (uvx).",
      "note_zh": "读取指定 Git 仓库的历史和差异。把最后的路径换成你的仓库。需要 uv(uvx)。"},
+
+    # ------------------------------------------------------------------ video making
+    # Three ways to make video that live outside this app. Two of them are servers this app
+    # talks to over HTTP, which is why the URL form above exists at all.
+    {"key": "voicebox", "name": "Voicebox (voice on this machine)",
+     "name_zh": "Voicebox(本机语音)",
+     "url": "http://127.0.0.1:17493/mcp", "transport": "http",
+     # A fixed header, and deliberately not treated as a secret: Voicebox uses it only to
+     # remember which voice this client speaks with. Nothing is installed by this entry —
+     # Voicebox is a separate desktop app, and it has to be running for the URL to answer.
+     "headers": {"X-Voicebox-Client-Id": "team-agent"},
+     "env_keys": [],
+     "note": "A desktop voice studio on this machine: speak text in a voice you cloned, and "
+             "transcribe audio, without anything leaving the computer. Install and start Voicebox "
+             "first — this entry only points at it (its MCP server listens on 127.0.0.1:17493). "
+             "Reading the audio out loud happens on your speakers, so a member that speaks is "
+             "audible to whoever is in the room.",
+     "note_zh": "本机的语音工作室:用你自己克隆的音色念出文字,并在本机转写音频,内容不出这台电脑。"
+                "需要你先安装并启动 Voicebox——这条只是指向它(它的 MCP 服务监听 127.0.0.1:17493)。"
+                "朗读是从你的音箱出来的,所以成员一开口,屋里的人都听得到。"},
+    {"key": "heygen", "name": "HeyGen (avatar video)", "name_zh": "HeyGen(数字人视频)",
+     "command": "uvx", "args": ["heygen-mcp"], "env_keys": ["HEYGEN_API_KEY"],
+     "note": "Make a talking-avatar video from a script, using your own HeyGen account: pick an "
+             "avatar and a voice, submit the script, then poll until the video is ready. The key "
+             "comes from your HeyGen account settings; rendering happens on their servers and is "
+             "billed to that account, so check the script before submitting rather than after. "
+             "Requires uv (uvx).",
+     "note_zh": "用你自己 HeyGen 账号里的数字人和音色,把一段稿子做成口播视频:选头像与音色、提交、再轮询到出片。"
+                "密钥在 HeyGen 账号设置里取;渲染在他们的服务器上完成并按该账号计费,所以请在提交前确认稿子,"
+                "而不是提交后再改。需要 uv(uvx)。"},
+    {"key": "chatcut", "name": "ChatCut (edit video by describing it)",
+     "name_zh": "ChatCut(用描述剪视频)",
+     "url": "https://api.chatcut.io/api/external-mcp/mcp", "transport": "http",
+     # Empty value = the user pastes it. The name alone puts it in the keychain.
+     "headers": {"Authorization": ""},
+     "env_keys": [],
+     "note": "Cut and shape a real multi-track timeline by describing the edit, and generate clips, "
+             "voice-over, music, captions and motion graphics inside the same project. This is their "
+             "hosted server, so the Authorization header needs a Bearer token from *your* ChatCut "
+             "account — their agent-plugin guide walks through the sign-in that produces one, and "
+             "the token is short-lived (about an hour), so a 401 later usually means refreshing it "
+             "rather than a wrong key. Watch the account it bills: it is not this app's.",
+     "note_zh": "用文字描述剪辑,让它去改真实的轨道时间线,并在同一个项目里生成片段、旁白、音乐、字幕与动态图形。"
+                "这是它的托管服务,所以 Authorization 头要填**你自己** ChatCut 账号的 Bearer token——"
+                "它那份接入说明里有换取 token 的登录流程;token 有效期不长(约 1 小时),之后报 401 通常是该换一个,"
+                "而不是填错了。注意计费记在那个账号上,不是本程序。"},
 ]
 
 HOOK_TEMPLATES: list[dict] = [
@@ -357,9 +412,18 @@ def _prompt_rows() -> list[dict]:
     return out
 
 
+def _mcp_headers(m: dict) -> dict[str, str]:
+    """The headers a template prefills. An empty value means the user pastes one in."""
+    return {str(k): str(v) for k, v in (m.get("headers") or {}).items()}
+
+
 def _mcp_rows() -> list[dict]:
     out = []
     for m in MCP_TEMPLATES:
+        headers = _mcp_headers(m)
+        # What the reader still has to supply. Both halves have to be listed: for the HTTP
+        # servers that is the only thing standing between the entry and a working connection.
+        needs = [*m.get("env_keys", []), *(k for k, v in headers.items() if not v)]
         out.append({
             "id": f"mcp:{m['key']}", "kind": "mcp",
             "name": m["name"], "name_zh": m.get("name_zh", ""),
@@ -369,9 +433,13 @@ def _mcp_rows() -> list[dict]:
             "source": "builtin",
             "preview": {"command": m.get("command", ""), "args": list(m.get("args", [])),
                         "env_keys": list(m.get("env_keys", [])), "note": m.get("note", ""),
-                        "note_zh": m.get("note_zh", "")},
+                        "note_zh": m.get("note_zh", ""),
+                        "url": m.get("url", ""), "transport": m.get("transport", ""),
+                        "headers": headers, "needs": needs},
             "def": {"name": m["name"], "command": m.get("command", ""),
                     "args": list(m.get("args", [])), "env_keys": list(m.get("env_keys", [])),
+                    "url": m.get("url", ""), "transport": m.get("transport", ""),
+                    "headers": headers, "header_keys": [k for k, v in headers.items() if not v],
                     "note": m.get("note", "")},
         })
     return out
@@ -1028,8 +1096,17 @@ def _apply_mcp(store: Store, item: dict, opts: dict) -> dict:
         " It is imported disabled: check the command, fill in the keys it needs, then enable it "
         "on the MCP page.",
         " 导入后是停用状态:核对命令、填好密钥后再到「MCP」页启用。")
+    # A URL template is a server somebody else runs, so there is no command to review — but the
+    # URL is worth reading before it is enabled, and it goes into the same `description` the MCP
+    # page shows. An empty header value stays empty here on purpose: this app does not know the
+    # user's token, and guessing one would either fail or look like it worked.
+    headers = _mcp_headers(d)
+    if headers and not d.get("command"):
+        note = note + i18n.pick_now(f" It is reached at {d.get('url', '')}.",
+                                    f" 它通过 {d.get('url', '')} 连接。")
     row = store.add_mcp(d["name"], d.get("command", ""), args,
-                        {k: "" for k in d.get("env_keys", [])}, "", "", {}, note.strip())
+                        {k: "" for k in d.get("env_keys", [])}, d.get("url", ""),
+                        d.get("transport", ""), headers, note.strip())
     store.update_mcp(row["id"], {"enabled": False})
     return _result(item, i18n.pick_now(
         f'Added MCP server "{label}" (disabled). Check the command on the MCP page, fill in what it '

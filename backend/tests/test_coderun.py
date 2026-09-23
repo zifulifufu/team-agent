@@ -224,6 +224,44 @@ def test_a_group_id_cannot_walk_out_of_the_base(tmp_path):
         raise AssertionError(f"{bad!r} should have been refused")
 
 
+def test_a_members_shell_can_find_node_and_ffmpeg_however_the_app_was_started(tmp_path, monkeypatch):
+    """`run_code` inherits this app's PATH, and an app started from the Finder inherits launchd's
+    minimal one — on which `node`, `npx`, `ffmpeg` and `uvx` are all absent however well they are
+    installed. A member building a video runs `npx remotion render`, so `command not found` was
+    the answer on a machine that has Node: the same trap that once hid ffmpeg from video frames."""
+    from app import bindirs, coderun
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    env = coderun.child_env(tmp_path)
+    dirs = env["PATH"].split(":")
+
+    # The caller's own order is kept: a version a user put deliberately early on their PATH wins.
+    assert dirs[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    for folder in bindirs.TOOL_DIRS:
+        if pathlib.Path(folder).is_dir():
+            assert folder in dirs, f"{folder} is installed here and still missing from the run"
+    assert not any(not pathlib.Path(d).is_dir() for d in dirs), "only existing directories are added"
+
+    # …and none of the boundary moved: no token, no inherited keys, no proxy credentials.
+    # (`NO_PROXY` for loopback is set deliberately and is not a credential.)
+    assert "TEAM_AGENT_TOKEN" not in env
+    assert not any(k.upper() in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY") for k in env)
+
+
+def test_the_place_a_hand_installed_tool_lives_is_one_list():
+    """A second copy of this list would drift into a bug nobody can reproduce: this app finding a
+    program along one path and not another. `bindirs` is a leaf so the two callers can share it —
+    `attachments` cannot be imported from `coderun` (attachments → library → store → media →
+    coderun)."""
+    from app import attachments, bindirs, coderun
+
+    assert attachments.TOOL_DIRS is bindirs.TOOL_DIRS
+    assert attachments.tool is bindirs.tool
+    assert coderun.search_path is bindirs.search_path
+    assert bindirs.search_path("/usr/bin:/bin").startswith("/usr/bin:/bin")
+    assert bindirs.search_path("/usr/bin:/bin").split(":")[:2] == ["/usr/bin", "/bin"]
+
+
 async def test_long_output_is_cut(code_env):
     orch, store, g = code_env
     store.update_settings({"tool_output_limit": 500})

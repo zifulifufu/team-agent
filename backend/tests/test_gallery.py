@@ -16,6 +16,7 @@ These tests pin down three things:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -77,10 +78,21 @@ def test_team_templates_reference_existing_members_and_skills() -> None:
 def test_catalog_ships_no_third_party_source_metadata(store) -> None:
     """Gallery entries can only be built-in or user supplied: no more fields of the
     "third-party repo URL + licence" kind.
-"""
+
+    A URL is no longer forbidden outright, because a server reached over the network *is* an
+    address: the only links allowed in the catalog are the ones a built-in MCP template declares
+    for its own server, and each of those has to come with a transport. Anything else that
+    appears in the overview is still a leftover of the removed "clone a repo" mechanism.
+    """
     ov = gallery.overview(store)
     blob = json.dumps(ov, ensure_ascii=False)
     assert "awesome-llm-apps" not in blob
+
+    for m in gallery.MCP_TEMPLATES:
+        if m.get("url"):
+            assert m.get("transport") in ("http", "sse"), m["key"]
+            assert m["url"] in blob, m["key"]
+            blob = blob.replace(m["url"], "")
     assert "http://" not in blob and "https://" not in blob
     assert "shipped" not in ov and "commit" not in ov
 
@@ -212,6 +224,110 @@ def test_mcp_page_templates_share_one_source(client) -> None:
     """The built-in templates on the MCP page and the gallery read the same list\nbeneath, so the two cannot drift apart."""
     listing = client.get("/api/mcp/templates").json()
     assert [m["name"] for m in listing] == [m["name"] for m in gallery.MCP_TEMPLATES]
+
+
+# ------------------------------------------- MCP servers reached over the network
+def test_every_builtin_mcp_template_says_how_it_is_reached() -> None:
+    """A template has to name a command to start *or* a URL that already answers. An entry with
+    neither imports as a server that can never be connected to, and the reader fills the form in
+    and still gets nothing — which is what the old URL-less form made of Voicebox and ChatCut."""
+    for m in gallery.MCP_TEMPLATES:
+        assert m.get("command") or m.get("url"), m["key"]
+        if m.get("url"):
+            assert m["url"].startswith(("http://", "https://")), m["key"]
+            assert m.get("transport") in ("http", "sse"), m["key"]
+        for k in (m.get("headers") or {}):
+            assert isinstance(k, str) and k, m["key"]
+        assert m["note"] and m["note_zh"], m["key"]
+
+
+def test_a_url_template_imports_its_address_transport_and_headers(client) -> None:
+    r = client.post("/api/gallery/mcp:voicebox/apply", json={}).json()
+    assert r["added"] == ["MCP: Voicebox (voice on this machine)"]
+    m = next(m for m in client.get("/api/mcp").json() if m["name"].startswith("Voicebox"))
+    assert m["enabled"] is False                       # like every other import from this gallery
+    assert m["command"] == "" and m["url"] == "http://127.0.0.1:17493/mcp"
+    assert m["transport"] == "http"
+    # The value the entry carries is kept; the API masks every env/header value on the way out, so
+    # what comes back is the mask, and the real one lives on the row (`store.get_mcp`).
+    assert set(m["headers"]) == {"X-Voicebox-Client-Id"}
+    assert client.app.state.store.get_mcp(m["id"])["headers"] == {"X-Voicebox-Client-Id": "team-agent"}
+    # The address is the one thing worth reading before it is switched on, so it goes in the note.
+    assert "127.0.0.1:17493" in m["description"]
+    # A second click adds nothing twice, exactly like the command-style templates.
+    assert client.post("/api/gallery/mcp:voicebox/apply", json={}).json()["skipped"] == \
+        ["MCP: Voicebox (voice on this machine)"]
+
+
+def test_a_token_header_is_imported_empty_and_never_guessed(client) -> None:
+    """ChatCut authenticates with a Bearer token from the reader's own account. The template must
+    import the header *name* without inventing a value: a placeholder that is not a real token
+    fails in a way that reads like the server being down, and the reader has no way to tell."""
+    client.post("/api/gallery/mcp:chatcut/apply", json={})
+    m = next(m for m in client.get("/api/mcp").json() if m["name"].startswith("ChatCut"))
+    assert m["url"] == "https://api.chatcut.io/api/external-mcp/mcp"
+    assert m["headers"] == {"Authorization": ""}        # empty in, empty out — nothing was invented
+
+    # …and the gallery says out loud what is still missing, in the reader's language.
+    card = client.get("/api/gallery/mcp:chatcut", headers={"Accept-Language": "zh-CN"}).json()
+    assert card["def"]["header_keys"] == ["Authorization"]
+    assert card["preview"]["needs"] == ["Authorization"]
+    assert card["name"] == "ChatCut(用描述剪视频)" and "Bearer" in card["summary"]
+
+
+def test_a_bearer_token_pasted_in_goes_to_the_keychain(tmp_path, monkeypatch) -> None:
+    """`Authorization` matches `secrets.SENSITIVE_NAME`, so the token must not reach the database
+    in the clear — backups and exports carry the database and not the keychain."""
+    from app import api_ext
+    from tests.test_compliance import _FakeKeychain
+
+    kc = _FakeKeychain().install(monkeypatch)
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="ok"))
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        c.post("/api/gallery/mcp:chatcut/apply", json={})
+        mid = next(m for m in c.get("/api/mcp").json() if m["name"].startswith("ChatCut"))["id"]
+        c.patch(f"/api/mcp/{mid}", json={"headers": {"Authorization": "Bearer cc-live-abcdef"}})
+
+        stored = json.dumps(c.app.state.store._q("SELECT * FROM mcp_servers"), ensure_ascii=False)
+        assert "cc-live" not in stored, "the token was written to the database in the clear"
+        assert kc.items[f"mcp:{mid}:Authorization"] == "Bearer cc-live-abcdef"
+        # The app still gets a usable header when it connects, and never sends it back to the UI.
+        assert c.app.state.store.get_mcp(mid)["headers"]["Authorization"] == "Bearer cc-live-abcdef"
+        listed = next(m for m in c.get("/api/mcp").json() if m["id"] == mid)
+        assert listed["headers"]["Authorization"] == api_ext.MASK
+
+
+def test_the_video_skills_ship_with_the_app_and_carry_their_prerequisites(client) -> None:
+    """The two skills are the whole of "make a video by writing code". They are seeded like every
+    other built-in skill — including on an install that already exists, which is what makes them
+    "there" rather than a template someone has to find — and what they must carry is the
+    prerequisite (Node 22+), the timeout a render does not fit in, and the rule that a member who
+    cannot watch the result must not describe it."""
+    library = {s["name"] for s in client.get("/api/skills").json()}
+    for tid, name in (("skill:remotion-video", "Video as code (Remotion)"),
+                      ("skill:hyperframes-video", "HTML to video (HyperFrames)")):
+        assert tid in {i["id"] for i in client.get("/api/gallery").json()["items"]}
+        assert name in library, f"{name} was not seeded"
+        # …and the gallery's click is the same idempotent one as for every other skill.
+        r = client.post(f"/api/gallery/{tid}/apply", json={}).json()
+        assert any(name in str(v) for v in [*r["added"], *r["skipped"]]), r
+
+    en = client.get("/api/gallery/skill:remotion-video").json()
+    zh = client.get("/api/gallery/skill:remotion-video", headers={"Accept-Language": "zh-CN"}).json()
+    assert en["name"] == "Video as code (Remotion)" and zh["name"] == "程序化视频(Remotion)"
+
+    # The English/Chinese pair is checked on the source of truth, not through the gallery card:
+    # `preview.body` is a 220-character clip, and the tail is exactly where the two rules live.
+    from app.tools import EXAMPLE_SKILLS
+
+    for key in ("remotion-video", "hyperframes-video"):
+        entry = EXAMPLE_SKILLS[key]
+        assert "Node.js 22" in entry["body"] and "Node.js 22" in entry["body_zh"]
+        assert not re.search(r"[\u4e00-\u9fff]", entry["body"]), "the base field is the English one"
+        assert re.search(r"[\u4e00-\u9fff]", entry["body_zh"])
+        for text in (entry["body"], entry["body_zh"]):
+            assert "run_code" in text, "the timeout a render does not fit in has to be named"
+            assert "cannot watch" in text or "看不到" in text, "and so does the honesty rule"
 
 
 def test_unknown_template_is_404_and_bad_group_is_400(client) -> None:

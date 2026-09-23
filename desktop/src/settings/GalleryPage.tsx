@@ -178,9 +178,17 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
         )}
         {it.kind === "mcp" && (
           <>
-            <code className="gl-cmd">{[S(d.def.command), ...A(d.def.args)].join(" ")}</code>
+            {/* A server reached over the network has no command to show — printing an empty line
+                where the reader expects the thing to check would be worse than saying the URL. */}
+            <code className="gl-cmd">
+              {S(d.def.command) ? [S(d.def.command), ...A(d.def.args)].join(" ") : S(d.def.url)}
+            </code>
             <div className="gl-line">{S(d.def.note)}</div>
-            {A(d.def.env_keys).length > 0 && <div className="gl-line">{t("You need to fill in:")} {A(d.def.env_keys).join(", ")}</div>}
+            {[...A(d.def.env_keys), ...A(d.def.header_keys)].length > 0 && (
+              <div className="gl-line">
+                {t("You need to fill in:")} {[...A(d.def.env_keys), ...A(d.def.header_keys)].join(", ")}
+              </div>
+            )}
           </>
         )}
       </div>

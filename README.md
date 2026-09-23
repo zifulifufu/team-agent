@@ -93,7 +93,7 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
-| Template gallery | 51 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
+| Template gallery | 72 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
 | Local models | Curated catalog, hardware fit estimate, discovery of new model versions |
 | External agents | Run a command-line agent as a group member, at read-only / edit / full permission, off by default |
 | Data | Backup and restore, chat export to Markdown, usage statistics |
@@ -260,6 +260,42 @@ inserts a token the backend understands:
 Paths are resolved inside the group's workspace and re-checked after resolving links, so a
 reference cannot reach outside it. How much referenced content one prompt may carry is
 `refs_budget` under Settings → General.
+
+## Making video: bringing mature video tools in
+
+The sections above are about this app *generating* video itself (`generate_video`, and the three
+dialects behind it). This one is the other half: **wiring in video tools that already exist**. Their
+shapes differ a lot, so where each one goes differs too — putting them all in the provider list
+would only get each of them half right.
+
+| Tool | Shape | Where it goes | Cost / prerequisite |
+|---|---|---|---|
+| **Remotion** | a local npm command line (`npx remotion render`) | built-in skill *Video as code (Remotion)* | Node.js 22+. The first project installs dependencies and downloads a headless browser (a few hundred megabytes), which can outlast one `run_code` call |
+| **HyperFrames** (HeyGen's open-source framework) | a local npm command line (`npx hyperframes render`) | built-in skill *HTML to video (HyperFrames)* | Node.js 22+ and `ffmpeg`. Its **cloud rendering API** is not wired up here (it needs a key and bills per minute of output) |
+| **Voicebox** | a desktop app on this machine, **serving MCP** over HTTP | Template gallery → MCP → *Voicebox (voice on this machine)* | Install and start Voicebox first; its MCP server listens on `127.0.0.1:17493`. Speaking comes out of your speakers |
+| **HeyGen** | stdio MCP (`uvx heygen-mcp`) | Template gallery → MCP → *HeyGen (avatar video)* | Needs an API key from your HeyGen account; rendering happens on their servers and **is billed to that account** |
+| **ChatCut** | a **hosted** HTTP MCP with a Bearer header | Template gallery → MCP → *ChatCut (edit video by describing it)* | You obtain the token yourself with their sign-in flow; it is short-lived (about an hour), so **a 401 later usually means refreshing it, not a wrong key** |
+
+Three rules, the same ones the rest of this app follows:
+
+* **The two local routes are skills, not providers.** A skill is plain text written for the model to
+  read and **executes nothing by itself**. What actually runs is `run_code`: the member builds a
+  project in the group workspace, writes the composition, runs the render command, and the result
+  lands in the workspace — which is how it becomes a file in the chat. So the video skills only work
+  once **Permissions & control → Let members write and run code** is on (it is off by default), and
+  `run_code` is an execution-class tool, so **by default you are asked before every call**.
+* ⚠️ **A render takes minutes, while `code_timeout` defaults to 60 seconds and stops at 600.**
+  Both skills say so, and require the member to **say it out loud** when the timeout cuts the run
+  short and ask for a longer budget, rather than quietly lowering the quality or dropping frames to
+  fit. Install the dependencies once in a terminal first; that is the step most likely to time out.
+* **MCP entries are imported disabled**, this app will not enable one for you, and it will not fill
+  in a key for you (a key you paste in goes to the keychain, not to the database in the clear).
+* **A member cannot watch the result.** Both skills require it to say what it composed and which
+  command it ran, and forbid describing the picture.
+
+> ChatCut Desktop registers its own **local** MCP server with the agents it detects — Claude Code
+> and Codex among them. Those config files are already readable here: pick the matching source under
+> *Settings → Importing from other AI apps* and you never have to know the address.
 
 ## External agents
 

@@ -217,6 +217,55 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "4. 合规:是否触及所在行业的监管要求(如医疗、金融的宣传与信息披露)?\n"
                    "5. 安全:要发出去的文件里有没有密钥、内网地址、内部人名?",
     },
+    "remotion-video": {
+        "name": "Video as code (Remotion)", "name_zh": "程序化视频(Remotion)",
+        "description": "How to build and render a video from React code in the workspace",
+        "description_zh": "用 React 代码在工作目录里做出并渲染一条视频的做法", "scope": "member",
+        "body": "Making a video with Remotion means writing React and rendering it to a file — not editing a timeline. Work inside the group workspace.\n"
+                "1. Check the ground before promising anything: Node.js 22 or newer. Run `node -v` first, and if it is missing or older say so, rather than starting a project that cannot render.\n"
+                "2. Set the project up once and reuse it: a subdirectory of the workspace holding `remotion`, `@remotion/cli` and `@remotion/renderer`. Installing those, plus the headless browser downloaded on the first render, can take longer than one `run_code` call is allowed — if the timeout stops it, say so and let the user decide; do not quietly abandon the video.\n"
+                "3. One composition per video, registered in the entry file with explicit width, height, fps and duration. Everything the user might want changed — title, figures, dates, wording, colours, the rows of a list — belongs in that composition's props and is passed in with `--props '{...}'`; never rewrite the component for each new video.\n"
+                "4. Every animation must come from the current frame (`interpolate`, `spring`, `Sequence`). CSS transitions, `animation` keyframes and animation utility classes are not rendered correctly and are forbidden — this is the most common way a Remotion video comes out wrong.\n"
+                "5. Render with a shell command: `npx remotion render <entry> <CompositionId> <file>.mp4 --props '{...}'`. Time and randomness arrive as props; `Date.now()` or `Math.random()` inside a composition makes the output different every run.\n"
+                "6. Write the .mp4 into the workspace and name it, together with the command you ran, in your reply. You cannot watch the result: describe what you composed, never what it looks like.",
+        "body_zh": "用 Remotion 做视频,是写 React 再渲染成文件,而不是在时间线上剪。工作在本群工作目录里进行。\n"
+                   "1. 先探路再承诺:需要 Node.js 22 或更新。先跑 `node -v`,没有或太旧就直说,别开一个根本渲染不出来的项目。\n"
+                   "2. 项目只装一次、反复用:工作目录下的一个子目录里放 `remotion`、`@remotion/cli`、`@remotion/renderer`。"
+                   "装这些,加上首次渲染要下载的无头浏览器,可能超过一次 `run_code` 允许的时间——超时被终止就直说,让用户决定,"
+                   "不要悄悄把这条视频放掉。\n"
+                   "3. 一条视频一个 composition,在入口文件里登记,宽高、帧率、时长都写明。"
+                   "用户可能想改的一切——标题、数字、日期、措辞、颜色、列表行——都放进它的 props,用 `--props '{...}'` 传进去;"
+                   "不要为每条新视频重写组件。\n"
+                   "4. 所有动画都必须由当前帧推出(`interpolate`、`spring`、`Sequence`)。"
+                   "CSS 过渡、`animation` 关键帧和动画工具类渲染不正确,一律不要用——这是 Remotion 视频做坏最常见的原因。\n"
+                   "5. 用 shell 命令渲染:`npx remotion render <入口> <CompositionId> <文件>.mp4 --props '{...}'`。"
+                   "时间与随机数都要当参数传进来;在 composition 里用 `Date.now()` 或 `Math.random()`,每次都渲染出不一样的结果。\n"
+                   "6. 把 .mp4 写进工作目录,并在回复里给出文件名和你跑过的命令。你看不到成片:只说你编了什么,不要描述画面。",
+    },
+    "hyperframes-video": {
+        "name": "HTML to video (HyperFrames)", "name_zh": "HTML 变视频(HyperFrames)",
+        "description": "How to build a scene as a web page and render it to MP4",
+        "description_zh": "把网页做成视频场景并渲染成 MP4 的做法", "scope": "member",
+        "body": "HyperFrames renders a web page into a video: the timeline is HTML, CSS and JavaScript. Work inside the group workspace.\n"
+                "1. Check the ground first: Node.js 22 or newer, and `ffmpeg` for local encoding. Name whichever is missing instead of starting a project that cannot finish.\n"
+                "2. One project per video: `npx hyperframes init <name>` in the workspace, then `npx hyperframes render` for the MP4. `npx hyperframes preview` opens a local preview for the user to look at — you cannot see it, so never describe what it shows.\n"
+                "3. Author the scene as a self-contained page: an index file plus the CSS, JavaScript, fonts and assets it needs, all inside the project folder. Motion belongs in the page, and timing follows the framework's own data attributes rather than a timeline you edit by hand.\n"
+                "4. Parameterize rather than fork: values declared as composition variables are overridden at render time, so one page yields many videos. Headline, figures, dates and colours are variables; the file is not rewritten per video.\n"
+                "5. Keep every asset local. A page that renders standalone in a browser can also be rendered elsewhere; one that depends on something on the internet cannot.\n"
+                "6. Rendering takes minutes, and `run_code` stops a call that times out. If the budget is too short, say so and ask for a longer one — do not shorten the video or drop frames to fit.\n"
+                "7. Name the .mp4 path and the command you ran in your reply. You cannot watch the result.",
+        "body_zh": "HyperFrames 把一个网页渲染成视频:时间线就是 HTML、CSS 和 JavaScript。工作在本群工作目录里进行。\n"
+                   "1. 先探路:需要 Node.js 22 或更新,本机编码还需要 `ffmpeg`。缺哪个就说哪个,别开一个做不完的项目。\n"
+                   "2. 一条视频一个项目:在工作目录里 `npx hyperframes init <名字>`,再用 `npx hyperframes render` 出 MP4。"
+                   "`npx hyperframes preview` 是开给用户看的本地预览——你看不到,所以不要描述里面是什么样。\n"
+                   "3. 场景写成一个自包含的页面:一个入口文件,加上它需要的 CSS、JavaScript、字体和素材,全部放在项目目录里。"
+                   "动效写在页面里,时序按框架自己的 data 属性走,而不是你手工去剪时间线。\n"
+                   "4. 参数化,不要复制:声明成 composition 变量的值可以在渲染时覆盖,所以一个页面能出很多条视频。"
+                   "标题、数字、日期、颜色都是变量,而不是每条视频改一遍文件。\n"
+                   "5. 素材全部本地化。能在浏览器里独立渲染的页面,才能拿到别处渲染;依赖外网上东西的不能。\n"
+                   "6. 渲染要几分钟,而 `run_code` 超时会终止调用。时间不够就直说、要求放宽——不要为了塞进去而把视频剪短或丢帧。\n"
+                   "7. 在回复里给出 .mp4 路径和你跑过的命令。你看不到成片。",
+    },
 }
 
 

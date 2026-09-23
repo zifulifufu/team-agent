@@ -230,12 +230,20 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
             label={t("Add MCP server")}
             items={[
               { key: "new", label: t("Add by hand…"), hint: t("Enter a command or a remote address and attach it to this group"), onClick: () => setMcpDlg({ ...EMPTY_INIT }) },
-              ...templates.map((tpl) => ({
-                key: "tpl:" + tpl.name,
-                label: tr("Template · {name}", { name: tpl.name }),
-                hint: tpl.args.some(hasPlaceholder) ? tr("Needs a path change") : tpl.note.slice(0, 20),
-                onClick: () => setMcpDlg({ ...EMPTY_INIT, name: tpl.name, description: tpl.note, command: tpl.command, args: tpl.args }),
-              })),
+              // Same two shapes as the MCP page: a command to start, or an address that answers.
+              ...templates.map((tpl) => {
+                const args = tpl.args ?? [];
+                const remote = !tpl.command && !!tpl.url;
+                return {
+                  key: "tpl:" + tpl.name,
+                  label: tr("Template · {name}", { name: tpl.name }),
+                  hint: args.some(hasPlaceholder) ? tr("Needs a path change") : tpl.note.slice(0, 20),
+                  onClick: () => setMcpDlg(remote
+                    ? { ...EMPTY_INIT, name: tpl.name, description: tpl.note, remote: true,
+                        url: tpl.url ?? "", transport: tpl.transport ?? "", headers: tpl.headers ?? {} }
+                    : { ...EMPTY_INIT, name: tpl.name, description: tpl.note, command: tpl.command, args }),
+                };
+              }),
               { key: "gh", label: t("Discover on GitHub…"), onClick: () => setDiscover("mcp") },
             ]}
           />

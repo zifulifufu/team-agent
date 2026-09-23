@@ -28,6 +28,12 @@ import tempfile
 from pathlib import Path
 
 from . import i18n, library
+# Where a hand-installed tool may live, and how one is found by name, live in a leaf module:
+# the environment a member's code is run in needs the same list and cannot reach it through this
+# module (this one imports the library, which imports the store, which imports `media`, which
+# imports `coderun`). Re-exported so the many callers that already say
+# `attachments.tool("ffmpeg")` keep working, and so there is still exactly one list.
+from .bindirs import TOOL_DIRS, tool
 
 IMAGE, VIDEO, AUDIO, DOCUMENT, OTHER = "image", "video", "audio", "document", "other"
 VISUAL = (IMAGE, VIDEO)
@@ -72,27 +78,7 @@ PLAIN_EXT = library.TEXT_EXT | {".html", ".htm", ".csv"}
 MAX_NAME = 60
 
 
-# Where a media tool may live when the app was started by the Finder rather than from a shell.
-# A GUI-launched app gets launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which does not
-# include the Homebrew prefixes — so "ffmpeg is installed" and "the app can find ffmpeg" are
-# different facts, and video frames would silently never work.
-#
-# `~/.local/bin` is in the list for the transcriber, which is the tool a user installs by hand:
-# `pipx install mlx-whisper` and `pip install --user …` both land there, and leaving it out meant
-# "I installed it and the app still says nothing was found" with no way to tell why.
-TOOL_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local/bin"), "/usr/bin", "/bin")
-
-
-def tool(name: str) -> str | None:
-    """A media binary by name, from PATH or a usual install prefix."""
-    found = shutil.which(name)
-    if found:
-        return found
-    for folder in TOOL_DIRS:
-        candidate = Path(folder) / name
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
+# `TOOL_DIRS` and `tool()` are imported at the top of this file, from `bindirs`.
 
 
 # ------------------------------------------------------------------ speech

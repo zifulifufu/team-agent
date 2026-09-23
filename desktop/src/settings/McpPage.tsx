@@ -227,11 +227,23 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
       <p className="muted small" style={{ margin: "-4px 0 10px", lineHeight: 1.7 }}>{t("Clicking a template only fills the form in; it is not saved straight away. Check the command, then save.")}</p>
       <div className="ext-tpl-grid">
         {templates.map((tpl) => {
-          const ph = tpl.args.some(hasPlaceholder);
+          // Two shapes: this app starts a program (stdio), or it connects to an address that
+          // something else is already serving. A template carries one or the other, and clicking
+          // it has to fill in the matching half of the form — reading `args` unconditionally
+          // crashed this page the moment a URL template existed.
+          const args = tpl.args ?? [];
+          const remote = !tpl.command && !!tpl.url;
+          const ph = args.some(hasPlaceholder);
           return (
-            <button key={tpl.name} className="ext-tpl" onClick={() => openAdd({ name: tpl.name, description: tpl.note, command: tpl.command, args: tpl.args })}>
+            <button key={tpl.name} className="ext-tpl"
+              onClick={() => openAdd(remote
+                ? { name: tpl.name, description: tpl.note, remote: true, url: tpl.url ?? "",
+                    transport: tpl.transport ?? "", headers: tpl.headers ?? {} }
+                : { name: tpl.name, description: tpl.note, command: tpl.command, args })}>
               <b>{tpl.name}{ph && <span className="tag warn">{t("Path needs changing")}</span>}</b>
-              <span className="ext-tpl-cmd"><Highlight text={[tpl.command, ...tpl.args].join(" ")} /></span>
+              <span className="ext-tpl-cmd">
+                <Highlight text={remote ? (tpl.url ?? "") : [tpl.command, ...args].join(" ")} />
+              </span>
               <span className="ext-tpl-note">{tpl.note}</span>
             </button>
           );
