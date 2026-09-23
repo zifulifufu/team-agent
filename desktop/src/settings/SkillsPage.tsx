@@ -7,6 +7,7 @@ import { Modal, useConfirm } from "../ui";
 import { GithubMark, SourceBadge, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
 import ImportFromApps from "../components/ImportFromApps";
+import { groupByCategory, matchesSkill, skillCategoryLabel, storedFolder } from "../skills";
 import "../styles/ext.css";
 
 // The scope wording per language. `scopeLabel` is a plain function, so it resolves through
@@ -34,6 +35,7 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
   const [checkMsg, setCheckMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
+  const [q, setQ] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -59,6 +61,11 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
   }, [skills, agents, groups]);
 
   const hasSource = (skills ?? []).some((s) => s.source);
+
+  // Kept in the order the backend sent, so the sections come out in the intended order and the
+  // headings cannot disagree with the sorting.
+  const matching = (skills ?? []).filter((s) => matchesSkill(s, q));
+  const sections = groupByCategory(matching);
 
   const check = async () => {
     setChecking(true);
@@ -131,6 +138,19 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
       {loadErr && <div className="ext-errbox"><div className="err">{t("Could not read the skills:")} {loadErr}</div><button className="btn small" onClick={() => void load()}>{t("Retry")}</button></div>}
 
       {!skills && !loadErr && <div className="empty"><Spin /> {t("Loading…")}</div>}
+      {skills && skills.length > 0 && (
+        <div className="sp-search">
+          <input className="pm-text" value={q} onChange={(e) => setQ(e.target.value)}
+                 placeholder={t("Search skills by name or description")}
+                 aria-label={t("Search skills")} />
+          {q && (
+            <span className="muted small">
+              {t("{n} of {total} shown", { n: matching.length, total: skills.length })}
+              <button className="link" onClick={() => setQ("")}>{t("Clear")}</button>
+            </span>
+          )}
+        </div>
+      )}
       {skills && (
         <div className="card flush">
           {skills.length === 0 && (
@@ -138,41 +158,61 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
               {t("No skills yet. Write one yourself with New skill in the top right, or find a ready-made one on GitHub.")}
             </div>
           )}
-          {skills.map((s) => {
-            const u = usage[s.name] ?? { agents: [], groups: [] };
-            const hasNew = newer.has(s.name);
-            return (
-              <div key={s.name} className="ext-item">
-                <div className="model-row">
-                  <div className="mr-main">
-                    <div className="mr-name">
-                      {s.name}
-                      <span className={"tag " + (s.scope === "group" ? "warn" : "on")}>{s.scope === "group" ? <Users size={11} /> : <User size={11} />} {scopeLabel(s.scope)}</span>
-                      {s.version && <span className="tag">v{s.version}</span>}
-                      {s.source && <SourceBadge repo={s.source.repo} path={s.source.path} />}
-                      {hasNew && <span className="tag new">{t("A newer version is on GitHub")}</span>}
-                    </div>
-                    {s.description && <div className="ext-item-desc">{s.description}</div>}
-                    <div className="ext-item-sub">
-                      {u.agents.length === 0 && u.groups.length === 0
-                        ? t("Not used yet")
-                        : [u.agents.length ? t("Members: {names}", { names: u.agents.join(", ") }) : "", u.groups.length ? t("Groups: {names}", { names: u.groups.join(", ") }) : ""].filter(Boolean).join(" · ")}
-                    </div>
-                    {rowErr[s.name] && <div className="ext-errline">{rowErr[s.name]}</div>}
-                  </div>
-                  <div className="ext-item-actions">
-                    {s.source && (
-                      <button className={"btn small" + (hasNew ? " primary" : "")} disabled={updating === s.name} onClick={() => void update(s)} title={t("Overwrite the local skill with the latest content from GitHub")}>
-                        {updating === s.name ? <><Spin size={12} /> {t("Updating")}</> : t("Update")}
-                      </button>
-                    )}
-                    <button className="icon-btn" title={t("Edit")} aria-label={t("Edit the skill {name}", { name: s.name })} onClick={() => setEditing(s)}><Pencil size={15} /></button>
-                    <button className="icon-btn" title={t("Delete")} aria-label={t("Delete the skill {name}", { name: s.name })} onClick={() => void remove(s)}><Trash2 size={15} /></button>
-                  </div>
-                </div>
+          {skills.length > 0 && matching.length === 0 && (
+            <div className="empty">{t("No skill matches that. Clear the search to see them all.")}</div>
+          )}
+          {sections.map((section) => (
+            <div key={section.key}>
+              {/* The heading is the point: same kind of work together, and a count, so a long list
+                  is something to scan rather than something to read. */}
+              <div className="sp-group">
+                <span>{t(skillCategoryLabel(section.key))}</span>
+                <span className="sp-group-n">{section.items.length}</span>
               </div>
-            );
-          })}
+              {section.items.map((s) => {
+                const u = usage[s.name] ?? { agents: [], groups: [] };
+                const hasNew = newer.has(s.name);
+                const folder = storedFolder(s);
+                return (
+                  <div key={s.name} className="ext-item">
+                    <div className="model-row">
+                      <div className="mr-main">
+                        <div className="mr-name">
+                          {s.name}
+                          <span className={"tag " + (s.scope === "group" ? "warn" : "on")}>{s.scope === "group" ? <Users size={11} /> : <User size={11} />} {scopeLabel(s.scope)}</span>
+                          {s.version && <span className="tag">v{s.version}</span>}
+                          {s.source && <SourceBadge repo={s.source.repo} path={s.source.path} />}
+                          {hasNew && <span className="tag new">{t("A newer version is on GitHub")}</span>}
+                        </div>
+                        {s.description && <div className="ext-item-desc">{s.description}</div>}
+                        {/* Only when the two differ: a skill whose text was rewritten by hand keeps
+                            the name it was written under, so this is how two rows with one title
+                            are told apart. */}
+                        {folder && (
+                          <div className="ext-item-sub">{t("Stored as “{folder}”", { folder })}</div>
+                        )}
+                        <div className="ext-item-sub">
+                          {u.agents.length === 0 && u.groups.length === 0
+                            ? t("Not used yet")
+                            : [u.agents.length ? t("Members: {names}", { names: u.agents.join(", ") }) : "", u.groups.length ? t("Groups: {names}", { names: u.groups.join(", ") }) : ""].filter(Boolean).join(" · ")}
+                        </div>
+                        {rowErr[s.name] && <div className="ext-errline">{rowErr[s.name]}</div>}
+                      </div>
+                      <div className="ext-item-actions">
+                        {s.source && (
+                          <button className={"btn small" + (hasNew ? " primary" : "")} disabled={updating === s.name} onClick={() => void update(s)} title={t("Overwrite the local skill with the latest content from GitHub")}>
+                            {updating === s.name ? <><Spin size={12} /> {t("Updating")}</> : t("Update")}
+                          </button>
+                        )}
+                        <button className="icon-btn" title={t("Edit")} aria-label={t("Edit the skill {name}", { name: s.name })} onClick={() => setEditing(s)}><Pencil size={15} /></button>
+                        <button className="icon-btn" title={t("Delete")} aria-label={t("Delete the skill {name}", { name: s.name })} onClick={() => void remove(s)}><Trash2 size={15} /></button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
 

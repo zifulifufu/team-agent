@@ -56,6 +56,21 @@ const ZH: Record<string, string> = {
 
   // ---------------------------------------------------------------- 工具入口(侧边栏与设置共用)
   "Skills": "技能",
+  // 技能列表的分组标题(后端只给稳定键,措辞在这边)。顺序即后端排好的顺序。
+  // "Video" / "Other" / "Clear" 已有词条,不再重复。
+  "Writing": "写作与文档",
+  "Research": "调研与文献",
+  "Data & analysis": "数据与表格",
+  "Meetings & discussion": "会议与讨论",
+  "Code & tooling": "代码与工具",
+  "Translation": "翻译",
+  "Making skills & plugins": "技能与插件本身",
+  "Imported from elsewhere": "从别处导入",
+  "Search skills by name or description": "按名字或描述搜索技能",
+  "Search skills": "搜索技能",
+  "{n} of {total} shown": "显示 {n} / {total} 条",
+  "No skill matches that. Clear the search to see them all.": "没有匹配的技能。清空搜索即可看全部。",
+  "Stored as “{folder}”": "存放目录:{folder}",
   "Plugins": "插件",
   "Prompts": "提示词",
   "Library": "资料库",

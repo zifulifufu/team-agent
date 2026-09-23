@@ -53,7 +53,7 @@ from .router import ModelRouter
 from .stats import compute_stats
 from .store import Store
 from .toolhub import ToolHub
-from .tools import build_registry, ensure_example_skills
+from .tools import build_registry, ensure_example_skills, merge_builtin_skill_copies
 from .updater import Updater, backfill_notice_languages, drop_stale_check_snapshot
 
 
@@ -239,6 +239,12 @@ def create_app(
     ensure_loopback_no_proxy()
     store = Store(data_dir)
     ensure_example_skills(store.data_dir / "skills", store._flag)
+    # Installs that predate the bilingual built-in skills have every one of them twice — the seed
+    # marker was keyed by the skill's name, and the name changed from Chinese to English when the
+    # text became language-neutral, so the set was written a second time. Both copies show the same
+    # title and the same description, and a member could be given the same rule twice. Repairing it
+    # here means it costs the user nothing: no reinstall, no manual delete, no list to prune.
+    merge_builtin_skill_copies(store)
     # Reminders used to be written in whichever language the check happened to run in. This gives
     # the ones already on disk their English form, so an English interface stops showing Chinese
     # ones immediately rather than waiting for the next check to rewrite them. Called by name

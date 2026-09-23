@@ -41,6 +41,8 @@ from .templates import create_group_from_template, ensure_agent_from_key
 from .toolhub import ToolHub, builtin_specs
 from .tools import (
     ToolRegistry,
+    category_of,
+    category_rank,
     delete_skill,
     list_skills,
     localize_skill,
@@ -1019,14 +1021,24 @@ def build_router(c: Ctx) -> APIRouter:
         # (anything the user rewrote stays as they wrote it).
         shown = localize_skill(s, i18n.current())
         src = store.get_source("skill", s.name)
-        out = {**shown.summary(), "source": ({"repo": src["repo"], "path": src["path"]} if src else None)}
+        out = {**shown.summary(), "source": ({"repo": src["repo"], "path": src["path"]} if src else None),
+               # Which section it belongs in, as a stable key: the label is the interface's business
+               # (the front end has the wording in both languages), so a section is never renamed by
+               # accident here — and a skill imported from elsewhere is filed as such rather than
+               # guessed at.
+               "category": category_of(s.name, s.description, imported=bool(src))}
         if with_body:
             out["body"] = shown.body
         return out
 
     @r.get("/api/skills")
     async def skills() -> list[dict]:
-        return [skill_view(s) for s in list_skills(store.data_dir / "skills")]
+        rows = [skill_view(s) for s in list_skills(store.data_dir / "skills")]
+        # Grouped by purpose, then by the name the reader sees. One order, decided here, because
+        # three screens show this list (the skills page, the member editor, the group panel) and
+        # they used to get folder order — all the English names, then all the Chinese ones.
+        rows.sort(key=lambda r: (category_rank(r["category"]), r["name"].casefold()))
+        return rows
 
     def find_skill(name: str):  # type: ignore[no-untyped-def]
         """The installed skill answering to `name`, in either language."""

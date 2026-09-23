@@ -745,6 +745,8 @@ export interface Skill {
   scope: "member" | "group";       // group = a chat-prompt skill attached to the whole group
   version: string;
   source: { repo: string; path: string } | null;
+  /** Which section it is filed under, as a stable key (see skills.ts for the wording). */
+  category: string;
   body?: string;                   // Returned only for a single read, create, or update
 }
 export interface PluginInfo {

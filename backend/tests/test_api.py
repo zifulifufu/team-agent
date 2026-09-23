@@ -191,3 +191,100 @@ def test_the_consolidation_setting_is_bounded(client):
     assert client.put("/api/settings", json={"integration_budget": 10}).status_code == 400
     assert client.put("/api/settings", json={"integration_budget": 50000}).status_code == 200
     assert client.get("/api/settings").json()["integration_budget"] == 50000
+
+
+def test_the_skill_list_is_filed_by_purpose_instead_of_by_folder_name(client):
+    """Reading order was the whole problem: the list came back in folder order, so on a Chinese
+    install all thirteen Chinese names followed every English one, the two copies of a skill sat
+    far apart, and nothing of the same kind was ever adjacent. Every row now carries a section, the
+    sections are consecutive, and the sections are in a fixed order — so the heading a reader sees
+    is the order the list is actually in, and the search box filters a list that has an order to
+    begin with."""
+    from app.tools import SKILL_CATEGORY_ORDER, category_rank
+
+    for lang in ("en", "zh"):
+        rows = client.get("/api/skills", params={"lang": lang}).json()
+        ranks = [category_rank(r["category"]) for r in rows]
+        assert all(r["category"] for r in rows), "every skill needs a section"
+        assert ranks == sorted(ranks), f"{lang}: the sections are not consecutive/in order"
+        assert ranks[0] == 0 and ranks[-1] <= len(SKILL_CATEGORY_ORDER)
+        # Within a section the names sort as displayed, not as stored — the point of the exercise.
+        for i in range(1, len(rows)):
+            if rows[i]["category"] == rows[i - 1]["category"]:
+                assert rows[i]["name"].casefold() >= rows[i - 1]["name"].casefold()
+
+    en = {r["name"]: r["category"] for r in client.get("/api/skills").json()}
+    assert en["Brainstorming rules"] == "facilitation"
+    assert en["Video as code (Remotion)"] == "video"
+    assert en["Chinese-English translation"] == "translation"
+    assert en["Office writing conventions"] == "writing"
+    # An imported one is filed as imported rather than guessed at from its words.
+    assert client.post("/api/skills", json={"name": "zz-imported-thing", "description": "x",
+                                           "body": "y", "scope": "member"}).status_code == 200
+    assert {r["name"]: r["category"] for r in client.get("/api/skills").json()}["zz-imported-thing"] \
+        in ("other", "imported")
+
+
+def test_a_builtin_skill_seeded_twice_is_merged_on_startup(tmp_path):
+    """The real install's state, reproduced: every built-in skill that predates the bilingual
+    rewrite is on disk twice — once under the English name it is stored under now, once under the
+    Chinese name it was first seeded with. Nothing looked broken, because a skill is found by
+    either spelling, so the visible result was two identical-looking rows and a member that could
+    be given the same rule twice. The repair happens at startup, so it costs the user nothing.
+    """
+    from app import tools
+    from app.store import Store
+
+    data = tmp_path / "data"
+    store = Store(data)          # as `create_app` does: the data directory and skills/ come first
+    seen: set[str] = set()
+    tools.ensure_example_skills(data / "skills", lambda k: k in seen or (seen.add(k) or False))
+
+    # Seed the legacy spelling a second time, in the notation that caused it (marker keyed by name).
+    doubled = {k: e for k, e in tools.EXAMPLE_SKILLS.items()
+               if e.get("name_zh") and k not in ("remotion-video", "hyperframes-video", "capcut-draft")}
+    for e in doubled.values():
+        folder = data / "skills" / tools.safe_skill_name(e["name_zh"])
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "SKILL.md").write_text(
+            tools.render_skill(e["name_zh"], e["description_zh"], e["body_zh"], e["scope"]),
+            encoding="utf-8")
+        store._x("INSERT INTO meta(key,value) VALUES(?,'1')", (f"seed_skill:{e['name_zh']}",))
+    # One the user rewrote by hand, which must survive the sweep untouched.
+    edited = data / "skills" / tools.safe_skill_name("头脑风暴规则")
+    edited.joinpath("SKILL.md").write_text(
+        (edited / "SKILL.md").read_text(encoding="utf-8") + "\n6. 我自己补的一条。\n", encoding="utf-8")
+    agent = store.list_agents()[0]
+    store.update_agent(agent["id"], {"skills": ["中英互译规范"]})
+    group = store.list_groups()[0]
+    store.update_group(group["id"], {"ext": {"skills": ["辩论规则"]}})
+    before = len(list((data / "skills").glob("*/SKILL.md")))
+
+    app = create_app(data, completion_fn=FakeLLM(default="ok"))
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        after = len(list((data / "skills").glob("*/SKILL.md")))
+        assert after < before, "the doubled set was not collapsed"
+        rows = c.get("/api/skills", params={"lang": "zh"}).json()
+        names = [s["name"] for s in rows]
+        duplicates = {n for n in names if names.count(n) > 1}
+        # One exception, and it is the point of the last assertion below: the copy the user rewrote
+        # is no longer a copy of anything, so it stays — under the name it was written under, which
+        # is why two rows can still share a title. They are at least distinguishable now.
+        assert duplicates == {"头脑风暴规则"}, duplicates
+        assert len(rows) == after, "the list and the folder count have to agree"
+        kept = [s for s in rows if s["name"] == "头脑风暴规则"]
+        assert len({s["path"] for s in kept}) == 2
+        assert "中英互译规范" in names and "公文写作规范" in names
+
+        # …and the tick did not silently disappear from the member or the group it was set on.
+        assert c.get(f"/api/agents").json()[0]["skills"] == ["Chinese-English translation"] \
+            or "Chinese-English translation" in next(
+                a for a in c.get("/api/agents").json() if a["id"] == agent["id"])["skills"]
+        assert "Debate rules" in next(
+            g for g in c.get("/api/groups").json() if g["id"] == group["id"])["ext"]["skills"]
+
+    # The rewritten one is a different skill now, so its folder is left alone — deleting it would
+    # throw away the user's own words.
+    assert (data / "skills" / tools.safe_skill_name("头脑风暴规则") / "SKILL.md").exists()
+    assert "我自己补的一条" in (data / "skills" / tools.safe_skill_name("头脑风暴规则")
+                                / "SKILL.md").read_text(encoding="utf-8")

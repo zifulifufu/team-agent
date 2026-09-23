@@ -9,6 +9,7 @@ import ExternalDialog from "../components/ExternalDialog";
 import ImportFromApps from "../components/ImportFromApps";
 import type { SettingsTab } from "../settings/SettingsModal";
 import { pick, useI18n } from "../i18n";
+import { matchesSkill } from "../skills";
 import "../styles/models.css";
 
 const BLANK: Partial<Agent> = { name: "", avatar: "🤖", role: "", prompt: "", model_id: null, skills: [], tags: [] };
@@ -84,6 +85,7 @@ function AgentForm({ agent, onDone, onSettings }: { agent: Agent | null; onDone:
   const [err, setErr] = useState("");
   const [extOpen, setExtOpen] = useState(false);
   const [saved, flash] = useFlash();
+  const [skillQ, setSkillQ] = useState("");
   useEffect(() => {
     api.skills().then((l) => setSkills(l.filter((s) => s.scope !== "group"))).catch(() => undefined);
     api.prompts().then((r) => setPrompts(r.prompts.filter((x) => x.kind === "general"))).catch(() => undefined);
@@ -222,8 +224,15 @@ function AgentForm({ agent, onDone, onSettings }: { agent: Agent | null; onDone:
         </div>
         <div className="field">
           <span>{t("Skills (injected into this member's prompt; works with every model)")}</span>
+          {/* Fifty-odd tick boxes is a lot to scan, and they are grouped by purpose but not
+              separated here: a filter is the smallest thing that makes one findable. */}
+          {skills.length > 6 && (
+            <input className="pm-text" value={skillQ} onChange={(e) => setSkillQ(e.target.value)}
+                   placeholder={t("Search skills by name or description")}
+                   aria-label={t("Search skills")} style={{ marginBottom: 8, maxWidth: 340 }} />
+          )}
           <div className="check-grid">
-            {skills.map((s) => (
+            {skills.filter((s) => matchesSkill(s, skillQ)).map((s) => (
               <label key={s.name} className={"check" + (f.skills?.includes(s.name) ? " on" : "")} title={s.description}>
                 <input type="checkbox" checked={!!f.skills?.includes(s.name)} onChange={(e) => setF({ ...f, skills: e.target.checked ? [...(f.skills ?? []), s.name] : (f.skills ?? []).filter((x) => x !== s.name) })} />
                 {s.name}

@@ -416,6 +416,33 @@ nothing) and *Send test* (really does send one, because on a robot that is the o
 counters below them — accepted, rejected, ignored — are what makes a misconfiguration visible at all: a
 webhook's usual symptom is silence.
 
+## Skills: one skill is one skill, and they are filed by what they are for
+
+**A skill is plain text written for a model to read** (how to write a formal notice, how to run a
+review meeting). It never runs anything. There are two scopes: a **member skill** is ticked for one
+member, a **group rule** is attached to the whole group and followed by everyone. The list lives
+under *Settings → Skills*; where they are ticked is the member editor and the group panel in the
+right sidebar of a chat.
+
+**The list is grouped by purpose, not one alphabetical run of folder names.** The sections are
+Writing, Video, Research, Data & analysis, Meetings & discussion, Code & tooling, Translation,
+Making skills & plugins, Imported from elsewhere, Other — and within a section the order is by the
+name you actually see. Sorted by folder name, a Chinese interface showed all thirteen Chinese names
+after every English one, the two copies of a skill sat far apart, and nothing of the same kind was
+ever next to anything else, which is most of why the list was hard to use. The three screens that
+show it (the skills page, the member editor, the group panel) take one order, worked out once on the
+server, and the skills page and the member editor both have a search box.
+
+**A built-in skill no longer exists twice.** It did: the seed marker was keyed by the skill's *name*,
+and the name changed from Chinese to English when the built-in text became bilingual, so the whole
+set was written a second time — one Chinese folder, one English folder. Nothing looked broken, since
+a skill is found by either spelling; what you saw was the same skill listed twice with identical
+title and description, and a member that could be given the same rule twice. **It is cleaned up on
+upgrade**: the canonical copy is kept and only a folder whose content still matches the built-in text
+is removed — a copy you rewrote by hand survives (it is not a copy any more) and is marked with a
+*Stored as …* line so it can be told apart from the other. Members and groups that had ticked the old
+spelling are rewritten, so no tick silently disappears.
+
 ## Bringing definitions in from other AI apps
 
 *Settings → MCP servers / Skills → **From another app***, and *Members → **Import experts***,

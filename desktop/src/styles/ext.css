@@ -6,6 +6,18 @@
 
 .sp-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .sp-head { flex-wrap: wrap; }
+/* 技能列表:按用途分组 + 搜索。分组标题是「一眼扫过」用的,不是又一行内容 */
+.sp-search { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.sp-search .pm-text { max-width: 340px; }
+.sp-search .link { margin-left: 8px; }
+.sp-group {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px 5px; font-size: 12px; font-weight: 600;
+  letter-spacing: .02em; color: var(--text-3); background: var(--bg-sub);
+  border-top: 1px solid var(--border); position: sticky; top: 0; z-index: 1;
+}
+.sp-group:first-child { border-top: none; }
+.sp-group-n { font-weight: 500; background: var(--hover); border-radius: 9px; padding: 0 7px; }
 .count-badge-plain { font-size: 11px; background: var(--hover); border-radius: 9px; padding: 0 7px; margin-left: 6px; color: var(--text-2); font-weight: 500; }
 
 /* 提示框 */

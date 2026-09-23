@@ -499,11 +499,179 @@ def ensure_example_skills(skills_dir: Path, flag: Callable[[str], bool] | None =
         # The canonical English name is what lands on disk; a Chinese UI shows the
         # Chinese wording through localize_skill() without touching the file.
         name = ex["name"]
+        # …but a skill seeded under its *other* spelling is the same skill, not a missing one.
+        # Writing the canonical folder as well is exactly how one skill became two: the seed marker
+        # used to be keyed by the name, the name changed from Chinese to English when the built-in
+        # text became bilingual, so every marker missed its skill and the whole set was written a
+        # second time. `localize_skill` then showed both copies with the same title, and a member
+        # could be given both. `merge_builtin_skill_copies` below clears the ones already on disk;
+        # this check is what stops it happening again.
+        if any((skills_dir / n).is_dir() for n in skill_names(key)):
+            continue
         d = skills_dir / name
         if d.exists():
             continue
         d.mkdir(parents=True, exist_ok=True)
         (d / "SKILL.md").write_text(render_skill(name, ex["description"], ex["body"], ex["scope"]), encoding="utf-8")
+
+
+def _is_seeded_copy(folder: Path, entry: dict) -> bool:
+    """Is this folder the built-in skill as this app wrote it — in either language, at any age?
+
+    Compared by parsed fields, not byte-for-byte. The frontmatter has gained keys since the first
+    installs (`scope` was added later), and a copy that is merely missing a line the current writer
+    emits is still untouched text; comparing the rendered file called those two user edits and left
+    them in place, which is one duplicate too many. Name, description and body are compared exactly,
+    and those are what editing a skill actually changes — so a skill the user rewrote never matches.
+    """
+    got = _parse_skill(folder / "SKILL.md")
+    if not got:
+        return False
+    for name_key, desc_key, body_key in (("name", "description", "body"),
+                                         ("name_zh", "description_zh", "body_zh")):
+        name = entry.get(name_key)
+        if not name:
+            continue
+        if (got.name.strip() == name.strip()
+                and got.description.strip() == (entry.get(desc_key) or "").strip()
+                and got.body.strip() == (entry.get(body_key) or "").strip()):
+            return True
+    return False
+
+
+def _rename_skill_refs(store: Any, old: str, new: str) -> None:
+    """Point every selection that names `old` at `new`.
+
+    Skipping this is the quiet half of the bug: the lookups resolve by either spelling, so the
+    prompt would still be right, but the tick in the interface matches on the stored string — so
+    the member's skill would show as unticked, and saving that member for any other reason would
+    drop it.
+    """
+    for a in store.list_agents():
+        if old in (a.get("skills") or []):
+            store.update_agent(a["id"], {"skills": [new if x == old else x for x in a["skills"]]})
+    for g in store.list_groups():
+        chosen = (g.get("ext") or {}).get("skills") or []
+        if old in chosen:
+            store.update_group(g["id"], {"ext": {"skills": [new if x == old else x for x in chosen]}})
+    if store.get_source("skill", old):
+        store.delete_source("skill", old)
+
+
+def merge_builtin_skill_copies(store: Any) -> list[tuple[str, str]]:
+    """One built-in skill is one folder, however many names it has picked up over time.
+
+    Every built-in skill that predates the bilingual rewrite is on disk twice: the seed marker was
+    keyed by the skill's name, the name moved from Chinese to English, so the marker for
+    `brainstorming` and the marker for `头脑风暴规则` were different keys — and the second seeding
+    wrote the whole set again under the canonical names. Nothing looked broken, because a skill is
+    found by either spelling; the visible result is the settings page listing `头脑风暴规则` twice
+    with the same description, and a member able to be given the same rule twice.
+
+    Kept: the canonical English folder, or the surviving one when only the legacy spelling is
+    there. Removed: only a folder whose SKILL.md is still exactly what was written. Returns the
+    `(kept, removed)` pairs.
+    """
+    skills_dir = store.data_dir / "skills"
+    if not skills_dir.is_dir():
+        return []
+    pairs: list[tuple[str, str]] = []
+    for _key, entry in EXAMPLE_SKILLS.items():
+        canonical = safe_skill_name(entry["name"])
+        spellings = [n for n in (canonical, safe_skill_name(entry.get("name_zh") or "")) if n]
+        present = [skills_dir / n for n in dict.fromkeys(spellings) if (skills_dir / n).is_dir()]
+        if len(present) < 2:
+            continue
+        keep = skills_dir / canonical if (skills_dir / canonical).is_dir() else present[0]
+        for folder in present:
+            if folder == keep or not _is_seeded_copy(folder, entry):
+                continue
+            shutil.rmtree(folder)
+            pairs.append((keep.name, folder.name))
+    for kept, gone in pairs:
+        _rename_skill_refs(store, gone, kept)
+        # The marker that made this happen, in the notation that caused it. Stable keys are what is
+        # used now; a name-keyed one can only ever refer to a skill that has been removed.
+        store._x("DELETE FROM meta WHERE key=?", (f"seed_skill:{gone}",))
+    return pairs
+
+
+# ----------------------------------------------------------------- categories
+# A fixed, ordered set of purposes, and the order the settings page shows them in. The list used to
+# be flat and alphabetical by *folder* name — which on a Chinese install puts all thirteen Chinese
+# names after all the English ones, so two copies of one skill sat far apart, nothing of the same
+# kind was ever adjacent, and the only way to find anything was to read all of it.
+SKILL_CATEGORY_ORDER: tuple[str, ...] = (
+    "writing", "video", "research", "analysis", "facilitation", "code", "translation", "meta",
+    "imported", "other",
+)
+
+# The built-in skills, filed by hand. Their descriptions are written to be read by a model, so
+# guessing a section from one files about half of them somewhere surprising.
+BUILTIN_SKILL_CATEGORY: dict[str, str] = {
+    "office-writing": "writing",
+    "report-structure": "writing",
+    "relay-writing": "writing",
+    "research-findings": "research",
+    "data-analysis": "analysis",
+    "code-review": "code",
+    "short-video-storyboard": "video",
+    "remotion-video": "video",
+    "hyperframes-video": "video",
+    "capcut-draft": "video",
+    "brainstorming": "facilitation",
+    "review-meeting": "facilitation",
+    "debate": "facilitation",
+    "risk-check": "facilitation",
+    "translation": "translation",
+}
+
+# For everything else — an imported skill or one the user wrote. First hit wins, so the narrower
+# words come first: "storyboard" is about video even though it is a kind of writing.
+_CATEGORY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("video", ("video", "视频", "分镜", "storyboard", "remotion", "hyperframes", "capcut", "剪映",
+               "animation", "动画", "ffmpeg")),
+    ("translation", ("translat", "翻译", "互译", "localis", "localiz")),
+    ("meta", ("skill-creator", "skill-development", "plugin-", "session-report", "playground",
+              "hookify", "example-skill", "example-command", "agent-development", "onboard",
+              "buddy")),
+    ("research", ("research", "研究", "调研", "文献", "论文", "paper", "学术", "academic",
+                  "citation", "olympiad")),
+    ("analysis", ("data", "数据", "分析", "excel", "sheet", "表格", "csv", "chart", "图表", "统计")),
+    ("code", ("code", "代码", "mcp", "debug", "refactor", "test", "frontend", "前端", "hook",
+              "command", "api", "deploy", "build-", "plugin", "skill", "agent")),
+    ("facilitation", ("meeting", "会议", "评审", "review", "brainstorm", "头脑风暴", "debate",
+                      "辩论", "relay", "接力", "risk", "风险", "checklist", "清单")),
+    ("writing", ("writ", "写作", "文案", "公文", "document", "文档", "report", "报告", "docx",
+                 "pptx", "排版", "摘要", "word", "slide")),
+)
+
+
+def builtin_key(name: str | None) -> str:
+    """The stable key of the built-in skill stored under `name`, or ""."""
+    for key, entry in EXAMPLE_SKILLS.items():
+        if name in (key, entry.get("name"), entry.get("name_zh")):
+            return key
+    return ""
+
+
+def category_of(name: str | None, description: str = "", *, imported: bool = False) -> str:
+    """Which section a skill belongs in: its built-in filing, else a guess from its words."""
+    key = builtin_key(name)
+    if key and key in BUILTIN_SKILL_CATEGORY:
+        return BUILTIN_SKILL_CATEGORY[key]
+    if imported:
+        return "imported"
+    hay = f"{name or ''} {description}".lower()
+    for cat, words in _CATEGORY_HINTS:
+        if any(w in hay for w in words):
+            return cat
+    return "other"
+
+
+def category_rank(cat: str) -> int:
+    """Position of a section, so every reader sorts it the same way."""
+    return SKILL_CATEGORY_ORDER.index(cat) if cat in SKILL_CATEGORY_ORDER else len(SKILL_CATEGORY_ORDER)
 
 
 def list_skills(skills_dir: Path) -> list[Skill]:
