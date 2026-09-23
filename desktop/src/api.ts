@@ -74,6 +74,9 @@ export interface Provider {
   has_key: boolean;
   key_hint: string;
   models: Model[];
+  /** The rows that generate instead of chatting. Kept apart from `models` because that list is what
+   *  a member can be pointed at as a conversational model; these can only join as a media member. */
+  media_models: Model[];
 }
 export interface Preset {
   preset: string;
@@ -130,7 +133,7 @@ export interface ModelOptions {
 /** Where a member came from. Empty for one made here by hand; `model` for one created by
  *  pulling a model in; `workbuddy:<slug>` for one imported from an expert package, which is
  *  also what makes a second import of the same package a skip. */
-export type AgentOrigin = "" | "model" | `workbuddy:${string}`;
+export type AgentOrigin = "" | "model" | "media" | `workbuddy:${string}`;
 export interface Agent {
   id: string;
   name: string;
@@ -140,7 +143,7 @@ export interface Agent {
   model_id: string | null;         // null = pick a model automatically from the strength tags
   skills: string[];
   tags: Tag[];                     // Strengths this role needs; used to pick models for the member and to split work
-  origin?: AgentOrigin;            // "model" = a member created automatically when a model from My models was pulled into the group (the member is that model itself); "workbuddy:<slug>" = imported from an expert package
+  origin?: AgentOrigin;            // "model" = a member created automatically when a model from My models was pulled into the group (the member is that model itself); "media" = the same, for a model that *generates* — it can be addressed in a group, and the sentence it is addressed with becomes its prompt; "workbuddy:<slug>" = imported from an expert package
   engine?: string;                 // Non-empty = an external agent member (e.g. workbuddy): it bypasses model routing and speaks through its own CLI engine
   engine_cfg?: ExternalCfg;
 }

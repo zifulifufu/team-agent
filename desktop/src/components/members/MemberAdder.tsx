@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Cpu, Plus, TerminalSquare } from "lucide-react";
+import { Clapperboard, Cpu, Image as ImageIcon, Plus, TerminalSquare } from "lucide-react";
 import { api, type AgentPreset, type ExternalOverview, type Group, type Model } from "../../api";
 import { useData } from "../../data";
 import { StrengthChips } from "../Strengths";
@@ -8,10 +8,14 @@ import { HealthDot } from "../Health";
 import ExternalDialog from "../ExternalDialog";
 
 /**
- * The "add group member" panel: three sources — the models you added (used directly
- * as members), existing members, and role presets. Opened by the + next to "Members"
- * in the sidebar and by "Add member" in the chat header.
+ * The "add group member" panel: the models you added (used directly as members), the ones that
+ * *generate* rather than chat (they take part as a member you can address), existing members, role
+ * presets, and external agents. Opened by the + next to "Members" in the sidebar and by "Add
+ * member" in the chat header.
  */
+/** The two model purposes that make a member a generator rather than a conversationalist. */
+const GENERATING = new Set(["image", "video"]);
+
 export default function MemberAdder({ group }: { group: Group }) {
   const { t } = useI18n();
   const { agents, providers, health, reload, reloadGroups } = useData();
@@ -31,16 +35,32 @@ export default function MemberAdder({ group }: { group: Group }) {
   }, []);
   useEffect(loadPresets, [loadPresets, group.member_ids.length]);
 
-  // Both the provider and the model must be enabled for it to join a group
+  // Both the provider and the model must be enabled for it to join a group. Generators are left out
+  // here so each model is offered in exactly one place: the same `use` that decides which section it
+  // belongs in is the one the generators are built from.
   const usable = useMemo(
-    () => providers.filter((p) => p.enabled).map((p) => ({ p, models: p.models.filter((m) => m.enabled) })).filter((x) => x.models.length > 0),
+    () => providers.filter((p) => p.enabled)
+      .map((p) => ({ p, models: p.models.filter((m) => m.enabled && !GENERATING.has(m.use)) }))
+      .filter((x) => x.models.length > 0),
+    [providers],
+  );
+  // A chat gateway can serve image or video models under its own key (MetaChat does), so the roster
+  // can contain a model that cannot hold a conversation. Those belong in the generating section
+  // below, not here — and this is the same `use` the generators themselves are built from.
+  const generating = useMemo(
+    () => providers.filter((p) => p.enabled)
+      .map((p) => ({ p, models: (p.media_models ?? []).filter((m) => m.enabled) }))
+      .filter((x) => x.models.length > 0),
     [providers],
   );
   const modelCount = usable.reduce((n, x) => n + x.models.length, 0);
+  const genCount = generating.reduce((n, x) => n + x.models.length, 0);
   const modelAgent = (m: Model) => agents.find((a) => a.origin === "model" && a.model_id === m.id);
+  const genAgent = (m: Model) => agents.find((a) => a.origin === "media" && a.model_id === m.id);
   const inGroup = (m: Model) => { const a = modelAgent(m); return !!a && group.member_ids.includes(a.id); };
+  const genInGroup = (m: Model) => { const a = genAgent(m); return !!a && group.member_ids.includes(a.id); };
   const mqs = mq.trim().toLowerCase();
-  const others = agents.filter((a) => !group.member_ids.includes(a.id) && a.origin !== "model" && !a.engine);
+  const others = agents.filter((a) => !group.member_ids.includes(a.id) && a.origin !== "model" && a.origin !== "media" && !a.engine);
   const extOthers = agents.filter((a) => !!a.engine && !group.member_ids.includes(a.id));
   const freshPresets = (presets ?? []).filter((p) => !p.exists);
   const freshExperts = freshPresets.filter((p) => p.kind === "expert");
@@ -113,6 +133,33 @@ export default function MemberAdder({ group }: { group: Group }) {
         </>
       )}
 
+      <div className="madd-sec">{t("Generating members")} {genCount > 0 && <span className="count-badge-lite">{genCount}</span>}</div>
+      <div className="madd-note">{t("These do not chat: address one and the sentence you wrote is handed to it as the prompt, and what comes back is the file. It runs on the provider it came from, and it cannot plan or delegate.")}</div>
+      {genCount === 0 ? (
+        <div className="madd-none">{t("No generating model is enabled yet. Add one under Settings → Providers — a video or image model, from a gateway or from Ark/Seedance.")}</div>
+      ) : (
+        generating.map(({ p, models }) => (
+          <div key={p.id} className="madd-group">
+            <div className="madd-prov">{p.name}{!p.has_key && !p.is_local && <span className="tag warn">{t("No API key")}</span>}</div>
+            {models.map((m) => (
+              <div key={m.id} className="madd-item">
+                <span className="avatar sm" aria-hidden>{m.use === "video" ? <Clapperboard size={15} /> : <ImageIcon size={15} />}</span>
+                <div className="madd-main">
+                  <div className="madd-name">{m.display_name}<span className="tag">{m.use === "video" ? t("Video") : t("Image")}</span></div>
+                </div>
+                {genInGroup(m) ? (
+                  <span className="muted small madd-here">{t("Already in this group")}</span>
+                ) : (
+                  <button className="btn small" disabled={!!busy} onClick={() => run("gen:" + m.id, () => api.addMemberFromModel(gid, m.id), true)} aria-label={t("Add generating member {name} to the group", { name: m.display_name })}>
+                    <Plus size={12} /> {t("Add")}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ))
+      )}
+
       <div className="madd-sec">{t("External agents")}</div>
       <div className="madd-note">{t("Let an agent you already run join the discussion as a member — a command-line agent with its own tools, or a chat gateway such as Cherry Studio or MetaChat. Off by default, and you have to turn it on.")}</div>
       {extOthers.map((a) => (
@@ -122,7 +169,7 @@ export default function MemberAdder({ group }: { group: Group }) {
           <button className="btn small" disabled={!!busy || !ext?.enabled} title={ext?.enabled ? "" : t("The external-agent master switch is still off")} onClick={() => run("add:" + a.id, () => api.addMember(gid, a.id))} aria-label={t("Add {name}", { name: a.name })}><Plus size={12} /> {t("Add")}</button>
         </div>
       ))}
-      {ext?.engines.map((e) => (
+      {ext?.engines.filter((e) => !e.provider).map((e) => (
         <div key={e.id} className="madd-item">
           <span className="avatar sm" aria-hidden>{e.avatar}</span>
           <div className="madd-main">

@@ -28,7 +28,7 @@ from typing import Any, Awaitable, Callable
 
 from . import external, planner, scoring, vision
 from . import attachments as attachments_lib
-from . import coderun
+from . import coderun, imagegen, media, video
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
 from .library import Library
@@ -135,6 +135,25 @@ def find_mentions(text: str, members: list[dict], exclude_id: str | None = None)
 
 def mentions_all(text: str) -> bool:
     return bool(_ALL_RE.search(text))
+
+
+def _strip_mentions(text: str, members: list[dict], speaker_id: str) -> str:
+    """The sentence with every member's name taken out.
+
+    For a generating member the sentence *is* the prompt, and a name inside a prompt is not
+    harmless: "@Seedance 画一只猫" left whole gets "Seedance" written into the picture. Every
+    member's name and alias is removed rather than only the addressee's, because "@A 和 @B 各画一张"
+    reaches both of them and neither should see the other's name in its prompt. Matching is
+    case-insensitive and anchored on the `@`, exactly as `find_mentions` does, so a name that
+    happens to be an ordinary word in the sentence is left alone.
+    """
+    out = text or ""
+    for m in members:
+        for name in _member_names(m):
+            out = re.sub(rf"@{re.escape(name)}(?=\s|$|[，,。.、!?！？:：;；])", "", out, flags=re.IGNORECASE)
+    # A trailing "…，" left behind by a removed mention reads as if the sender trailed off.
+    out = re.sub(r"^[\s，,。.、:：;；!?！？]+", "", out)
+    return " ".join(out.split()).strip()
 
 
 # The host says this when it produced a plan but no prose. Kept as a pair so the value
@@ -700,7 +719,10 @@ class Orchestrator:
         hops = 0
 
         mode = group["ext"]["plan"] if group["ext"]["plan"] != "inherit" else cfg["plan_mode"]
-        if not explicit and mode != "off" and len(members) >= 2 and int(cfg["plan_max_tasks"]) >= 2 and not host.get("engine"):
+        # Planning is the host's job, and only a member that can hold a conversation can do it — an
+        # external agent has its own tools, and a generating member has no judgement to add.
+        if (not explicit and mode != "off" and len(members) >= 2 and int(cfg["plan_max_tasks"]) >= 2
+                and not host.get("engine") and (host.get("origin") or "") != media.MEDIA_ORIGIN):
             hops = 1
             out = await self._planning_turn(group, members, host, text, mode, emit, run)
             if out is None:
@@ -725,6 +747,11 @@ class Orchestrator:
             queued = {a["id"] for a in queue}
             if agent.get("engine") and not (agent.get("engine_cfg") or {}).get("handoff", True):
                 continue   # this external agent is configured not to hand off: the @ in its reply is just text
+            if (agent.get("origin") or "") == media.MEDIA_ORIGIN:
+                # A generating member does not hand off either, and for a stronger reason: the text
+                # it "said" was written by this app, not by a model that read the group — so an `@`
+                # in it would not be an act of delegation at all.
+                continue
             for m in find_mentions(out.text, members, exclude_id=agent["id"]):
                 if m["id"] not in queued:
                     queue.append(m)
@@ -737,11 +764,15 @@ class Orchestrator:
 
     @staticmethod
     def _pick_host(group: dict, members: list[dict]) -> dict:
-        """The owner must be a model member: an external agent does not delegate through the <plan>
-protocol and should not decide what the others do."""
+        """The owner must be a member that can hold a conversation: an external agent does not
+        delegate through the <plan> protocol, and a generating member has nothing to decide — so
+        neither should be handed the job of deciding what the others do."""
+        def plain(m: dict) -> bool:
+            return not m.get("engine") and (m.get("origin") or "") != media.MEDIA_ORIGIN
+
         host = next((m for m in members if m["id"] == group.get("host_agent_id")), None)
-        if host is None or host.get("engine"):
-            host = next((m for m in members if not m.get("engine")), host or members[0])
+        if host is None or not plain(host):
+            host = next((m for m in members if plain(m)), host or members[0])
         return host
 
     # ------------------------------------------------------------------- plan
@@ -880,6 +911,15 @@ protocol and should not decide what the others do."""
         base = {"id": mid, "group_id": group["id"], "sender_type": "agent",
                 "sender_id": agent["id"], "sender_name": agent["name"]}
         await emit({"type": "message_start", "message": {**base, "content": "", "meta": extra_meta or {}}})
+        # A member that is a generator takes a different road again: it has no conversation and no
+        # tools to pick from, only the one call it exists to make. Both branches are decided by the
+        # member's own row rather than by anything the caller passed, so no path into this function
+        # can forget to route it.
+        if (agent.get("origin") or "") == media.MEDIA_ORIGIN:
+            return await self._media_turn(
+                group, agent, members, emit, run, mid=mid, extra_user=extra_user,
+                extra_meta=extra_meta, empty_fallback=empty_fallback,
+            )
         if agent.get("engine"):
             return await self._external_turn(
                 group, agent, members, emit, run, mid=mid, extra_user=extra_user, extra_meta=extra_meta,
@@ -1212,6 +1252,153 @@ protocol and should not decide what the others do."""
             "cost_usd": res.cost_usd, "num_turns": res.num_turns,
         })
         return TurnOut(content, res.text, saved)
+
+    # ------------------------------------------------------- generating member turn
+    async def _media_turn(
+        self, group: dict, agent: dict, members: list[dict], emit: Emit, run: RunState, *, mid: str,
+        extra_user: str | None, extra_meta: dict | None, empty_fallback: str,
+    ) -> TurnOut | None:
+        """A member that *is* a generator speaks: its one tool is run with the user's own sentence.
+
+        No language model is involved anywhere in this path, and that is the design rather than a
+        shortcut: the sentence somebody types at "@Seedance 生成一段…" *is* the prompt, and putting
+        a model in between would rewrite it — paying for a paraphrase of something already written.
+
+        Everything else is the same as any other member's turn, because it runs the same tool: the
+        engine's own switches gate it, the argument validation is the one in `video.py`, the file
+        lands in the group's workspace, and the approval policy applies unchanged. What is
+        deliberately *not* shared is the reading of the result — the tool's text is written for a
+        model that must not narrate a clip it never watched, and here the reader is the user.
+        """
+        cfg = self.store.get_settings()
+        name = agent["name"]
+        gid = group["id"]
+
+        async def fail(msg: str) -> None:
+            await emit({"type": "message_discard", "message_id": mid})
+            await self._system(gid, msg, emit)
+            run.steps.append({"agent": name, "ok": False, "tools": []})
+            return None
+
+        target = media.member_target(self.store, agent)
+        if target is None:
+            return await fail(i18n.pick_now(
+                f"\"{name}\" is a generating member, but the model it was made from is gone, so it "
+                "cannot do anything. Take it out of the group, or add the model back and make the "
+                "member again.",
+                f"「{name}」是生成成员,但它所依据的模型已经不在了,所以什么也做不了。"
+                "请把它移出群聊,或重新添加那个模型再建一次。"))
+        use, prov = target["use"], target["provider"]
+        tool = "generate_video" if use == "video" else "generate_image"
+        # The master switch is the user's "may this machine spend money on this at all", and it
+        # governs here for the same reason it governs a tool call: a member you can address must not
+        # be a way around a switch you turned off.
+        if not cfg["video_enabled" if use == "video" else "image_enabled"]:
+            what = i18n.pick_now("video generation", "视频生成") if use == "video" \
+                else i18n.pick_now("drawing", "绘画")
+            return await fail(i18n.pick_now(
+                f"\"{name}\" is a {what} member, but {what} is switched off under Permissions & "
+                "control, so it did nothing. Turn it on there and send the message again.",
+                f"「{name}」是{what}成员,但「权限与操控」里的{what}是关着的,所以它没有动手。"
+                "到那里打开后再发一次。"))
+        blocked = (video if use == "video" else imagegen).blocked_by_offline(prov, cfg)
+        if blocked:
+            return await fail(blocked)
+
+        # The sentence that caused this turn. `extra_user` is what a plan handed this member; with
+        # none, it is what the user typed. Mentions come out because "@Seedance 画一只猫" is not a
+        # prompt — "画一只猫" is, and leaving the name in gets it drawn into the picture.
+        source = (extra_user or run.user_text or "").strip()
+        prompt = _strip_mentions(source, members, agent["id"])
+        if not prompt:
+            return await fail(i18n.pick_now(
+                f"\"{name}\" had nothing to work from: address it with what you want, in the same "
+                "message (\"@name what to make\").",
+                f"「{name}」没有可用的内容:请在点名它的同一条消息里写清楚要生成什么"
+                "(「@名字 要生成什么」)。"))
+
+        args: dict = {"prompt": prompt}
+        if use == "video":
+            args.update(self._media_refs(group, run))
+
+        ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
+        for p in ctx.problems:
+            if p not in run.warned:
+                run.warned.add(p)
+                await self._system(gid, p, emit)
+
+        entry: dict = {"name": tool, "args": _short_args(args), "status": "running"}
+
+        async def approve(s: dict, a: dict) -> bool:
+            entry["status"] = "waiting"          # the pill shows "waiting for your confirmation"
+            await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+            allowed = await self.approvals.ask(group=group, message_id=mid, agent=agent, spec=s, args=a, emit=emit)
+            entry["status"] = "running"
+            if allowed:
+                await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+            return allowed
+
+        await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+        oc = await self.toolhub.call(ctx, tool, args, approve)
+        entry.update(status="denied" if oc.denied else "ok" if oc.ok else "failed", ms=oc.ms,
+                     preview=oc.text[:300])
+        if oc.files:
+            entry["files"] = oc.files
+        await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+
+        content = oc.text.strip() or empty_fallback or i18n.pick_now("(nothing was generated)", "(没有生成内容)")
+        # The same reply gate every other member answers to: a bad prompt can be stopped from
+        # becoming part of the record whatever produced it.
+        if self.hooks:
+            reason, content = await self.hooks.gate_reply(
+                gid, {"name": name, "model": agent.get("model_id") or ""}, content)
+            if reason:
+                return await fail(reason)
+        meta = {"tools": [entry], **(extra_meta or {})}
+        try:
+            saved = self.store.add_message(
+                gid, "agent", agent["id"], name, content, model_id=agent.get("model_id"), meta=meta, mid=mid,
+            )
+        except Exception as e:  # noqa: BLE001 — the UI must wrap up either way, leaving no spinning bubble
+            return await fail(i18n.pick_now(f"{name}'s result could not be saved: {e}",
+                                            f"「{name}」的产出没能保存:{e}"))
+        await emit({"type": "message_end", "message": saved})
+        run.steps.append({"agent": name, "model": agent.get("model_id") or "", "ok": bool(oc.ok),
+                          "tools": [tool] if oc.ok else []})
+        self._notify("agent.reply", gid, group, {
+            "agent": name, "model": agent.get("model_id") or "", "media": use,
+            "chars": len(content), "tools": [tool], "ok": oc.ok, "ms": oc.ms,
+        })
+        return TurnOut(content, content, saved)
+
+    def _media_refs(self, group: dict, run: RunState) -> dict:
+        """The files on the user's message, as the reference arrays Ark takes.
+
+        This is the one place a group can get reference material to a generator without hosting it
+        anywhere: a picture it drew, or one the user dragged in, is a file in its own workspace. The
+        role each one gets is decided by what it *is* rather than by what it is called, because that
+        is what the bytes said at upload time.
+
+        Deliberately not `first_frame`: a keyframe task pins the output ratio to `adaptive`, and
+        somebody who attached a picture and asked for 16:9 meant both. Ark's omni-reference path is
+        the one that keeps their ratio, and the prompt can still say "首帧为该图".
+        """
+        out: dict[str, list[str]] = {"reference_images": [], "reference_videos": [], "reference_audios": []}
+        workspace = self.workspace(group["id"])
+        for meta in run.files:
+            row = self.store.get_attachment(str(meta.get("id") or ""))
+            if not row or row["group_id"] != group["id"]:
+                continue
+            path = attachments_lib.path_for_row(self.store, row)
+            if path is None:
+                continue          # already reported by `_files_for_turn`
+            key = {"image": "reference_images", "video": "reference_videos",
+                   "audio": "reference_audios"}.get(row.get("kind") or "")
+            if key and path.resolve().is_relative_to(workspace.resolve()):
+                # A path inside the workspace is what `ark_asset` knows how to inline; anything that
+                # somehow is not is left out rather than read from outside the group's own folder.
+                out[key].append(str(path.relative_to(workspace.resolve())))
+        return {k: v for k, v in out.items() if v}
 
     async def _plan_failed(self, gid: str, out: "TurnOut", note: str, emit: Emit) -> None:
         """When the plan could not be executed, rewrite the owner's message that only says

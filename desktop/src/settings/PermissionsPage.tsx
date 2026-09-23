@@ -238,7 +238,7 @@ export default function PermissionsPage({ onTab }: PageProps) {
 
       <div className="sec">{t("Video generation")}</div>
       <div className="card flush">
-        <Row title={t("Let members generate video")} desc={t("Off by default. When on, members get a generate_video tool that renders a few seconds of video and saves it into the group's own workspace. Two kinds of provider can do it. A self-hosted MiniMax H3 (SGLang or vLLM; tens of GB of weights, and the official example uses 4 GPUs) makes 4-15s clips with sound at 768p, and 2K plus the official prompt shaper are not open source. MetaChat's video API needs no GPU at all — a key and a model name are the whole setup — but its two models generate only from a reference image, so no member can prompt one from text alone.")}>
+        <Row title={t("Let members generate video")} desc={t("Off by default. When on, members get a generate_video tool that renders a few seconds of video and saves it into the group's own workspace — and a video model can also join a group as a member of its own, so you can address it directly instead of asking a member to call the tool. Three kinds of provider can do it. A self-hosted MiniMax H3 (SGLang or vLLM; tens of GB of weights, and the official example uses 4 GPUs) makes 4-15s clips with sound at 768p, and 2K plus the official prompt shaper are not open source. MetaChat's video API needs no GPU at all, but its two models generate only from a reference image, so no member can prompt one from text alone. Volcengine's Ark (Doubao Seedance 2.5) needs no GPU either, takes up to 30 seconds, has sound on by default, and is the only one that accepts reference video and audio.")}>
           <Switch checked={settings.video_enabled} label={t("Let members generate video")} onChange={(v) => void set({ video_enabled: v })} />
         </Row>
         {settings.video_enabled && (
@@ -263,8 +263,8 @@ export default function PermissionsPage({ onTab }: PageProps) {
                 </select>
               </Row>
             )}
-            <Row title={t("Longest clip")} desc={t("The longest clip a member may ask for. H3 accepts 4-15 seconds and MetaChat's API 1-15; a longer request is shortened rather than refused, and the member is told it was.")}>
-              <NumInput v={settings.video_max_seconds} min={1} max={15} unit={t("sec")} label={t("Longest clip")} onCommit={(n) => set({ video_max_seconds: n })} />
+            <Row title={t("Longest clip")} desc={t("The longest clip a member may ask for. This is the group's ceiling, not any one model's: a self-hosted H3 accepts 4-15 seconds, MetaChat's API 1-15, and Ark's Seedance 2.5 4-30. A longer request is shortened to what the provider takes rather than refused, and the member is told it was.")}>
+              <NumInput v={settings.video_max_seconds} min={1} max={30} unit={t("sec")} label={t("Longest clip")} onCommit={(n) => set({ video_max_seconds: n })} />
             </Row>
             <Row title={t("Render timeout")} desc={t("How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.")}>
               <NumInput v={settings.video_timeout} min={30} max={7200} unit={t("sec")} label={t("Render timeout")} onCommit={(n) => set({ video_timeout: n })} />

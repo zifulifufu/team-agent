@@ -74,17 +74,18 @@ class ImageError(Exception):
 
 
 # ------------------------------------------------------------------ providers
-def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
+def pick_provider(store, cfg: dict, prefer: str = "") -> tuple[dict | None, str]:
     """(the provider to generate with, why there is none).
 
-    A configured id wins; otherwise the first usable one. An id that no longer exists is
-    reported rather than silently replaced, because quietly generating on somebody else's
-    account is exactly the surprise this file should not produce.
+    `prefer` is the provider a *media member* was created from, and it outranks the setting: a
+    member called "Seedream" must draw with Seedream whatever the group's last global choice was.
+    An id that no longer exists is reported rather than silently replaced, since quietly generating
+    on somebody else's account is exactly the surprise this file should not produce.
     """
     # Not `media.providers_of_kind`: a gateway whose kind is "chat" still belongs here when its
     # own model list says it serves image models (see Store.providers_for_use).
     rows = store.providers_for_use("image", KINDS)
-    wanted = str(cfg.get("image_provider_id") or "").strip()
+    wanted = str(prefer or cfg.get("image_provider_id") or "").strip()
     if wanted:
         p = next((x for x in rows if x["id"] == wanted), None)
         if p is None:

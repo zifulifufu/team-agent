@@ -1,7 +1,8 @@
-"""Video generation through a self-hosted MiniMax H3 server **or** MetaChat's open media API.
+"""Video generation through a self-hosted MiniMax H3 server, MetaChat's open media API, or
+Volcengine's Ark (Doubao Seedance).
 
-Two shapes live here because they disagree about every parameter, and a request validated
-against the other shape's list would be rejected locally for a value the server accepts:
+Three shapes live here because they disagree about every parameter, and a request validated
+against another shape's list would be rejected locally for a value the server accepts:
 
     self-hosted H3 (kind `minimax_video`)
         POST {base}/v1/videos              -> {"id": "..."}          submit
@@ -13,10 +14,15 @@ against the other shape's list would be rejected locally for a value the server 
         GET  {base}/video/result/{id}      -> {"data": {...}}        poll
         GET  the `video_url` it reports    -> the mp4 bytes          download
 
+    Volcengine Ark (kind `ark_video`; `{base}` is `https://ark.cn-beijing.volces.com/api/v3`)
+        POST {base}/contents/generations/tasks      -> {"id": "cgt-..."}   submit
+        GET  {base}/contents/generations/tasks/{id} -> {"status": ...}     poll
+        GET  the `content.video_url` it reports      -> the mp4 bytes      download
+
 Its drawing endpoints (`image/generate`, `midjourney/imagine`) are reached through
 `app/imagegen.py` — one key, two APIs, and a job is a job in both.
 
-Three things about the MetaChat one are worth stating up front, because they are the API's
+Four things about the MetaChat one are worth stating up front, because they are the API's
 properties and not ours to paper over:
 
 - **Both of its models are image-to-video.** `grok-imagine-video-1.5-preview` says so in as many
@@ -27,6 +33,21 @@ properties and not ours to paper over:
   is refused with the reason rather than uploaded somewhere behind the user's back.
 - **It has no model-listing endpoint** (see `media.BUILTIN_MEDIA_MODELS`), so the model name is a
   setting rather than something discovered.
+- **It takes no `seed`** where H3 does, and no duration on the Midjourney path.
+
+Three properties of Ark shape this file, and each is a documented constraint rather than a choice:
+
+- **The request is a `content` array, not a prompt string.** Text goes in as one item; every
+  reference picture, video and audio clip is another, each carrying a `role`. Which role you use
+  changes the *task type* the model runs (first_frame/last_frame is keyframe interpolation,
+  reference_* is the omni-reference path), and the task type in turn constrains the parameters —
+  a first_frame pins the ratio to `adaptive`. `ark_ratio` applies that rule and reports it.
+- **`generate_audio` defaults to true**, so a silent clip is the thing you have to ask for.
+  Nothing here sends it unless the caller said something: an omitted field leaves Ark's own default
+  in place, which is also the compatible answer for a model name we do not ship a description for.
+- **No model-listing endpoint either** (`media.BUILTIN_MEDIA_MODELS["ark_video"]` owns the id), and
+  the finished clip is fetched from a signed object-storage URL — **without the key**, since that
+  link points at TOS and the key belongs to Ark alone.
 
 Two things the H3 server will *not* do for us, and which therefore shape this file:
 
@@ -44,6 +65,7 @@ and the approval flow), because only it knows the group and the settings.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import re
@@ -62,10 +84,11 @@ MEDIA_KINDS: tuple[str, ...] = media.MEDIA_KINDS
 # ...while this module only drives its own kinds. The two lists were the same thing until a
 # second generator existed; picking a provider by the union would let the video tool select an
 # image provider, which surfaces as a broken server rather than a wrong lookup.
-KINDS: tuple[str, ...] = ("minimax_video", "metachat_media")
+KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "ark_video")
 
 H3_KIND = "minimax_video"
 META_KIND = "metachat_media"
+ARK_KIND = "ark_video"
 
 # What each shape accepts. Kept per kind rather than as one shared list: the three parameters
 # disagree, and a single union would let the tool send MetaChat a pixel count it does not take,
@@ -76,12 +99,21 @@ SHAPES: dict[str, dict] = {
         "ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
         "default_ratio": "16:9",
         "model": False,      # the server has one checkpoint; no model id in the request
+        "audio": True,       # H3 renders stereo sound as part of the clip
     },
     "metachat_media": {
         "seconds": (1, 15),                                             # documented as 1-15, 5 by default
         "ratios": ("adaptive", "16:9", "9:16", "4:3", "3:4", "1:1", "3:2", "2:3"),
         "default_ratio": "adaptive",   # follows the reference image, which is the only input it has
         "model": True,       # every call names the model: the same host serves each of them
+        "audio": False,      # neither of its models documents an audio track
+    },
+    "ark_video": {
+        "seconds": (4, 30),                                             # Seedance 2.5 documents 4-30
+        "ratios": ("16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"),
+        "default_ratio": "16:9",        # Ark's own default; `adaptive` is forced by a keyframe
+        "model": True,
+        "audio": True,       # `generate_audio` defaults to true, which is why `sound` reads from here
     },
 }
 
@@ -116,9 +148,31 @@ ASPECT_RATIOS: tuple[str, ...] = tuple(
 META_RESOLUTIONS = ("480p", "720p")
 META_RESOLUTION_PIVOT = 640
 
+# Volcengine Ark's own video API. `{base}` is the API prefix its documentation gives —
+# `https://ark.cn-beijing.volces.com/api/v3` — so these paths are relative to that and not to the
+# host, which is what the user is told to paste into the provider's address field.
+#
+# The task object is the *whole* reply (`id`, `model`, `status`, `content.video_url`, `usage`,
+# `error`), which is why the finished clip needs a nested lookup — see `link_of`.
+ARK_SUBMIT = "contents/generations/tasks"
+ARK_TASK = "contents/generations/tasks/{vid}"
+
+# Ark takes a named resolution, so the user's "output short edge" is mapped onto its two values
+# rather than duplicated as a second setting — the same pivot MetaChat uses, since both take the
+# same pair and neither takes a pixel count. (1080p exists in the API but not in the Seedance 2.5
+# launch build, so offering it would be offering something that fails.)
+ARK_RESOLUTIONS = ("480p", "720p")
+
+# One request may carry a lot of reference material — 30 images, 10 videos, 10 audio clips, 50
+# items in total — but the *body* is capped at 64 MB, and the documentation says in as many words
+# not to base64-encode large files. So a workspace file is only inlined below this, and anything
+# bigger has to be handed over as a URL the service can fetch.
+ARK_INLINE_MB = 20
+
 # Status words. Anything that is neither done nor failed counts as "still working" and the
 # deadline decides when to stop, so a server that invents a new word for "queued" does not make
-# us fail instantly.
+# us fail instantly. Ark's six (`queued`, `running`, `succeeded`, `failed`, `expired`, `cancelled`)
+# are covered by the two sets below without needing a word of their own.
 _DONE = {"completed", "complete", "succeeded", "success", "done", "finished"}
 _FAILED = {"failed", "failure", "error", "cancelled", "canceled", "expired", "rejected"}
 
@@ -136,17 +190,20 @@ class VideoError(Exception):
 
 
 # ------------------------------------------------------------------ providers
-def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
+def pick_provider(store, cfg: dict, prefer: str = "") -> tuple[dict | None, str]:
     """(the provider to generate with, why there is none).
 
-    A configured id wins; otherwise the first usable one. An id that no longer exists is
-    reported rather than silently replaced, because quietly generating on a different machine
-    than the user asked for is exactly the kind of surprise this file should not produce.
+    `prefer` is the provider a *media member* was created from, and it outranks the setting: a
+    member called "Seedance" must run Seedance whatever the group's last global choice was. It is
+    the same lookup either way, because a member's provider is checked exactly as strictly — an id
+    that no longer exists is reported rather than silently replaced, since quietly generating on a
+    different machine than the user asked for is exactly the kind of surprise this file should not
+    produce.
     """
     # Not `media.providers_of_kind`: a gateway whose kind is "chat" still belongs here when its
     # own model list says it serves video models (see Store.providers_for_use).
     rows = store.providers_for_use("video", KINDS)
-    wanted = str(cfg.get("video_provider_id") or "").strip()
+    wanted = str(prefer or cfg.get("video_provider_id") or "").strip()
     if wanted:
         p = next((x for x in rows if x["id"] == wanted), None)
         if p is None:
@@ -167,12 +224,12 @@ def pick_provider(store, cfg: dict) -> tuple[dict | None, str]:
     if not usable:
         return None, i18n.pick_now(
             "Video generation is on, but no video provider has been added yet. Either add "
-            "\"MetaChat video (open media API)\" and paste your key — its two models are "
-            "image-to-video, no GPU involved — or add \"MiniMax H3 (self-hosted video)\" and point "
-            "it at your SGLang / vLLM server.",
-            "视频生成已开启,但还没有添加视频服务商。要么添加「MetaChat 视频(开放媒体接口)」并填上密钥"
-            "(它的两个模型都是图生视频,不需要显卡),要么添加「MiniMax H3(自建视频生成)」"
-            "并填上你的 SGLang / vLLM 服务地址。",
+            "\"Doubao Seedance (Volcengine Ark)\" and paste your key — its model is the one "
+            "Seedance 2.5, no GPU involved — or add \"MetaChat video (open media API)\", or add "
+            "\"MiniMax H3 (self-hosted video)\" and point it at your SGLang / vLLM server.",
+            "视频生成已开启,但还没有添加视频服务商。要么添加「Doubao Seedance(火山方舟)」并填上密钥"
+            "(模型就是 Seedance 2.5,不需要显卡),要么添加「MetaChat 视频(开放媒体接口)」,"
+            "要么添加「MiniMax H3(自建视频生成)」并填上你的 SGLang / vLLM 服务地址。",
         )
     return usable[0], ""
 
@@ -297,6 +354,148 @@ def metachat_payload(
     }
 
 
+ARK_ADAPTIVE = "adaptive"
+
+
+def ark_ratio(ratio: str, *, keyframe: bool) -> tuple[str, bool]:
+    """(ratio to send, whether it had to be changed).
+
+    A `first_frame`/`last_frame` pins the output to the source's shape — the documentation says the
+    ratio "必须为 adaptive" for that task type — so a request that names both a keyframe and a ratio
+    is *adjusted* rather than refused, exactly as a too-long clip is, and the caller is told.
+    Refusing would be defensible and annoying at the same time: the ratio people type is the one
+    they always type.
+    """
+    if keyframe and ratio != ARK_ADAPTIVE:
+        return ARK_ADAPTIVE, True
+    return ratio, False
+
+
+def ark_asset(value: str, workspace: Path, *, what: str, what_zh: str) -> str:
+    """One reference for Ark's `content` array.
+
+    Ark accepts three forms: a public URL it fetches itself, a `data:` URL carrying the bytes, and
+    an `asset://` id from its own asset library. The middle one is what makes this work for a group
+    at all — the pictures a group has are files in its own workspace, and there is nowhere public
+    to put them — so a workspace path is read and inlined. Above `ARK_INLINE_MB` the body would be
+    closing on Ark's own 64 MB cap, and its documentation says outright not to base64-encode large
+    files, so the caller is told to host that one instead of having a request rejected for a reason
+    nobody could guess.
+
+    A file outside the workspace is refused for the same reason `frame_uri` refuses one: these
+    bytes leave this machine, and a member must not be able to post arbitrary local files to a
+    third party.
+    """
+    from . import attachments          # local import: this module is imported by the store
+
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if re.match(r"^(https?://|data:|asset://)", v, re.I):
+        return v
+    root = workspace.resolve()
+    if v.lower().startswith("file://"):
+        raw = urllib.parse.unquote(v[7:])
+        if raw.startswith("localhost/"):
+            raw = raw[len("localhost"):]
+        target = Path(raw)
+        if not target.is_absolute():
+            target = root / target
+    else:
+        target = root / v.lstrip("/")
+    target = target.resolve()
+    if not _inside(root, target):
+        raise VideoError(i18n.pick_now(
+            f"\"{v}\" is outside this group's workspace, so it was not sent. Put the {what} in the "
+            "workspace and refer to it by a path inside it, or pass an http(s) URL the service can "
+            "fetch.",
+            f"「{v}」在本群工作目录之外,没有发出去。请把{what_zh}放进工作目录并用目录内的路径引用,"
+            "或改用服务方取得到的 http(s) 地址。",
+        ))
+    if not target.is_file():
+        # A leading "/" means "from the workspace root" rather than a path on this machine (the same
+        # rule `frame_uri` uses, so the two cannot disagree about what a reference means), and the
+        # wording says so rather than claiming a file that may well exist elsewhere does not.
+        raise VideoError(i18n.pick_now(
+            f"There is no file at \"{v}\" in this group's workspace, so it was not sent. A path "
+            "starting with / is read from the workspace root; anything outside the workspace has to "
+            "be an http(s) URL the service can fetch.",
+            f"本群工作目录里没有「{v}」这个文件,没有发出去。以 / 开头的路径按「工作目录根」来读;"
+            "工作目录之外的东西必须换成服务方取得到的 http(s) 地址。",
+        ))
+    data = target.read_bytes()
+    limit = ARK_INLINE_MB * 1024 * 1024
+    if len(data) > limit:
+        raise VideoError(i18n.pick_now(
+            f"\"{target.name}\" is {len(data) / 1024 / 1024:.0f} MB, over the {ARK_INLINE_MB} MB this "
+            f"app will send inline as a {what} — Ark caps a whole request at 64 MB and its "
+            "documentation says not to base64-encode large files. Put it somewhere with an http(s) "
+            "URL and pass that instead.",
+            f"「{target.name}」有 {len(data) / 1024 / 1024:.0f} MB,超过本程序内联发送{what_zh}的 "
+            f"{ARK_INLINE_MB} MB 上限 —— Ark 整个请求上限是 64 MB,它的文档也明确说大文件不要用 "
+            "Base64。请把它放到一个有 http(s) 地址的地方再传进来。",
+        ))
+    _kind, mime, _ext = attachments.classify(data, target.name)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def ark_payload(
+    prompt: str, *, model: str, ratio: str, duration_seconds: int, short_edge: int,
+    first_frame: str = "", last_frame: str = "", reference_images: tuple[str, ...] = (),
+    reference_videos: tuple[str, ...] = (), reference_audios: tuple[str, ...] = (),
+    seed: int = 0, audio: bool | None = None,
+) -> dict:
+    """The body `POST {base}/contents/generations/tasks` documents.
+
+    Text first, then every reference with its `role`: the role is not decoration, it is what makes
+    Ark pick the task type (keyframe interpolation versus the omni-reference path), and the prompt
+    refers to the items by position — `@图片1`, `@视频1` — so the order here is what the member's
+    own sentence is counting on. Text, then pictures, then videos, then audio is the order the
+    documentation's examples use.
+
+    `resolution` is Ark's own pair, mapped from the pixel count the user configured (see
+    `resolution_for`); `watermark: false` is sent because the default is the thing you would have
+    to notice and undo, and the user's own example asks for it off. `generate_audio` is sent *only*
+    when the caller said something, since Ark already defaults it to true and an omitted field is
+    also the compatible answer for a model name this app ships no description for.
+    """
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for url, role in ((first_frame, "first_frame"), (last_frame, "last_frame")):
+        if url:
+            content.append({"type": "image_url", "image_url": {"url": url}, "role": role})
+    for url in reference_images:
+        content.append({"type": "image_url", "image_url": {"url": url}, "role": "reference_image"})
+    for url in reference_videos:
+        content.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
+    for url in reference_audios:
+        content.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
+    body: dict = {
+        "model": model,
+        "content": content,
+        "ratio": ratio,
+        "duration": int(duration_seconds),
+        "resolution": resolution_for(short_edge),
+        "watermark": False,
+    }
+    if seed:
+        body["seed"] = int(seed)
+    if audio is not None:
+        body["generate_audio"] = bool(audio)
+    return body
+
+
+def link_of(kind: str, detail: dict, field: str) -> str:
+    """Where the finished clip lives, in whichever reply shape this provider uses.
+
+    MetaChat and H3 report it at the top of the job's own object (`video_url`); Ark nests it one
+    level down, inside `content`. One lookup here beats a branch at each of the three call sites.
+    """
+    if kind == ARK_KIND:
+        inner = detail.get("content")
+        return str((inner or {}).get("video_url") or "") if isinstance(inner, dict) else ""
+    return str(detail.get(field) or "")
+
+
 def image_url(value: str) -> str:
     """An image the *provider* will fetch, for the MetaChat `images` array.
 
@@ -401,6 +600,8 @@ async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None 
                  job: dict | None = None) -> str:
     if prov.get("kind") == META_KIND:
         return await _meta_submit(prov, payload, client=client, job=job)
+    if prov.get("kind") == ARK_KIND:
+        return await _ark_submit(prov, payload, client=client)
     url = media.api_url(prov["base_url"], "v1/videos")
     async with _client(client, SUBMIT_TIMEOUT, url) as c:
         try:
@@ -435,6 +636,8 @@ async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = 
                     job: dict | None = None) -> tuple[str, dict]:
     if prov.get("kind") == META_KIND:
         return await _meta_status(prov, vid, client=client, job=job)
+    if prov.get("kind") == ARK_KIND:
+        return await _ark_status(prov, vid, client=client)
     url = media.api_url(prov["base_url"], f"v1/videos/{vid}")
     async with _client(client, STATUS_TIMEOUT, url) as c:
         try:
@@ -459,21 +662,23 @@ async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncC
                    url: str = "") -> bytes:
     """The mp4 bytes.
 
-    Which address they come from differs: H3 serves them off its own task id, while MetaChat
-    returns a link into its object store — so `url` is the caller's answer for that shape, and
-    guessing any other endpoint would be inventing one. The checks afterwards are the same for
-    both, which is the part worth not writing twice.
+    Which address they come from differs: H3 serves them off its own task id, while MetaChat and
+    Ark return a link into their own object storage — so `url` is the caller's answer for those
+    shapes, and guessing any other endpoint would be inventing one. The checks afterwards are the
+    same for all three, which is the part worth not writing twice.
     """
-    if prov.get("kind") == META_KIND:
+    if prov.get("kind") in (META_KIND, ARK_KIND):
         if not url:
+            name = prov.get("name") or prov.get("kind") or "the service"
             raise VideoError(i18n.pick_now(
-                "MetaChat reported the job as finished but gave no video address, so nothing was "
+                f"{name} reported the job as finished but gave no video address, so nothing was "
                 "saved. This is worth reporting to them rather than retrying.",
-                "MetaChat 报告任务已完成,但没有给出视频地址,所以没有保存。这种情况建议反馈给 MetaChat,重试没有意义。",
+                f"{name} 报告任务已完成,但没有给出视频地址,所以没有保存。这种情况建议反馈给该服务商,重试没有意义。",
             ))
-        # Deliberately no Authorization header: the link points at MetaChat's object storage
-        # (an aliyuncs host), and the key is for MetaChat alone. Sending it there would hand the
-        # credential to a third party for a file that does not need it.
+        # Deliberately no Authorization header: the link points at that service's object storage
+        # (an aliyuncs host for MetaChat, a volces.com one for Ark), and the key is for the API
+        # alone. Sending it there would hand the credential to a third party for a file that does
+        # not need it.
         headers: dict[str, str] = {}
         target = url
         timeout = DOWNLOAD_TIMEOUT
@@ -596,6 +801,66 @@ async def _meta_status(prov: dict, vid: str, *, client: httpx.AsyncClient | None
     return str(data.get("status") or "").strip().lower(), (data if isinstance(data, dict) else {})
 
 
+# ------------------------------------------------------------------ Volcengine Ark (Doubao Seedance)
+async def _ark_submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None) -> str:
+    url = media.api_url(prov["base_url"], ARK_SUBMIT)
+    async with _client(client, SUBMIT_TIMEOUT, url) as c:
+        try:
+            r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
+                             timeout=SUBMIT_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Could not reach Ark at {prov['base_url']}: {type(e).__name__}: {e}",
+                f"连不上火山方舟 {prov['base_url']}:{type(e).__name__}: {e}",
+            )) from None
+    if r.status_code >= 400:
+        raise VideoError(i18n.pick_now(
+            f"Ark refused the request ({_why(r)})", f"火山方舟拒绝了这次请求({_why(r)})"
+        ))
+    try:
+        body = r.json()
+    except ValueError:
+        raise VideoError(i18n.pick_now(
+            "Ark did not return JSON, so the job could not be read. Check that the address is "
+            "https://ark.cn-beijing.volces.com/api/v3.",
+            "火山方舟没有返回 JSON,读不到任务。请检查地址是不是 https://ark.cn-beijing.volces.com/api/v3。",
+        )) from None
+    vid = str((body or {}).get("id") or "").strip()
+    if not vid:
+        raise VideoError(i18n.pick_now(
+            f"Ark accepted the job but returned no task id ({str(body)[:200]})",
+            f"火山方舟收下了请求但没有返回任务 id({str(body)[:200]})",
+        ))
+    return vid
+
+
+async def _ark_status(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None) -> tuple[str, dict]:
+    """(state word, the whole task object).
+
+    The whole object, not a plucked field, because the finished clip is *inside* it
+    (`content.video_url`) and so is what the job cost (`usage`). `link_of` knows where to look.
+    """
+    path = ARK_TASK.format(vid=urllib.parse.quote(vid, safe=""))
+    url = media.api_url(prov["base_url"], path)
+    async with _client(client, STATUS_TIMEOUT, url) as c:
+        try:
+            r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
+        except httpx.HTTPError as e:
+            raise VideoError(i18n.pick_now(
+                f"Lost contact with Ark while waiting: {type(e).__name__}: {e}",
+                f"等待期间与火山方舟失去联系:{type(e).__name__}: {e}",
+            )) from None
+    if r.status_code >= 400:
+        raise VideoError(i18n.pick_now(
+            f"Could not read the generation status ({_why(r)})", f"读取生成状态失败({_why(r)})"
+        ))
+    try:
+        body = r.json()
+    except ValueError:
+        body = {}
+    return str((body or {}).get("status") or "").strip().lower(), (body if isinstance(body, dict) else {})
+
+
 def too_big(size: int, max_bytes: int) -> str:
     return i18n.pick_now(
         f"The video is {size / 1024 / 1024:.0f} MB, over the {max_bytes / 1024 / 1024:.0f} MB cap "
@@ -627,6 +892,8 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
         return False, i18n.pick_now("This provider has no address configured.", "这个服务商没有填地址。")
     if prov.get("kind") == META_KIND:
         return await _probe_meta(prov, c)
+    if prov.get("kind") == ARK_KIND:
+        return await _probe_ark(prov, c)
     key = prov.get("api_key", "")
     try:
         r = await c.get(media.api_url(base, "health"), headers=media.auth_headers(key))
@@ -656,6 +923,54 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
             f"{base} answered the video API with {r.status_code}.", f"{base} 的视频接口有响应({r.status_code})。"
         )
     return False, i18n.pick_now(f"{base} answered {_why(r)}", f"{base} 返回了 {_why(r)}")
+
+
+async def _probe_ark(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
+    """Is Ark there, and does it accept this key? Renders nothing.
+
+    Asking about a task id that cannot exist. Measured against the live service, a key Ark will not
+    accept comes back **HTTP 401** with `{"error": {"code": "AuthenticationError", "message": "The
+    API key format is incorrect..."}}`, so 401/403 is the one answer that means "something is
+    really wrong". Anything else — a 404 for a task that does not exist, a 400 for a malformed id —
+    proves the request was authenticated and processed, which is all this probe claims.
+
+    The same lesson as `media.probe_meta`, learned the hard way there: when the verdict depends on
+    the service's failure convention, assert the convention actually observed rather than assuming
+    that "4xx means broken".
+    """
+    base = (prov.get("base_url") or "").strip()
+    url = media.api_url(base, ARK_TASK.format(vid="team-agent-probe"))
+    try:
+        r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
+    except httpx.HTTPError as e:
+        return False, i18n.pick_now(
+            f"Could not reach {base}: {type(e).__name__}: {e}", f"连不上 {base}:{type(e).__name__}: {e}"
+        )
+    if r.status_code in (401, 403):
+        return False, i18n.pick_now(
+            f"{base} is up but rejected the key ({r.status_code}). Create the key in the Ark console "
+            "(API Key management) and make sure it belongs to the same region as this address.",
+            f"{base} 是活的,但密钥被拒绝了({r.status_code})。请在方舟控制台的「API Key 管理」里创建密钥,"
+            "并确认它与这个地址属于同一个区域。",
+        )
+    said = ""
+    try:
+        body = r.json()
+        if isinstance(body, dict):
+            err = body.get("error")
+            said = " ".join(str(err.get("message") if isinstance(err, dict) else err or "").split())[:160]
+    except ValueError:
+        said = " ".join((r.text or "").split())[:160]
+    tail = f" · {said}" if said else ""
+    if r.status_code >= 400:
+        return True, i18n.pick_now(
+            f"{base} accepted the key: it answered {r.status_code} for a task that does not exist{tail}.",
+            f"{base} 接受了密钥:对不存在的任务返回了 {r.status_code}{tail}。",
+        )
+    return True, i18n.pick_now(
+        f"{base} accepted the key and answered {r.status_code}{tail}.",
+        f"{base} 接受了密钥,返回 {r.status_code}{tail}。",
+    )
 
 
 async def _probe_meta(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
@@ -718,9 +1033,12 @@ async def _generate(
         if raw in _DONE:
             break
         if raw in _FAILED:
-            # `fail_reason` is MetaChat's name for it, `error` is H3's; both end up in the message
-            # rather than being flattened into a bare "failed".
-            why = " ".join(str(detail.get("error") or detail.get("fail_reason")
+            # `fail_reason` is MetaChat's name for it, `error` is H3's, and Ark nests an
+            # `{"code","message"}` object under `error`; all of them end up in the message rather
+            # than being flattened into a bare "failed".
+            err = detail.get("error")
+            nested = err.get("message") if isinstance(err, dict) else ""
+            why = " ".join(str(nested or detail.get("error") or detail.get("fail_reason")
                                or detail.get("message") or "").split())[:300]
             raise VideoError(i18n.pick_now(
                 f"The video server reported failure{': ' + why if why else ''}",
@@ -738,15 +1056,18 @@ async def _generate(
         await asyncio.sleep(interval)
         interval = min(POLL_MAX, interval * 1.5)
     # The field the finished clip is in comes from the model's own job description: `video_url`
-    # for every family today, but a table that says so is cheaper than a guess that breaks.
+    # for every MetaChat family today, but a table that says so is cheaper than a guess that
+    # breaks. Ark nests it, and `link_of` is the one place that knows.
     field = (job or {}).get("file", "video_url")
     data = await download(prov, vid, max_bytes=max_bytes, client=client,
-                          url=str(detail.get(field) or ""))
+                          url=link_of(prov.get("kind") or "", detail, field))
     path = save(data, workspace, str(payload.get("prompt", "")), vid)
     return {
         "id": vid, "path": path, "name": path.name, "bytes": len(data),
         "seconds": round(time.time() - t0, 1), "status": detail,
         # MetaChat bills in its own points and reports the total; passing it along lets the tool
-        # tell the user what the clip actually cost, which is not something to hide.
+        # tell the user what the clip actually cost, which is not something to hide. Ark reports
+        # token usage in the same place — a different unit, so the tool names it separately.
         "points": detail.get("total_points"),
+        "usage": detail.get("usage"),
     }

@@ -54,6 +54,11 @@ class ToolContext:
     # a flag is used rather than matching on wording, because the text in problems follows
 # the request language.
     mcp_deferred: bool = False
+    # Set only when the member *is* a generator (see `media.member_target`): `{"provider_id",
+    # "model", "use"}`. It exists because the generators otherwise read their provider and model
+    # from the group's settings, and a member called "Seedance" has to run Seedance whatever was
+    # chosen last — one field rather than a second copy of the tool.
+    media: dict = field(default_factory=dict)
 
     def specs(self) -> list[dict]:
         return list(self.tools.values())
@@ -139,20 +144,27 @@ BUILTIN_SPECS: dict[str, dict] = {
     },
     "generate_video": {
         "description": "Generate a short video through this group's video provider, and save it "
-                       "into the group's workspace. Two kinds of provider exist and they differ. A "
+                       "into the group's workspace. Three kinds of provider exist and they differ. A "
                        "self-hosted MiniMax H3 makes 4-15 second clips with sound and is prompted "
                        "as shots and then sound (\"[Shot 1] ... overall_soundscape: ... "
                        "non_diegetic_music: ...\"); a workspace image can be first_frame/last_frame. "
                        "MetaChat's video API (Grok Video, Midjourney Video) makes 1-15 second clips "
                        "and generates ONLY from a reference image, which must be an http(s) URL "
-                       "because that service downloads it itself. Rendering takes minutes. You "
-                       "cannot watch or hear the result: say what you asked for, never describe "
-                       "what came out.",
-        "description_zh": "用本群配置的视频服务商生成一段短视频,存进本群工作目录。有两类服务商,规矩不同:"
+                       "because that service downloads it itself. Volcengine's Ark (Doubao Seedance "
+                       "2.5) makes 4-30 second clips, has sound on by default, takes a workspace "
+                       "file or a URL for every kind of reference (pictures, video, audio) and is "
+                       "the only one that accepts reference_videos/reference_audios; its prompt "
+                       "refers to the references by position (\"@图片1\", \"@视频1\"). Rendering "
+                       "takes minutes. You cannot watch or hear the result: say what you asked for, "
+                       "never describe what came out.",
+        "description_zh": "用本群配置的视频服务商生成一段短视频,存进本群工作目录。有三类服务商,规矩不同:"
                           "自建的 MiniMax H3 生成 4-15 秒、带声音的片段,提示词要写成「先分镜、再说声音」"
                           "(如「[Shot 1] … overall_soundscape: … non_diegetic_music: …」),可以用工作目录里的图片"
                           "当 first_frame/last_frame;MetaChat 的视频接口(Grok Video、Midjourney Video)"
-                          "生成 1-15 秒的片段,而且只能「按参考图生成」,参考图必须是 http(s) 地址——它自己去下载。"
+                          "生成 1-15 秒的片段,而且只能「按参考图生成」,参考图必须是 http(s) 地址——它自己去下载;"
+                          "火山方舟(Doubao Seedance 2.5)生成 4-30 秒的片段,默认带声音,参考素材(图、视频、音频)"
+                          "既可以是工作目录里的文件也可以是公网地址,而且是三者中唯一支持 reference_videos/"
+                          "reference_audios 的;它的提示词用序号指代素材(「@图片1」「@视频1」)。"
                           "渲染需要等几分钟。你看不到也听不到结果:只说你要求了什么,绝不要描述生成出来的画面。",
         # Every built-in carries its own `risk`: it runs something outside this app, so it asks.
         "risk": "exec",
@@ -161,8 +173,8 @@ BUILTIN_SPECS: dict[str, dict] = {
         "timeout_key": "video_timeout",
         "parameters": {"type": "object", "properties": {
             "prompt": {"type": "string",
-                       "description": "What to generate: shots, then soundscape and music",
-                       "description_zh": "要生成什么:分镜,再写声音环境与配乐"},
+                       "description": "What to generate. On a self-hosted H3: shots, then soundscape and music. On Ark: a description of the shot, naming any references by their position (@图片1, @视频1)",
+                       "description_zh": "要生成什么。自建 H3:分镜,再写声音环境与配乐。火山方舟:对画面的描述,用序号指代素材(@图片1、@视频1)"},
             "duration_seconds": {"type": "integer",
                                  "description": f"Clip length, {video.MIN_SECONDS}-{video.MAX_SECONDS} seconds, and at most what this group allows; the group's own limit is used when omitted",
                                  "description_zh": f"时长,{video.MIN_SECONDS}-{video.MAX_SECONDS} 秒,且不超过本群上限;不填则用本群允许的最长时长"},
@@ -170,13 +182,25 @@ BUILTIN_SPECS: dict[str, dict] = {
                              "description": f"One of: {', '.join(video.ASPECT_RATIOS)}; omit for the provider's own default. Which of them apply depends on the provider",
                              "description_zh": f"可选:{', '.join(video.ASPECT_RATIOS)};不填则用服务商自己的默认值。具体哪些可用取决于服务商"},
             "first_frame": {"type": "string",
-                            "description": "Reference image: a path inside the workspace on a self-hosted H3 server, an http(s) URL on MetaChat's video API (which fetches it itself, and where it is required)",
-                            "description_zh": "参考图:自建 H3 服务可填工作目录内的路径;MetaChat 的视频接口必须是 http(s) 地址(它自己去取),而且是必填的"},
+                            "description": "Reference image to start from: a path inside the workspace on a self-hosted H3 server or on Ark, an http(s) URL on MetaChat's video API (which fetches it itself, and where it is required). On Ark a keyframe pins the aspect ratio to adaptive",
+                            "description_zh": "起始参考图:自建 H3 或火山方舟可填工作目录内的路径;MetaChat 的视频接口必须是 http(s) 地址(它自己去取),而且是必填的。方舟上用了关键帧就会把画幅锁成 adaptive"},
             "last_frame": {"type": "string",
-                           "description": "Image to end on, same forms as first_frame. Self-hosted H3 only — MetaChat's API generates from a single keyframe and refuses this",
-                           "description_zh": "结束图片,写法同 first_frame。仅自建 H3 支持;MetaChat 的接口只按一张参考图生成,填了会被拒绝"},
-            "seed": {"type": "integer", "description": "0 for a random result; self-hosted H3 only",
-                     "description_zh": "填 0 表示随机;仅自建 H3 支持"}},
+                           "description": "Image to end on, same forms as first_frame. Self-hosted H3 and Ark only — MetaChat's API generates from a single keyframe and refuses this",
+                           "description_zh": "结束图片,写法同 first_frame。仅自建 H3 与火山方舟支持;MetaChat 的接口只按一张参考图生成,填了会被拒绝"},
+            "reference_images": {"type": "array", "items": {"type": "string"},
+                                 "description": "Extra reference pictures, for the models that take them (Ark only). Pass a workspace path or an http(s) URL; the prompt can name them by position (@图片1)",
+                                 "description_zh": "额外的参考图,仅火山方舟支持。可填工作目录内的路径或 http(s) 地址;提示词里可以按序号引用(@图片1)"},
+            "reference_videos": {"type": "array", "items": {"type": "string"},
+                                 "description": "Reference clips, Ark only: give the model a camera move or a subject to carry over (@视频1)",
+                                 "description_zh": "参考视频,仅火山方舟支持:把运镜或主体交给模型参考(@视频1)"},
+            "reference_audios": {"type": "array", "items": {"type": "string"},
+                                 "description": "Reference audio, Ark only: a voice or a piece of music to use (@音频1)",
+                                 "description_zh": "参考音频,仅火山方舟支持:要沿用的音色或音乐(@音频1)"},
+            "generate_audio": {"type": "boolean",
+                               "description": "Ark only, and only when you want the opposite of its default: Seedance 2.5 already makes sound, so pass false for a silent clip",
+                               "description_zh": "仅火山方舟,而且只在你要「反着来」时才填:Seedance 2.5 默认就生成声音,想静音才填 false"},
+            "seed": {"type": "integer", "description": "0 for a random result; self-hosted H3 and Ark only",
+                     "description_zh": "填 0 表示随机;仅自建 H3 与火山方舟支持"}},
             "required": ["prompt"]},
     },
     "generate_image": {
@@ -235,6 +259,21 @@ def timeout_budget(cfg: dict, spec: dict) -> float:
     return float(cfg[key]) if key else float(cfg["tool_timeout"])
 
 
+def _str_list(value: object) -> list[str]:
+    """A string-array argument, tolerating the two shapes a model actually sends.
+
+    A model asked for `["a", "b"]` sometimes hands over a single string instead, and refusing that
+    would fail a call whose intent is not in doubt. Anything else is dropped rather than
+    stringified: an object here means the parameter was misunderstood, and inventing a path out of
+    it would send the wrong reference — which is worse than sending none.
+    """
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    return []
+
+
 
 class ToolHub:
     def __init__(self, store: Store, registry: ToolRegistry, mcp: McpManager, library: Library,
@@ -259,6 +298,51 @@ class ToolHub:
         if int(cfg["tool_rounds"]) <= 0:
             return ctx
         ext = group["ext"]
+
+        # A media member is the generator itself, so it gets exactly one tool — its own — and gets
+        # it on the account of the provider it was made from rather than the group's. Returning
+        # early is the point: everything below hands a *conversational* member the tools of the
+        # group, and none of that applies to a member whose whole turn is one call.
+        if agent.get("origin") == media.MEDIA_ORIGIN:
+            specs = builtin_specs()
+            target = media.member_target(self.store, agent)
+            if target is None:
+                ctx.problems.append(i18n.pick_now(
+                    f"\"{agent['name']}\" is a generating member, but the model it was made from is "
+                    "gone (its provider or the model itself was deleted), so it cannot do anything. "
+                    "Take it out of the group, or add the model back and make the member again.",
+                    f"「{agent['name']}」是生成成员,但它所依据的模型已经不在了(服务商或模型被删除),"
+                    "所以它什么也做不了。请把它移出群聊,或重新添加那个模型再建一次。"))
+                return ctx
+            ctx.media = {"provider_id": target["provider"]["id"], "model": target["model"]["model_name"],
+                         "use": target["use"]}
+            prov = target["provider"]
+            if target["use"] == "video":
+                name = "generate_video"
+                gated = video.blocked_by_offline(prov, cfg)
+                off = i18n.pick_now(
+                    f"\"{agent['name']}\" generates video through \"{prov['name']}\", which is "
+                    "switched off or has no address — so it cannot reply.",
+                    f"「{agent['name']}」通过「{prov['name']}」生成视频,而那个服务商已停用或没填地址,"
+                    "所以它无法回复。")
+            else:
+                name = "generate_image"
+                gated = imagegen.blocked_by_offline(prov, cfg)
+                off = i18n.pick_now(
+                    f"\"{agent['name']}\" draws through \"{prov['name']}\", which is switched off or "
+                    "has no address — so it cannot reply.",
+                    f"「{agent['name']}」通过「{prov['name']}」绘画,而那个服务商已停用或没填地址,"
+                    "所以它无法回复。")
+            if gated or not (prov["enabled"] and (prov["base_url"] or "").strip()):
+                # Same rule as for a conversational member: nobody is handed a tool that cannot
+                # work, and the user is told why instead of watching it fail.
+                ctx.problems.append(gated or off)
+                return ctx
+            spec = specs[name]
+            ctx.tools[name] = {"name": name, "description": spec["description"],
+                               "parameters": spec["parameters"], "risk": spec.get("risk"),
+                               "timeout_key": spec.get("timeout_key"), "source": "builtin"}
+            return ctx
 
         specs = builtin_specs()          # descriptions in the request language
 
@@ -418,12 +502,17 @@ When it is not supplied, calls needing confirmation are always denied."""
         model a generic "failed" — makes it retry and then blame itself.
         """
         cfg = self.store.get_settings()
-        prov, why = video.pick_provider(self.store, cfg)
+        # A media member's turn arrives here too: it *is* a generator, so the provider it was
+        # created from outranks the group's setting, and its own model name outranks `video_model`.
+        # Without this, "@Seedance" would quietly render on whatever was chosen last.
+        member = ctx.media or {}
+        prov, why = video.pick_provider(self.store, cfg, prefer=str(member.get("provider_id") or ""))
         if prov is None:
             return why, False, []
         blocked = video.blocked_by_offline(prov, cfg)
         if blocked:
             return blocked, False, []
+        model = str(member.get("model") or cfg.get("video_model") or "").strip()
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
             return i18n.pick_now("The prompt was empty, so nothing was generated.", "提示词是空的,没有生成。"), False, []
@@ -442,9 +531,24 @@ When it is not supplied, calls needing confirmation are always denied."""
         workspace = self.store.workspace_dir(ctx.group["id"])
         want_first = str(args.get("first_frame") or "").strip()
         want_last = str(args.get("last_frame") or "").strip()
+        # Reference material beyond the two keyframes: only Ark takes any of it, so a member that
+        # sends some to H3 or MetaChat is told which provider would have accepted it rather than
+        # having it silently dropped — a generation that ignored the reference it was given comes
+        # back looking like the model's fault.
+        ref_images = _str_list(args.get("reference_images"))
+        ref_videos = _str_list(args.get("reference_videos"))
+        ref_audios = _str_list(args.get("reference_audios"))
+        if (ref_images or ref_videos or ref_audios) and prov["kind"] != video.ARK_KIND:
+            return i18n.pick_now(
+                f"\"{prov['name']}\" does not take reference pictures, video or audio, so nothing "
+                "was generated. Only Volcengine Ark (Doubao Seedance) accepts those — use "
+                f"first_frame otherwise. Available here: {', '.join(k for k, v in (('first_frame', want_first), ('last_frame', want_last)) if v) or 'the prompt alone'}.",
+                f"「{prov['name']}」不接受参考图/参考视频/参考音频,没有生成。只有火山方舟(Doubao Seedance)"
+                "支持这些 —— 其他服务商请改用 first_frame。",
+            ), False, []
         seconds, clamped = video.clamp_seconds(args.get("duration_seconds"), int(cfg["video_max_seconds"]), prov["kind"])
+        pinned = False
         if prov["kind"] == video.META_KIND:
-            model = str(cfg.get("video_model") or "").strip()
             if not model:
                 return i18n.pick_now(
                     "Video generation is set to MetaChat's media API, which serves more than one "
@@ -475,6 +579,35 @@ When it is not supplied, calls needing confirmation are always denied."""
                 prompt, model=model, ratio=ratio, duration_seconds=seconds,
                 short_edge=int(cfg["video_short_edge"]), frame=frame,
             )
+        elif prov["kind"] == video.ARK_KIND:
+            if not model:
+                return i18n.pick_now(
+                    "Ark serves several video models and none is chosen, so nothing was generated. "
+                    "Pick one under Permissions & control → Video generation.",
+                    "火山方舟有多个视频模型,但没有选定用哪个,所以没有生成。请在「权限与操控 → 视频生成」里选一个。",
+                ), False, []
+            try:
+                assets = {
+                    "first_frame": video.ark_asset(want_first, workspace, what="keyframe", what_zh="关键帧"),
+                    "last_frame": video.ark_asset(want_last, workspace, what="keyframe", what_zh="关键帧"),
+                    "reference_images": tuple(video.ark_asset(u, workspace, what="reference picture", what_zh="参考图")
+                                              for u in ref_images),
+                    "reference_videos": tuple(video.ark_asset(u, workspace, what="reference clip", what_zh="参考视频")
+                                              for u in ref_videos),
+                    "reference_audios": tuple(video.ark_asset(u, workspace, what="reference audio", what_zh="参考音频")
+                                              for u in ref_audios),
+                }
+            except video.VideoError as e:
+                return str(e), False, []
+            # A keyframe task pins the ratio to `adaptive`, so the adjustment happens here and the
+            # member is told, exactly as a clamped duration is.
+            ratio, pinned = video.ark_ratio(ratio, keyframe=bool(assets["first_frame"] or assets["last_frame"]))
+            payload = video.ark_payload(
+                prompt, model=model, ratio=ratio, duration_seconds=seconds,
+                short_edge=int(cfg["video_short_edge"]), seed=int(args.get("seed") or 0),
+                audio=args.get("generate_audio") if isinstance(args.get("generate_audio"), bool) else None,
+                **assets,
+            )
         else:
             try:
                 first = video.frame_uri(want_first, workspace)
@@ -497,9 +630,10 @@ When it is not supplied, calls needing confirmation are always denied."""
         # reads like something went wrong.
         size = (f"{r['bytes'] / 1024:.0f} KB" if r["bytes"] < 1024 * 1024
                 else f"{r['bytes'] / 1024 / 1024:.1f} MB")
-        # "with sound" is an H3 property, not a promise of the video API: MetaChat's two models do
-        # not document an audio track, and telling the user otherwise would be inventing a feature.
-        sound = i18n.pick_now(" with sound", "、带声音") if prov["kind"] != video.META_KIND else ""
+        # "with sound" is read off the provider's own shape rather than hardcoded: H3 renders stereo
+        # audio and Ark defaults `generate_audio` to true, while MetaChat's two models document no
+        # audio track at all — telling the user there is one would be inventing a feature.
+        sound = i18n.pick_now(" with sound", "、带声音") if shape.get("audio") else ""
         lines = [
             i18n.pick_now(
                 f"Rendered a {seconds}s {ratio} clip{sound} using {prov['name']}: {r['name']} "
@@ -518,6 +652,18 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"(The service billed {points} points for it.)",
                 f"(这次生成消耗了 {points} 元点。)",
             ))
+        usage = r.get("usage") if isinstance(r.get("usage"), dict) else None
+        cost = (usage or {}).get("total_tokens")
+        if cost:
+            lines.append(i18n.pick_now(
+                f"(Ark billed {int(cost)} tokens for it.)", f"(这次生成消耗了 {int(cost)} tokens。)"
+            ))
+        if pinned:
+            lines.append(i18n.pick_now(
+                f"(Aspect ratio was set to {ratio}: on Ark a first/last frame fixes the output to "
+                "the shape of that image.)",
+                f"(画幅已设为 {ratio}:在方舟上,给了首帧/尾帧就由那张图的形状决定输出。)"
+            ))
         if clamped:
             lo, hi = shape["seconds"]
             lines.append(i18n.pick_now(
@@ -526,12 +672,15 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"(时长已调整为 {seconds} 秒:本群上限是 {int(cfg['video_max_seconds'])} 秒,模型本身支持 "
                 f"{lo}-{hi} 秒。)",
             ))
-        # Without this line the model tends to narrate what "happened" in a video it never saw.
-        lines.append(i18n.pick_now(
-            "You cannot watch or hear the result, so do not describe what happens in it — tell the "
-            "user it is ready and where it is.",
-            "你看不到也听不到生成结果,不要描述里面的内容 —— 只要告诉用户已经生成好了、文件在哪里。",
-        ))
+        # Without this line the model tends to narrate what "happened" in a video it never saw. A
+        # media member is not that reader — its message goes straight to the user — so it is spared
+        # an instruction addressed to somebody else.
+        if not member:
+            lines.append(i18n.pick_now(
+                "You cannot watch or hear the result, so do not describe what happens in it — tell the "
+                "user it is ready and where it is.",
+                "你看不到也听不到生成结果,不要描述里面的内容 —— 只要告诉用户已经生成好了、文件在哪里。",
+            ))
         return "\n".join(lines), True, [{"kind": "video", "name": r["name"], "bytes": r["bytes"], "seconds": seconds}]
 
     # ----------------------------------------------------------- image generation
@@ -542,7 +691,10 @@ When it is not supplied, calls needing confirmation are always denied."""
         retry, and then blame itself for the service's answer.
         """
         cfg = self.store.get_settings()
-        prov, why = imagegen.pick_provider(self.store, cfg)
+        # Same rule as the video tool: when the caller is a media member, *its* provider and model
+        # outrank the group's setting, so "@Seedream" draws with Seedream.
+        member = ctx.media or {}
+        prov, why = imagegen.pick_provider(self.store, cfg, prefer=str(member.get("provider_id") or ""))
         if prov is None:
             return why, False, []
         blocked = imagegen.blocked_by_offline(prov, cfg)
@@ -559,7 +711,7 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"「{size}」不是这个服务支持的尺寸,没有生成。可用:{', '.join(imagegen.SIZES)}。",
             ), False, []
         workspace = self.store.workspace_dir(ctx.group["id"])
-        model = str(cfg["image_model"])
+        model = str(member.get("model") or cfg["image_model"])
         if prov["kind"] == "metachat_media":
             # Fifteen models behind one key, and the request differs per model (which path, and
             # which parameters) — so an unset name is a request that would fail rather than draw.

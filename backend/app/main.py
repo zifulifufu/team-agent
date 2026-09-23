@@ -407,8 +407,9 @@ def create_app(
               # files: an upload may be a video, and a referenced folder can be worth a lot of text
               "upload_max_mb": (1, 1024), "video_frames": (1, 12), "refs_budget": (1000, 200000),
               "integration_budget": (2000, 200000),
-              # video: H3 itself caps a clip at 15s, and a render is minutes rather than seconds
-              "video_short_edge": (128, 2048), "video_max_seconds": (1, 15), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
+              # video: the cap is the group's, not any one model's — H3 stops at 15s and Seedance 2.5
+              # runs to 30, and `video.clamp_seconds` narrows each request to its own provider.
+              "video_short_edge": (128, 2048), "video_max_seconds": (1, 30), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
               # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
               "image_timeout": (20, 900), "image_max_mb": (1, 128),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
@@ -479,14 +480,21 @@ def create_app(
     @app.get("/api/providers")
     async def providers() -> list[dict]:
         models = store.list_models()
+        # The generators, as a *separate* key. They stay out of `models` because that list is what a
+        # member can be pointed at as a conversational model, and moving them in would re-open the
+        # bug this split exists to prevent (a member asked to chat with a video model). The member
+        # adder reads `media_models` for its own section; nothing else has a use for it.
+        media_models = {m["id"]: m for m in store.list_media_models()}
         lang = i18n.current()
         out = []
         for p in store.list_providers():
             # The built-in name is shown in the request language; a name the user typed is theirs.
             pp = presets.localize_provider(public_provider(p), lang)
             # The rows carry their provider's name too, so the same rule applies to them.
-            pp["models"] = [{**m, "provider_name": presets.provider_name_view(p["id"], m.get("provider_name") or "", lang)}
-                            for m in models if m["provider_id"] == p["id"]]
+            def _named(m: dict) -> dict:
+                return {**m, "provider_name": presets.provider_name_view(p["id"], m.get("provider_name") or "", lang)}
+            pp["models"] = [_named(m) for m in models if m["provider_id"] == p["id"]]
+            pp["media_models"] = [_named(m) for m in media_models.values() if m["provider_id"] == p["id"]]
             out.append(pp)
         return out
 

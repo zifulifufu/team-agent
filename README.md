@@ -84,6 +84,7 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Area | What you get |
 | --- | --- |
 | Group chat | Members, a host, `@`-hand-off, role statements, and a live task board; a group chat is created by **picking its workspace and then its members**, and both stay editable |
+| Generating members | A video or image model can join a group as a member of its own: **address it and what you wrote is the prompt**, and the result comes back as a file. It does not chat, plan or hand off |
 | Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
@@ -430,8 +431,67 @@ before the first generation:
   `video_short_edge` becomes 480p at or below 640px and 720p above, and `image_size` becomes the
   `aspect` that API takes.
 
-**Seedance 2.0, Sora 2, Kling V3 and Veo 3.1 are web-only** (video): no section of the API
-documentation mentions them, so refreshing can never reveal them and no key reaches them.
+**Seedance 2.0, Sora 2, Kling V3 and Veo 3.1 are web-only** on *MetaChat*: no section of its API
+documentation mentions them, so refreshing can never reveal them and no key of theirs reaches them.
+
+### Doubao Seedance (Volcengine Ark)
+
+The third video dialect, and the only one that is a cloud vendor's own API rather than a self-hosted
+server or an aggregator. It takes its own shape: the request body is a `content` array — the text is
+one item, every piece of reference material is another, each carrying a `role` — and which role you
+use decides the *task type* the model runs (keyframe interpolation versus the omni-reference path),
+which in turn constrains the parameters. So `app/video.py` speaks it separately:
+
+```
+POST contents/generations/tasks        -> {"id": "cgt-..."}                    submit
+GET  contents/generations/tasks/{id}   -> {"status": "...", "content": ...}    poll
+GET  the content.video_url it reports  -> the mp4 bytes                        download
+```
+
+Add the **"Doubao Seedance (Volcengine Ark)"** preset under Model providers — address
+`https://ark.cn-beijing.volces.com/api/v3`, key created in the Ark console → API Key management, and
+**the key has to belong to the same region as the address** — then pick it under *Permissions &
+control → Video generation*.
+
+- **4-30 seconds, sound on by default** (`generate_audio` defaults to true, so a silent clip is the
+  thing you have to ask for). The reference budget is wide: up to 30 pictures, 10 video clips and 10
+  audio clips, 50 items in total.
+- **Reference material may be a public URL *or* a file in the group's own workspace** — the latter is
+  **inlined as base64** by this app, because that is the only place a group's pictures exist. Above
+  20 MB each it is refused with the reason: Ark caps a whole request at 64 MB and its documentation
+  says outright not to base64-encode large files.
+- **A first/last frame pins the ratio to `adaptive`** (that is the task type's own rule). The request
+  is *adjusted* and you are told, rather than refused.
+- **The model id ships with the app** (`doubao-seedance-2-5-260628`): Ark publishes no model listing
+  to page through either, so "refresh" answers with the same built-in list. BytePlus, the
+  international face of the same platform, calls it `dreamina-seedance-2-5-260628` — and **a key
+  issued in one region does not authenticate against the other**, so the address and the id have to
+  belong to the same account.
+
+### Generating members: the model itself, in the group
+
+The sections above are about members *calling* `generate_video` and `generate_image`. A video or
+image model can also **be** a member: the member adder has a **Generating members** section listing
+every enabled model that generates — including the drawing models a gateway reports under its own key
+(the eleven `*-image` ones on MetaChat's OpenAI-compatible address, for instance).
+
+- **Address it, and what you wrote is the prompt.** `@name a tea advert shot in first person` — your
+  sentence, minus the name, goes to the model as its prompt, **with no language model in between**:
+  that saves a call and avoids having your own words rewritten. The result lands in the group's
+  workspace and appears exactly as a tool call does — the same pill, the same player.
+- **It runs on the provider it came from**, so the group's own video provider setting cannot redirect
+  a member that names its own model.
+- **The master switches still govern it**: with *Permissions & control → Video generation* (or →
+  Image generation) off it does nothing and says which switch is in the way. Every generation is
+  still subject to the **approval policy** (`generate_video` defaults to "ask"; add it to
+  "always allow" if you would rather not confirm each time).
+- **Attachments on the message become reference material** — the last two only on Ark. Pictures go in
+  as `reference_image` rather than `first_frame`, because a keyframe pins the aspect ratio and
+  somebody who attached a picture *and* asked for 16:9 meant both.
+- **It does not plan, does not own the group and does not hand off** — it has no judgement to add,
+  and the text it "said" was written by this app, so an `@` in it would not be delegation.
+- It is not a conversational model, so it stays out of the chat roster, the routing chain and the
+  model picker; and when the model is deleted, the member made from it goes with it.
 
 ## Licence
 

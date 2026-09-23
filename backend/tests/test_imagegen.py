@@ -390,17 +390,19 @@ def test_an_image_provider_is_not_usable_for_video_and_the_other_way_round(store
     image_only = store.add_provider_from_preset("openai-image")
     video_only = store.add_provider_from_preset("minimax-h3")
     both = store.add_provider_from_preset("metachat-media")
+    ark = store.add_provider_from_preset("doubao-seedance")
 
     assert [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)] == \
         [image_only["id"], both["id"]]
     assert [p["id"] for p in media.providers_of_kind(store, video.KINDS)] == \
-        [video_only["id"], both["id"]]
+        [video_only["id"], both["id"], ark["id"]]
     # The exclusive ones never cross over, which is the failure this asserts against.
     assert image_only["id"] not in [p["id"] for p in media.providers_of_kind(store, video.KINDS)]
     assert video_only["id"] not in [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)]
-    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_media", "openai_image"}
+    assert ark["id"] not in [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)]
+    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_media", "ark_video", "openai_image"}
     # and none of them is offered to a member as a chat model
-    media_ids = (image_only["id"], video_only["id"], both["id"])
+    media_ids = (image_only["id"], video_only["id"], both["id"], ark["id"])
     assert [m["id"] for m in store.list_models() if m["provider_id"] in media_ids] == []
 
 

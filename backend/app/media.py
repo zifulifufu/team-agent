@@ -25,8 +25,44 @@ from .coderun import inside as _inside
 # `imagegen.KINDS`) — add the new kind here **and** to that subset.
 #
 # `metachat_media` covers both media: its one key reaches an image API *and* a video API, so it
-# belongs in both subsets rather than being configured twice under two names.
-MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "openai_image")
+# belongs in both subsets rather than being configured twice under two names. `ark_video` is
+# Volcengine's own video API (Doubao Seedance), one medium and its own job shape again.
+MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "ark_video", "openai_image")
+
+# The two answers `purpose_of` gives for something a generator can make. A member may *be* one of
+# these (see `member_target`), which is why the pair is named here rather than spelled out at each
+# place that needs it.
+MEDIA_USES: tuple[str, ...] = ("image", "video")
+
+# A member whose whole job is to generate: it does not hold a conversation, it takes the user's
+# sentence as the prompt and runs the generator. Recorded in `agents.origin`, the same column that
+# already distinguishes "a member I made" from "a member the app made out of a model".
+MEDIA_ORIGIN = "media"
+
+
+def member_target(store, agent: dict) -> dict | None:
+    """What a media member generates with: `{"model", "provider", "use"}` — or None.
+
+    None means "not a media member" as well as "one whose model has gone": a deleted provider takes
+    its models with it, and a member left pointing at nothing must be reported as broken rather
+    than quietly falling back to the chat roster (where it would then answer questions it cannot).
+
+    The test is on the **model**, not the provider kind, because a chat gateway can serve image
+    models under its own key — MetaChat's OpenAI-compatible address reports eleven of them — and
+    pointing a member at one of those fails in exactly the same way.
+    """
+    if (agent.get("origin") or "") != MEDIA_ORIGIN:
+        return None
+    row = store.get_model(str(agent.get("model_id") or ""))
+    if not row:
+        return None
+    use = row.get("use") or purpose_of(row.get("model_name", ""))
+    if use not in MEDIA_USES:
+        return None
+    prov = store.get_provider(row["provider_id"])
+    if not prov:
+        return None
+    return {"model": row, "provider": prov, "use": use}
 
 # MetaChat's open media API, one row per model: what it is for, where its job is submitted and
 # polled, which parameters its own page of the documentation lists, and where the finished file
@@ -111,15 +147,21 @@ MEDIA_MODELS: dict[str, dict] = {
                "params": ("aspect",), "file": "image_url"},
 }
 
-# The one media API whose model list cannot be asked for: `/open/v1/models` and
-# `/open/v1/video/models` both answer 404. So there is nothing to refresh against and these ids
-# ship with the app — the preset seeds from here and `discovery` answers a refresh with the same
-# list. Grouped by what a model is for, which is what the image and video settings ask for.
+# The media APIs whose model list cannot be asked for. Neither Volcengine's Ark nor MetaChat's open
+# media API publishes one (`/open/v1/models`, `/open/v1/video/models` and Ark's `/models` all answer
+# 404 or nothing), so there is nothing to refresh against and these ids ship with the app — the
+# presets seed from here and `discovery` answers a refresh with the same list. Grouped by what a
+# model is for, which is what the image and video settings ask for.
 BUILTIN_MEDIA_MODELS: dict[str, dict[str, tuple[str, ...]]] = {
     "metachat_media": {
         use: tuple(mid for mid, m in MEDIA_MODELS.items() if m["use"] == use)
         for use in ("image", "video")
     },
+    # ⚠️ One model, and it is the one its own documentation names: `doubao-seedance-2-5-260628`.
+    # BytePlus (the international face of the same platform) calls it
+    # `dreamina-seedance-2-5-260628`; a key issued in one region does not authenticate against the
+    # other, so the address and this id have to belong to the same account.
+    "ark_video": {"video": ("doubao-seedance-2-5-260628",)},
 }
 
 # For `purpose_of`: a model we ship a job for is what that job says it is. Neither "mj-v82" nor

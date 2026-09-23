@@ -269,6 +269,34 @@ PRESETS: list[dict] = [
                 "refresh that provider and it is offered for drawing on its own key.",
         "hint_zh": "不是对话模型:它提供 /images/generations。任何实现同一接口的服务都可以——把密钥填在下面,再到「权限与操控 → 绘画」里选模型。如果一个「对话」网关的模型列表里就带绘画模型,那根本不需要加这个预设:刷新那个服务商,它自己那把 key 就能用来画画。",
     },
+    {
+        # The third video dialect, and the only one that is a first-party cloud API rather than a
+        # gateway or a server you run: Volcengine Ark serves Doubao Seedance itself. Its request is
+        # a `content` array (text plus references, each carrying a role) rather than a prompt
+        # string, and `generate_audio` defaults to on — `app/video.py` says what that changes.
+        #
+        # The model id is seeded rather than fetched: Ark publishes no model listing either, so
+        # `media.BUILTIN_MEDIA_MODELS` owns it and `discovery` answers a refresh with it.
+        "preset": "doubao-seedance",
+        "name": "Doubao Seedance (Volcengine Ark)", "name_zh": "Doubao Seedance(火山方舟)",
+        "kind": "ark_video",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "is_local": False,
+        "models": list(media.BUILTIN_MEDIA_MODELS["ark_video"]["video"]),
+        "hint": "Not a chat model: it needs no GPU and answers Ark's own video API "
+                "(contents/generations/tasks). Address https://ark.cn-beijing.volces.com/api/v3; the key comes from the "
+                "Ark console → API Key management, and it has to belong to the same region as the address. Its model, "
+                "Seedance 2.5, ships with this preset instead of being fetched — that API has no model-list endpoint. "
+                "Members get 4-30 second clips, with sound by default, and may pass reference pictures, video and audio: "
+                "each one either a public URL or a file from the group's own workspace, which is inlined as base64. This "
+                "provider can also join a group as a member of its own — see the media members section of the README.",
+        "hint_zh": "不是对话模型:不需要显卡,走的是方舟自己的视频接口(contents/generations/tasks)。"
+                   "地址 https://ark.cn-beijing.volces.com/api/v3;密钥在方舟控制台的「API Key 管理」里创建,"
+                   "并且要与这个地址属于同一区域。模型 Seedance 2.5 随这个预设内置,而不是查出来的 —— "
+                   "那个接口没有模型清单接口。成员可以生成 4-30 秒的片段(默认带声音),并可以传参考图、参考视频、"
+                   "参考音频:每样都可以是公网地址,也可以是本群工作目录里的文件(程序会内联为 base64)。"
+                   "这个服务商还可以作为一个「媒体成员」直接入群 —— 用法见 README 里的「媒体成员」一节。",
+    },
 ]
 
 PRESET_BY_ID = {p["preset"]: p for p in PRESETS}
@@ -762,6 +790,70 @@ def model_member_prompt(lang: str = "en") -> str:
     return MODEL_MEMBER_PROMPT if lang == "en" else MODEL_MEMBER_PROMPT_ZH
 
 
+# A media member is the generator itself taking part in the group. Its "prompt" is not an
+# instruction to a language model — nothing reads it as one: the turn it gets runs the generator
+# with the user's own sentence. It is shown where a member's prompt is shown, so it has to read as
+# a description of what this member does, in the reader's language.
+MEDIA_MEMBER_ROLE = "Media member · {use} · {kind}"
+MEDIA_MEMBER_ROLE_ZH = "生成成员 · {use} · {kind}"
+MEDIA_ROLE_PREFIXES = ("Media member · ", "生成成员 · ")
+MEDIA_USE_LABELS = {"video": "Video generation", "image": "Image generation"}
+MEDIA_USE_LABELS_ZH = {"video": "视频生成", "image": "绘画"}
+MEDIA_MEMBER_PROMPT = (
+    "You are \"{{model_name}}\", a generating member of this group: when you are addressed, your "
+    "sentence is handed to the model as its prompt and the result is saved into the group's "
+    "workspace. You do not hold a conversation and you cannot see what comes out, so write the "
+    "prompt as a description of what should be made — and expect the result to be reported, not "
+    "discussed."
+)
+MEDIA_MEMBER_PROMPT_ZH = (
+    "你就是「{{model_name}}」,本群的生成成员:被点名时,你说的那句话会直接作为提示词交给模型,产物保存在"
+    "本群工作目录里。你不参与对话,也看不到生成结果,所以请把话写成对「要做出什么」的描述,"
+    "并预期得到的是产物本身,而不是一场讨论。"
+)
+
+
+def media_member_role(use: str, kind: str = "", lang: str = "en") -> str:
+    """The generated role of a member that is a generator."""
+    table = MEDIA_USE_LABELS if lang == "en" else MEDIA_USE_LABELS_ZH
+    tpl = MEDIA_MEMBER_ROLE if lang == "en" else MEDIA_MEMBER_ROLE_ZH
+    return tpl.format(use=table.get(use, use), kind=kind)
+
+
+def media_member_prompt(use: str, lang: str = "en") -> str:
+    """The description such a member starts with.
+
+    `use` is accepted and unused on purpose: the two wordings are the same sentence today, and
+    having the caller pass what it knows keeps the signature symmetric with
+    `media_member_role` — a place that later needs to say "video" here should not have to change
+    every call site.
+    """
+    return MEDIA_MEMBER_PROMPT if lang == "en" else MEDIA_MEMBER_PROMPT_ZH
+
+
+def localize_media_member(agent: dict, lang: str) -> dict:
+    """A media member as it should read in `lang`, by the same rule as a model member: generated
+    text is swapped while it still looks generated, and anything the user edited is left alone."""
+    from . import media
+    if agent.get("origin") != media.MEDIA_ORIGIN:
+        return agent
+    out = dict(agent)
+    role = out.get("role") or ""
+    for prefix in MEDIA_ROLE_PREFIXES:
+        if role.startswith(prefix):
+            parts = [p.strip() for p in role[len(prefix):].split("·")]
+            use_en = parts[0] if parts else ""
+            use = next((en for en, zh in MEDIA_USE_LABELS.items()
+                        if use_en in (en, MEDIA_USE_LABELS[en], MEDIA_USE_LABELS_ZH[en])), use_en)
+            kind = parts[1] if len(parts) > 1 else ""
+            kind = (KIND_LABELS.get(kind, kind) if lang == "en" else KIND_LABELS_ZH.get(kind, kind))
+            out["role"] = media_member_role(use, kind, lang)
+            break
+    if (out.get("prompt") or "").strip() in {MEDIA_MEMBER_PROMPT.strip(), MEDIA_MEMBER_PROMPT_ZH.strip()}:
+        out["prompt"] = media_member_prompt("", lang)
+    return out
+
+
 def localize_model_member(agent: dict, lang: str) -> dict:
     """A model member as it should read in `lang`.
 
@@ -816,13 +908,14 @@ def provider_name_view(pid: str, name: str, lang: str | None = None) -> str:
 def localize_member(agent: dict, lang: str) -> dict:
     """Any member as it should read in `lang`.
 
-    Three kinds of member arrive here — a built-in one, one that *is* a model, and one that is
-    another application's agent — and each stores its display text from a different source, so
-    each needs its own rule. What they share is the property that matters: a field the user
-    rewrote is left exactly as they wrote it.
+    Four kinds of member arrive here — a built-in one, one that *is* a model, one that *is* a
+    generator, and one that is another application's agent — and each stores its display text from
+    a different source, so each needs its own rule. What they share is the property that matters: a
+    field the user rewrote is left exactly as they wrote it.
     """
     from . import external      # local: `external` never imports presets, and this keeps it one-way
-    return external.localize_member(localize_model_member(localize_agent(agent, lang), lang), lang)
+    return external.localize_member(
+        localize_media_member(localize_model_member(localize_agent(agent, lang), lang), lang), lang)
 
 
 def localize_agent(agent: dict, lang: str) -> dict:

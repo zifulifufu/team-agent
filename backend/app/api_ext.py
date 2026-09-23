@@ -484,15 +484,17 @@ def build_router(c: Ctx) -> APIRouter:
     @r.post("/api/groups/{gid}/members/from-model")
     async def member_from_model(gid: str, body: ModelMemberIn) -> dict:
         """Add a model from "my models" straight into the group as a member (a matching member is
-        created automatically, with its name and strengths taken from the model)."""
+        created automatically, with its name and strengths taken from the model).
+
+        A model that *generates* is accepted here too, and becomes a media member: it joins the group
+        so it can be addressed, but its turn runs its generator instead of a conversation. This used
+        to be refused outright, which was right while "member" could only mean "something that
+        chats" — it is not right now that a member can be the generator itself.
+        """
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         model = _need(store.get_model(body.model_id), i18n.pick_now("Model", "模型"))
         if not model["enabled"] or not model["provider_enabled"]:
             raise HTTPException(400, i18n.pick_now("This model, or its provider, is disabled — enable it under Model providers first", "这个模型或它的服务商已停用,先在「模型服务」里启用"))
-        if model.get("kind") in video.MEDIA_KINDS:
-            raise HTTPException(400, i18n.pick_now(
-                "That is a video-generation provider, so it cannot join the group as a member. Members are driven through the generate_video tool instead.",
-                "那是视频生成服务商,不能作为成员入群。成员是通过 generate_video 工具使用它的。"))
         agent = _need(store.ensure_model_agent(body.model_id), i18n.pick_now("Model", "模型"))
         store.add_member(gid, agent["id"])
         return group_view(store.get_group(gid))  # type: ignore[arg-type]

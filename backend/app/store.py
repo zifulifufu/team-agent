@@ -26,12 +26,20 @@ from .presets import (
     SEED_AGENTS,
     SEED_PROMPTS,
     builtin_for,
+    media_member_prompt,
+    media_member_role,
     model_member_prompt,
     model_member_role,
 )
 
 from . import secrets as secrets_store
 from .store_ext import SCHEMA_EXT, ExtStore
+
+# The `agents.origin` values that mean "this member was made out of a model row". Both follow that
+# row: deleting the model deletes them. A media member is one of these — it *is* the generator
+# taking part in the group, not somebody the user wrote — so the two lists must stay together.
+_MODEL_ORIGINS = ("model", media.MEDIA_ORIGIN)
+_MODEL_ORIGINS_SQL = ",".join("?" * len(_MODEL_ORIGINS))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS providers (
@@ -693,8 +701,9 @@ plaintext (non-macOS / keychain unavailable)."""
         self._x("DELETE FROM model_seen WHERE provider_id=?", (pid,))
         self._x("DELETE FROM model_live WHERE provider_id=?", (pid,))
         self.clear_health(provider_id=pid)
-        for a in self._q("SELECT id FROM agents WHERE origin='model' AND model_id LIKE ?", (f"{pid}/%",)):
-            self.delete_agent(a["id"])   # "model members" follow their model: once the provider is deleted they are meaningless too
+        for a in self._q(f"SELECT id FROM agents WHERE origin IN ({_MODEL_ORIGINS_SQL}) AND model_id LIKE ?",
+                         (*_MODEL_ORIGINS, f"{pid}/%")):
+            self.delete_agent(a["id"])   # members made out of a model follow it: once the provider is deleted they are meaningless too
 # (same as deleting a single model)
         self._x("UPDATE agents SET model_id=NULL WHERE model_id LIKE ?", (f"{pid}/%",))
         self._x("DELETE FROM providers WHERE id=?", (pid,))
@@ -737,6 +746,18 @@ plaintext (non-macOS / keychain unavailable)."""
             tuple(video.MEDIA_KINDS),
         )
         return [self._model_row(r) for r in rows]
+
+    def list_media_models(self) -> list[dict]:
+        """Every model row that *generates*, whatever kind of provider it hangs off.
+
+        `list_models()` is the chat roster and filters media providers out — but a chat gateway can
+        serve image models under its own key (MetaChat's OpenAI-compatible address reports eleven),
+        so "the provider is a chat provider" is not the same question as "this model can chat". This
+        is the list the media-member picker needs, and it is the same `use` column the generator
+        settings are built from, so a model cannot be offered in one place and missing in the other.
+        """
+        rows = self._q(self.MODEL_SELECT)
+        return [r for r in (self._model_row(x) for x in rows) if r.get("use") in media.MEDIA_USES]
 
     def get_model(self, model_id: str) -> dict | None:
         """One row, whatever kind of provider it hangs off.
@@ -831,8 +852,9 @@ plaintext (non-macOS / keychain unavailable)."""
         return self.get_model(model_id)
 
     def delete_model(self, model_id: str) -> None:
-        for a in self._q("SELECT id FROM agents WHERE origin='model' AND model_id=?", (model_id,)):
-            self.delete_agent(a["id"])  # a "model member" is the model itself, so it is meaningless once the model is gone
+        for a in self._q(f"SELECT id FROM agents WHERE origin IN ({_MODEL_ORIGINS_SQL}) AND model_id=?",
+                         (*_MODEL_ORIGINS, model_id)):
+            self.delete_agent(a["id"])  # a member *is* the model, so it is meaningless once the model is gone
         self._x("UPDATE agents SET model_id=NULL WHERE model_id=?", (model_id,))
         self.clear_health(model_id=model_id)
         self._x("DELETE FROM models WHERE id=?", (model_id,))
@@ -874,12 +896,21 @@ plaintext (non-macOS / keychain unavailable)."""
 
     def ensure_model_agent(self, model_id: str) -> dict | None:
         """Turn "a model I added" into a member that can be pulled into a group: reuse it when it
-already exists, otherwise create it (name and strengths are both taken from the model)."""
+already exists, otherwise create it (name and strengths are both taken from the model).
+
+        A model that *generates* becomes a media member instead (`origin="media"`): it takes part in
+        the group as a member you can address, but it does not hold a conversation — the turn it
+        gets runs its generator with the user's own sentence as the prompt. The two are kept apart
+        by `origin` because everything downstream asks the same question ("is this a member that
+        answers, or one that makes something?") and `origin` is what answers it.
+        """
         m = self.get_model(model_id)
-        if not m or m.get("kind") in video.MEDIA_KINDS:
-            return None                 # a video provider has no chat model to turn into a member
+        if not m:
+            return None
+        generating = m.get("kind") in video.MEDIA_KINDS or m.get("use") in media.MEDIA_USES
+        origin = media.MEDIA_ORIGIN if generating else "model"
         for a in self.list_agents():
-            if a.get("origin") == "model" and a["model_id"] == model_id:
+            if a.get("origin") == origin and a["model_id"] == model_id:
                 return a
         base = re.sub(r"[\s@]+", "-", (m["display_name"] or m["model_name"]).strip()).strip("-") \
             or i18n.pick_now("Model", "模型")
@@ -895,11 +926,15 @@ already exists, otherwise create it (name and strengths are both taken from the 
                 n += 1
             name = f"{name}-{n}"
         # Stored canonically in English: the display layer and the prompt builder both
-        # run this member through presets.localize_model_member().
+        # run this member through `presets.localize_member()`.
         kind = "Local" if m["is_local"] else (m.get("provider_name") or "Cloud")
         avatar = self.MODEL_AVATARS[sum(ord(ch) for ch in m["provider_id"]) % len(self.MODEL_AVATARS)]
+        if generating:
+            use = m.get("use") if m.get("use") in media.MEDIA_USES else media.purpose_of(m["model_name"])
+            return self.create_agent(name, avatar, media_member_role(use, kind), media_member_prompt(use),
+                                     model_id, [], [], origin=origin)
         return self.create_agent(name, avatar, model_member_role(kind), model_member_prompt(),
-                                 model_id, [], [], origin="model")
+                                 model_id, [], [], origin=origin)
 
     def update_agent(self, aid: str, patch: dict) -> dict | None:
         for k in ("name", "avatar", "role", "prompt", "model_id"):

@@ -18,15 +18,16 @@ const KIND_LABEL: Record<string, string> = {
   ollama: "Ollama",
   minimax_video: "Video generation",
   metachat_media: "Drawing and video (MetaChat media API)",
+  ark_video: "Video generation (Volcengine Ark)",
 };
 /** Providers that generate media instead of chatting: no model list, no chat endpoint. The
  *  backend keeps them out of the model roster too (`store.list_models`). */
-const MEDIA_KINDS = new Set(["minimax_video", "metachat_media"]);
+const MEDIA_KINDS = new Set(["minimax_video", "metachat_media", "ark_video"]);
 const isMedia = (kind: string) => MEDIA_KINDS.has(kind);
 // Only the kinds whose wording actually differs need a Chinese entry; the rest are proper
 // nouns. Read through a plain function (`currentLang()`), not a hook, because AddProvider
 // renders it inside a callback.
-const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容", minimax_video: "视频生成", metachat_media: "绘画与视频(MetaChat 媒体接口)" };  // i18n-keep: the Chinese half of the pair table above
+const KIND_LABEL_ZH: Record<string, string> = { openai_compatible: "OpenAI 兼容", minimax_video: "视频生成", metachat_media: "绘画与视频(MetaChat 媒体接口)", ark_video: "视频生成(火山方舟)" };  // i18n-keep: the Chinese half of the pair table above
 
 const kindLabel = (kind: string): string =>
   pickLang(KIND_LABEL[kind] ?? kind, KIND_LABEL_ZH[kind], currentLang());
@@ -46,6 +47,7 @@ function endpointPreview(kind: string, base: string): string {
   if (kind === "ollama") return `${b}/api/chat`;
   if (kind === "minimax_video") return `${b}/v1/videos`;
   if (kind === "metachat_media") return `${b}/video/generate · ${b}/image/generate`;
+  if (kind === "ark_video") return `${b}/contents/generations/tasks`;
   return b;
 }
 
@@ -282,7 +284,9 @@ function ProviderDetail({
           <div className="fb-note muted">
             {p.kind === "metachat_media"
               ? t("This is not a chat model: it goes to MetaChat's own media endpoints, and members reach it through the generate_image and generate_video tools. Drawing is what it adds over MetaChat's OpenAI-compatible address — Midjourney, FLUX, Seedream, Z-Image and Grok Image are only there. Its models ship with the app (that API publishes no model list to fetch), so there is nothing to add here; pick them under Permissions & control → Image generation and → Video generation. Both of its video models generate from a reference image. Test the address here.")
-              : t("This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.")}
+              : p.kind === "ark_video"
+                ? t("This is not a chat model: it goes to Volcengine Ark's own video API, and members reach it through the generate_video tool. Its model (Seedance 2.5) ships with the preset — Ark publishes no model list to fetch — so there is nothing to add here; pick it under Permissions & control → Video generation. It takes workspace files or public URLs as reference pictures, video and audio, makes clips up to 30 seconds, and has sound on by default. A member can also be made out of this model, so you can address it directly in a group chat. Test the address here.")
+                : t("This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.")}
           </div>
           <div className="row" style={{ marginTop: 8 }}>
             <button className="btn small" disabled={busy} onClick={checkVideo}>{busy ? t("Checking…") : t("Test the service")}</button>
