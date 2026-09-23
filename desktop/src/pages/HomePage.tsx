@@ -82,6 +82,10 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     const dir = await window.teamAgent?.pickFolder?.();
     if (dir) setWorkspace(dir);
   };
+  // The folder chooser is a native dialog, so it only exists inside the desktop shell. Without it
+  // the button is not offered at all — the established rule in this app — rather than sitting
+  // there doing nothing when the page is opened in a browser.
+  const canPickFolder = !!window.teamAgent?.pickFolder;
 
   const start = async () => {
     const task = text.trim();
@@ -129,7 +133,9 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
               <span className="ng-path" title={workspace || undefined}>
                 {workspace || t("Managed by the app, under its own data folder")}
               </span>
-              <button className="btn small" onClick={() => void chooseFolder()}>{t("Choose folder")}</button>
+              {canPickFolder && (
+                <button className="btn small" onClick={() => void chooseFolder()}>{t("Choose folder")}</button>
+              )}
               {workspace !== "" && (
                 <button className="btn small" onClick={() => setWorkspace("")} title={t("Go back to the folder the app manages")}>
                   {t("Use the default")}

@@ -65,6 +65,9 @@ export default function WorkspacePanel({ gid, onClose }: { gid: string; onClose:
     const dir = await window.teamAgent?.pickFolder?.();
     if (dir) await setWorkspace(dir);
   };
+  // Only the desktop shell has a native folder dialog; in a browser the button is not drawn at all
+  // rather than left there doing nothing.
+  const canPickFolder = !!window.teamAgent?.pickFolder;
 
   const save = async (path: string, name: string) => {
     try {
@@ -104,9 +107,11 @@ export default function WorkspacePanel({ gid, onClose }: { gid: string; onClose:
               ? t("A folder you picked — the members work in it directly.")
               : t("Managed by the app. Pick a folder of your own to have the members work in it instead.")}
           </span>
-          <button className="btn small" disabled={busy} onClick={() => void choose()}>
-            <FolderTree size={13} /> {t("Choose folder")}
-          </button>
+          {canPickFolder && (
+            <button className="btn small" disabled={busy} onClick={() => void choose()}>
+              <FolderTree size={13} /> {t("Choose folder")}
+            </button>
+          )}
           {view?.managed === false && (
             <button className="btn small" disabled={busy} onClick={() => void setWorkspace("")}>
               {t("Use the default")}
