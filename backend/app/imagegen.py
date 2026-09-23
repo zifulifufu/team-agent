@@ -49,6 +49,12 @@ SIZES = ("1024x1024", "1536x1024", "1024x1536")
 DEFAULT_SIZE = "1024x1024"
 DEFAULT_MODEL = "gpt-image-1"
 
+# What a picture prompt has to contain, for the step that writes one out of a group's conversation
+# (`orchestrator._media_prompt`). The opposite of a chat answer: no explanation, no request.
+PROMPT_NOTE = ("Describe the picture itself — subject, composition, style, lighting, and any text "
+               "that must appear in it.")
+PROMPT_NOTE_ZH = "描述画面本身 —— 主体、构图、风格、光线,以及必须出现在画面里的文字。"
+
 SUBMIT_TIMEOUT = 120.0
 DOWNLOAD_TIMEOUT = 120.0
 

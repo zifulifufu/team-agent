@@ -25,6 +25,9 @@ from tests.test_ark_video import MODEL, FakeArk
 from tests.test_collab import Collector, setup
 
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
+# What the prompt-writing model answers in these tests, so "did the generator get the written prompt
+# rather than the raw sentence" is a one-line assertion.
+WRITTEN = "第一人称手持镜头:手摘下一颗带晨露的红苹果,投入雪克杯用力摇晃;听到摇晃声与轻快鼓点"
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +64,9 @@ def studio(store, make_router, ark_call):
     model = store.list_provider_models(prov["id"])[0]
     member = store.ensure_model_agent(model["id"])
     group = store.create_group("生成组", member["id"], [member["id"]])
-    fake = FakeLLM(default="never called")
+    # The one model call in this path is the prompt writer, so the fake's default answer *is* the
+    # prompt the generator should end up with.
+    fake = FakeLLM(default=WRITTEN)
     orch, _ = setup(store, make_router, fake)
     return orch, store, group, member, prov, fake
 
@@ -140,18 +145,102 @@ def test_the_api_offers_them_and_accepts_one_as_a_member(tmp_path):
 
 
 # ------------------------------------------------------------------ the turn it gets
-async def test_the_member_runs_the_generator_with_the_users_own_words(studio, ark_call):
+async def test_the_prompt_is_written_from_the_conversation_not_lifted_from_the_sentence(studio, ark_call):
+    """The whole point of the member being *in* the group: you discuss the clip, then say "make that".
+
+    Handing the generator only the last sentence throws away what the discussion produced, so a chat
+    model turns the conversation into a prompt first — and the assertion is that the generator got
+    *that*, not the sentence.
+    """
     orch, store, group, member, prov, fake = studio
+    srv = ark_call()
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 按刚才商量的做")
+
+    assert saved is not None and "Seedance" in saved["content"]
+    assert srv.payloads[0]["content"][0]["text"] == WRITTEN
+    assert fake.calls, "the conversation was read by a model before the generator ran"
+    clips = list((Path(store.data_dir) / "workspaces" / group["id"] / "video").glob("*.mp4"))
+    assert len(clips) == 1
+
+
+async def test_the_writer_sees_what_the_members_concluded(studio, ark_call):
+    """Not just the last line: the earlier speakers, what they settled on, and which reference
+    material the generator is about to receive."""
+    orch, store, group, member, prov, fake = studio
+    srv = ark_call()
+    store.add_message(group["id"], "agent", "someone", "小助",
+                      "结论:走第一人称视角，用「苹苹安安」限定款，尾帧定格在产品图上。")
+    before = len(fake.calls)
+
+    _c, _saved, _ends = await speak(orch, group, f"@{member['name']} 就按这个来")
+
+    sent = fake.calls[before][1]
+    text = "\n".join(str(m.get("content") or "") for m in sent)
+    assert "苹苹安安" in text and "第一人称" in text, "the conversation reached the writer"
+    assert "就按这个来" in text, "and so did the instruction"
+    assert "Seedance" in text, "and which model it is writing for"
+    assert srv.payloads[0]["content"][0]["text"] == WRITTEN
+
+
+async def test_the_writer_is_told_what_this_provider_wants(studio, ark_call):
+    """A prompt for Seedance is not a prompt for H3 — the conventions differ, and they are the one
+    thing a generic writer cannot guess."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+
+    await speak(orch, group, f"@{member['name']} 做个广告")
+
+    system = str(fake.calls[0][1][0]["content"])
+    assert "Seedance 2.5" in system and "@图片1" in system
+    assert "no preamble" in system, "and that only the prompt may come back"
+
+
+async def test_a_prompt_wrapped_in_packaging_is_cleaned_up(studio, ark_call):
+    """A model that answers with a fenced block and a closing offer is the common case, and none of
+    that packaging belongs in a video model's text field."""
+    orch, store, group, member, prov, fake = studio
+    fake.default = "```\n" + WRITTEN + "\n```\n\n需要我调整吗？"
+    srv = ark_call()
+
+    await speak(orch, group, f"@{member['name']} 做个广告")
+
+    assert srv.payloads[0]["content"][0]["text"] == WRITTEN
+
+
+async def test_a_generation_still_happens_when_nothing_can_read_the_conversation(store, make_router, ark_call):
+    """The writer is a nicety, not a dependency. With every chat model down, the clip is still made
+    from the sentence as written — and the message says so, because "the clip ignored the
+    discussion" and "there was no model to read it" look identical from outside.
+    """
+    store.update_settings({"video_enabled": True, "video_timeout": 30, "video_max_seconds": 30,
+                           "video_max_mb": 8})
+    prov = store.add_provider_from_preset("doubao-seedance", api_key="sk-ark-123456")
+    member = store.ensure_model_agent(store.list_provider_models(prov["id"])[0]["id"])
+    group = store.create_group("生成组", member["id"], [member["id"]])
+    orch, _ = setup(store, make_router, FakeLLM(default=RuntimeError("every model is down")))
     srv = ark_call()
 
     _c, saved, _ends = await speak(orch, group, f"@{member['name']} 一杯苹果果茶的广告")
 
-    assert saved is not None and "Seedance" in saved["content"]
-    assert srv.payloads[0]["content"][0]["text"] == "一杯苹果果茶的广告", \
-        "the prompt is the user's sentence, with the name taken out"
-    assert fake.calls == [], "no language model takes part in this turn"
-    clips = list((Path(store.data_dir) / "workspaces" / group["id"] / "video").glob("*.mp4"))
-    assert len(clips) == 1
+    assert saved is not None
+    assert srv.payloads[0]["content"][0]["text"] == "一杯苹果果茶的广告"
+    assert "No chat model was available" in saved["content"], saved["content"]
+
+
+async def test_a_model_that_answers_with_nothing_falls_back_too(studio, ark_call):
+    """A whitespace-only answer is not a prompt, and the router refuses to pretend otherwise (it
+    raises "the model returned nothing"), so this is the same fallback path as every model being
+    down — which is what the assertion pins, rather than a branch of my own that no input reaches.
+    """
+    orch, store, group, member, prov, fake = studio
+    fake.default = "   "
+    srv = ark_call()
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 一只猫在键盘上睡着")
+
+    assert srv.payloads[0]["content"][0]["text"] == "一只猫在键盘上睡着"
+    assert saved is not None and "No chat model was available" in saved["content"]
 
 
 async def test_the_clip_is_offered_the_same_way_a_tool_call_offers_one(studio, ark_call):

@@ -84,7 +84,7 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Area | What you get |
 | --- | --- |
 | Group chat | Members, a host, `@`-hand-off, role statements, and a live task board; a group chat is created by **picking its workspace and then its members**, and both stay editable |
-| Generating members | A video or image model can join a group as a member of its own: **address it and what you wrote is the prompt**, and the result comes back as a file. It does not chat, plan or hand off |
+| Generating members | A video or image model can join a group as a member of its own: **discuss the clip with everybody, then say "make that"** — a chat model reads the conversation into one prompt and hands it over, and the result comes back as a file. It does not chat, plan or hand off itself |
 | Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
@@ -101,6 +101,10 @@ to keep it that way, and removing that variable is what makes the real keychain 
 ## Security
 
 - The backend listens on `127.0.0.1` only, and every request has to carry a token generated at startup.
+- The window (Electron's renderer) runs under a strict CSP: no remote scripts or styles, and only
+  the local API is reachable. Pictures and clips are shown from `blob:` URLs — the bytes are fetched
+  with the app token first — so `blob:` is allowed for those two media types. Dropping it silently
+  turns every image and every clip into something that cannot load.
 - API keys and the GitHub token are kept in the **system keychain**; the database holds only a reference.
 - Backups, exports and API responses never contain plaintext keys.
 - **No automatic outbound calls**: update checks are off by default.
@@ -475,10 +479,17 @@ image model can also **be** a member: the member adder has a **Generating member
 every enabled model that generates — including the drawing models a gateway reports under its own key
 (the eleven `*-image` ones on MetaChat's OpenAI-compatible address, for instance).
 
-- **Address it, and what you wrote is the prompt.** `@name a tea advert shot in first person` — your
-  sentence, minus the name, goes to the model as its prompt, **with no language model in between**:
-  that saves a call and avoids having your own words rewritten. The result lands in the group's
-  workspace and appears exactly as a tool call does — the same pill, the same player.
+- **It reads the whole discussion, not just your last sentence.** That is what the member being *in*
+  the group is for: "everybody agrees on this approach → `@name just do that`" is the normal way to
+  use it, and a chat model turns the recent conversation (the conclusions the members reached, the
+  style, the length, the wording they settled on) into **one** generation prompt before the generator
+  runs. An instruction that is already a complete description is kept as it is — the writer is told
+  not to rewrite something already written — and when no chat model is available the run still
+  happens on your own words, with a line in the message saying which prompt was used. The writer is
+  also told **this provider's own conventions** (Seedance wants references named by position,
+  @图片1, and makes sound by default; H3 wants shots and then sound), which is the one thing it
+  cannot guess. The result lands in the group's workspace and appears exactly as a tool call does —
+  the same pill, the same player.
 - **It runs on the provider it came from**, so the group's own video provider setting cannot redirect
   a member that names its own model.
 - **The master switches still govern it**: with *Permissions & control → Video generation* (or →

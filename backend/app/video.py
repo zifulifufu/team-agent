@@ -356,6 +356,41 @@ def metachat_payload(
 
 ARK_ADAPTIVE = "adaptive"
 
+# What each provider's own documentation asks a prompt to look like.
+#
+# This is the same knowledge the tool description carries, kept separately because the two are read
+# by different models: the tool spec is handed to a model that is *calling* the tool, while this is
+# handed to the one that is *writing the prompt* out of a group's conversation
+# (`orchestrator._media_prompt`). Folding them together would make the second read a lot of
+# parameter documentation it has no use for.
+PROMPT_NOTES: dict[str, tuple[str, str]] = {
+    "minimax_video": (
+        "Write it the way MiniMax H3 is trained to read it: name the shots, then the sound, in the "
+        "form \"[Shot 1] … [Shot 2] … overall_soundscape: … non_diegetic_music: …\".",
+        "按 MiniMax H3 被训练来读的格式写:先分镜,再说声音,用「[Shot 1] … [Shot 2] … "
+        "overall_soundscape: … non_diegetic_music: …」这种形式。",
+    ),
+    "metachat_media": (
+        "That service generates only from a single reference image and its videos carry no audio, so "
+        "describe the motion and the camera; do not write dialogue.",
+        "那个服务只按一张参考图生成,视频也没有音轨,所以要描述动作和运镜,不要写对白。",
+    ),
+    "ark_video": (
+        "Seedance 2.5 reads a description of the shots and generates sound by default, so say what "
+        "should be heard as well as what should be seen. If the material it is given should be used, "
+        "refer to it by position (@图片1, @视频1, @音频1).",
+        "Seedance 2.5 读的是对镜头的描述,而且默认生成声音,所以既要写看到的,也要写听到的。"
+        "如果要用到随附的素材,按位置指代它们(@图片1、@视频1、@音频1)。",
+    ),
+}
+
+
+def prompt_note(kind: str, lang: str = "en") -> str:
+    """What to tell the prompt writer about one provider. Empty for a kind we know nothing about —
+    better a missing sentence than an invented convention."""
+    en, zh = PROMPT_NOTES.get(kind or "", ("", ""))
+    return zh if lang == "zh" else en
+
 
 def ark_ratio(ratio: str, *, keyframe: bool) -> tuple[str, bool]:
     """(ratio to send, whether it had to be changed).

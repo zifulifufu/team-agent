@@ -140,12 +140,12 @@ def mentions_all(text: str) -> bool:
 def _strip_mentions(text: str, members: list[dict], speaker_id: str) -> str:
     """The sentence with every member's name taken out.
 
-    For a generating member the sentence *is* the prompt, and a name inside a prompt is not
-    harmless: "@Seedance 画一只猫" left whole gets "Seedance" written into the picture. Every
-    member's name and alias is removed rather than only the addressee's, because "@A 和 @B 各画一张"
-    reaches both of them and neither should see the other's name in its prompt. Matching is
-    case-insensitive and anchored on the `@`, exactly as `find_mentions` does, so a name that
-    happens to be an ordinary word in the sentence is left alone.
+    For a generating member the sentence is the instruction, and a name inside it is not harmless:
+    "@Seedance 画一只猫" left whole gets "Seedance" written into the picture. Every member's name and
+    alias is removed rather than only the addressee's, because "@A 和 @B 各画一张" reaches both of
+    them and neither should see the other's name in its prompt. Matching is case-insensitive and
+    anchored on the `@`, exactly as `find_mentions` does, so a name that happens to be an ordinary
+    word in the sentence is left alone.
     """
     out = text or ""
     for m in members:
@@ -154,6 +154,45 @@ def _strip_mentions(text: str, members: list[dict], speaker_id: str) -> str:
     # A trailing "…，" left behind by a removed mention reads as if the sender trailed off.
     out = re.sub(r"^[\s，,。.、:：;；!?！？]+", "", out)
     return " ".join(out.split()).strip()
+
+
+def _clean_prompt(text: str) -> str:
+    """The prompt out of a model's answer, with the packaging taken off.
+
+    Models like to answer with a fenced block, or with "Here is the prompt:", or with a closing
+    offer to change it. None of that belongs in a video model's text field, and taking it off here
+    costs less than explaining to the user afterwards why their clip has `**` in the middle of it.
+
+    A fenced block wins outright: if one is there, its contents are the answer and everything around
+    it (including the offer to adjust it) is dropped, which is the one case where the model has
+    already marked the boundary itself.
+    """
+    s = (text or "").strip()
+    fenced = re.search(r"```[A-Za-z0-9_+-]*[ \t]*\r?\n(.*?)```", s, re.S)
+    if fenced:
+        s = fenced.group(1)
+    else:
+        s = re.sub(r"^```[A-Za-z0-9_+-]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    s = re.sub(r"^(?:prompt|提示词|生成提示词|视频提示词)\s*[:：]\s*", "", s.strip(), flags=re.I)
+    s = s.strip()
+    # A whole answer wrapped in one pair of quotes is packaging; a quote *inside* a prompt (someone's
+    # line of dialogue) is content, and only the outermost pair is looked at.
+    for a, b in (('"', '"'), ("“", "”"), ("「", "」")):
+        if len(s) > 1 and s.startswith(a) and s.endswith(b):
+            s = s[1:-1].strip()
+    # The last defensive step, and the one that saves a whole render: a model that answered with
+    # `{"prompt": "…"}` would otherwise have that JSON filmed literally.
+    if s.startswith("{"):
+        try:
+            got = json.loads(s)
+        except ValueError:
+            got = None
+        if isinstance(got, dict):
+            for key in ("prompt", "text", "content", "提示词"):
+                if isinstance(got.get(key), str) and got[key].strip():
+                    return got[key].strip()
+    return s.strip()
 
 
 # The host says this when it produced a plan but no prose. Kept as a pair so the value
@@ -1258,11 +1297,20 @@ class Orchestrator:
         self, group: dict, agent: dict, members: list[dict], emit: Emit, run: RunState, *, mid: str,
         extra_user: str | None, extra_meta: dict | None, empty_fallback: str,
     ) -> TurnOut | None:
-        """A member that *is* a generator speaks: its one tool is run with the user's own sentence.
+        """A member that *is* a generator speaks: its one tool is run with a prompt built from the
+        conversation.
 
-        No language model is involved anywhere in this path, and that is the design rather than a
-        shortcut: the sentence somebody types at "@Seedance 生成一段…" *is* the prompt, and putting
-        a model in between would rewrite it — paying for a paraphrase of something already written.
+        The prompt is written by a chat model that reads what the group has been saying — the point
+        of the member being *in* the group is that you can discuss a clip with everybody first and
+        then say "make that". Handing the generator only the last sentence would throw away exactly
+        the part the discussion produced, and members do not write their conclusions in a form a
+        video model can consume.
+
+        It used to be the opposite: the literal sentence, with no model in between, on the argument
+        that anything else rewrites what the user already wrote. That argument holds for a complete,
+        hand-written prompt and fails for "按刚才说的做" — so the writer is told to leave a prompt
+        that is already complete alone, and the raw sentence is still the fallback when no chat model
+        can be reached (the generation goes ahead either way, and the message says what was used).
 
         Everything else is the same as any other member's turn, because it runs the same tool: the
         engine's own switches gate it, the argument validation is the one in `video.py`, the file
@@ -1305,21 +1353,26 @@ class Orchestrator:
         if blocked:
             return await fail(blocked)
 
-        # The sentence that caused this turn. `extra_user` is what a plan handed this member; with
-        # none, it is what the user typed. Mentions come out because "@Seedance 画一只猫" is not a
-        # prompt — "画一只猫" is, and leaving the name in gets it drawn into the picture.
+        # What caused this turn. `extra_user` is what a plan handed this member; with none, it is
+        # what the user typed. Mentions come out because "@Seedance 画一只猫" is not an instruction —
+        # "画一只猫" is, and leaving the name in gets it written into the picture.
         source = (extra_user or run.user_text or "").strip()
-        prompt = _strip_mentions(source, members, agent["id"])
-        if not prompt:
+        instruction = _strip_mentions(source, members, agent["id"])
+        if not instruction:
             return await fail(i18n.pick_now(
                 f"\"{name}\" had nothing to work from: address it with what you want, in the same "
                 "message (\"@name what to make\").",
                 f"「{name}」没有可用的内容:请在点名它的同一条消息里写清楚要生成什么"
                 "(「@名字 要生成什么」)。"))
 
-        args: dict = {"prompt": prompt}
+        # References first: the writer is told what the generator will receive, so it can name the
+        # material by position (@图片1) instead of describing pictures it has never seen.
+        args: dict = {}
         if use == "video":
             args.update(self._media_refs(group, run))
+        prompt, note = await self._media_prompt(group, members, run, instruction,
+                                                use=use, target=target, refs=args)
+        args["prompt"] = prompt
 
         ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
         for p in ctx.problems:
@@ -1347,6 +1400,10 @@ class Orchestrator:
         await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
 
         content = oc.text.strip() or empty_fallback or i18n.pick_now("(nothing was generated)", "(没有生成内容)")
+        if note:
+            # Said out loud rather than logged: which prompt was used is the difference between "the
+            # clip ignored the discussion" and "there was no model available to read it".
+            content = f"{content}\n\n{note}"
         # The same reply gate every other member answers to: a bad prompt can be stopped from
         # becoming part of the record whatever produced it.
         if self.hooks:
@@ -1370,6 +1427,116 @@ class Orchestrator:
             "chars": len(content), "tools": [tool], "ok": oc.ok, "ms": oc.ms,
         })
         return TurnOut(content, content, saved)
+
+    async def _media_prompt(
+        self, group: dict, members: list[dict], run: RunState, instruction: str, *,
+        use: str, target: dict, refs: dict,
+    ) -> tuple[str, str]:
+        """(the prompt to generate with, a note to show when it is not what we wanted).
+
+        The conversation is turned into a prompt by a chat model, because that is the step between
+        "the group discussed a clip" and "a video model can make it" — and because a group's
+        conclusions are written for people, not for a diffusion model. The writer sees the messages
+        (clipped with the same budgets as any other turn), the instruction that addressed this
+        member, and an inventory of what the generator is about to receive, so it can point at a
+        reference by position instead of describing a picture it cannot see.
+
+        It is told to leave an already-complete prompt alone: someone who pasted a hand-written,
+        shot-by-shot description means it, and paraphrasing that would be the same bug in the other
+        direction. When nothing can write one — every model down, or all of them answering with
+        nothing (the router raises rather than returning an empty string) — the raw instruction is
+        still good enough to generate with, so the run continues and the second element of the pair
+        says which one was used. There is deliberately no separate branch for "the answer was
+        empty": it cannot happen, and a branch that no input can reach is a branch no test covers.
+        """
+        provider = target["provider"]
+        model = target["model"]
+        rows = self.store.list_messages(group["id"])
+        cfg = self.store.get_settings()
+        budget = int(cfg["history_clip"])
+        limit = max(1, int(cfg["history_limit"]))
+        # Oldest-first, most recent kept: a discussion's conclusion is at the end. The plan board and
+        # system notes stay in — the board is where a plan's assigned wording lives, and "some tasks
+        # could not be done" is exactly what a generator should not be told to guess at.
+        recent = rows[-limit:]
+        convo = "\n\n".join(
+            f"[{m['sender_name'] or m['sender_type']}] {clip_middle(str(m['content'] or ''), budget)}"
+            for m in recent if str(m.get("content") or "").strip()
+        ) or i18n.pick_now("(no earlier messages)", "(前面没有其它消息)")
+        system = i18n.pick_now(
+            "You write one generation prompt for an AI model, from a group chat. "
+            f"The model is {model['model_name']} ({provider['name']}), and it makes "
+            f"{'video' if use == 'video' else 'an image'}. "
+            "Answer with the prompt itself and nothing else: no preamble, no explanation, no quotes, "
+            "no markdown, no code fences, no alternatives. Write it in the language of the "
+            "conversation. "
+            "The last thing in the message below is the instruction that asked for this; the rest is "
+            "what the group said before it. Build the prompt on what the conversation established — "
+            "the subject, the style, the mood, the length, and above all the conclusions the members "
+            "arrived at, including any wording they agreed on. If the instruction is already a "
+            "complete description, keep it as it is instead of rewriting it. Never invent facts "
+            "nobody mentioned. "
+            f"{video.prompt_note(provider['kind']) if use == 'video' else imagegen.PROMPT_NOTE}",
+            "你要根据一段群聊,为一个人工智能模型写一条生成提示词。"
+            f"那个模型是 {model['model_name']}({provider['name']}),它生成{'视频' if use == 'video' else '图片'}。"
+            "只回答提示词本身:不要开场白、不要解释、不要引号、不要 markdown、不要代码块、不要给多个备选。"
+            "用这段对话所用的语言来写。"
+            "下面最后一段是「要求这次生成」的那句话,前面的都是群里之前说过的内容。"
+            "提示词要建立在讨论已经确立的东西上 —— 主体、风格、氛围、时长,尤其是成员们商定的结论,"
+            "包括他们已经定下来的措辞。如果那句话本身就已经是一份完整的描述,那就原样保留,不要改写。"
+            "任何人没有提到过的事实都不要编。"
+            f"{video.prompt_note(provider['kind'], 'zh') if use == 'video' else imagegen.PROMPT_NOTE_ZH}",
+        )
+        inventory = self._refs_inventory(refs)
+        user = i18n.pick_now(
+            f"[Conversation so far]\n{convo}\n\n"
+            f"[The instruction that asked for this]\n{instruction}\n\n"
+            f"[What the generator will receive alongside your prompt]\n{inventory}",
+            f"【到目前为止的对话】\n{convo}\n\n"
+            f"【要求这次生成的那句话】\n{instruction}\n\n"
+            f"【生成器会和你写的提示词一起收到的东西】\n{inventory}",
+        )
+        try:
+            res = await self.router.complete([{"role": "system", "content": system},
+                                              {"role": "user", "content": user}])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — a missing writer must not cost the generation itself
+            self._notify("media.prompt", group["id"], group, {"ok": False, "error": type(e).__name__})
+            return instruction, i18n.pick_now(
+                "(No chat model was available to read the conversation, so the instruction above was "
+                f"used as the prompt as written. {type(e).__name__}: {e})",
+                f"(没有可用的对话模型来读这段讨论,所以直接把上面那句话当提示词用了。{type(e).__name__}: {e})",
+            )
+        text = _clean_prompt(res.text)
+        self._notify("media.prompt", group["id"], group,
+                     {"ok": True, "model": res.model_id, "chars": len(text),
+                      "fallback_from": res.fallback_from or ""})
+        return text, ""
+
+    @staticmethod
+    def _refs_inventory(refs: dict) -> str:
+        """What the generator is handed besides the prompt, described so the writer can name it.
+
+        Only what is true: the count, the kind, and the file names. The writer cannot see these
+        pictures, which is exactly why it is told it cannot — otherwise it will happily describe
+        them, and those invented words end up steering the generation.
+        """
+        order = {"reference_images": ("pictures", "图片"), "reference_videos": ("video clips", "视频"),
+                 "reference_audios": ("audio clips", "音频")}
+        lines = []
+        for key, (en, zh) in order.items():
+            got = list(refs.get(key) or [])
+            if got:
+                names = ", ".join(Path(str(g)).name for g in got)
+                lines.append(i18n.pick_now(
+                    f"{len(got)} {en}: {names} — name them by position (@图片1 / @视频1 / @音频1) "
+                    "if that helps.",
+                    f"{len(got)} 段{zh}:{names} —— 需要时按位置称它们为 @图片1 / @视频1 / @音频1。"))
+        return "\n".join(lines) or i18n.pick_now(
+            "Nothing — only your prompt. You cannot see any of the material the user may have "
+            "attached; do not describe it.",
+            "没有别的 —— 只有你写的提示词。用户可能附上的素材你看不到,不要描述它们。")
 
     def _media_refs(self, group: dict, run: RunState) -> dict:
         """The files on the user's message, as the reference arrays Ark takes.
