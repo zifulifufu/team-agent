@@ -17,7 +17,7 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
-from app import attachments, coderun, library
+from app import attachments, coderun, library, media, strengths, vision
 from app.main import create_app
 from app.orchestrator import Orchestrator
 from tests.conftest import FakeLLM
@@ -199,6 +199,22 @@ def test_a_document_attachment_reaches_the_model_as_text(store, make_router):
     assert "指标表.xlsx" in sent and "DNT | 45" in sent and "uploads/" in sent
 
 
+def test_a_document_with_no_text_layer_says_so_instead_of_arriving_empty(store, make_router):
+    """A scanned PDF used to reach the member as a bare name-and-size header, which reads like a
+    document whose contents were simply not worth quoting. The reader then discusses a report
+    nobody has seen — the same failure as a picture nobody could look at, one kind over."""
+    fake = FakeLLM(default="好")
+    orch, group = setup(store, make_router, fake)
+    scan = b"%PDF-1.7\n" + b"\x00" * 200          # a PDF with no text layer at all
+    row = _file_in_workspace(store, group["id"], "报告扫描件.pdf", scan)
+    assert not row.get("text"), "nothing was extracted, which is the case under test"
+
+    asyncio.run(orch.handle_user_message(group["id"], "看下附件", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "document"}]))
+    sent = member_call(fake)
+    assert "报告扫描件.pdf" in sent and "no text could be pulled out" in sent
+
+
 def test_a_picture_is_described_once_when_no_member_can_see_it(store, make_router):
     """The member's model is text-only, so a vision model looks instead — and the description is
     what the member reads. Described once: the second round re-uses it."""
@@ -265,6 +281,110 @@ def test_nothing_is_made_up_when_nobody_can_look_at_the_picture(store, make_rout
     sent = member_call(fake)
     assert "no model here can look at images" in sent
     assert "ollama pull" in sent, "the reader is told what to do about it, not just that it failed"
+
+
+# ------------------- a model that makes pictures is not a model that looks at pictures
+def test_a_generator_is_never_mistaken_for_a_model_that_can_see():
+    """`multimodal` reached every `gemini-*` from family reputation alone — including the ones that
+    only generate pictures. A gateway lists both kinds together, so "can see" has to be judged by
+    what the model is *for*, not by the family name."""
+    assert media.purpose_of("gemini-3.1-pro-preview") == "chat"
+    for name in ("gemini-3-pro-image", "gpt-image-2.5-sunburst", "flux-2-pro", "doubao-seedance-2-5"):
+        assert media.purpose_of(name) != "chat"
+        assert "multimodal" not in strengths.infer(name), f"{name} was tagged as able to see"
+    assert "multimodal" in strengths.infer("gemini-3.1-pro-preview")
+    # And the same judgement holds for a model that was *told* it is multimodal — a tag set by hand,
+    # or by an older build of this app.
+    assert not vision._can_see({"model_name": "gpt-image-2.5-sunburst", "strengths": ["multimodal"]})
+    assert not vision._can_see({"model_name": "whatever", "use": "image", "strengths": ["multimodal"]})
+    assert vision._can_see({"model_name": "qwen2.5vl:3b", "strengths": ["multimodal"], "is_local": True})
+
+
+def test_a_picture_is_still_read_when_the_picked_model_cannot_look(store, make_router):
+    """The pick used to be honoured to the letter: naming a model that cannot see meant *no* picture
+    in *any* group was read, with nothing on screen connecting the two. It now falls through to a
+    model that can — still local-first, so the picture does not leave the machine by accident."""
+    fake = FakeLLM(script={"ollama": "描述:一张化验单"}, default="好")
+    orch, group = setup(store, make_router, fake)
+    store.update_model("ollama/qwen2.5:7b", {"strengths": ["multimodal"]})
+    store.update_settings({"vision_model_id": "deepseek/deepseek-v4-pro"})   # a text model, not eyes
+    row = _file_in_workspace(store, group["id"], "化验单.png", PNG)
+
+    asyncio.run(orch.handle_user_message(group["id"], "看这张", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "image"}]))
+    assert len(vision_calls(fake)) == 1, "the picture was not looked at at all"
+    assert "描述:一张化验单" in member_call(fake)
+    assert store.get_attachment(row["id"])["vision_text"].startswith("描述:一张化验单")
+
+
+def test_a_cloud_model_picked_by_hand_still_needs_the_cloud_vision_switch(store, make_router):
+    """The switch says images never leave the machine while it is off. An explicitly named cloud
+    model used to slip past it — pick one model once and every picture in every group went to that
+    provider, with the switch off and nothing on screen saying so."""
+    fake = FakeLLM(script={"ollama": "描述:一张化验单"}, default="好")
+    orch, group = setup(store, make_router, fake)
+    store.update_settings({"vision_cloud": False})
+    store.update_model("ollama/qwen2.5:7b", {"strengths": ["multimodal"]})
+    store.update_model("deepseek/deepseek-flash", {"strengths": ["multimodal"]})   # a cloud one, by hand
+    store.update_settings({"vision_model_id": "deepseek/deepseek-flash"})
+    row = _file_in_workspace(store, group["id"], "化验单.png", PNG)
+
+    asyncio.run(orch.handle_user_message(group["id"], "看这张", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "image"}]))
+    assert not pictures_sent_to(fake, "deepseek"), "the picture went to the cloud anyway"
+    assert "描述:一张化验单" in member_call(fake), "the local model that can see was not used instead"
+
+    # ...and with the switch on, the model the user named is the one used.
+    fake.calls.clear()
+    store.update_settings({"vision_cloud": True})
+    row2 = _file_in_workspace(store, group["id"], "化验单2.png", PNG)
+    asyncio.run(orch.handle_user_message(group["id"], "再看这张", Collector(),
+                                         files=[{"id": row2["id"], "name": row2["name"], "kind": "image"}]))
+    assert pictures_sent_to(fake, "deepseek"), "the model the user named was not used"
+
+
+def test_the_picked_model_is_named_when_it_cannot_look(store, make_router):
+    """Told "no model here can look at images" while a model is selected for exactly that, the
+    reader has no way to find the setting that is wrong. So the sentence carries the name."""
+    fake = FakeLLM(default="好")
+    orch, group = setup(store, make_router, fake)
+    for m in store.list_models():
+        store.update_model(m["id"], {"strengths": ["chinese"]})
+    store.update_settings({"vision_model_id": "deepseek/deepseek-flash"})
+    row = _file_in_workspace(store, group["id"], "化验单.png", PNG)
+
+    asyncio.run(orch.handle_user_message(group["id"], "看这张", Collector(),
+                                         files=[{"id": row["id"], "name": row["name"], "kind": "image"}]))
+    sent = member_call(fake)
+    assert "deepseek-flash" in sent, "the model that was picked has to be named"
+    assert "Which model looks at pictures" in sent
+
+
+def test_a_model_that_cannot_look_is_reported_with_the_reason(store, make_router):
+    """`status` is what the settings page reads, so the mis-pick has to be visible there too — and
+    an image generator must never be offered as something that looks at pictures."""
+    router = make_router(FakeLLM())
+    store.update_settings({"vision_cloud": False})
+    # A name is all `purpose_of` needs, and this is the shape of the mistake: a gateway lists its
+    # chat models and its image models together, so `gpt-image-…` sits in the same list looking like
+    # a model that *handles* images.
+    store.add_model("ollama", "gpt-image-2")
+    store.update_settings({"vision_model_id": "ollama/gpt-image-2"})
+    st = vision.status(store, router)
+    assert st["configured_sees"] is False and st["configured_found"] is True
+    assert st["configured_name"] == "gpt-image-2"
+    assert "ollama/gpt-image-2" not in [c["id"] for c in st["candidates"]]
+    assert "makes pictures, not one that reads them" in vision.reason_missing(store, router)
+
+    # A name that is not a model here at all is a third case, with its own sentence.
+    store.update_settings({"vision_model_id": "deepseek/some-model-that-is-gone"})
+    st = vision.status(store, router)
+    assert st["configured_sees"] is False and st["configured_found"] is False
+    assert "is not here any more" in vision.reason_missing(store, router)
+
+    # Nothing picked = automatic, and that is *not* a misconfiguration.
+    store.update_settings({"vision_model_id": ""})
+    assert vision.status(store, router)["configured_sees"] is None
 
 
 def test_an_audio_file_is_named_and_not_pretended_to_have_been_read(store, make_router, monkeypatch):
@@ -353,6 +473,16 @@ def vision_calls(fake) -> list:
     """The calls made to the vision model. litellm spells a local Ollama chat call
     `ollama_chat/...`, so match loosely rather than pinning the provider spelling."""
     return [m for m in fake.calls if "ollama" in m[0]]
+
+
+def pictures_sent_to(fake, needle: str) -> list:
+    """Calls to one model that carried a picture as content parts.
+
+    Looking at the *parts* rather than at the model name is what makes "the picture did not leave
+    the machine" checkable: a member's own prompt mentions the file by name either way.
+    """
+    return [m for m, messages in fake.calls
+            if needle in m and "data:image" in str(messages)]
 
 
 def member_call(fake) -> str:

@@ -423,10 +423,22 @@ class Orchestrator:
                 text = await asyncio.to_thread(attachments_lib.text_of_file, workspace, path)
                 if row.get("id") and not str(row["id"]).startswith("file:"):
                     self.store.set_attachment_text(str(row["id"]), text or None)
-            body = clip_middle(text, self.REF_FILE_CHARS) if text else ""
+            if not text:
+                # Name, size and path only — the member is *told* that nothing was pulled out
+                # instead. A scanned PDF used to arrive as a bare header, which reads like a
+                # document whose contents were simply uninteresting; the reader has no way to know
+                # that the text was never there to read, and would confidently discuss a report
+                # nobody has seen.
+                return i18n.pick_now(
+                    f"{header} — a document, but no text could be pulled out of it on this machine "
+                    "(it may be a scan). The file itself is in the workspace if a member has the "
+                    "tools to open it.",
+                    f"{header} —— 文档,但本机没能从它里面抽出文字(可能是扫描件)。文件本身就在工作目录里,"
+                    "成员如果有工具可以自己打开它。"), []
+            body = clip_middle(text, self.REF_FILE_CHARS)
             tail = i18n.pick_now(" (excerpt; read the whole file in the workspace if you need it)",
                                  "(节选,需要完整内容可在工作目录里读)")
-            return f"{header}\n{body}{tail if text else ''}".strip(), []
+            return f"{header}\n{body}{tail}", []
         if kind == attachments_lib.IMAGE:
             return await self._visual_text(row, path, [path], workspace, sees, run, header, kind)
         if kind == attachments_lib.VIDEO:

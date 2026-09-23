@@ -191,7 +191,7 @@ Attachments are any kind of file. The kind is decided by the file's own bytes, n
 
 | Kind | What the members get |
 | --- | --- |
-| Documents (pdf, docx, xlsx, pptx, txt, md, csv, json, html) | The text, extracted on this machine when the file is uploaded. **No vision model is involved**, so this works with any model. |
+| Documents (pdf, docx, xlsx, pptx, txt, md, csv, json, html) | The text, extracted on this machine when the file is uploaded. **No vision model is involved**, so this works with any model. When nothing can be extracted (a scanned PDF) the members are told exactly that, rather than being handed a bare filename. |
 | Images | Given to the model directly when the answering member's model can see; otherwise described once by the *vision model*, and the description is what members read. |
 | Video | Duration and resolution, plus a few evenly spaced stills (ffmpeg), treated like images. The audio track is not transcribed. |
 | Audio | Transcribed on this machine when a transcriber is installed (see below). With none, named with its size and left in the workspace. |
@@ -204,6 +204,24 @@ machine. If no model here can look at a picture, the members are told exactly th
 cannot see it instead of inventing content, and the settings page tells you what to install
 (`ollama pull qwen2.5vl:3b` is a good local choice).
 
+*Settings → General → Which model looks at pictures* offers **only models that can really look**. A
+gateway lists its chat models and its **image generators** side by side, so `gpt-image-…` and
+`gemini-…-image` read like models that *handle* images; picking one of those used to mean **no picture
+in any group was ever read**. Three things now prevent that:
+
+* a model that only makes pictures never gets the `multimodal` tag, so it is not offered as eyes at
+  all — the judgement lives in one place (`media.purpose_of`, the same one that keeps generators out
+  of the member roster);
+* a pick that cannot look no longer turns vision off silently: the search falls through to a model
+  that can, still local-first and still gated by `vision_cloud`, so a wrong pick cannot send a picture
+  off the machine;
+* **cloud vision is the only thing that decides whether a picture may leave the machine** — a cloud
+  model chosen by hand needs that switch too. It used to be bypassed: name one cloud model once and
+  every picture in every group went to that provider while the switch still read "off";
+* when nothing can look, the sentence the members read **names the model** ("the model picked to look
+  at pictures (X) cannot look at images...") instead of the blanket "no model here can look at
+  images" — otherwise the reader stares at the model they just chose and cannot tell what to change.
+
 **Speech is the one kind that needs a program rather than a model.** Nothing is bundled and nothing
 is downloaded on your behalf: a whisper model is a few hundred megabytes, and fetching one silently
 while somebody waits for an answer is not a decision this app gets to make. If `mlx_whisper` or
@@ -211,7 +229,10 @@ while somebody waits for an answer is not a decision this app gets to make. If `
 you name any other transcriber — `{out}` is the folder for the text and `{audio}` marks where the
 file goes. The words are read once and remembered on the attachment. With nothing installed, the
 members are told the audio was not read, rather than being handed a summary of something nobody
-listened to.
+listened to. Note that a transcriber is found **by name** along PATH plus `/opt/homebrew/bin`,
+`/usr/local/bin`, `/usr/bin` and `/bin` — `pip install mlx-whisper` inside this app's own virtualenv
+puts it somewhere the app cannot see, so install it into one of those, or write the full path under
+*Transcribe audio*.
 
 Referencing something with `@` in the composer offers members, files, folders and documents, and
 inserts a token the backend understands:

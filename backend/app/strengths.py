@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .media import purpose_of
+
 # (id, English description). The order is the display order.
 TAGS: list[tuple[str, str]] = [
     ("writing", "Long-form writing, copy, polishing, tone control"),
@@ -167,6 +169,15 @@ def infer(model_id: str, entry: dict | None = None, *, is_local: bool = False) -
             for t in ts[:4]:
                 add(t, 2)
             break
+    # A model that only *makes* pictures does not look at them, and `multimodal` reaches one from
+    # reputation alone: every `gemini-*` is in that family, so `gemini-3-pro-image` and
+    # `gemini-3.1-flash-image` came out "can look at images" — as did every `gpt-image-*` under a
+    # provider whose listing calls them chat models. That is how a group's "vision model" ended up
+    # being an image generator, which quietly stopped every picture in every group from being read.
+    # `media.purpose_of` is the app's one judgement about what a model is for (the same one
+    # `store.list_models` uses to keep generators out of the member roster).
+    if purpose_of(name) != "chat":
+        w.pop("multimodal", None)
     if is_local:
         add("local", 10)
         if tier == "fast":  # "reasoning/long-context" claims on small models are not reliable

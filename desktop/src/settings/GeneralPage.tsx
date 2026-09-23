@@ -37,7 +37,7 @@ const MEM_ROWS: NumRow[] = [
 
 export default function GeneralPage() {
   const { t, pick } = useI18n();
-  const { settings, models } = useData();
+  const { settings } = useData();
   const { set, err } = useSettingsSaver();
   const [vision, setVision] = useState<VisionStatus | null>(null);
   const [caps, setCaps] = useState<{ audio_transcribe: boolean } | null>(null);
@@ -46,11 +46,24 @@ export default function GeneralPage() {
   useEffect(() => { void api.machineCapabilities().then(setCaps).catch(() => undefined); }, [settings?.transcribe_cmd]);
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
 
-  const visionText = !vision?.model_id
-    ? vision?.blocked_cloud
-      ? t("A model here can see, but sending images to a cloud model is switched off (see Permissions & control).")
-      : t("No model here can look at images. Pull a local vision model in Ollama (for example `ollama pull qwen2.5vl:3b`) and pick it above, or connect a cloud provider and allow cloud vision.")
-    : t("Attached pictures and video frames are looked at by this model; members whose own model cannot see get its description.");
+  // Only models that can really look are offered. The list used to be every enabled model, and a
+  // gateway lists chat models and image generators side by side under one name space — so
+  // `gpt-image-…` looked exactly like a model that handles images, and selecting it switched vision
+  // off for every group without a word. The current value is shown even when it cannot look: a
+  // `<select>` whose value is not among its options renders as if nothing were chosen, so a broken
+  // pick would silently turn into "automatic" the next time anything else on this page was saved.
+  const canLook = vision?.candidates ?? [];
+  const namedId = settings.vision_model_id;
+  const namedMissing = !!namedId && !canLook.some((m) => m.id === namedId);
+  const namedLabel = vision?.configured_name || namedId;
+
+  const visionText = vision?.configured_sees === false
+    ? t("The model picked above cannot look at images, so no picture in any group would be read while it is selected. Pick one that can see, or set this back to automatic.")
+    : !vision?.model_id
+      ? vision?.blocked_cloud
+        ? t("A model here can see, but sending images to a cloud model is switched off (see Permissions & control).")
+        : t("No model here can look at images. Pull a local vision model in Ollama (for example `ollama pull qwen2.5vl:3b`) and pick it above, or connect a cloud provider and allow cloud vision.")
+      : t("Attached pictures and video frames are looked at by this model; members whose own model cannot see get its description.");
 
   const numRows = (rows: NumRow[]) =>
     rows.map((r) => {
@@ -87,11 +100,18 @@ export default function GeneralPage() {
       <div className="sec">{t("Files in a group chat")}</div>
       <div className="card flush">
         {numRows(FILE_ROWS)}
-        <Row title={t("Which model looks at pictures")} desc={t("Attached images and video frames go to a model that can actually see them. Members whose own model cannot look get a description from this one instead — so a spreadsheet, a PDF or a picture all reach every member. Leave it on automatic to use any usable vision model, local first.", { name: vision?.model_name || "" })}>
+        <Row title={t("Which model looks at pictures")} desc={t("Attached images and video frames go to a model that can actually see them. Members whose own model cannot look get a description from this one instead — so a spreadsheet, a PDF or a picture all reach every member. Leave it on automatic to use any usable vision model, local first. Only models that can look are listed; a cloud one still needs cloud vision to be on, here and on the row below.")}>
           <select className="pm-text" value={settings.vision_model_id} aria-label={t("Which model looks at pictures")}
             onChange={(e) => void set({ vision_model_id: e.target.value })}>
             <option value="">{t("Automatic (local first)")}</option>
-            {models.filter((m) => m.enabled).map((m) => <option key={m.id} value={m.id}>{m.display_name || m.model_name}</option>)}
+            {canLook.map((m) => <option key={m.id} value={m.id}>{m.name}{m.is_local ? ` · ${t("local")}` : ""}</option>)}
+            {namedMissing && (
+              <option value={namedId}>
+                {vision?.configured_sees === false
+                  ? t("{name} — cannot look at images", { name: namedLabel })
+                  : t("{name} — not usable right now", { name: namedLabel })}
+              </option>
+            )}
           </select>
         </Row>
         <Row title={t("Vision model")} desc={visionText}>

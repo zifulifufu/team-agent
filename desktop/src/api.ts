@@ -565,6 +565,12 @@ export interface VisionStatus {
   model_name: string;
   is_local: boolean;
   configured: string;
+  /** The name of the model the setting names, for when it is one that cannot look. */
+  configured_name: string;
+  /** Whether that model still exists at all. */
+  configured_found: boolean;
+  /** null = automatic; false = the named model cannot look at images (an image generator). */
+  configured_sees: boolean | null;
   vision_cloud: boolean;
   candidates: { id: string; name: string; is_local: boolean }[];
   blocked_cloud: boolean;
