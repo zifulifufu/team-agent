@@ -23,6 +23,15 @@ Security conventions (consistent with the rest of the program):
     this program's token nor any model provider's key;
   * its output is only chat text and is never parsed as <plan> / <tool_call>.
 
+Signing in is the command-line engine's own business, and this is where users get stuck first: the
+WorkBuddy window being signed in does **not** sign the engine in, and the engine keeps a login of its
+own (it ships inside the app bundle, so `codebuddy` is usually not on the user's PATH either). Two
+routes work and both are named where the failure is shown (`explain_failure`): run the engine once in
+a terminal and type `/login`, or give the member its own `CODEBUDDY_API_KEY` in its settings — that
+one is handed over on every run by `build_env`, so it does not depend on how this program was
+started. Which key is used is decided in `ExternalRunner.own_key`. Nothing here ever reads the
+engine's account or session files.
+
 A second kind of external member talks to an OpenAI-compatible chat gateway instead of a command
 line — Cherry Studio's local API gateway, or MetaChat. See `ENGINES[...]["kind"] == "http"`. Such a
 member is a conversation partner only: it has no tools and no files, and its endpoint is called
@@ -38,6 +47,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sys
@@ -66,6 +76,11 @@ ENGINES: dict[str, dict] = {
         "role": "External agent · WorkBuddy",
         "role_zh": "外部智能体 · WorkBuddy",
         "tags": ["tool-use", "coding"],
+        # The engine signs in separately from the WorkBuddy window, so a member may be given a key of
+        # its own. The hint says what the key is *for* rather than pointing at a page we would be
+        # guessing at — the sign-in route in `explain_failure` needs no key at all.
+        "key_hint": "a WorkBuddy API key — with one the command line signs in by itself and needs no terminal login",
+        "key_hint_zh": "WorkBuddy 的 API key——填了它,命令行引擎自己就能登录,不必再去终端登录一次",
         "prompt": (
             "You are WorkBuddy (a desktop agent), taking part as a member of the group. You come "
             "with your own tools for reading files and searching, so you suit the parts that need "
@@ -251,7 +266,8 @@ DEFAULT_CFG: dict[str, Any] = {
     "handoff": True,            # when its reply @-mentions another member, whether that member speaks next
     "cli_path": "",             # cli engines: command-line location set by hand (empty = look it up automatically)
     "base_url": "",             # http engines: the OpenAI-compatible endpoint (empty = the engine's default)
-    "api_key": "",              # http engines: a keychain reference once saved (see secrets.py), never the key itself
+    "api_key": "",              # either kind: a keychain reference once saved (see secrets.py), never the key itself.
+                                # A command-line engine uses it as CODEBUDDY_API_KEY; a gateway as its bearer token.
 }
 
 READ_TOOLS = ("Read", "Grep", "Glob")
@@ -285,6 +301,15 @@ def _dir(path: str, what: str) -> str:
     if not p.is_dir():
         raise ValueError(i18n.pick_now(f"{what} does not exist, or is not a folder: {path}", f"{what}不存在或不是文件夹:{path}"))
     return str(p.resolve())
+
+
+def _key_value(value: Any) -> str:
+    """Validate an API key the user typed. Shared by both kinds of engine: a command-line engine
+takes one as its sign-in, a chat gateway as its bearer token."""
+    v = str(value or "").strip()
+    if len(v) > 300 or any(c in v for c in "\r\n"):
+        raise ValueError(i18n.pick_now("That API key does not look right", "这个 API key 看起来不对"))
+    return v
 
 
 def clean_cfg(raw: Any, base: dict | None = None, engine: str = "workbuddy",
@@ -345,6 +370,12 @@ and the key are not accepted at all because the provider already holds them."""
                     raise ValueError(i18n.pick_now("The command-line file name should start with codebuddy or cbc, so a different program is not picked by mistake", "命令行文件名应以 codebuddy 或 cbc 开头(避免误选成别的程序)"))
                 v = str(p.resolve())
             out["cli_path"] = v
+        # A command-line engine has no endpoint, but it can still be given a key — that is how a
+        # member is signed in without anyone touching a terminal, and it is the only route that does
+        # not depend on how this program was started. Same field, same keychain storage as a
+        # gateway's (`build_env` hands it over as CODEBUDDY_API_KEY).
+        if "api_key" in raw:
+            out["api_key"] = _key_value(raw["api_key"])
     else:
         # A chat gateway: an address to talk to and a key to talk with. Neither is required at save
         # time — an empty base_url means "the engine's own default" — but a half-filled address is
@@ -377,10 +408,7 @@ and the key are not accepted at all because the provider already holds them."""
                     raise ValueError(i18n.pick_now("That address is too long", "这个地址太长了"))
                 out["base_url"] = v
             if "api_key" in raw:
-                v = str(raw["api_key"] or "").strip()
-                if len(v) > 300 or any(c in v for c in "\r\n"):
-                    raise ValueError(i18n.pick_now("That API key does not look right", "这个 API key 看起来不对"))
-                out["api_key"] = v
+                out["api_key"] = _key_value(raw["api_key"])
     if out["level"] in ("edit", "full"):
         for d in [out["cwd"], *out["add_dirs"]]:
             if d and (Path(d) == Path(Path(d).anchor) or Path(d) == Path.home().resolve()):
@@ -461,6 +489,13 @@ settings, and the CODEBUDDY_* variables the user set themselves (desktop control
     for k, v in os.environ.items():
         if k.startswith("CODEBUDDY_") and not k.startswith(_ENV_DENY_PREFIX):
             env[k] = v
+    # A key filled in on this member's own settings beats whatever this program inherited: it is the
+    # user saying "use this one, for this member", and it is the only route that survives however
+    # this program was started (an app opened from Finder never sees a shell's exported variables,
+    # which is why `launchctl setenv` used to be the only way to make one reach here).
+    own = str(cfg.get("api_key") or "").strip()
+    if own:
+        env["CODEBUDDY_API_KEY"] = own
     env["CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"] = "1"   # a single run, leaving no background task behind
     env["TERM"] = "dumb"
     return env
@@ -772,27 +807,39 @@ def explain_http(status: int, detail: str, engine: str) -> str:
     return f"{msg} · {tail}" if tail else msg
 
 
-def explain_failure(rc: int | None, stderr: str, error: str) -> str:
+def explain_failure(rc: int | None, stderr: str, error: str, login_cmd: str = "") -> str:
+    """Turn a failed command-line run into something the user can act on.
+
+`login_cmd` is the exact command line this program would run (node plus the engine's path); it is
+quoted in the sign-in hint because the engine ships inside the app bundle and is usually *not* on the
+user's PATH — "run codebuddy in a terminal" is advice that fails at the first keystroke."""
     detail = scrub_secrets(re.sub(r"\s+", " ", (error or stderr or "").strip()))[-300:]
     msg = i18n.pick_now(f"The command-line engine did not return properly (exit code {rc})", f"命令行引擎没有正常返回(退出码 {rc})") if rc else i18n.pick_now("The command-line engine reported an error", "命令行引擎报告了错误")
     if detail:
         msg += f":{detail}"
     if AUTH_HINT.search(detail):
-        # Two routes, and the wording has to be honest about which one actually works here. The
-        # signed-in state the CLI keeps next to the user's home directory is independent of how this
-        # app was started, so it is the one to lead with. An *exported* variable is not: an app
-        # opened from Finder never sees a shell's environment, so "export CODEBUDDY_API_KEY and
-        # restart" is advice that silently does nothing — which is worse than no advice, because the
-        # user does it and comes back with the same error.
+        # The engine signs in by itself, and the WorkBuddy window being signed in does not sign it in.
+        # So the hint leads with the two routes that really work here, and every one of them is
+        # something the user can carry out as written: the sign-in is kept next to the user's home
+        # folder (independent of how this app was started), and a key given to the member is handed
+        # to the engine on every run.
+        run_it = (i18n.pick_now(f"In a terminal, run `{login_cmd}` and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
+                                f"在终端里运行 `{login_cmd}`,然后输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。")
+                  if login_cmd else
+                  i18n.pick_now("In a terminal, run the engine's command line once and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
+                                "在终端里运行一次这个引擎的命令行并输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。"))
+        routes = [x for x in (run_it, i18n.pick_now(
+            "Or paste a WorkBuddy API key into this member's settings: it is kept in the keychain and handed to the engine on every run, so there is nothing else to set up.",
+            "或者在这个成员的设置里填一个 WorkBuddy 的 API key:它存在钥匙串里,每次运行都会交给引擎,不需要再配置别的。")) if x]
         msg += i18n.pick_now(
-            ". It looks like you are not signed in: run codebuddy once in a terminal and type /login —"
-            " that is stored in your home folder, so it works however this app was started. (An API key"
-            " works too, but a variable exported in a shell never reaches an app opened from Finder: use"
-            " `launchctl setenv CODEBUDDY_API_KEY <key>` and then reopen this app.)",
-            "。看起来是没登录:在终端里运行一次 codebuddy 并输入 /login 即可 —— 登录信息存在你的主目录,"
-            "无论本程序怎么启动都有效。(用 CODEBUDDY_API_KEY 也可以,但在终端里 export 的变量到不了从访达"
-            "启动的 app:请用 `launchctl setenv CODEBUDDY_API_KEY <密钥>`,然后重开本程序。)",
-        )
+            " It looks like the command line is not signed in — the WorkBuddy window being signed in"
+            " does not sign it in. Either of these is enough: " + " ".join(routes)
+            + " (A key exported in a shell never reaches an app opened from Finder; if you prefer that"
+              " route, set it with `launchctl setenv CODEBUDDY_API_KEY …` and reopen this app.)",
+            "。看起来是这套命令行没有登录——WorkBuddy 窗口登录了,并不代表它也登录了。下面两条路任选一条即可:"
+            + "".join(routes)
+            + "(在终端里 export 的变量到不了从访达启动的 app;若你想用环境变量,请用 "
+              "`launchctl setenv CODEBUDDY_API_KEY …` 然后重开本程序。)")
     return msg
 
 
@@ -834,6 +881,25 @@ class ExternalRunner:
         if not self.store or not pid:
             return []
         return [m for m in self.store.list_models() if m["provider_id"] == pid and m["enabled"]]
+
+    def own_key(self, cfg: dict) -> str:
+        """The member's own API key, with a keychain reference turned back into the key itself.
+
+        The database holds only a reference (`keychain:…`), which the *store* resolves — and the API
+        layer does that for the interface, so a key looks fine there while the thing that actually
+        uses it gets the literal reference. That is how a gateway member could pass the dialog's test
+        and then send `Authorization: Bearer keychain:external:<id>` on a real turn: the same value
+        was read two different ways. Resolving once, here, keeps the two ends from disagreeing.
+
+        An engine bound to a provider is unaffected: its key comes from the provider (`resolve`), and
+        this field is empty for it.
+        """
+        stored = str(cfg.get("api_key") or "")
+        if not stored:
+            return ""
+        if self.store:
+            return str(self.store._secret_off(stored) or "")
+        return stored
 
     def resolve(self, engine: str, cfg: dict) -> tuple[dict, dict]:
         """Put together what the engine actually uses, plus what the interface should say about it.
@@ -1057,7 +1123,10 @@ class ExternalRunner:
         )
         out = parser.outcome()
         if parser.error or (rc not in (0, None) and not out.text):
-            raise ExternalError(explain_failure(rc, stderr, parser.error))
+            # The sign-in hint quotes this exact command line: the engine ships inside the app
+            # bundle, so a bare `codebuddy` is not something the user can run (`login_cmd`).
+            raise ExternalError(explain_failure(rc, stderr, parser.error,
+                                                login_cmd=" ".join(shlex.quote(a) for a in lc.argv)))
         if not out.text:
             raise ExternalError(i18n.pick_now("The engine returned nothing", "引擎没有返回任何内容") + (f":{stderr.strip()[-200:]}" if stderr.strip() else ""))
         return out
@@ -1066,6 +1135,10 @@ class ExternalRunner:
                   on_delta: DeltaFn | None = None, on_tool: ToolFn | None = None) -> ExtResult:
         engine = str(agent.get("engine") or "workbuddy")
         cfg = {**DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
+        # Whichever kind this is, the key that is actually used is resolved here: what the member
+        # stores is a reference, and a command-line engine needs the key itself to hand over
+        # (`build_env`), as much as a gateway needs it as its bearer token.
+        cfg["api_key"] = self.own_key(cfg)
         if kind_of(engine) == "http":
             # Address, key and model come from the provider this engine is bound to, not from the
             # member; one place decides that, so a saved member and a probe cannot disagree.
@@ -1140,6 +1213,7 @@ class ExternalRunner:
 network). A chat gateway: ask its /models endpoint, and with live=True send one short message
 (this calls a cloud model)."""
         cfg = {**DEFAULT_CFG, **cfg}
+        cfg["api_key"] = self.own_key(cfg)      # a reference in the database, the key here
         if kind_of(engine) == "http":
             cfg, binding = self.resolve(engine, cfg)
             return await self._probe_http(engine, cfg, live=live, binding=binding)

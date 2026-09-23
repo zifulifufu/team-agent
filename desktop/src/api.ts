@@ -164,7 +164,7 @@ export interface ExternalCfg {
   handoff: boolean;
   cli_path: string;                // command-line engines
   base_url: string;                // chat gateways: the OpenAI-compatible endpoint
-  api_key: string;                 // chat gateways: never sent back to the UI (it shows "***")
+  api_key: string;                 // either kind: never sent back to the UI (it shows "***")
   has_key?: boolean;               // whether a key is stored — the UI never sees the key itself
 }
 export interface ExternalProviderModel { name: string; display_name: string }

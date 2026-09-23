@@ -1611,6 +1611,9 @@ const ZH: Record<string, string> = {
   "It has no tools on this machine — it cannot read files, run commands or browse — so it takes part in the discussion, not in the work on your disk.": "它在这台机器上没有工具——读不了文件、不能执行命令、不能上网——所以它参与的是讨论,不是你磁盘上的活。",
   "API address (empty = the default for this engine)": "API 地址(留空 = 用这个引擎的默认地址)",
   "A key is stored already — leave this empty to keep it": "已经存过密钥了——留空就保持不变",
+  // 外部智能体:命令行引擎自己的登录(它和 WorkBuddy 窗口的登录是两回事)
+  "WorkBuddy API key (optional)": "WorkBuddy API key(可留空)",
+  "The command line signs in separately from the WorkBuddy window, which is why the connection test can say it is not signed in. Either this key or signing it in once with /login in a terminal is enough — a key filled in here is kept in the keychain and handed over on every run, so it does not depend on how this app was started.": "命令行引擎的登录和 WorkBuddy 窗口是分开的,所以测试连接会说「没登录」。填这里的密钥,或者在终端里给它登录一次(/login),有一个就够——填在这里的密钥存在钥匙串里,每次运行都会交给引擎,与本程序怎么启动无关。",
   "Where to get a key:": "密钥从哪来:",
   "Open the documentation": "打开文档",
   "Model to call (required: a gateway has to be told which model to run)": "要调用的模型(必填:网关需要知道运行哪个模型)",

@@ -54,6 +54,9 @@ def openai_like(reply: str = "来自云端", status: int = 200):
         app.state.hits += 1
         body = await request.json()
         app.state.last_body = body
+        # What the caller actually authenticated with: a test can only tell a resolved key from the
+        # keychain *reference* the database holds by looking here.
+        app.state.last_auth = request.headers.get("authorization")
         if status != 200:
             return JSONResponse({"error": {"message": "Authentication Fails", "type": "auth"}}, status_code=status)
 

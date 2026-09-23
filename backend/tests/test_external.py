@@ -22,6 +22,7 @@ from app import external
 from app.external import ExternalError, ExternalRunner, StreamParser, build_args, build_env, clean_cfg, find_launcher
 from app.main import create_app
 from tests.conftest import FakeLLM
+from tests.fakes import FakeServer, openai_like
 from tests.test_collab import Collector, setup
 
 FAKE = str(Path(__file__).parent / "codebuddy_fake.py")
@@ -127,6 +128,19 @@ def test_env_is_whitelisted(monkeypatch):
     assert "CODEBUDDY_COMPUTER_USE_ENABLED" not in env          # desktop control is never passed through
     assert env["HTTPS_PROXY"] == "http://127.0.0.1:7890"
     assert env["CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    # A key filled in on the member's own settings wins over the one this program inherited: it is
+    # the user saying "use this one, for this member", and it is the route that does not care how
+    # this program was started.
+    assert build_env(clean_cfg({"api_key": "member-key"}))["CODEBUDDY_API_KEY"] == "member-key"
+
+
+def test_a_command_line_member_can_be_given_its_own_key():
+    assert clean_cfg({})["api_key"] == ""
+    assert clean_cfg({"api_key": "  sk-abc  "})["api_key"] == "sk-abc"     # trimmed, ready to hand over
+    with pytest.raises(ValueError):
+        clean_cfg({"api_key": "line\nbreak"})
+    with pytest.raises(ValueError):
+        clean_cfg({"api_key": "x" * 400})
 
 
 def test_find_launcher_uses_custom_then_none(monkeypatch, tmp_path):
@@ -137,6 +151,65 @@ def test_find_launcher_uses_custom_then_none(monkeypatch, tmp_path):
     assert find_launcher() is None
     lc = find_launcher(FAKE)
     assert lc and lc.argv == [sys.executable, FAKE] and lc.via == "custom"
+
+
+# ------------------------------------------------------------ the member's own key
+class Keychain:
+    """Stands in for the store: the database keeps a reference, the keychain keeps the value."""
+
+    def __init__(self, value: str = "sk-the-real-one"):
+        self.value = value
+
+    def _secret_off(self, stored):
+        return self.value if str(stored or "").startswith("keychain:") else str(stored or "")
+
+
+def test_own_key_turns_a_reference_into_the_key():
+    """The two ends read the same field differently unless this is done in one place.
+
+    The API layer resolves the reference for the interface, so a key looks fine in the dialog; the
+    thing that actually *uses* it (a subprocess environment, an Authorization header) has to resolve
+    it too, or a member that passed the connection test sends `keychain:external:<id>` as its key.
+    """
+    runner = ExternalRunner(Path("/tmp/ta-keys"), store=Keychain())
+    assert runner.own_key({"api_key": "keychain:external:abc"}) == "sk-the-real-one"
+    assert runner.own_key({"api_key": "sk-plain"}) == "sk-plain"     # not every value is a reference
+    assert runner.own_key({}) == ""
+    # A runner built from a data directory alone (the tests, and anywhere that only needs a
+    # workspace) has no keychain to ask, so the value is passed on as it is.
+    assert ExternalRunner(Path("/tmp/ta-keys")).own_key({"api_key": "sk-plain"}) == "sk-plain"
+
+
+def test_the_engine_is_given_the_key_not_the_reference(store, fake_env, monkeypatch):
+    """End to end for a command-line member: what is handed to the engine is the key itself."""
+    seen: dict = {}
+    real = external.build_env
+
+    def spy(cfg, launcher=None):
+        seen.update(cfg)
+        return real(cfg, launcher)
+
+    monkeypatch.setattr(external, "build_env", spy)
+    a = store.create_agent("WorkBuddy", "🧰", "role", "p", None, [], [], engine="workbuddy",
+                           engine_cfg=clean_cfg({"api_key": "keychain:external:x"}))
+    asyncio.run(ExternalRunner(store.data_dir, store=Keychain()).run(
+        store.get_agent(a["id"]), system="SYS", prompt="hi"))
+    assert seen["api_key"] == "sk-the-real-one"
+    assert "CODEBUDDY_API_KEY" in json.loads(fake_env.read_text())["env"]   # the engine saw one
+
+
+def test_a_gateway_member_sends_the_key_not_the_reference(tmp_path):
+    """The same rule on the other kind of engine, over a real socket."""
+    app = openai_like("ok")
+    cfg = clean_cfg({"base_url": "http://127.0.0.1:1/v1", "api_key": "keychain:external:a1",
+                     "model": "gpt-5"}, engine="cherry")
+    with FakeServer(app) as srv:
+        cfg["base_url"] = srv.url + "/v1"
+        agent = {"id": "a1", "engine": "cherry", "engine_cfg": cfg}
+        out = asyncio.run(ExternalRunner(tmp_path / "data", store=Keychain()).run(
+            agent, system="", prompt="hi"))
+    assert out.text == "ok"
+    assert app.state.last_auth == "Bearer sk-the-real-one"
 
 
 # -------------------------------------------------------------- stream parsing
@@ -200,13 +273,22 @@ def test_parser_error_result_unknown_events_and_non_json_fallback():
 
 
 def test_explain_failure_adds_login_hint():
-    msg = external.explain_failure(1, "Error: not logged in", "")
-    assert "codebuddy" in msg
-    # The hint has to name a route that works for an app started from Finder: signing in once is
-    # stored next to the user's home directory, whereas a shell export never reaches a GUI app.
-    # "Export the variable and restart" was advice the user could carry out and still be stuck.
+    cmd = ("/Users/x/.workbuddy/binaries/node/versions/22.22.2-3/bin/node "
+           "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
+    msg = external.explain_failure(1, "Error: not logged in", "", login_cmd=cmd)
+    # The hint has to be runnable *as written*. The engine ships inside the app bundle and is not on
+    # the user's PATH, so "run codebuddy in a terminal" fails at the first keystroke: the command
+    # line this program would actually run is quoted instead.
+    assert cmd in msg
     assert "/login" in msg
+    # The second route needs no terminal at all, which is what a GUI-launched app wants.
+    assert "API key" in msg
+    # And the one non-obvious fact from before survives: a shell export reaches nothing here.
     assert "launchctl setenv" in msg
+    # With no command line to quote the route is still named, and the hint does not promise a
+    # command it does not have.
+    bare = external.explain_failure(1, "not logged in", "")
+    assert "/login" in bare and "In a terminal, run the engine's command line" in bare
     assert "not signed in" not in external.explain_failure(2, "segfault", "")
     assert "exit code 2" in external.explain_failure(2, "segfault", "")
 

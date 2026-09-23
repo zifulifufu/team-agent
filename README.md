@@ -251,6 +251,23 @@ is to keep the engine on a short leash. Either way its reply is chat text only �
 as `<plan>` or `<tool_call>` — and the subprocess gets an allow-listed environment with neither this
 app's token nor any provider's key.
 
+**Signing the engine in is a separate thing.** The WorkBuddy window being signed in does not sign the
+command line in, and that is the first failure most people meet: *the connection test* answers with
+the engine's own `Authentication required. Please use /login command to sign in to your account`.
+Either route fixes it, and the hint you get names both, with the exact command line this app would
+run (the engine ships inside the app bundle, so `codebuddy` is usually not on your `PATH`):
+
+* run that command line once in a terminal and type `/login` — the sign-in is kept in your home
+  folder, so it keeps working however this app was launched; or
+* paste a WorkBuddy API key into the member's own settings. It is kept in the keychain like every
+  other key this app stores, and handed to the engine as `CODEBUDDY_API_KEY` on every run, so it does
+  not depend on how this app was launched at all. A key filled in on the member wins over one this
+  app inherited from its environment.
+
+The same environment route still exists system-wide (`launchctl setenv CODEBUDDY_API_KEY …`, then
+reopen this app) — note that a variable merely *exported* in a shell never reaches an app opened from
+Finder. Nothing here ever reads the engine's own account or session files.
+
 ## Chat channels
 
 A group chat here can be reached from a chat platform, and what it produces can be pushed into one.

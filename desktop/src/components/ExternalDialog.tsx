@@ -91,7 +91,10 @@ export default function ExternalDialog(props: Props) {
                // "***" tells the backend to keep the key it already has
                api_key: c.api_key.trim() || (c.has_key ? "***" : "") };
     }
-    return { level: c.level, risk_ack: needAck ? ack : c.risk_ack, web: c.level === "full" ? false : c.web, cwd: c.cwd.trim(), handoff: c.handoff, model: c.model.trim(), timeout: c.timeout, cli_path: c.cli_path.trim(), native: c.native, max_turns: c.max_turns };
+    return { level: c.level, risk_ack: needAck ? ack : c.risk_ack, web: c.level === "full" ? false : c.web, cwd: c.cwd.trim(), handoff: c.handoff, model: c.model.trim(), timeout: c.timeout, cli_path: c.cli_path.trim(), native: c.native, max_turns: c.max_turns,
+             // Same field as a gateway's key, and the same "***" rule: it is handed to the engine as
+             // CODEBUDDY_API_KEY, which is a sign-in route that does not need a terminal at all.
+             api_key: c.api_key.trim() || (c.has_key ? "***" : "") };
   };
 
   const submit = () => run(async () => {
@@ -318,6 +321,16 @@ export default function ExternalDialog(props: Props) {
                 <label className="check">
                   <input type="checkbox" checked={cfg.handoff} onChange={(e) => set({ handoff: e.target.checked })} />
                   {t("When its reply @mentions another member, that member speaks next")}
+                </label>
+
+                <label className="field">
+                  <span>{t("WorkBuddy API key (optional)")}</span>
+                  <input type="password" value={cfg.api_key} onChange={(e) => set({ api_key: e.target.value })} spellCheck={false}
+                         placeholder={cfg.has_key ? t("A key is stored already — leave this empty to keep it") : ""} />
+                  {eng?.key_hint && <span className="muted small">{eng.key_hint}</span>}
+                  <span className="muted small">
+                    {t("The command line signs in separately from the WorkBuddy window, which is why the connection test can say it is not signed in. Either this key or signing it in once with /login in a terminal is enough — a key filled in here is kept in the keychain and handed over on every run, so it does not depend on how this app was started.")}
+                  </span>
                 </label>
 
                 <details className="ext-adv">
