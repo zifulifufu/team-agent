@@ -613,3 +613,60 @@ def test_a_partial_library_patch_keeps_the_rest_of_the_selection(tmp_path):
     st.update_group(g["id"], {"ext": {"plan": "off"}})
     assert st.get_group(g["id"])["ext"]["plan"] == "off"
     assert st.get_group(g["id"])["ext"]["library"]["mode"] == "selected"
+
+
+def test_a_stdio_server_gets_a_path_that_can_find_npx():
+    """The MCP SDK's default child environment is `HOME, LOGNAME, PATH, SHELL, TERM, USER`, and the
+    PATH in it is this app's. Started from the Finder that is launchd's minimal one, on which `npx`
+    and `uvx` are absent however well they are installed — so every `npx`-based server (Playwright,
+    mcp-remote, the whole `-y` family) answered `command not found`. Same trap as `coderun`'s, and
+    the same fix: the one list in `bindirs`."""
+    import os
+
+    from app import bindirs
+    from app.mcp_client import child_env
+
+    env = child_env()
+    assert env.get("HOME"), "the child still needs a home"
+    for folder in bindirs.TOOL_DIRS:
+        if os.path.isdir(folder):
+            assert folder in env["PATH"].split(":"), folder
+
+    # What a server is configured with is *added*, which is what the field means elsewhere in this
+    # app. It used to replace the environment outright, so a server with an env ran without HOME.
+    with_env = child_env({"MY_VALUE": "x"})
+    assert with_env["MY_VALUE"] == "x" and with_env["HOME"] == env["HOME"]
+
+
+def test_the_service_templates_are_shaped_for_how_they_actually_authenticate(client):
+    """The addresses in the gallery were each contacted before being written down, because a wrong
+    one is not a broken template — it is one that looks fine and can never work, discovered one
+    opaque failure at a time. What this pins is the *shape*: a command or an address, the
+    transport an address needs, and which of them genuinely need nothing filled in."""
+    tpl = {t["name"]: t for t in client.get("/api/mcp/templates").json()}
+
+    for name, t in tpl.items():
+        if t.get("url"):
+            assert t["url"].startswith(("http://", "https://")), name
+            assert t.get("transport") in ("http", "sse"), name
+        else:
+            assert t["command"] and t.get("args") is not None, name
+
+    # Context7 answers without any credential at all — verified against the live endpoint — so the
+    # entry must not ask for one. An entry that lists a header as "to be filled in" when it works
+    # without it teaches the reader that the form is guesswork.
+    ctx = tpl["Context7 (current library docs)"]
+    assert not ctx.get("headers") and not ctx["env_keys"]
+    assert ctx["url"] == "https://mcp.context7.com/mcp"
+
+    # Figma's local server is a loopback address with nothing to sign in to: nothing leaves the
+    # machine, which is the reason to prefer it over their hosted one.
+    fig = tpl["Figma (the design itself)"]
+    assert fig["url"].startswith("http://127.0.0.1:") and not fig.get("headers")
+
+    # The two OAuth-only ones go through the stdio bridge, because this app cannot drive a browser
+    # sign-in from inside a connection attempt.
+    for name in ("Vercel (deployments and logs)", "Linear (issues and projects)"):
+        assert tpl[name]["command"] == "npx"
+        assert "mcp-remote" in tpl[name]["args"], name
+        assert "OAuth" in tpl[name]["note"], name

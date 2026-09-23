@@ -79,20 +79,20 @@ def test_catalog_ships_no_third_party_source_metadata(store) -> None:
     """Gallery entries can only be built-in or user supplied: no more fields of the
     "third-party repo URL + licence" kind.
 
-    A URL is no longer forbidden outright, because a server reached over the network *is* an
-    address: the only links allowed in the catalog are the ones a built-in MCP template declares
-    for its own server, and each of those has to come with a transport. Anything else that
-    appears in the overview is still a leftover of the removed "clone a repo" mechanism.
+    A URL is no longer forbidden outright, because for an MCP server an address *is* the content —
+    both the one the entry connects to and, sometimes, an alternative the note names. So the rule
+    is now positional rather than absolute: links may appear inside the MCP templates and nowhere
+    else in the catalog. Anything outside them is still a leftover of the removed "clone a repo"
+    mechanism, which is what this guards.
     """
     ov = gallery.overview(store)
     blob = json.dumps(ov, ensure_ascii=False)
     assert "awesome-llm-apps" not in blob
 
-    for m in gallery.MCP_TEMPLATES:
-        if m.get("url"):
-            assert m.get("transport") in ("http", "sse"), m["key"]
-            assert m["url"] in blob, m["key"]
-            blob = blob.replace(m["url"], "")
+    allowed = re.findall(r"https?://[^\s\"'`)]+", json.dumps(gallery.MCP_TEMPLATES, ensure_ascii=False))
+    assert allowed, "the MCP templates do carry addresses; if not, this guard is not being exercised"
+    for url in allowed:
+        blob = blob.replace(url, "")
     assert "http://" not in blob and "https://" not in blob
     assert "shipped" not in ov and "commit" not in ov
 

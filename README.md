@@ -93,7 +93,7 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
-| Template gallery | 72 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
+| Template gallery | 81 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
 | Local models | Curated catalog, hardware fit estimate, discovery of new model versions |
 | External agents | Run a command-line agent as a group member, at read-only / edit / full permission, off by default |
 | Data | Backup and restore, chat export to Markdown, usage statistics |
@@ -298,6 +298,41 @@ Three rules, the same ones the rest of this app follows:
 > ChatCut Desktop registers its own **local** MCP server with the agents it detects — Claude Code
 > and Codex among them. Those config files are already readable here: pick the matching source under
 > *Settings → Importing from other AI apps* and you never have to know the address.
+
+## The everyday services, over MCP
+
+Template gallery → MCP carries this family too. **Every address in it was contacted before it was
+written down**: a wrong one is not a broken template, it is one that looks fine and can never work,
+and it tells you so one opaque failure at a time.
+
+| Service | Shape | What you have to supply |
+|---|---|---|
+| **Playwright** (browser automation) | local `npx` (`@playwright/mcp@latest`) | nothing. It is an execution-class tool, so you are asked before each call; the browser may need downloading on first use |
+| **Context7** (current library docs) | hosted HTTP, **no credential** | nothing at all — verified against the live endpoint. Add `Authorization: Bearer <key>` yourself only if the shared rate limit becomes a problem |
+| **GitHub** | hosted HTTP + `Authorization` | a PAT written as `Bearer ghp_…`. **Its scopes are what a member can then do**, so start read-only |
+| **Supabase** | hosted HTTP + `Authorization` | the address already asks for `read_only=true` — **keep it**, this server can write; add `&project_ref=<ref>` to scope it; the token goes in as `Bearer sbp_…` |
+| **Sentry** | hosted HTTP + `Authorization` | a user token written as **`Sentry-Bearer sntrys_…`** — deliberately not a plain `Bearer`, which Sentry reserves for OAuth tokens |
+| **Figma** (the design itself) | **local** `http://127.0.0.1:3845/mcp` | no account and nothing leaves the machine, but the Figma desktop app has to be running with its local MCP server switched on, and it needs a Dev or Full seat on a paid plan |
+| **Vercel** (deployments and logs) | `npx -y mcp-remote https://mcp.vercel.com` | one browser sign-in. Read-only server (and during its beta Vercel keeps an allowlist of clients) |
+| **Linear** (issues and projects) | `npx -y mcp-remote https://mcp.linear.app/mcp/readonly` | one browser sign-in. The address ends in `/readonly`; drop the suffix for write access |
+
+Three rules, the same as everywhere else here — but worth repeating at this spot:
+
+* **Everything is imported disabled.** This app will not enable one for you and will not fill in a key
+  for you (a key you paste in goes to the keychain, not to the database in the clear).
+* **For the OAuth ones (Vercel, Linear) the first Test will very likely time out** — that is the
+  browser page still being open. The token is cached in `~/.mcp-auth` afterwards, so pressing the same
+  button again connects. If it keeps failing, run `npx -y mcp-remote <address>` once in a terminal,
+  finish the sign-in there, and test again. A failed connection also quotes what the process printed,
+  which is usually the sign-in link it wants you to open.
+* ⚠️ **These servers can change things on your accounts.** GitHub's scopes, Supabase's `read_only` and
+  Linear's `/readonly` are switches worth actually reading; do not hand out write access to all of them
+  by reflex.
+
+One more thing worth knowing: this app appends its list of usual install prefixes to the environment an
+MCP server is started in, so `npx` and `uvx` are found even when the app was launched from the Finder.
+Without that the templates above fail with `command not found`, which looks exactly like "Node is not
+installed".
 
 ## External agents
 

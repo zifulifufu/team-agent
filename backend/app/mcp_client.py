@@ -14,12 +14,15 @@ from . import i18n
 
 import asyncio
 import json
+import os
 import re
 import tempfile
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
+
+from .bindirs import search_path
 
 
 def slug(text: str) -> str:
@@ -35,6 +38,32 @@ def pick_transport(cfg: dict) -> str:
         return "stdio"
     url = cfg.get("url") or ""
     return "sse" if re.search(r"/sse/?$", url) else "http"
+
+
+def child_env(configured: dict | None = None) -> dict[str, str]:
+    """The environment a stdio MCP server is started with.
+
+    The MCP SDK's own default is a deliberately short list — `HOME`, `LOGNAME`, `PATH`, `SHELL`,
+    `TERM`, `USER` — and `PATH` in it is *this app's*. Started from the Finder that is launchd's
+    minimal one, on which `npx` and `uvx` are absent however well Node and uv are installed, so
+    every `npx`-based server (Playwright, mcp-remote, context7) answered `command not found`. It is
+    the same trap `coderun` and `attachments` hit, and it is fixed the same way: the one list in
+    `bindirs`, appended to whatever PATH we inherited.
+
+    `configured` is layered *on top of* the default rather than replacing it, which is what the
+    field means everywhere else in this app — additions, not a fresh environment. (It used to
+    replace it, so a server with a configured env ran without even HOME.)
+    """
+    try:
+        from mcp.client.stdio import get_default_environment
+
+        env = dict(get_default_environment())
+    except Exception:  # noqa: BLE001 — an SDK that moved this must not stop every server starting
+        env = {k: os.environ[k] for k in ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
+               if k in os.environ}
+    env["PATH"] = search_path(env.get("PATH"))
+    env.update({str(k): str(v) for k, v in (configured or {}).items()})
+    return env
 
 
 def looks_relative(command: str) -> bool:
@@ -292,7 +321,8 @@ class _Conn:
                         # when the truth is "that path was never resolvable from here".
                         raise RuntimeError(i18n.pick_now(*relative_command_message(cfg["command"])))
                     params = StdioServerParameters(
-                        command=cfg["command"], args=list(cfg.get("args") or []), env=dict(cfg.get("env") or {}) or None
+                        command=cfg["command"], args=list(cfg.get("args") or []),
+                        env=child_env(cfg.get("env")),
                     )
                     streams = await stack.enter_async_context(stdio_client(params, errlog=self._errlog))
                 elif kind == "sse":

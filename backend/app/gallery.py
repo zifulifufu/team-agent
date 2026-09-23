@@ -60,7 +60,7 @@ from .tools import (
     write_skill,
 )
 
-CATALOG_VERSION = "2.1.0"      # semantic version of the catalog contents: bump it when templates are added or changed
+CATALOG_VERSION = "2.2.0"      # semantic version of the catalog contents: bump it when templates are added or changed
 SCHEMA_VERSION = 1            # file format version of custom templates
 CUSTOM_DIRNAME = "templates"  # subdirectory of the data directory holding custom templates
 CUSTOM_MAX_BYTES = 512 * 1024
@@ -79,6 +79,20 @@ PLACEHOLDER_DIR = "/path/to/allowed/dir"
 #     to fill in, exactly like `env_keys`. Anything whose *name* looks like a credential is
 #     moved to the keychain on the way in (`secrets.SENSITIVE_NAME`), so a Bearer token never
 #     lands in the database in the clear.
+# Signing in to a server that only speaks OAuth cannot happen inside a connection attempt: it needs a
+# person in a browser, and the very process this app started is the one that has to serve the
+# callback. So the route is `mcp-remote`, and the instruction worth spelling out is the terminal one.
+# Written once, because three entries need it and three slightly different paragraphs would be three
+# different pieces of advice about the same thing.
+_OAUTH_EN = (" Its sign-in is OAuth, which this app cannot drive for you: the first Test will very "
+             "likely time out while the browser page is still open. The token is then cached in "
+             "~/.mcp-auth, so pressing the same button again connects. If it keeps failing, run the "
+             "command above once in a terminal, finish the sign-in there, and test again here. "
+             "Requires Node.js.")
+_OAUTH_ZH = (" 它用 OAuth 登录,而这个流程本程序替不了你:第一次点「测试连接」很可能在浏览器页面还开着的时候就超时。"
+             "令牌会缓存在 ~/.mcp-auth,所以再点一次同一个按钮就通了。要是一直不行,就在终端里把上面那条命令跑一次,"
+             "在那边完成登录,再回来测试。需要 Node.js。")
+
 MCP_TEMPLATES: list[dict] = [
     # Pre-filled forms, not a one-click install: the command and arguments are yours to
     # check, and anything imported this way starts disabled. English is the canonical
@@ -187,6 +201,103 @@ MCP_TEMPLATES: list[dict] = [
                 "走的是 Resolve 自己的脚本 API。三个前提缺一不可:DaVinci Resolve Studio"
                 "(免费版根本没有对外脚本 API)、偏好设置 → 系统 → 常规 → 外部脚本 设为 Local、"
                 "以及按测试之前 Resolve 已经开着——连不上它,这个服务器会立刻退出。需要 uv(uvx)。"},
+
+    # --------------------------------------------------- the everyday services
+    # Every endpoint below was contacted before this list was written. That matters here more than
+    # anywhere else in this file: a wrong address is not a broken template, it is a template that
+    # looks fine and cannot ever work, and the reader finds out one opaque 404 at a time.
+    {"key": "github", "name": "GitHub", "name_zh": "GitHub",
+     "url": "https://api.githubcopilot.com/mcp/", "transport": "http",
+     "headers": {"Authorization": ""}, "env_keys": [],
+     "note": "Repositories, issues, pull requests and CI runs, through GitHub's own hosted server — "
+             "nothing to install. The header takes a personal access token written as `Bearer "
+             "ghp_…` (or `github_pat_…` for a fine-grained one). The scopes on that token are "
+             "exactly what a member can then do, so a read-only token is the sensible first try; "
+             "GitHub's own documentation also lists Copilot access as a prerequisite for parts of "
+             "the server. Their Docker image is the local alternative, but that is a second thing "
+             "to install.",
+     "note_zh": "仓库、issue、Pull Request、CI 运行情况,走 GitHub 自己的托管服务器,不需要在本机装东西。"
+                "请求头填一个个人访问令牌(PAT),写成 `Bearer ghp_…`(细粒度令牌是 `github_pat_…`)。"
+                "令牌上的权限范围就是成员之后能做的事,所以第一次建议只给只读权限;"
+                "GitHub 自己的文档还把「有 Copilot 访问权」列为这个服务器的部分能力的前提。"
+                "用他们的 Docker 镜像也可以在本机跑,但那是要多装一样东西。"},
+    {"key": "context7", "name": "Context7 (current library docs)", "name_zh": "Context7(库的当前文档)",
+     "url": "https://mcp.context7.com/mcp", "transport": "http",
+     # No header in the template on purpose: this one really does connect without a token, and an
+     # entry that lists a header as "to be filled in" would be asking for something it does not need.
+     # The note says where a key would go if the shared rate limit becomes a problem.
+     "env_keys": [],
+     "note": "Up-to-date documentation for a library, so a member stops inventing an API from its "
+             "training cutoff: it resolves a package name and returns current docs and code "
+             "examples. It needs no account and no token — leave it exactly as it is. If the shared "
+             "rate limit becomes a problem, take a key from context7.com/dashboard and add a request "
+             "header named Authorization with the value `Bearer <key>`.",
+     "note_zh": "某个库的当下文档,让成员不再凭训练截止时间里的记忆编 API:它先把包名解析成 "
+                "Context7 的库 id,再把当前文档和代码示例取回来。它不需要账号也不需要令牌,照原样导入就能用。"
+                "如果觉得公用速率上限不够,到 context7.com/dashboard 取一个 key,"
+                "再自己加一条名为 Authorization、值为 `Bearer <key>` 的请求头。"},
+    {"key": "supabase", "name": "Supabase (database and logs)", "name_zh": "Supabase(数据库与日志)",
+     "url": "https://mcp.supabase.com/mcp?read_only=true", "transport": "http",
+     "headers": {"Authorization": ""}, "env_keys": [],
+     "note": "Query a project's database, read logs and advisors, list migrations and edge "
+             "functions. The address above asks for read-only, which runs every query as a "
+             "read-only Postgres user — keep it, because this server can also write: execute_sql "
+             "and apply_migration change real data. Add `&project_ref=<ref>` to scope it to a "
+             "single project, and paste an access token as `Bearer sbp_…`. It also offers an OAuth "
+             "sign-in, which this app cannot drive, so the token is the route here.",
+     "note_zh": "查项目数据库、读日志与优化建议、看迁移记录与 Edge Functions。上面那个地址带 `read_only=true`,"
+                "所有查询都以只读 Postgres 用户执行——**建议留着**,因为这个服务器也能写:`execute_sql` 与 "
+                "`apply_migration` 会改真实数据。加上 `&project_ref=<ref>` 就只限于某一个项目;"
+                "访问令牌填成 `Bearer sbp_…`。它也提供 OAuth 登录,但那个流程本程序走不了,所以这里用令牌。"},
+    {"key": "vercel", "name": "Vercel (deployments and logs)", "name_zh": "Vercel(部署与日志)",
+     "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.vercel.com"], "env_keys": [],
+     "note": "Answer \"why did that deploy fail\" without opening the dashboard: read build and "
+             "runtime logs, list projects, teams and deployments, and search the docs. It is "
+             "read-only — it cannot deploy or change anything." + _OAUTH_EN +
+             " Vercel also keeps an allowlist of approved clients while this is in beta, so a "
+             "refusal that names the client is theirs rather than something wrong on this machine.",
+     "note_zh": "不开控制台就能回答「这次部署为什么失败」:读构建日志与运行日志、列出项目/团队/部署、搜官方文档。"
+                "它是只读的——不能部署,也改不了任何东西。" + _OAUTH_ZH +
+                "另外这个服务还在 beta,维护着一份「允许的客户端」名单;如果被拒时点名了客户端,那是他们的名单问题,"
+                "不是这台机器坏了。"},
+    {"key": "sentry", "name": "Sentry (errors and traces)", "name_zh": "Sentry(报错与链路)",
+     "url": "https://mcp.sentry.dev/mcp", "transport": "http",
+     "headers": {"Authorization": ""}, "env_keys": [],
+     "note": "From an error report to the code behind it: search issues and events, read stack "
+             "traces, traces and releases. The header takes a Sentry user auth token written as "
+             "`Sentry-Bearer sntrys_…` — deliberately not a plain `Bearer`, which Sentry reserves "
+             "for the OAuth tokens this app cannot obtain. (They also publish a local stdio server "
+             "that reads `SENTRY_ACCESS_TOKEN`, but its natural-language search needs its own model "
+             "key, so the hosted one is the shorter path.)",
+     "note_zh": "从一条报错走到它背后的代码:检索 issue 与事件、读堆栈、看 trace 与 release。"
+                "请求头填 Sentry 的用户令牌,写成 `Sentry-Bearer sntrys_…`——**注意不是普通的 `Bearer`**,"
+                "那个前缀被 Sentry 留给本程序拿不到的 OAuth 令牌了。"
+                "(他们也有一个本机 stdio 服务器,读 `SENTRY_ACCESS_TOKEN`;但它的自然语言检索要另配一个模型密钥,"
+                "所以托管版更省事。)"},
+    {"key": "linear", "name": "Linear (issues and projects)", "name_zh": "Linear(issue 与项目)",
+     "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp/readonly"],
+     "env_keys": [],
+     "note": "Find, read and write issues, projects, cycles and comments. The address above ends in "
+             "`/readonly`, which only ever exposes the read tools — drop that suffix to let a member "
+             "create and update issues, and expect to sign in again when you do." + _OAUTH_EN,
+     "note_zh": "查找、读取与写入 issue、项目、迭代与评论。上面那个地址以 `/readonly` 结尾,只会暴露只读工具;"
+                "想去掉这个限制让成员能建 issue、改 issue,就把后缀去掉——那时通常要重新登录一次。" + _OAUTH_ZH},
+    {"key": "figma", "name": "Figma (the design itself)", "name_zh": "Figma(直接给设计稿)",
+     "url": "http://127.0.0.1:3845/mcp", "transport": "http", "env_keys": [],
+     "note": "Hand a member the design rather than a screenshot: the selected frame's layout, "
+             "components, variables and styles, which is what makes \"build this screen\" come out "
+             "matching instead of guessed. This is Figma's *local* server, so nothing leaves the "
+             "machine and no account is involved here — but it only exists while the Figma desktop "
+             "app is running with it switched on (in Figma: Preferences → Enable local MCP server, "
+             "or the MCP section of the Dev Mode inspect panel). Needs a Dev or Full seat on a paid "
+             "plan. Figma's hosted server at https://mcp.figma.com/mcp is the other way, and it is "
+             "OAuth, so this app cannot drive its sign-in.",
+     "note_zh": "把设计稿本身交给成员,而不是一张截图:选中画板的布局、组件、变量与样式,"
+                "这样「照这个做一屏」才会做得像,而不是靠猜。这是 Figma 的**本机**服务器,内容不出这台机器,"
+                "也不需要账号——但它只在 Figma 桌面版**正在运行且已开启**时存在"
+                "(在 Figma 里:偏好设置 → 启用本地 MCP 服务器,或开发模式检查面板里的 MCP 一栏)。"
+                "需要付费版图上的 Dev 或 Full 席位。Figma 也有托管服务器 https://mcp.figma.com/mcp,"
+                "那个走 OAuth,本程序走不了它的登录流程。"},
 ]
 
 HOOK_TEMPLATES: list[dict] = [

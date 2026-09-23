@@ -88,7 +88,7 @@ TEAM_AGENT_KEYCHAIN_TEST=1 ../.venv/bin/python -m pytest tests/test_compliance.p
 | 资料库 | txt、md、csv、json、html、pdf、docx、xlsx、pptx → 分片 → BM25 检索(支持中文);可按群限定范围;`#文档标题` 引用 |
 | 记忆 | 全局 / 群 / 成员 × 偏好、事实、决定、教训、做法;自动提炼;与 Obsidian 双向同步 |
 | 提示词 | 可编辑的全局系统提示词、提示词库、群提示词、`{{变量}}` |
-| 模板中心 | 72 条现成的团队、岗位、技能、提示词与 MCP 用法,一键安装;也支持放自己的 JSON |
+| 模板中心 | 81 条现成的团队、岗位、技能、提示词与 MCP 用法,一键安装;也支持放自己的 JSON |
 | 本地模型 | 推荐目录、硬件适配估算、新版本发现 |
 | 外部智能体 | 把命令行智能体当群成员用,只读 / 可改 / 完全三级权限,默认关闭 |
 | 数据 | 备份与恢复、聊天导出 Markdown、使用统计 |
@@ -259,6 +259,34 @@ hooks/my-hook/hook.py       def handle(event, payload): ...
 
 > ChatCut 桌面版会自己把它的**本地** MCP 注册进 Claude Code / Codex 的配置里;那些文件本程序本来就能读——
 > 「设置 → 从其他 AI 应用导入」里选上对应来源即可,不需要知道地址。
+
+## 常用服务的 MCP 接入
+
+模板中心 → MCP 里还有这一类。**每个地址都在写进本程序之前真打通过**:一个错的地址不是「模板坏了」,而是
+「看着正常、却永远连不上」,而且只会一次给你一个含糊的失败。
+
+| 服务 | 形态 | 你要准备的 |
+|---|---|---|
+| **Playwright**(浏览器自动化) | 本机 `npx`(`@playwright/mcp@latest`) | 无。属执行类工具,默认每次调用前都会问你;首次用可能要下载浏览器内核 |
+| **Context7**(库的当前文档) | 托管 HTTP,**免密钥** | **什么都不用填**——实测直接可用。想提高速率上限再自己加一条 `Authorization: Bearer <key>` |
+| **GitHub** | 托管 HTTP + `Authorization` | 一个 PAT,写成 `Bearer ghp_…`。**scope 决定成员能做什么**,第一次建议只给只读 |
+| **Supabase** | 托管 HTTP + `Authorization` | 地址默认带 `read_only=true`,**建议留着**(这服务器也能写库);加 `&project_ref=<ref>` 限定一个项目;令牌写成 `Bearer sbp_…` |
+| **Sentry** | 托管 HTTP + `Authorization` | 用户令牌,写成 **`Sentry-Bearer sntrys_…`**(注意不是普通的 `Bearer`,那个前缀被它留给 OAuth 令牌了) |
+| **Figma**(直接给设计稿) | **本机** `http://127.0.0.1:3845/mcp` | 不需要账号、内容不出本机;但要 Figma 桌面版正在运行且已启用本地 MCP 服务器,并需要付费版的 Dev / Full 席位 |
+| **Vercel**(部署与日志) | `npx -y mcp-remote https://mcp.vercel.com` | 在浏览器里登录一次。只读服务器(beta 期间它还维护一份「允许的客户端」名单) |
+| **Linear**(issue 与项目) | `npx -y mcp-remote https://mcp.linear.app/mcp/readonly` | 浏览器登录一次。地址默认 `/readonly`,去掉后缀才有写权限 |
+
+三条约定的和前面一样,但这里更值得重复:
+
+* **全部导入后是停用状态**,本程序不替你启用,也不替你填任何密钥(填了也进钥匙串,不是明文落库)。
+* **OAuth 类(Vercel / Linear)第一次点「测试连接」很可能超时**——那是在浏览器页面还开着的时候超时了。
+  令牌会缓存在 `~/.mcp-auth`,所以再点一次同一个按钮就通;要是一直不行,就在终端里跑一次
+  `npx -y mcp-remote <地址>`,在那边登录完,再回来测试。失败信息里会带上那个进程打印的话,通常就是它让你去打开的登录链接。
+* ⚠️ **这些服务器能改你线上的东西。** GitHub 的 scope、Supabase 的 `read_only`、Linear 的 `/readonly`
+  都是你真要读一眼的旋钮,别一律给写权限。
+
+顺带一句:本程序会给 MCP 子进程补上它找程序的那几个目录,所以从访达启动时 `npx` / `uvx` 一样能找到——
+否则这些模板会以 `command not found` 失败,而那条报错和「Node 没装」长得一样。
 
 ## 外部智能体
 
