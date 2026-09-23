@@ -73,6 +73,29 @@ def _merge(entries: list[dict]) -> list[dict]:
     return [out[k] for k in sorted(out)]
 
 
+def still_listed(store: Any, provider_id: str, model_name: str) -> bool | None:
+    """Is this model still in its provider's own listing? `None` when that cannot be answered.
+
+    `None` is not a failure: it means no listing has been fetched for that provider (or it has just
+    been cleared, or the provider is a local runtime whose list is about what is *pulled* rather
+    than what is *offered*), and an empty list says nothing about any single model — so the caller
+    must not read it as "gone".
+
+    `False` is the interesting answer: the model was added by hand and the provider has since
+    stopped offering it, which is the commonest reason a model that looks perfectly fine answers
+    `NotFoundError` on the first call. Anything that *recommends* or *offers* a model has to ask
+    this before doing so.
+    """
+    prov = store.get_provider(provider_id) if provider_id else None
+    if not prov or prov.get("is_local"):
+        return None
+    live = store.get_model_live(provider_id)
+    ids = (live or {}).get("ids") or []
+    if not ids:
+        return None
+    return model_name in set(ids)
+
+
 async def fetch_models(provider: dict, timeout: float = 15.0,
                        client: httpx.AsyncClient | None = None) -> list[dict]:
     """The provider's live listing: `[{"id": ..., "mode": ...}]`, sorted by id.

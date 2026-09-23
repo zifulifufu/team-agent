@@ -11,6 +11,7 @@ listing count as "new" until "mark all as read" clears them.
 
 from __future__ import annotations
 
+from . import discovery
 from .discovery import fetch_models
 from .media import purpose_of
 from .store import Store
@@ -74,9 +75,10 @@ def model_options(store: Store, pid: str) -> dict:
         v["live"] = (mid in live_ids) if live_ids is not None else None
         v["is_new"] = mid not in seen_set
         v["retired_reason"] = retired.get(mid)
-        # Added by you but absent from the provider's live listing: most likely retired.
-        # Not applicable to local providers (Ollama), whose listing means "installed".
-        v["gone"] = bool(live_ids is not None and not prov["is_local"] and mid in have and mid not in live_ids)
+        # Added by you but absent from the provider's live listing: most likely retired. One
+        # judgement, shared with everything else that offers or recommends a model
+        # (`discovery.still_listed`).
+        v["gone"] = bool(mid in have and discovery.still_listed(store, pid, mid) is False)
         if prov["is_local"]:
             v["installed"] = (mid in live_ids) if live_ids is not None else None
         items.append(v)

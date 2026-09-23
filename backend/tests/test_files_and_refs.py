@@ -360,6 +360,111 @@ def test_the_picked_model_is_named_when_it_cannot_look(store, make_router):
     assert "Which model looks at pictures" in sent
 
 
+def test_a_model_the_provider_dropped_is_never_recommended(store, make_router):
+    """Enabled + keyed + multimodal is not enough to be a good recommendation: a model its provider
+    has stopped serving fails on the first call. The live listing is what says so, and it is the
+    same judgement the model chooser uses to badge one as gone."""
+    router = make_router(FakeLLM())
+    store.update_provider("deepseek", {"api_key": "sk-test-1234567890"})
+    store.update_settings({"vision_cloud": True})
+    store.update_model("deepseek/deepseek-flash", {"strengths": ["multimodal"]})
+    store.update_model("deepseek/deepseek-v4-pro", {"strengths": ["multimodal"]})
+    # v4-pro comes first in the roster, so it is the one "automatic" would pick...
+    assert vision.status(store, router)["recommended_id"] == "deepseek/deepseek-v4-pro"
+
+    # ...until the provider's own listing drops it — the case that prompted this was `kimi-k3`,
+    # still enabled on an account whose provider had stopped serving it.
+    store.set_model_live("deepseek", ["deepseek-flash"])
+    st = vision.status(store, router)
+    assert st["recommended_id"] == "deepseek/deepseek-flash"
+    assert "deepseek/deepseek-v4-pro" not in [c["id"] for c in st["candidates"]]
+    assert vision.pick(store, router.usable_models())["id"] == "deepseek/deepseek-flash"
+
+    # A listing we do not have says nothing: nothing may be hidden on the strength of a missing one.
+    store.set_model_live("deepseek", [])
+    assert "deepseek/deepseek-v4-pro" in [c["id"] for c in vision.status(store, router)["candidates"]]
+
+
+def test_the_recommendation_is_the_model_that_would_really_run(store, make_router):
+    """The settings page stars a model and says "automatic uses this one", so the star has to be the
+    model that would actually run — one rule, not two. Local first, and the page is told whether
+    that means a picture leaves the machine."""
+    router = make_router(FakeLLM())
+    store.update_provider("deepseek", {"api_key": "sk-test-1234567890"})   # usable, so it can be recommended
+    store.update_settings({"vision_cloud": False})
+    store.update_model("ollama/qwen2.5:7b", {"strengths": ["multimodal"]})
+    st = vision.status(store, router)
+    assert st["recommended_id"] == "ollama/qwen2.5:7b" and st["recommended_local"] is True
+    assert st["recommended_name"] == "qwen2.5:7b"
+
+    # A cloud model that can see does not displace a local one...
+    store.update_model("deepseek/deepseek-flash", {"strengths": ["multimodal"]})
+    assert vision.status(store, router)["recommended_id"] == "ollama/qwen2.5:7b"
+
+    # ...and with none local, the recommendation names a cloud model and says so.
+    store.update_model("ollama/qwen2.5:7b", {"strengths": ["chinese"]})
+    st = vision.status(store, router)
+    assert st["recommended_id"] == "deepseek/deepseek-flash" and st["recommended_local"] is False
+
+    # Nothing can look at all: no star to give, which is what makes the page print the "install one"
+    # sentence instead of a name.
+    store.update_model("deepseek/deepseek-flash", {"strengths": ["chinese"]})
+    st = vision.status(store, router)
+    assert st["recommended_id"] == "" and st["candidates"] == []
+
+
+def test_the_transcriber_install_hint_fits_this_machine(monkeypatch):
+    """"nothing found" is a dead end on its own — the command that would work *here* is the useful
+    half of it. Which package is named depends on the hardware (MLX is Apple silicon only), and on
+    which installer the machine actually has, because the entry point has to end up in a directory
+    this app searches."""
+    monkeypatch.setattr(attachments, "apple_silicon", lambda: True)
+    monkeypatch.setattr(attachments, "tool", lambda name: f"/usr/local/bin/{name}" if name in ("uv", "pip3") else None)
+    assert attachments.suggested_transcriber_install() == "uv tool install mlx-whisper"
+    monkeypatch.setattr(attachments, "tool", lambda name: "/usr/local/bin/pipx" if name == "pipx" else None)
+    assert attachments.suggested_transcriber_install() == "pipx install mlx-whisper"
+    monkeypatch.setattr(attachments, "apple_silicon", lambda: False)
+    assert attachments.suggested_transcriber_install() == "pipx install openai-whisper"
+    monkeypatch.setattr(attachments, "tool", lambda name: None)
+    assert attachments.suggested_transcriber_install() == "pip3 install --user openai-whisper"
+
+
+def test_apple_silicon_asks_the_hardware_not_the_interpreter(monkeypatch):
+    """This backend commonly runs as an x86_64 process under Rosetta on an M-series Mac, where
+    `platform.machine()` says x86_64 — believing it would recommend the slow transcriber to someone
+    whose machine has the fast one built in."""
+    monkeypatch.setattr(attachments.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(attachments.platform, "machine", lambda: "x86_64")
+
+    class Ran:
+        stdout = "1\n"
+
+    monkeypatch.setattr(attachments.subprocess, "run", lambda *a, **k: Ran())
+    assert attachments.apple_silicon() is True
+
+    Ran.stdout = "0\n"
+    assert attachments.apple_silicon() is False
+
+    monkeypatch.setattr(attachments.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no sysctl")))
+    assert attachments.apple_silicon() is False, "an unanswerable question is not a 'yes'"
+
+
+def test_the_capabilities_endpoint_carries_the_install_hint(tmp_path, monkeypatch):
+    """The row in Settings reads this endpoint, so the hint has to travel with the 'no'."""
+    monkeypatch.setattr(attachments, "transcriber", lambda settings=None: None)
+    monkeypatch.setattr(attachments, "suggested_transcriber_install", lambda: "uv tool install mlx-whisper")
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好"))
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        caps = c.get("/api/capabilities").json()
+        assert caps["audio_transcribe"] is False
+        assert caps["transcriber_install"] == "uv tool install mlx-whisper"
+
+        monkeypatch.setattr(attachments, "transcriber", lambda settings=None: ("/usr/local/bin/whisper", []))
+        caps = c.get("/api/capabilities").json()
+        assert caps["audio_transcribe"] is True and caps["transcriber_install"] == ""
+
+
 def test_a_model_that_cannot_look_is_reported_with_the_reason(store, make_router):
     """`status` is what the settings page reads, so the mis-pick has to be visible there too — and
     an image generator must never be offered as something that looks at pictures."""

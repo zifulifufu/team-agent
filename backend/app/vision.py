@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import i18n, images, media
+from . import discovery, i18n, images, media
 
 # Long enough for a dense screenshot with a table in it, short enough not to dominate the prompt.
 MAX_DESCRIPTION = 6000
@@ -49,6 +49,34 @@ def chosen(store: Any, models: list[dict] | None = None) -> dict | None:
     return next((m for m in pool if m["id"] == wanted), None) or store.get_model(wanted)
 
 
+def offered(store: Any, pool: list[dict]) -> list[dict]:
+    """Drop the models their provider no longer lists.
+
+    A model left switched on after its provider dropped it fails on the first call — and it is
+    exactly the kind that gets *recommended*, because it is enabled, has a key and looks multimodal.
+    Being told to pick a model that cannot be called is worse than being told nothing: the case that
+    prompted this was a `kimi-k3` still enabled on an account whose provider had stopped serving it.
+    """
+    return [m for m in pool
+            if discovery.still_listed(store, m.get("provider_id") or "",
+                                      str(m.get("model_name") or "")) is not False]
+
+
+def automatic(pool: list[dict], cfg: dict, *, allow_cloud: bool | None = None) -> dict | None:
+    """The model the app would choose on its own: local first, then a cloud one if allowed.
+
+    One rule, used for two things — what actually runs (`pick`) and what the settings page
+    recommends (`status`). Two copies of "which one is the default" is how a page ends up
+    recommending one model while the app quietly uses another.
+    """
+    cloudoi = bool(cfg["vision_cloud"]) if allow_cloud is None else allow_cloud
+    local = [m for m in pool if _can_see(m) and m.get("is_local")]
+    if local:
+        return local[0]
+    cloud = [m for m in pool if _can_see(m)]
+    return cloud[0] if cloud and cloudoi else None
+
+
 def pick(store: Any, models: list[dict] | None = None) -> dict | None:
     """The model that will look at pictures, or None.
 
@@ -62,7 +90,7 @@ def pick(store: Any, models: list[dict] | None = None) -> dict | None:
     screenshot does not leave the machine merely so a member can talk about it.
     """
     cfg = store.get_settings()
-    pool = models if models is not None else []
+    pool = offered(store, models if models is not None else [])
     want = chosen(store, pool)
     if want and _can_see(want) and (want.get("is_local") or cfg["vision_cloud"]):
         return want
@@ -70,11 +98,7 @@ def pick(store: Any, models: list[dict] | None = None) -> dict | None:
     # the choice was honoured to the letter, so one wrong pick turned every picture in every group
     # into "nobody here can look", with nothing on screen connecting the two. The mis-pick is not
     # swallowed either: `status()` reports it and `reason_missing()` names it.
-    local = [m for m in pool if _can_see(m) and m.get("is_local")]
-    if local:
-        return local[0]
-    cloud = [m for m in pool if _can_see(m)]
-    return cloud[0] if cloud and cfg["vision_cloud"] else None
+    return automatic(pool, cfg)
 
 
 def status(store: Any, router: Any) -> dict:
@@ -89,14 +113,22 @@ def status(store: Any, router: Any) -> dict:
         usable = router.usable_models()
     except Exception:  # noqa: BLE001
         usable = []
+    usable = offered(store, usable)
     eyes = pick(store, usable)
     want = chosen(store, usable)
+    # What automatic would choose *if the switch allowed it*. The settings page shows this next to
+    # "automatic", so leaving it alone is an informed choice rather than a blind one: the model it
+    # means, and whether that model is local.
+    would = automatic(usable, cfg, allow_cloud=True)
     seeing = [m for m in usable if _can_see(m)]
     named = str(cfg.get("vision_model_id") or "").strip()
     return {
         "model_id": eyes["id"] if eyes else "",
         "model_name": (eyes.get("display_name") or eyes["model_name"]) if eyes else "",
         "is_local": bool(eyes and eyes.get("is_local")),
+        "recommended_id": would["id"] if would else "",
+        "recommended_name": (would.get("display_name") or would["model_name"]) if would else "",
+        "recommended_local": bool(would and would.get("is_local")),
         "configured": named,
         "configured_name": (want.get("display_name") or want["model_name"]) if want else named,
         "configured_found": bool(want),

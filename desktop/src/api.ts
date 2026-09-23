@@ -564,6 +564,11 @@ export interface VisionStatus {
   model_id: string;
   model_name: string;
   is_local: boolean;
+  /** What "automatic" would choose if the switch allowed it — the app's own recommendation, so the
+   *  page can say which model "leave it on automatic" means instead of leaving it a blind choice. */
+  recommended_id: string;
+  recommended_name: string;
+  recommended_local: boolean;
   configured: string;
   /** The name of the model the setting names, for when it is one that cannot look. */
   configured_name: string;
@@ -1264,7 +1269,7 @@ export const api = {
   vision: () => get<VisionStatus>("/api/vision"),
   /** What this machine can do with files: which document kinds are read locally, whether
    *  ffmpeg is there for video frames, and who can look at pictures. */
-  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; upload_max_mb: number }>("/api/capabilities"),
+  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number }>("/api/capabilities"),
   /** A clip a member generated, out of that group's own workspace. Same header problem, so the
    *  bytes come through the API and are turned into an object URL (`MessageVideo`). */
   videoBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/video/${encodeURIComponent(name)}`),

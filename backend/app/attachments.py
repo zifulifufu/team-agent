@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -132,6 +133,47 @@ def transcriber(settings: dict | None = None) -> tuple[str, list[str]] | None:
         if exe:
             return exe, list(args)
     return None
+
+
+def apple_silicon() -> bool:
+    """Is this an Apple-silicon Mac — *including* when the interpreter runs under Rosetta?
+
+    `platform.machine()` answers "x86_64" for a Rosetta process on an M-series Mac, and this app's
+    own backend commonly is one (the desktop shell may launch an x86_64 interpreter). Trusting it
+    would tell the user to install the slow CPU-only transcriber while the machine has a fast one
+    built in, so the hardware is asked directly.
+    """
+    if platform.system() != "Darwin":
+        return False
+    if platform.machine() == "arm64":
+        return True
+    try:
+        # `/usr/sbin` is in launchd's PATH but not in every environment this can be called from, so
+        # the usual location is named as a fallback rather than silently reporting "not arm64".
+        exe = shutil.which("sysctl") or "/usr/sbin/sysctl"
+        out = subprocess.run([exe, "-n", "hw.optional.arm64"],  # noqa: S603
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.stdout.strip() == "1"
+
+
+def suggested_transcriber_install() -> str:
+    """One command that would install a transcriber on *this* machine, or "" if we cannot tell.
+
+    The settings page used to say only "nothing found", which is a dead end for someone who has
+    never installed a speech model: they need the command, not the diagnosis. Two things make the
+    command worth printing: the *fast* choice on Apple silicon is `mlx-whisper` (MLX is
+    Apple-silicon only, so anywhere else the portable `openai-whisper` is named instead), and
+    whichever installer is used must put the entry point where `tool()` looks — `uv tool install`
+    and `pipx install` both land in `~/.local/bin`, which is on `TOOL_DIRS`.
+    """
+    package = "mlx-whisper" if apple_silicon() else "openai-whisper"
+    for installer, verb in (("uv", "uv tool install"), ("pipx", "pipx install"),
+                            ("pip3", "pip3 install --user")):
+        if tool(installer):
+            return f"{verb} {package}"
+    return f"pip3 install --user {package}"
 
 
 def transcribe(path: Path, settings: dict | None = None) -> str | None:

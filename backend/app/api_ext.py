@@ -1100,6 +1100,11 @@ def build_router(c: Ctx) -> APIRouter:
             "documents": ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv", "json", "html"],
             "video_frames": bool(attachments_lib.tool("ffmpeg")),
             "audio_transcribe": bool(attachments_lib.transcriber(store.get_settings())),
+            # The settings page says "nothing found" when there is no transcriber. That is a dead end
+            # on its own — the reader has never installed a speech model — so the command that would
+            # work *here* goes with it.
+            "transcriber_install": ("" if attachments_lib.transcriber(store.get_settings())
+                                    else attachments_lib.suggested_transcriber_install()),
             "upload_max_mb": int(store.get_settings()["upload_max_mb"]),
         }
 

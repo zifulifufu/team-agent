@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type Settings, type VisionStatus } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
@@ -40,10 +40,15 @@ export default function GeneralPage() {
   const { settings } = useData();
   const { set, err } = useSettingsSaver();
   const [vision, setVision] = useState<VisionStatus | null>(null);
-  const [caps, setCaps] = useState<{ audio_transcribe: boolean } | null>(null);
+  const [caps, setCaps] = useState<{ audio_transcribe: boolean; transcriber_install: string } | null>(null);
   useEffect(() => { void api.vision().then(setVision).catch(() => undefined); }, [settings?.vision_model_id, settings?.vision_cloud]);
-  // Asked again whenever the command changes, so the chip reflects what would actually happen.
-  useEffect(() => { void api.machineCapabilities().then(setCaps).catch(() => undefined); }, [settings?.transcribe_cmd]);
+  // Asked again whenever the command changes, so the chip reflects what would actually happen — and
+  // on demand, because installing a transcriber changes no setting at all: without a button the
+  // reader would have to restart this app to see that it had been found.
+  const checkCaps = useCallback(async () => {
+    try { setCaps(await api.machineCapabilities()); } catch { /* the row keeps what it had */ }
+  }, []);
+  useEffect(() => { void checkCaps(); }, [checkCaps, settings?.transcribe_cmd]);
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
 
   // Only models that can really look are offered. The list used to be every enabled model, and a
@@ -56,14 +61,57 @@ export default function GeneralPage() {
   const namedId = settings.vision_model_id;
   const namedMissing = !!namedId && !canLook.some((m) => m.id === namedId);
   const namedLabel = vision?.configured_name || namedId;
+  const recId = vision?.recommended_id || "";
+  const recName = vision?.recommended_name || "";
+  const recWhere = vision?.recommended_local
+    ? t(" (local, so pictures never leave this machine)")
+    : t(" (cloud, so pictures are sent to that provider)");
 
-  const visionText = vision?.configured_sees === false
-    ? t("The model picked above cannot look at images, so no picture in any group would be read while it is selected. Pick one that can see, or set this back to automatic.")
-    : !vision?.model_id
+  // Every reason nothing is looking, as one sentence each — the same shape the members get. They
+  // are independent: a wrong pick and a switch that is off can both be true at once, and naming
+  // only the first would send the reader round the loop twice.
+  const visionText = [
+    vision?.configured_sees === false
+      ? t("The model picked above cannot look at images, so it is not the one reading them — the app falls back to a model that can. Pick one that can see, or set this back to automatic.")
+      : "",
+    !vision?.model_id
       ? vision?.blocked_cloud
         ? t("A model here can see, but sending images to a cloud model is switched off (see Permissions & control).")
         : t("No model here can look at images. Pull a local vision model in Ollama (for example `ollama pull qwen2.5vl:3b`) and pick it above, or connect a cloud provider and allow cloud vision.")
-      : t("Attached pictures and video frames are looked at by this model; members whose own model cannot see get its description.");
+      : "",
+    vision?.model_id
+      ? t("Attached pictures and video frames are looked at by this model; members whose own model cannot see get its description.")
+      : "",
+  ].filter(Boolean).join(" ");
+
+  // Before the answer arrives there is nothing to recommend *yet* — saying "nothing here can look"
+  // for one frame and then changing its mind is the kind of flicker that reads as a bug.
+  const visionDesc = ((!vision
+    ? t("Checking what can look at images here…")
+    : recName
+      ? t("Recommended: {name}{where} — leave the choice on automatic to use it.", { name: recName, where: recWhere })
+      : t("There is nothing to recommend yet: no model available here can look at images."))
+    + " " + t("Attached images and video frames go to a model that can actually see them. Members whose own model cannot look get a description from this one instead — so a spreadsheet, a PDF or a picture all reach every member. Only models that can look are listed; a cloud one still needs cloud vision to be on."));
+
+  // The empty state, as buttons rather than advice: each one is the thing that would actually
+  // unblock it. Turning the switch on is enough even with a bad pick left in place (the search then
+  // falls through to a model that can see), which is why it comes first.
+  const visionFixes: { label: string; run: () => void }[] = [];
+  if (!vision?.model_id && vision?.blocked_cloud) {
+    visionFixes.push({ label: t("Turn on cloud vision"), run: () => void set({ vision_cloud: true }) });
+  }
+  if (vision?.configured_sees === false) {
+    visionFixes.push({ label: t("Set it back to automatic"), run: () => void set({ vision_model_id: "" }) });
+  }
+  const visionChip = !vision
+    ? t("Checking…")
+    : vision.model_id
+      ? `${vision.model_name} · ${vision.is_local ? t("local") : t("cloud")}`
+      : vision.blocked_cloud
+        ? t("a model can see, but the switch is off")
+        : vision.configured_sees === false
+          ? t("{name} — cannot look at images", { name: namedLabel })
+          : t("no model here can look at images");
 
   const numRows = (rows: NumRow[]) =>
     rows.map((r) => {
@@ -100,11 +148,15 @@ export default function GeneralPage() {
       <div className="sec">{t("Files in a group chat")}</div>
       <div className="card flush">
         {numRows(FILE_ROWS)}
-        <Row title={t("Which model looks at pictures")} desc={t("Attached images and video frames go to a model that can actually see them. Members whose own model cannot look get a description from this one instead — so a spreadsheet, a PDF or a picture all reach every member. Leave it on automatic to use any usable vision model, local first. Only models that can look are listed; a cloud one still needs cloud vision to be on, here and on the row below.")}>
+        <Row title={t("Which model looks at pictures")} desc={visionDesc}>
           <select className="pm-text" value={settings.vision_model_id} aria-label={t("Which model looks at pictures")}
             onChange={(e) => void set({ vision_model_id: e.target.value })}>
-            <option value="">{t("Automatic (local first)")}</option>
-            {canLook.map((m) => <option key={m.id} value={m.id}>{m.name}{m.is_local ? ` · ${t("local")}` : ""}</option>)}
+            <option value="">{t("Automatic (local first)")}{recName ? ` → ${recName} ★` : ""}</option>
+            {canLook.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}{m.is_local ? ` · ${t("local")}` : ""}{m.id === recId ? " ★" : ""}
+              </option>
+            ))}
             {namedMissing && (
               <option value={namedId}>
                 {vision?.configured_sees === false
@@ -115,17 +167,36 @@ export default function GeneralPage() {
           </select>
         </Row>
         <Row title={t("Vision model")} desc={visionText}>
-          <span className={"chip" + (vision?.model_id ? "" : " warn")}>
-            {vision?.model_id ? `${vision.model_name}${vision.is_local ? ` · ${t("local")}` : ` · ${t("cloud")}`}` : t("none available")}
+          <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <span className={"chip" + (vision?.model_id ? "" : " warn")}>{visionChip}</span>
+            {visionFixes.map((f) => (
+              <button key={f.label} className="btn small" onClick={f.run}>{f.label}</button>
+            ))}
           </span>
         </Row>
         <Row title={t("Transcribe audio")}
              desc={t("Speech needs a program, not a model: nothing is bundled and nothing is downloaded for you. Leave this empty to use a transcriber that is already installed; write a command to use your own. {out} is the folder to write the text into, and {audio} is the file — if the command does not mention it, the path is added at the end.")}>
-          <input className="pm-text" value={settings.transcribe_cmd} placeholder={t("(an installed transcriber, if there is one)")}
-                 aria-label={t("Transcribe audio")}
-                 onChange={(e) => void set({ transcribe_cmd: e.target.value })} />
-          <span className={"chip" + (caps?.audio_transcribe ? "" : " warn")} style={{ marginLeft: 8 }}>
-            {caps?.audio_transcribe ? t("ready") : t("nothing found")}
+          <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <input className="pm-text" value={settings.transcribe_cmd} placeholder={t("(an installed transcriber, if there is one)")}
+                   aria-label={t("Transcribe audio")}
+                   onChange={(e) => void set({ transcribe_cmd: e.target.value })} />
+            <span className={"chip" + (caps?.audio_transcribe ? "" : " warn")}>
+              {caps?.audio_transcribe ? t("ready") : t("nothing found")}
+            </span>
+            {/* "nothing found" on its own is a dead end for someone who has never installed a speech
+                model: the command that would work on *this* machine is the useful part. */}
+            {!caps?.audio_transcribe && (
+              <>
+                <span className="muted small" style={{ maxWidth: 330, textAlign: "right" }}>
+                  {t("Install one — this app will find it by itself afterwards:")}
+                  {caps?.transcriber_install ? <> <code>{caps.transcriber_install}</code></> : null}
+                </span>
+                <span className="muted small" style={{ maxWidth: 330, textAlign: "right" }}>
+                  {t("It lands in ~/.local/bin, which this app looks in. The first transcription downloads the model, a few hundred megabytes.")}
+                </span>
+                <button className="btn small" onClick={() => void checkCaps()}>{t("Check again")}</button>
+              </>
+            )}
           </span>
         </Row>
       </div>

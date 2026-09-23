@@ -222,6 +222,14 @@ in any group was ever read**. Three things now prevent that:
   at pictures (X) cannot look at images...") instead of the blanket "no model here can look at
   images" — otherwise the reader stares at the model they just chose and cannot tell what to change.
 
+**"Automatic" is not a blind choice.** The settings page writes out which model it means (the name
+gets a ★) and what that implies: a local model is "pictures never leave this machine", a cloud one is
+"pictures are sent to that provider". **The recommendation is the model automatic would pick** — one
+rule for both, so the page can never recommend one model while the app quietly uses another. A model
+its provider has **stopped listing** is neither offered nor recommended (the same judgement the model
+chooser badges as "gone": `discovery.still_listed`) — an enabled, keyed, multimodal-looking model that
+answers `NotFoundError` is worse as a recommendation than no recommendation.
+
 **Speech is the one kind that needs a program rather than a model.** Nothing is bundled and nothing
 is downloaded on your behalf: a whisper model is a few hundred megabytes, and fetching one silently
 while somebody waits for an answer is not a decision this app gets to make. If `mlx_whisper` or
@@ -229,10 +237,14 @@ while somebody waits for an answer is not a decision this app gets to make. If `
 you name any other transcriber — `{out}` is the folder for the text and `{audio}` marks where the
 file goes. The words are read once and remembered on the attachment. With nothing installed, the
 members are told the audio was not read, rather than being handed a summary of something nobody
-listened to. Note that a transcriber is found **by name** along PATH plus `/opt/homebrew/bin`,
-`/usr/local/bin`, `~/.local/bin`, `/usr/bin` and `/bin` — so `pipx install mlx-whisper` (or
-`pip install --user …`), which land in `~/.local/bin`, are found as they are, while one installed
-inside this app's own virtualenv is not: write the full path under *Transcribe audio* for that.
+listened to. That row no longer stops at "nothing found": it prints **the install command that works
+on this machine** (`mlx-whisper` on Apple silicon, `openai-whisper` elsewhere, through whichever of
+`uv`/`pipx`/`pip3` is installed — those all land in `~/.local/bin`, which the app searches), and has a
+*Check again* button, because installing a transcriber changes no setting at all.
+Note that a transcriber is found **by name** along PATH plus `/opt/homebrew/bin`, `/usr/local/bin`,
+`~/.local/bin`, `/usr/bin` and `/bin` — so `pipx install mlx-whisper` (or `pip install --user …`),
+which land in `~/.local/bin`, are found as they are, while one installed inside this app's own
+virtualenv is not: write the full path under *Transcribe audio* for that.
 
 Referencing something with `@` in the composer offers members, files, folders and documents, and
 inserts a token the backend understands:
