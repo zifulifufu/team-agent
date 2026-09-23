@@ -598,6 +598,11 @@ def test_a_media_tool_is_found_even_when_the_app_was_started_from_the_finder(mon
     missing = attachments.tool("definitely-not-a-real-binary")
     assert missing is None, "and a tool that really is absent still reports as absent"
 
+    # A transcriber is the tool a user installs by hand, and pipx / `pip install --user` put it in
+    # ~/.local/bin — which no GUI-launched app has on its PATH. Without this, "I installed it" and
+    # "the app found it" were different facts with nothing on screen to explain the gap.
+    assert str(pathlib.Path.home() / ".local/bin") in attachments.TOOL_DIRS
+
 
 def test_the_readers_of_the_new_file_kinds_are_declared_as_dependencies():
     """They are imported lazily, so a missing one does not break the app — it just makes a

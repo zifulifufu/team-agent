@@ -201,9 +201,9 @@ hooks/my-hook/hook.py       def handle(event, payload): ...
 `whisper` 时就用它;「设置 → 通用 → 群聊里的文件」里可以填任何别的转写命令——`{out}` 是文本写出的
 目录,`{audio}` 标出文件放在哪。转写只在第一次做,结果记在附件上。什么都没装时,会明确告诉成员
 「这段音频没有被读到」,而不是丢给它一份谁也没听过的摘要。
-⚠️ 转写器和 `ffmpeg` 一样是**按名字**在 PATH 与 `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`、`/bin`
-里找的:`pip install mlx-whisper` 装进应用自己的 venv 时它**看不到**。装到上面那些目录之一,或在
-「转写命令」里直接写绝对路径。
+⚠️ 转写器和 `ffmpeg` 一样是**按名字**在 PATH 与 `/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin`、
+`/usr/bin`、`/bin` 里找的:`pipx install mlx-whisper`、`pip install --user …` 默认就落在 `~/.local/bin`,
+所以这两种装法能被直接认出来;装进应用自己的 venv 则**看不到**,那种情况请在「转写命令」里写绝对路径。
 
 在输入框里用 `@` 可以引用成员、文件、文件夹与资料,插入的是后端能识别的标记:
 

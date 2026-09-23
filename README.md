@@ -230,9 +230,9 @@ you name any other transcriber — `{out}` is the folder for the text and `{audi
 file goes. The words are read once and remembered on the attachment. With nothing installed, the
 members are told the audio was not read, rather than being handed a summary of something nobody
 listened to. Note that a transcriber is found **by name** along PATH plus `/opt/homebrew/bin`,
-`/usr/local/bin`, `/usr/bin` and `/bin` — `pip install mlx-whisper` inside this app's own virtualenv
-puts it somewhere the app cannot see, so install it into one of those, or write the full path under
-*Transcribe audio*.
+`/usr/local/bin`, `~/.local/bin`, `/usr/bin` and `/bin` — so `pipx install mlx-whisper` (or
+`pip install --user …`), which land in `~/.local/bin`, are found as they are, while one installed
+inside this app's own virtualenv is not: write the full path under *Transcribe audio* for that.
 
 Referencing something with `@` in the composer offers members, files, folders and documents, and
 inserts a token the backend understands:

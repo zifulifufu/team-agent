@@ -75,7 +75,11 @@ MAX_NAME = 60
 # A GUI-launched app gets launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which does not
 # include the Homebrew prefixes — so "ffmpeg is installed" and "the app can find ffmpeg" are
 # different facts, and video frames would silently never work.
-TOOL_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin")
+#
+# `~/.local/bin` is in the list for the transcriber, which is the tool a user installs by hand:
+# `pipx install mlx-whisper` and `pip install --user …` both land there, and leaving it out meant
+# "I installed it and the app still says nothing was found" with no way to tell why.
+TOOL_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local/bin"), "/usr/bin", "/bin")
 
 
 def tool(name: str) -> str | None:
