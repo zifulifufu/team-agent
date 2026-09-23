@@ -56,12 +56,38 @@
 .ext-status-text.error { color: var(--danger); }
 
 .ext-errline { color: var(--danger); font-size: 12.5px; margin-top: 4px; overflow-wrap: anywhere; white-space: pre-wrap; }
+/* 错误只留两行:一行错误往往是整段话(服务器的遗言、代理的页面),全铺出来就是这个页面显得拥挤的原因 */
+.ext-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ext-errbox { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 9px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 6%, transparent); margin: 8px 0; }
 .ext-errbox .err { overflow-wrap: anywhere; white-space: pre-wrap; }
 .ext-tool-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .ext-tool { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; flex-wrap: wrap; }
 .ext-tool code { flex: none; }
 .ext-tool .muted { flex: 1; min-width: 160px; }
+
+/* 服务器状态一览 + 按状态筛选:「哪些连不上」是这一页最常被问的问题 */
+.ext-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.ext-sum { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-sub); color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.ext-sum:hover { color: var(--text); }
+.ext-sum.on { border-color: color-mix(in srgb, var(--text) 30%, transparent); color: var(--text); background: var(--hover); }
+.ext-sum b { font-weight: 600; }
+.ext-sum.bad { border-color: color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); }
+
+/* 工具:名字做成小标签,说明按需展开(25 / 212 个工具逐个铺说明是这个面板撑爆的原因) */
+.ext-tools { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ext-tools-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.ext-tools-head .pm-text { max-width: 240px; }
+.ext-tools-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+.ext-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--bg-sub); cursor: pointer; max-width: 100%; }
+.ext-chip:hover { border-color: color-mix(in srgb, var(--text) 25%, transparent); }
+.ext-chip.on { background: var(--hover); border-color: color-mix(in srgb, var(--text) 35%, transparent); }
+.ext-chip code { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-chip-ro { color: var(--ok); font-weight: 700; }
+.ext-tool-note { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12.5px;
+  padding: 8px 10px; border-radius: 8px; background: var(--bg-sub); border: 1px solid var(--border); color: var(--text-2); }
+.ext-tool-note code { flex: none; color: var(--text); }
 
 /* 代码块 / 源码 */
 .ext-src { margin: 8px 0 0; padding: 12px 14px; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 10px; font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text); overflow: auto; max-height: min(44vh, 460px); white-space: pre; tab-size: 4; }

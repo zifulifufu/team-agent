@@ -56,6 +56,15 @@ const ZH: Record<string, string> = {
 
   // ---------------------------------------------------------------- 工具入口(侧边栏与设置共用)
   "Skills": "技能",
+  // MCP 页:工具只列名字、说明按需展开;错误只留两行;顶部一条状态一览可按状态筛选
+  " · {n} read-only": " · 其中 {n} 个只读",
+  "Filter tools": "筛选工具",
+  "No tool matches that.": "没有匹配的工具。",
+  "The server gave no description for this tool.": "这个服务器没有给这个工具写说明。",
+  "Show {n} more": "再显示 {n} 个",
+  "Show the whole message": "看完整信息",
+  "Filter by state": "按状态筛选",
+  "Nothing in this state right now.": "当前没有处于这个状态的服务。",
   // 技能列表的分组标题(后端只给稳定键,措辞在这边)。顺序即后端排好的顺序。
   // "Video" / "Other" / "Clear" 已有词条,不再重复。
   "Writing": "写作与文档",

@@ -48,6 +48,106 @@ const MARKETS = [   // English keys; translated where they are rendered (see STA
 
 import type { SettingsTab } from "./SettingsModal";
 
+/** A long error, folded to two lines with a way to read the rest.
+ *
+ * A connection failure is often a whole paragraph — the server's own last words, a proxy's page,
+ * a path it could not open — and printing all of it inside every failing row is what made this page
+ * feel crowded. The first two lines say what happened; the rest is there when it is wanted. */
+function Folded({ text }: { text: string }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const long = text.length > 150 || text.split("\n").length > 2;
+  return (
+    <div className="ext-errline">
+      <span className={open || !long ? "" : "ext-clamp"}>{text}</span>
+      {long && (
+        <button type="button" className="link" style={{ marginLeft: 6 }} onClick={() => setOpen((v) => !v)}>
+          {open ? t("Collapse") : t("Show the whole message")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The tools a server offers, as names rather than as a page of prose.
+ *
+ * Each tool used to be a row with its full description beside it: at 25 tools that is a screenful,
+ * at the 212 one bridge listed it is unusable. The name is what a reader is scanning for; the
+ * description is one click away, on the tool they actually care about, and hovering gives it too.
+ */
+function ToolList({ name, tools }: { name: string; tools: McpServer["tools"] }) {
+  const { t } = useI18n();
+  const [q, setQ] = useState("");
+  const [shown, setShown] = useState(24);
+  const [peek, setPeek] = useState<string | null>(null);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return tools;
+    return tools.filter((x) => `${x.name} ${x.description}`.toLowerCase().includes(needle));
+  }, [tools, q]);
+  const visible = filtered.slice(0, shown);
+  const readOnly = tools.filter((x) => x.read_only).length;
+  return (
+    <div className="ext-tools" aria-label={t("Tools of {name}", { name })}>
+      <div className="ext-tools-head">
+        <span className="muted small">
+          {t("{n} tools", { n: tools.length })}
+          {readOnly ? t(" · {n} read-only", { n: readOnly }) : ""}
+        </span>
+        {tools.length > 12 && (
+          <input className="pm-text" value={q} onChange={(e) => { setQ(e.target.value); setShown(24); }}
+                 placeholder={t("Filter tools")} aria-label={t("Filter tools")} />
+        )}
+      </div>
+      <div className="ext-tools-grid">
+        {visible.map((tool) => (
+          <button key={tool.name} type="button" className={"ext-chip" + (peek === tool.name ? " on" : "")}
+                  title={tool.description} onClick={() => setPeek(peek === tool.name ? null : tool.name)}>
+            <code>{tool.name}</code>
+            {tool.read_only && <span className="ext-chip-ro" title={t("The server declares this tool read-only")}>·</span>}
+          </button>
+        ))}
+        {filtered.length === 0 && <span className="muted small">{t("No tool matches that.")}</span>}
+      </div>
+      {peek && (
+        <div className="ext-tool-note">
+          <code>{peek}</code>
+          <span>{tools.find((x) => x.name === peek)?.description || t("The server gave no description for this tool.")}</span>
+        </div>
+      )}
+      {filtered.length > shown && (
+        <button type="button" className="btn small" onClick={() => setShown((n) => n + 60)}>
+          {t("Show {n} more", { n: Math.min(60, filtered.length - shown) })}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** How the servers stand, at a glance — and a way to see only the ones that do not work. */
+function Summary({ servers, filter, setFilter }: {
+  servers: McpServer[]; filter: string; setFilter: (f: string) => void;
+}) {
+  const { t } = useI18n();
+  const counts: { key: string; label: string; n: number }[] = [
+    { key: "all", label: t("All"), n: servers.length },
+    { key: "ready", label: t("Connected"), n: servers.filter((s) => s.status === "ready").length },
+    { key: "error", label: t("Connection failed"), n: servers.filter((s) => s.status === "error").length },
+    { key: "idle", label: t("Not connected"), n: servers.filter((s) => s.status === "idle").length },
+    { key: "off", label: t("Disabled"), n: servers.filter((s) => !s.enabled).length },
+  ];
+  return (
+    <div className="ext-summary" role="group" aria-label={t("Filter by state")}>
+      {counts.map((c) => (
+        <button key={c.key} type="button" className={"ext-sum" + (filter === c.key ? " on" : "") + (c.key === "error" && c.n ? " bad" : "")}
+                aria-pressed={filter === c.key} onClick={() => setFilter(c.key)}>
+          {c.label} <b>{c.n}</b>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } = {}) {
   const { t } = useI18n();
   const { groups, reloadGroups } = useData();
@@ -63,6 +163,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<Record<string, string>>({});       // id → what it is doing
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
+  const [stateFilter, setStateFilter] = useState("all");
   const timer = useRef<number>();
 
   const load = useCallback(async () => {
@@ -92,7 +193,11 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   const connect = async (s: McpServer) => {
     setB(s.id, "connect");
     setE(s.id, "");
-    setOpen((o) => new Set(o).add(s.id));
+    // Deliberately *not* opening the row. It used to, and a server's payload landed on the page
+    // unasked: Playwright answers with 25 tools and one Vercel bridge listed 212, each with a
+    // paragraph attached — a wall of text where the reader had asked for one thing ("does it
+    // work?"). The row answers that itself now (a status, a count), and the tools are one click
+    // away for whoever wants them.
     try {
       replace(await api.connectMcp(s.id));
     } catch (e) {
@@ -117,8 +222,16 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
     try { await api.delMcp(s.id); await load(); await reloadGroups(); } catch (e) { setE(s.id, (e as Error).message); }
   };
 
-  const openAdd = (init: Partial<FormInit> = {}) => setDialog({ server: null, init: { ...EMPTY_INIT, ...init } });
-  const openEdit = (s: McpServer) =>
+  // "Which ones are broken?" is the question this page gets asked, and answering it by reading a
+  // list of twelve is work. The strip above counts them and each count filters.
+  const shownServers = useMemo(() => {
+    const l = servers ?? [];
+    if (stateFilter === "all") return l;
+    if (stateFilter === "off") return l.filter((s) => !s.enabled);
+    return l.filter((s) => s.enabled && s.status === stateFilter);
+  }, [servers, stateFilter]);
+
+  const openAdd = (init: Partial<FormInit> = {}) => setDialog({ server: null, init: { ...EMPTY_INIT, ...init } });  const openEdit = (s: McpServer) =>
     setDialog({
       server: s,
       init: {
@@ -150,6 +263,9 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
       {note && <div className="ok-text" role="status" style={{ marginBottom: 8 }}>{note}</div>}
       {err && <div className="ext-errbox"><div className="err">{t("Failed to load: {err}", { err })}</div><button className="btn small" onClick={() => void load()}>{t("Retry")}</button></div>}
       {!servers && !err && <div className="empty"><Spin /> {t("Loading…")}</div>}
+      {servers && servers.length > 0 && (
+        <Summary servers={servers} filter={stateFilter} setFilter={setStateFilter} />
+      )}
       {servers && (
         <div className="card flush">
           {servers.length === 0 && (
@@ -157,7 +273,10 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
               {t("No MCP servers yet. Start from a template below (it pre-fills the form for you to confirm and save),")}<br />{t("or click Add an MCP server to fill it in by hand.")}
             </div>
           )}
-          {servers.map((s) => {
+          {servers.length > 0 && stateFilter !== "all" && shownServers.length === 0 && (
+            <div className="empty">{t("Nothing in this state right now.")}</div>
+          )}
+          {shownServers.map((s) => {
             const st = busy[s.id] === "connect" ? "connecting" : s.status;
             const isOpen = open.has(s.id);
             const eff = s.transport_effective;
@@ -184,7 +303,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
                       {s.status === "ready" ? t("{n} tools", { n: s.tools.length }) : t("Tools are listed once connected")}
                       {inGroups ? t(" · enabled in {n} groups", { n: inGroups }) : t(" · not enabled in any group yet")}
                     </div>
-                    {(rowErr[s.id] || (st === "error" && s.error)) && <div className="ext-errline">{rowErr[s.id] || s.error}</div>}
+                    {(rowErr[s.id] || (st === "error" && s.error)) && <Folded text={rowErr[s.id] || s.error || ""} />}
                   </div>
                   <div className="ext-item-actions">
                     {s.status === "ready" ? (
@@ -203,15 +322,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
                   <div className="ext-item-detail">
                     {s.description && <div className="ext-item-desc" style={{ marginTop: 0 }}>{s.description}</div>}
                     {s.tools.length > 0 ? (
-                      <div className="ext-tool-list" aria-label={t("Tools of {name}", { name: s.name })}>
-                        {s.tools.map((tool) => (
-                          <div key={tool.name} className="ext-tool">
-                            <code>{tool.name}</code>
-                            {tool.read_only && <span className="tag on" title={t("The server declares this tool read-only")}>{t("Read-only")}</span>}
-                            <span className="muted">{tool.description}</span>
-                          </div>
-                        ))}
-                      </div>
+                      <ToolList name={s.name} tools={s.tools} />
                     ) : (
                       <div className="muted small" style={{ marginTop: 6 }}>{t("No tool information yet — click Connect and the tools this server provides will be listed.")}</div>
                     )}
