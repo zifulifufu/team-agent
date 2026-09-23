@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppWindow, Pencil, Plus, RefreshCw, Trash2, Users, User } from "lucide-react";
+import { AppWindow, FileText, Pencil, Plus, RefreshCw, Trash2, Users, User } from "lucide-react";
 import { api, type Skill } from "../api";
 import { useData } from "../data";
 import { currentLang, pickLang, useI18n } from "../i18n";
@@ -182,6 +182,11 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
                           <span className={"tag " + (s.scope === "group" ? "warn" : "on")}>{s.scope === "group" ? <Users size={11} /> : <User size={11} />} {scopeLabel(s.scope)}</span>
                           {s.version && <span className="tag">v{s.version}</span>}
                           {s.source && <SourceBadge repo={s.source.repo} path={s.source.path} />}
+                          {s.files > 0 && (
+                            <span className="tag" title={t("This skill came with files of its own; they are installed next to it and the prompt tells members where to find them.")}>
+                              <FileText size={11} /> {t("{n} files", { n: s.files })}
+                            </span>
+                          )}
                           {hasNew && <span className="tag new">{t("A newer version is on GitHub")}</span>}
                         </div>
                         {s.description && <div className="ext-item-desc">{s.description}</div>}

@@ -183,12 +183,12 @@ def test_importing_a_skill_writes_it_and_a_second_import_skips_it(home):
     write(home, ".claude/skills/writer/SKILL.md",
           "---\nname: writer\ndescription: Formal notices\n---\n\n写公告的步骤")
     got = I.import_skills(store, "claude-skills", ["writer"])
-    assert got == {"added": ["writer"], "skipped": []}
+    assert got == {"added": ["writer"], "skipped": [], "copied": {}}
     saved = (store.data_dir / "skills" / "writer" / "SKILL.md").read_text(encoding="utf-8")
     assert "写公告的步骤" in saved and "Formal notices" in saved
     # a second run must not overwrite what is already there
     again = I.import_skills(store, "claude-skills", ["writer"])
-    assert again == {"added": [], "skipped": ["writer"]}
+    assert again == {"added": [], "skipped": ["writer"], "copied": {}}
     assert [i["name"] for i in servers_of(store, "claude-skills")][0] == "writer"
     assert servers_of(store, "claude-skills")[0]["exists"] is True
 
@@ -620,3 +620,116 @@ def test_a_codex_relative_command_is_resolved_against_its_absolute_cwd(tmp_path)
     assert any("relative path" in n for n in notes), notes
     assert not any("relative path" in n for n in I.risk_notes(by["resolvable"])), \
         "the one that was resolved is not relative any more"
+
+
+# ============================================================ a skill is a folder, not a file
+def test_importing_a_skill_brings_the_files_its_text_refers_to(home, tmp_path):
+    """A skill that ships a `references/` tree is exactly the kind worth importing, and it was the
+    kind that arrived half-broken: only the SKILL.md was written, so every line saying "read
+    references/resolve.md" pointed at a file that was never installed. Nothing said so — the skill
+    appeared in the list, complete.
+
+    What may come along is bounded and filtered: editor leftovers and anything dotted are skipped
+    (`copy_skill_files`), which is why the `.gitignore` the real package ships is not expected here.
+    """
+    write(home, ".claude/skills/media-use/SKILL.md",
+          "---\nname: media-use\ndescription: media\n---\n\nRead `references/resolve.md`, run "
+          "`scripts/resolve.mjs`.\n")
+    write(home, ".claude/skills/media-use/references/resolve.md", "how to resolve\n")
+    write(home, ".claude/skills/media-use/scripts/resolve.mjs", "// resolve\n")
+    write(home, ".claude/skills/media-use/.gitignore", "node_modules\n")
+
+    data = tmp_path / "data"
+    app = create_app(data, completion_fn=FakeLLM(default="ok"))
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        got = c.post("/api/import/skills",
+                     json={"source": "claude-skills", "names": ["media-use"]}).json()
+        assert got["added"] == ["media-use"], got
+        assert got["copied"] == {"media-use": 2}, got
+        assert (data / "skills/media-use/SKILL.md").is_file()
+        assert (data / "skills/media-use/references/resolve.md").read_text() == "how to resolve\n"
+        assert (data / "skills/media-use/scripts/resolve.mjs").is_file()
+        assert not (data / "skills/media-use/.gitignore").exists(), "dotted files are not copied"
+
+        # The interface can say which skills are folders rather than paragraphs.
+        row = next(s for s in c.get("/api/skills").json() if s["name"] == "media-use")
+        assert row["files"] == 2
+
+
+def test_a_skill_imported_before_this_fix_gets_its_files_back(home, tmp_path):
+    """The repair for installs that already exist. Every skill imported up to now arrived as its
+    SKILL.md alone, and re-importing is not an option — the importer skips an existing name on
+    purpose — so the only route back used to be deleting each one by hand.
+
+    It is deliberately narrow: once per skill, only ever adding what is missing, and never touching a
+    file that is already there (which is the one a user might have edited).
+    """
+    data = tmp_path / "data"
+    Store(data)                                    # the data directory, before the app takes over
+    write(data, "skills/media-use/SKILL.md", "---\nname: media-use\n---\n\nRead references/x.md\n")
+    write(home, ".claude/skills/media-use/SKILL.md", "---\nname: media-use\n---\n\ntext\n")
+    write(home, ".claude/skills/media-use/references/x.md", "from the source\n")
+    assert not (data / "skills/media-use/references/x.md").exists()
+
+    create_app(data, completion_fn=FakeLLM(default="ok"))
+    assert (data / "skills/media-use/references/x.md").read_text() == "from the source\n"
+
+    # A file the user has since edited is not taken back…
+    (data / "skills/media-use/references/x.md").write_text("my own notes\n")
+    # …and a skill with no source to fill from is simply marked, not retried on every start.
+    write(data, "skills/mine/SKILL.md", "---\nname: mine\n---\n\ntext\n")
+    create_app(data, completion_fn=FakeLLM(default="ok"))
+    assert (data / "skills/media-use/references/x.md").read_text() == "my own notes\n"
+    assert Store(data)._one("SELECT 1 FROM meta WHERE key=?", ("skill_files_checked:mine",))
+
+
+def test_the_prompt_says_where_a_skills_own_files_are(tmp_path):
+    """Filling in the files is only half of it: the skill's text says "read references/x.md" and
+    "run scripts/y.mjs", and neither resolves unless the reader is told the directory they are in.
+    A plain text skill gets no such line, or every prompt would carry noise.
+    """
+    from app import tools
+
+    d = tmp_path / "skills"
+    tools.write_skill(d, "plain", "d", "Body of the plain one.", "member")
+    tools.write_skill(d, "media-use", "d", "Read references/x.md — `<SKILL_DIR>` is mine.", "member")
+    (d / "media-use" / "references").mkdir()
+    (d / "media-use" / "references" / "x.md").write_text("x\n", encoding="utf-8")
+
+    assert tools.skill_extra_files(next(s for s in tools.list_skills(d) if s.name == "media-use")) == 1
+
+    from app import i18n
+
+    # Restored in `finally`, like every other language switch in these tests: leaving it on Chinese
+    # makes every later test that expects an English message fail, and the failure reads like the
+    # message being wrong rather than the language being wrong.
+    was = i18n.current()
+    try:
+        for lang in ("en", "zh"):
+            i18n.set_current(lang)
+            block = tools.skills_prompt(d, ["media-use", "plain"])
+            assert str(d / "media-use") in block, lang
+            assert block.count(str(d / "media-use")) == 1
+            assert str(d / "plain") not in block, "a text-only skill has no files to point at"
+    finally:
+        i18n.set_current(was)
+
+
+def test_a_symlink_inside_an_imported_skill_is_skipped_not_followed(home):
+    """The source belongs to another application and the destination is this app's data directory:
+    copying a link through would put whatever it points at into the app, under the skill's name.
+    """
+    from app.tools import copy_skill_files
+
+    outside = home / "secret.txt"
+    outside.write_text("not part of the skill\n", encoding="utf-8")
+    src = home / ".claude/skills/thing"
+    (src / "references").mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: thing\n---\n\ntext\n", encoding="utf-8")
+    (src / "references" / "real.md").write_text("real\n", encoding="utf-8")
+    (src / "references" / "link.md").symlink_to(outside)
+
+    dest = home / "installed"
+    assert copy_skill_files(src, dest) == 1
+    assert (dest / "references" / "real.md").is_file()
+    assert not (dest / "references" / "link.md").exists()

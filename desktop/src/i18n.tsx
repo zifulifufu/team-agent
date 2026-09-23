@@ -71,6 +71,9 @@ const ZH: Record<string, string> = {
   "{n} of {total} shown": "显示 {n} / {total} 条",
   "No skill matches that. Clear the search to see them all.": "没有匹配的技能。清空搜索即可看全部。",
   "Stored as “{folder}”": "存放目录:{folder}",
+  // 带附属文件的技能 = 一本手册,不是一段规则;导入时会把它们一起装进来
+  "{n} files": "{n} 个文件",
+  "This skill came with files of its own; they are installed next to it and the prompt tells members where to find them.": "这个技能自带文件,导入时一起装在了它旁边,提示词里会告诉成员去哪里找。",
   "Plugins": "插件",
   "Prompts": "提示词",
   "Library": "资料库",

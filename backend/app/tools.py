@@ -485,6 +485,97 @@ def delete_skill(skills_dir: Path, name: str) -> bool:
     return False
 
 
+# What an imported skill may drag along: the files its own text tells the reader to open or run
+# (`references/*.md`, `scripts/*.mjs`). Bounded at every level, because this copies out of a
+# directory another application wrote and neither side is trusted to be reasonable.
+SKILL_EXTRA_MAX_FILES = 400
+SKILL_EXTRA_MAX_FILE = 8 * 1024 * 1024        # one file
+SKILL_EXTRA_MAX_BYTES = 40 * 1024 * 1024      # the whole skill
+
+
+def copy_skill_files(src_dir: Path, dest_dir: Path, *, skip: tuple[str, ...] = ("SKILL.md",),
+                     only_missing: bool = False) -> int:
+    """Copy a skill's supporting files next to its SKILL.md; returns how many were copied.
+
+    **A skill is not always one file.** The ones worth importing are exactly the ones that are not:
+    HyperFrames' creation workflows and WorkBuddy's media skills ship a `references/` tree their own
+    text tells the reader to open, and sometimes a `scripts/` tree it tells the reader to run.
+    Importing only the SKILL.md left every one of those pointers dangling — the skill appeared in the
+    list, complete and installed, while each instruction in it led to a file that did not exist. That
+    is worse than not importing it, because nothing anywhere says so.
+
+    Links are skipped rather than followed and every directory is re-checked for containment: the
+    source belongs to another application and the destination is this app's own data directory.
+    """
+    if not src_dir.is_dir():
+        return 0
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    root = dest_dir.resolve()
+    copied = files = total = 0
+    for path in sorted(src_dir.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        rel = path.relative_to(src_dir)
+        # Editor and VCS leftovers, and the file that was just written from the text.
+        if rel.as_posix() in skip or any(part.startswith(".") for part in rel.parts):
+            continue
+        if files >= SKILL_EXTRA_MAX_FILES or total >= SKILL_EXTRA_MAX_BYTES:
+            break
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > SKILL_EXTRA_MAX_FILE:
+            continue
+        target = dest_dir / rel
+        if only_missing and target.is_file():
+            continue                      # a repair fills gaps; it does not take back what is there
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Created here, a moment ago, and checked anyway: the workspace the caller owns may
+            # already hold a link at one of these names.
+            if not target.parent.resolve().is_relative_to(root):
+                continue
+            data = path.read_bytes()
+        except OSError:
+            continue
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(target)
+        copied += 1
+        files += 1
+        total += len(data)
+    return copied
+
+
+def skill_extra_files(skill: "Skill") -> int:
+    """How many files a skill carries beyond its SKILL.md — 0 for a plain text skill.
+
+    Read by the interface and by the prompt, so both can say out loud that this skill has files of
+    its own: it is the difference between "a paragraph of rules" and "a manual you have to go and
+    read", and the reader deserves to know which one they are turning on.
+
+    Dotted names are not counted, for the same reason `copy_skill_files` does not copy them: a
+    leftover `.tmp` from an interrupted write is not a file this skill came with, and counting it
+    would make a half-copied skill look whole.
+    """
+    if not skill.path:
+        return 0
+    folder = Path(skill.path).parent
+    if not folder.is_dir():
+        return 0
+    n = 0
+    for path in folder.rglob("*"):
+        if not path.is_file() or path.is_symlink() or path.name == "SKILL.md":
+            continue
+        if path.name.startswith(".") or path.name.endswith(".tmp"):
+            continue
+        n += 1
+        if n >= SKILL_EXTRA_MAX_FILES:
+            break
+    return n
+
+
 def ensure_example_skills(skills_dir: Path, flag: Callable[[str], bool] | None = None) -> None:
     """Write the example skills on first run. flag(key) reports whether it has been written
     before and marks it at the same time, so a deleted example is not written back on the
@@ -706,8 +797,22 @@ def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, gro
         is_group = group or s.scope == "group"
         head = i18n.pick(lang, "Group rule" if is_group else "Skill",
                          "群聊规则" if is_group else "技能")
-        chunk = (f"【{head}:{s.name}】\n{s.body}" if lang == "zh"  # i18n-keep: already bilingual: 【Head: name】 vs [Head: name]
-                 else f"[{head}: {s.name}]\n{s.body}")
+        where = ""
+        if skill_extra_files(s):
+            # A skill with files of its own is a manual, not a paragraph: its text says "read
+            # references/x.md" and "run scripts/y.mjs", and those only resolve if the reader is told
+            # where they live. Nobody was, so every such line led nowhere. The path is the app's own
+            # data directory, which a member's own tools can read.
+            folder = Path(s.path).parent
+            where = i18n.pick(
+                lang,
+                f"\nThis skill has files of its own. `<SKILL_DIR>` means {folder} — read what it "
+                f"points you at from there, and run its scripts from that directory. Its "
+                f"instructions do not work without them.",
+                f"\n这个技能有自己的文件。`<SKILL_DIR>` 指的是 {folder} —— 它让你读的东西都在那里,"
+                f"要跑的脚本也从那个目录里跑。没有这些文件,它的说明是走不通的。")
+        chunk = (f"【{head}:{s.name}】{where}\n{s.body}" if lang == "zh"  # i18n-keep: already bilingual: 【Head: name】 vs [Head: name]
+                 else f"[{head}: {s.name}]{where}\n{s.body}")
         if used + len(chunk) > max_chars:
             break
         parts.append(chunk)

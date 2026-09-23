@@ -908,32 +908,97 @@ def import_mcp(store: Any, source: str, names: list[str]) -> dict:
     return import_servers(store, servers, list(names))
 
 
+def restore_imported_skill_files(store: Any) -> list[tuple[str, int]]:
+    """Give a skill imported before this fix the files its own text points at.
+
+    Every skill imported up to now arrived as its SKILL.md alone, so any skill whose text says "read
+    references/resolve.md" or "run scripts/resolve.mjs" has been pointing at nothing. Re-importing is
+    not the answer: the importer skips an existing name on purpose, so the only route back was to
+    delete each one by hand and hope — from the one screen that cannot tell you which skills were
+    affected.
+
+    Deliberately narrow. It runs **once per skill** (recorded in `meta`, like the other startup
+    repairs), it only ever *adds* files that are missing, it never touches a SKILL.md — the file a
+    user would have edited — and it only fills in from a source that is still on this machine.
+    Returns the `(skill, files added)` pairs.
+    """
+    from .tools import copy_skill_files, list_skills, safe_skill_name
+
+    skills_dir = store.data_dir / "skills"
+    if not skills_dir.is_dir():
+        return []
+    roots = [root for src in SOURCES if src["kind"] == "skill" for root in paths_of(src)]
+    if not roots:
+        return []
+    fixed: list[tuple[str, int]] = []
+    for skill in list_skills(skills_dir):
+        folder = Path(skill.path).parent.name if skill.path else ""
+        if not folder:
+            continue
+        mark = f"skill_files_checked:{safe_skill_name(folder)}"
+        if store._one("SELECT 1 FROM meta WHERE key=?", (mark,)):
+            continue                      # already looked at, once, and never again
+        for root in roots:
+            origin = root / folder
+            if not root.is_dir() or not (origin / "SKILL.md").is_file():
+                continue
+            # `only_missing`: a repair adds the files that are gone and leaves everything already
+            # there alone. Deciding from "does this skill have any extra files" instead — the first
+            # version — wrote off a skill whose copy was interrupted halfway, because a single file
+            # was enough for it to look complete.
+            files = copy_skill_files(origin, skills_dir / folder, only_missing=True)
+            if files:
+                fixed.append((skill.name, files))
+            break
+        # Marked once the attempt is over, and marked even when no source had this skill: there is
+        # nothing to fill it from, so asking again on every start only walks the filesystem. A skill
+        # imported later is a *new* folder and is looked at on its own.
+        #
+        # `_flag()` would have recorded it *before* trying, so a copy that failed — a permission, a
+        # full disk — would leave a skill broken with a marker claiming it had been dealt with, which
+        # is the one outcome worth avoiding here.
+        store._x("INSERT OR IGNORE INTO meta(key,value) VALUES(?, '1')", (mark,))
+    return fixed
+
+
 def import_skills(store: Any, source: str, names: list[str]) -> dict:
-    """Import the named skills as text. Existing names are skipped, never overwritten."""
-    from .tools import write_skill
+    """Import the named skills — the text *and* the files their text points at.
+
+    It used to be the text only ("import the named skills as text"), which quietly broke every skill
+    that ships a `references/` or `scripts/` tree: the SKILL.md says "read references/resolve.md" and
+    "run scripts/resolve.mjs", and neither arrived. The result looked installed. Existing names are
+    still skipped, never overwritten.
+    """
+    from .tools import copy_skill_files, parse_skill_text, safe_skill_name, write_skill
     src = BY_KEY.get(source)
     if not src or src["kind"] != "skill":
         raise ValueError(i18n.pick_now("That is not a skill source", "这不是一个技能来源"))
-    added, skipped = [], []
+    added, skipped, copied = [], [], {}
+    skills_dir = store.data_dir / "skills"
     for item in _skill_items(src, store):
         if item["name"] not in names:
             continue
         if item["exists"]:
             skipped.append(item["name"])
             continue
+        origin = Path(item["path"])
         try:
-            text = Path(item["path"]).read_text(encoding="utf-8", errors="ignore")
+            text = origin.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             skipped.append(item["name"])
             continue
-        from .tools import parse_skill_text
         skill = parse_skill_text(text, default_name=item["folder"], path=item["path"])
         if not (skill.body or "").strip():
             skipped.append(item["name"])
             continue
-        write_skill(store.data_dir / "skills", skill.name, skill.description, skill.body, "member")
+        write_skill(skills_dir, skill.name, skill.description, skill.body, "member")
+        files = copy_skill_files(origin.parent, skills_dir / (safe_skill_name(skill.name) or item["folder"]))
         added.append(skill.name)
-    return {"added": added, "skipped": skipped}
+        if files:
+            # Reported rather than left for the reader to discover: this skill is a folder, not a
+            # paragraph, and it brought `files` of them.
+            copied[skill.name] = files
+    return {"added": added, "skipped": skipped, "copied": copied}
 
 
 def import_experts(store: Any, source: str, names: list[str]) -> dict:

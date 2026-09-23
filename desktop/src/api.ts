@@ -747,6 +747,8 @@ export interface Skill {
   source: { repo: string; path: string } | null;
   /** Which section it is filed under, as a stable key (see skills.ts for the wording). */
   category: string;
+  /** Files it carries beyond its SKILL.md. 0 = a paragraph of rules; >0 = a manual with files. */
+  files: number;
   body?: string;                   // Returned only for a single read, create, or update
 }
 export interface PluginInfo {

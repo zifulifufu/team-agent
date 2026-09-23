@@ -47,6 +47,7 @@ from .tools import (
     list_skills,
     localize_skill,
     safe_skill_name,
+    skill_extra_files,
     skill_names,
     write_skill,
 )
@@ -1026,7 +1027,11 @@ def build_router(c: Ctx) -> APIRouter:
                # (the front end has the wording in both languages), so a section is never renamed by
                # accident here — and a skill imported from elsewhere is filed as such rather than
                # guessed at.
-               "category": category_of(s.name, s.description, imported=bool(src))}
+               "category": category_of(s.name, s.description, imported=bool(src)),
+               # How many files it carries beyond its SKILL.md. A skill that is a manual rather than
+               # a paragraph reads completely differently, and leaving the count out meant the reader
+               # had to open the folder to find out which one they were turning on.
+               "files": skill_extra_files(s)}
         if with_body:
             out["body"] = shown.body
         return out

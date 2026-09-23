@@ -443,6 +443,18 @@ is removed — a copy you rewrote by hand survives (it is not a copy any more) a
 *Stored as …* line so it can be told apart from the other. Members and groups that had ticked the old
 spelling are rewritten, so no tick silently disappears.
 
+**A skill can be a folder, not only that paragraph.** Importing from another app brings the skill's
+own `references/` and `scripts/` **as well**, and the prompt states the directory they are in —
+because the text says "read `references/resolve.md`" and "run `scripts/resolve.mjs`", and neither
+line means anything without it. A skill that carries files is marked *N files* in the list, so
+"a paragraph of rules" and "a manual you have to go and read" are told apart at a glance.
+
+⚠️ Earlier versions imported **the SKILL.md alone**, so those skills installed empty: every reference
+in the text pointed at a file that was never written, and nothing on screen said so. **Upgrades fill
+them in once** — one pass per skill, only files that are missing, never overwriting something you
+edited — so there is nothing to re-import by hand. The GitHub install path is still one-file; see
+Known limitations.
+
 ## Bringing definitions in from other AI apps
 
 *Settings → MCP servers / Skills → **From another app***, and *Members → **Import experts***,
@@ -691,6 +703,10 @@ from other projects.
 - PDF extraction has no OCR, so scanned documents cannot be read.
 - Re-importing a library folder detects changes by file size, so a same-size edit is missed.
 - With a single provider, strength-based model selection adds little — more models make it worthwhile.
+- **Installing a skill from GitHub takes the SKILL.md file only** (the preview and the hash check are
+  both built around that one file). A repository skill that ships a `references/` tree therefore
+  arrives incomplete that way; to get the whole folder, import it from another app — that path copies
+  the directory — or clone the repository and import from there.
 
 ## Roadmap
 

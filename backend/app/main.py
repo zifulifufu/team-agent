@@ -43,6 +43,7 @@ from .memory import MemoryService
 from . import templates
 from . import i18n
 from . import images
+from . import import_sources
 from . import net
 from .obsidian import ObsidianSync
 from .orchestrator import Orchestrator
@@ -245,6 +246,10 @@ def create_app(
     # title and the same description, and a member could be given the same rule twice. Repairing it
     # here means it costs the user nothing: no reinstall, no manual delete, no list to prune.
     merge_builtin_skill_copies(store)
+    # Skills imported before the importer knew a skill can be a folder arrived as their SKILL.md
+    # alone, so anything they said to read or run pointed at nothing. One pass, once per skill, adds
+    # only the files that are missing.
+    import_sources.restore_imported_skill_files(store)
     # Reminders used to be written in whichever language the check happened to run in. This gives
     # the ones already on disk their English form, so an English interface stops showing Chinese
     # ones immediately rather than waiting for the next check to rewrite them. Called by name
