@@ -722,6 +722,45 @@ async def test_the_probe_treats_a_missing_task_as_a_live_service():
     assert ok and "200" in detail
 
 
+async def test_a_working_key_is_not_reported_as_a_broken_service():
+    """The convention this API actually uses, measured with a real key: a task that does not exist
+    comes back as **HTTP 500** carrying `{"status": "Fail", "message": "视频任务查询失败: Video task
+    not found"}`, not 404 and not the 200-with-Fail its other paths use.
+
+    So a probe that flipped `>= 400` to unreachable called a perfectly good provider broken — and it
+    stayed invisible while the only key available answered 401. Both shapes are asserted, plus the
+    body being quoted so "up but broken" is not passed off as healthy.
+    """
+    def handler(request):
+        return httpx.Response(500, json={"status": "Fail",
+                                         "message": "视频任务查询失败: Video task not found",
+                                         "data": None})
+
+    prov = {"kind": "metachat_media", "base_url": "https://api.mmchat.xyz/open/v1", "api_key": "sk-real"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        ok, detail = await video.probe(prov, client=c)
+
+    assert ok, detail
+    assert "500" in detail and "accepted the key" in detail
+    assert "Video task not found" in detail, "the service's own words are kept, not swallowed"
+
+
+async def test_the_key_is_still_what_makes_it_fail():
+    """The other end of the same rule, so the loosening above cannot hide a bad key."""
+    for code in (401, 403):
+        def handler(request, code=code):
+            return httpx.Response(code, json={"status": "authentication_error", "message": "Unauthorized"})
+
+        prov = {"kind": "metachat_media", "base_url": "https://api.mmchat.xyz/open/v1", "api_key": "sk-bad"}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            ok, detail = await video.probe(prov, client=c)
+        assert not ok and str(code) in detail
+        # …and the picture the drawing tool asks about gets the same verdict, since it is one key
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            ok, detail = await imagegen.probe(prov, "z-image-turbo", client=c)
+        assert not ok and "key" in detail
+
+
 async def test_the_probe_reports_a_dead_address():
     def handler(request):
         raise httpx.ConnectError("connection refused", request=request)

@@ -201,9 +201,17 @@ META_PROBE = "video/result/{vid}"
 async def probe_meta(base: str, key: str, *, client: "httpx.AsyncClient") -> tuple[bool, str]:
     """Is MetaChat's media API there, and does it accept this key? Renders and draws nothing.
 
-    Asking about a task id that cannot exist: that API has no `/health` and no listing to read, and
-    it answers a missing task in its own 200-with-`Fail` envelope. A 401/403 is the one answer that
-    means something is really wrong (the key), and anything else proves the service answered.
+    Asking about a task id that cannot exist. What comes back for that, measured against the live
+    service with a real key, is **HTTP 500 carrying `{"status": "Fail", "message": "视频任务查询失败:
+    Video task not found"}`** — not the 404 an H3-style server would give, and not the 200-with-Fail
+    the rest of this API uses. So the **status code is no help here** and the only answer that means
+    "something is really wrong" is 401/403; everything else, 500 included, proves the request was
+    authenticated and processed, which is all this probe claims to establish.
+
+    ⚠️ Treating `>= 400` as unreachable was the earlier mistake, and it was invisible for a while
+    because the only key to hand then was an invalid one that answered 401. **A working key reported
+    "the service answered HTTP 500", i.e. a healthy provider called broken.** When a probe's verdict
+    depends on the failure convention of the service, assert the convention you actually observed.
 
     Shared by both tools rather than written twice: one key, one host, one question — and a second
     copy could only drift into asking it differently.
@@ -222,18 +230,24 @@ async def probe_meta(base: str, key: str, *, client: "httpx.AsyncClient") -> tup
             f"{base} 是活的,但密钥被拒绝了({r.status_code})。MetaChat 的密钥在头像 → API 管理里创建,"
             "媒体接口用的是同一把。",
         )
-    if r.status_code == 404:
+    said = ""
+    try:
+        body = r.json()
+        if isinstance(body, dict):
+            said = " ".join(str(body.get("message") or "").split())[:160]
+    except ValueError:
+        said = " ".join((r.text or "").split())[:160]
+    tail = f" · {said}" if said else ""
+    if r.status_code >= 400:
+        # Reachable, and the key was accepted — otherwise this would have been 401/403. The body is
+        # quoted so a service that is up but broken is not silently called healthy either.
         return True, i18n.pick_now(
-            f"{base} is reachable: it answered 404 for a task id that does not exist.",
-            f"{base} 可以联通:对不存在的任务 id 返回了 404。",
+            f"{base} accepted the key: it answered {r.status_code} for a task that does not exist{tail}.",
+            f"{base} 接受了密钥:对不存在的任务返回了 {r.status_code}{tail}。",
         )
-    if r.status_code < 400:
-        return True, i18n.pick_now(
-            f"{base} answered the media API with {r.status_code}.", f"{base} 的媒体接口有响应({r.status_code})。"
-        )
-    return False, i18n.pick_now(
-        f"{base} answered HTTP {r.status_code} ({r.text[:200]}).",
-        f"{base} 返回了 HTTP {r.status_code}({r.text[:200]})。",
+    return True, i18n.pick_now(
+        f"{base} accepted the key and answered {r.status_code}{tail}.",
+        f"{base} 接受了密钥,返回 {r.status_code}{tail}。",
     )
 
 
