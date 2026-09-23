@@ -1,12 +1,18 @@
-"""Image generation through an OpenAI-compatible images endpoint.
+"""Image generation through an OpenAI-compatible images endpoint, **or** MetaChat's media API.
 
-This is the one media capability that works against a *gateway* rather than a self-hosted
-server: `POST {base}/images/generations` with a model name is what OpenAI serves, what
-MetaChat serves on its OpenAI-compatible address (GPT-Image), and what most aggregators
-implement — so one implementation reaches all of them. A gateway is also the cheapest way in:
-a key and a model name, no GPU.
+The first is the one media capability that works against a *gateway* rather than a self-hosted
+server: `POST {base}/images/generations` with a model name is what OpenAI serves, what MetaChat
+serves on its OpenAI-compatible address (GPT-Image), and what most aggregators implement — so one
+implementation reaches all of them. A gateway is also the cheapest way in: a key and a model name,
+no GPU.
 
-Three platform facts shape it:
+The second is `metachat_media`: MetaChat's own image API, which is a *job* rather than a reply —
+submit, poll, then download the picture from a link. It is the only way to reach the drawing models
+that are not on its OpenAI-compatible address (Midjourney, FLUX, Seedream, Z-Image, Grok Image), and
+its paths and parameters differ per model, so they are described in `media.MEDIA_MODELS` rather than
+assumed here.
+
+Three platform facts shape the first path:
 
 * **The response is either base64 or a URL.** OpenAI's newer image models always inline the
   bytes; older and third-party ones return a temporary URL. Both are accepted, and the URL
@@ -15,18 +21,16 @@ Three platform facts shape it:
   outright, so it is never sent; whatever comes back decides which branch runs.
 * **Failures arrive as HTTP errors with a JSON body**, and the useful ones (bad key, unknown
   model, unsupported size, rate limit) each need a different fix. `explain` names it.
-
-Platforms whose image models are *not* on an OpenAI-compatible path — MetaChat's Seedream /
-FLUX / Z-Image / Midjourney endpoints are asynchronous jobs of their own shape — are not
-covered here; they would be another provider kind with its own submit/poll dialect.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -35,8 +39,9 @@ from . import i18n, media, net
 from .media import offline_reason
 
 # The provider kinds this module can drive. A subset of `media.MEDIA_KINDS`: the video tool
-# must never pick an image provider, and the other way round.
-KINDS: tuple[str, ...] = ("openai_image",)
+# must never pick an image provider, and the other way round. `metachat_media` is in both
+# subsets because its one key reaches an image API *and* a video API.
+KINDS: tuple[str, ...] = ("openai_image", "metachat_media")
 
 # What OpenAI's image models accept. A gateway may support more, but offering a size the
 # model then refuses produces a paid failure, so the list stays conservative.
@@ -46,6 +51,18 @@ DEFAULT_MODEL = "gpt-image-1"
 
 SUBMIT_TIMEOUT = 120.0
 DOWNLOAD_TIMEOUT = 120.0
+
+# MetaChat's API takes a named aspect ratio rather than a pixel size, so our three sizes are mapped
+# onto the ratios every one of its families documents. A second setting saying almost the same
+# thing would be a setting to keep in sync, and it would still have to decide which one applies.
+META_ASPECTS = {"1024x1024": "1:1", "1536x1024": "3:2", "1024x1536": "2:3"}
+
+# Status words of a media job. Anything else means "still working" and the deadline decides.
+_DONE = {"completed", "complete", "succeeded", "success", "done", "finished"}
+_FAILED = {"failed", "failure", "error", "cancelled", "canceled", "expired", "rejected"}
+
+POLL_START, POLL_MAX = 2.0, 10.0
+MIN_DEADLINE = 5.0
 
 # A refusal is a sentence, not a document. The cap exists so an error body cannot be unbounded
 # either — the size of a *reply* is a different question from the size of an *image*.
@@ -102,9 +119,24 @@ def blocked_by_offline(provider: dict, cfg: dict) -> str:
 
 # -------------------------------------------------------------------- request
 def build_payload(prompt: str, *, model: str, size: str) -> dict:
-    """The request body. `response_format` is deliberately absent — see the module docstring."""
+    """The request body for an OpenAI-compatible images endpoint.
+    `response_format` is deliberately absent — see the module docstring."""
     return {"model": (model or DEFAULT_MODEL).strip(), "prompt": prompt.strip(),
             "n": 1, "size": size}
+
+
+def metachat_payload(prompt: str, *, model: str, size: str) -> dict:
+    """The body MetaChat's image job documents: `{prompt, model, params}`.
+
+    Only the parameters *this* model's own page lists, and of those only the aspect ratio: the
+    pixel sizes (`1MP`, `1K`…) are left at each family's documented default, because sending a
+    value the model does not know is a paid failure rather than a helpful error. `num` is 1
+    because one image is what gets saved.
+    """
+    job = media.job_of(model, "image")
+    values = {"aspect": META_ASPECTS.get(size, "1:1"), "num": 1}
+    return {"prompt": prompt.strip(), "model": (model or "").strip(),
+            "params": {k: values[k] for k in job["params"] if k in values}}
 
 
 def decode_b64(value: str) -> bytes:
@@ -309,6 +341,9 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     image itself reads as a size at every call site, and `size_label(b"...")` fails with a
     comparison error far from its cause.
     """
+    if provider.get("kind") == "metachat_media":
+        return await _metachat_generate(provider, payload, max_bytes=max_bytes,
+                                        deadline_s=deadline_s, client=client)
     url = media.api_url(provider["base_url"], "/v1/images/generations")
     base = (provider.get("base_url") or "").strip()
     cap = max(ERROR_BODY_CAP, max_bytes * 2)      # base64 inflates by a third; the envelope is small
@@ -349,6 +384,126 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     return {"data": blob, "size": len(blob), "seconds": time.time() - started, "url": url}
 
 
+# -------------------------------------------------------------------- MetaChat's image job
+async def _metachat_generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s: float,
+                             client: httpx.AsyncClient | None = None) -> dict:
+    """One image through MetaChat's own image API: submit, wait, download the link it reports.
+
+    A separate function rather than a branch inside `generate`: a job is a different shape from a
+    reply, and the only thing the two share is what they return.
+    """
+    model = str(payload.get("model") or "")
+    job = media.job_of(model, "image")
+    base = (provider.get("base_url") or "").strip()
+    own = client is None
+    c = client or net.client(base, timeout=SUBMIT_TIMEOUT)
+    started = time.time()
+    try:
+        vid = await _meta_submit(c, provider, job["submit"], payload)
+        data = await _meta_wait(c, provider, job, vid, deadline_s)
+        links = media.job_links(data, job["file"])
+        if not links:
+            raise ImageError(i18n.pick_now(
+                f"MetaChat reported the job as finished but returned no picture address ({model}). "
+                "This is worth reporting to them rather than retrying.",
+                f"MetaChat 报告任务已完成,但没有返回图片地址({model})。这种情况建议反馈给 MetaChat,重试没有意义。"))
+        # No Authorization header on this one: the link points into MetaChat's object storage, and
+        # the key is for MetaChat alone. `fetch` also refuses a link that points back at this
+        # machine or the local network.
+        blob = await fetch(links[0], max_bytes=max_bytes, client=c, base=base)
+    finally:
+        if own:
+            await c.aclose()
+    if len(blob) > max_bytes:
+        raise ImageError(i18n.pick_now(
+            f"the image is larger than this group allows ({media.size_label(max_bytes)})",
+            f"图片超过了本群允许的大小({media.size_label(max_bytes)})"))
+    return {"data": blob, "size": len(blob), "seconds": time.time() - started, "url": links[0]}
+
+
+async def _meta_submit(c: httpx.AsyncClient, provider: dict, path: str, payload: dict) -> str:
+    """Hand the drawing over; returns the task id. Raises ImageError with a sentence."""
+    url = media.api_url(provider["base_url"], path)
+    try:
+        r = await c.post(url, json=payload, headers=media.auth_headers(provider.get("api_key") or ""),
+                         timeout=SUBMIT_TIMEOUT)
+    except Exception as e:  # noqa: BLE001 — the common case is an unreachable address
+        raise ImageError(i18n.pick_now(
+            f"could not reach MetaChat's image service at {url} ({e})",
+            f"连不上 MetaChat 的图片服务 {url}({e})")) from None
+    if r.status_code in (401, 403):
+        raise ImageError(i18n.pick_now(
+            "MetaChat rejected the key, so nothing was drawn. Check the API key on that provider.",
+            "MetaChat 认为密钥无效,没有画。请检查那个服务商里的 API Key。"))
+    if r.status_code >= 300:
+        raise ImageError(_why(r.status_code, r.text))
+    try:
+        body = r.json()
+    except ValueError:
+        raise ImageError(i18n.pick_now(
+            "MetaChat returned something that is not JSON. Check that the address is "
+            "https://api.mmchat.xyz/open/v1.",
+            "MetaChat 返回的不是 JSON。请检查地址是不是 https://api.mmchat.xyz/open/v1。")) from None
+    if not media.meta_ok(body):
+        # A refusal arrives with HTTP 200 and the verdict in the body, so the status code said
+        # nothing and this is the only place the actual reason exists.
+        raise ImageError(i18n.pick_now(
+            f"MetaChat did not accept the drawing ({media.meta_said(body)})",
+            f"MetaChat 没有接受这次绘图({media.meta_said(body)})"))
+    vid = str(((body or {}).get("data") or {}).get("id") or "").strip()
+    if not vid:
+        raise ImageError(i18n.pick_now(
+            f"MetaChat accepted the drawing but returned no task id ({str(body)[:200]})",
+            f"MetaChat 收下了绘图请求但没有返回任务 id({str(body)[:200]})"))
+    return vid
+
+
+async def _meta_wait(c: httpx.AsyncClient, provider: dict, job: dict, vid: str,
+                     deadline_s: float) -> dict:
+    """Poll until the job is done; returns its `data` object. Raises ImageError on failure or
+    when the deadline passes."""
+    path = job["result"].format(vid=urllib.parse.quote(vid, safe=""))
+    url = media.api_url(provider["base_url"], path)
+    deadline = time.monotonic() + max(MIN_DEADLINE, deadline_s)
+    interval = POLL_START
+    while True:
+        try:
+            r = await c.get(url, headers=media.auth_headers(provider.get("api_key") or ""),
+                            timeout=SUBMIT_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            raise ImageError(i18n.pick_now(
+                f"lost contact with MetaChat while waiting ({e})",
+                f"等待期间与 MetaChat 失去联系({e})")) from None
+        if r.status_code >= 300:
+            raise ImageError(_why(r.status_code, r.text))
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        if not media.meta_ok(body):
+            raise ImageError(i18n.pick_now(
+                f"MetaChat could not report on the drawing ({media.meta_said(body)})",
+                f"MetaChat 无法汇报绘图状态({media.meta_said(body)})"))
+        data = (body or {}).get("data") or {}
+        state = str(data.get("status") or "").strip().lower()
+        if state in _DONE:
+            return data if isinstance(data, dict) else {}
+        if state in _FAILED:
+            why = " ".join(str(data.get("fail_reason") or data.get("error") or "").split())[:300]
+            raise ImageError(i18n.pick_now(
+                f"MetaChat reported the drawing failed{': ' + why if why else ''}",
+                f"MetaChat 报告绘图失败{':' + why if why else ''}"))
+        if time.monotonic() >= deadline:
+            raise ImageError(i18n.pick_now(
+                f"gave up after {int(deadline_s)}s: the picture was still not ready (last status "
+                f"\"{state or 'none'}\"). Raise the image timeout under Permissions & control if the "
+                "service is just slow.",
+                f"等了 {int(deadline_s)} 秒仍未画好(最后状态「{state or '无'}」),已放弃。"
+                "如果只是服务慢,可以在「权限与操控」里把绘画时限调大。"))
+        await asyncio.sleep(interval)
+        interval = min(POLL_MAX, interval * 1.5)
+
+
 def save(data: bytes, workspace: Path, prompt: str) -> Path:
     """Write the image into the group's workspace, and nowhere else."""
     try:
@@ -365,11 +520,32 @@ async def probe(provider: dict, model: str, *, client: httpx.AsyncClient | None 
     There is no read-only image endpoint, so this asks `/models` when the service has one:
     reaching it proves the address and the key, and finding the model id in the list proves
     the name. The honest test of the rest is to generate one.
+
+    MetaChat's media API has no list to read at all (`/open/v1/models`: 404), so for that one the
+    question becomes the one `media.probe_meta` answers — is it there and does it take this key —
+    which is also what the video tool asks it. Asking `/models` here would report a working
+    provider as broken.
     """
     base = (provider["base_url"] or "").strip()
     if not base:
         return False, i18n.pick_now("no address is configured for this provider",
                                     "这个服务商没有填地址")
+    if provider.get("kind") == "metachat_media":
+        own = client is None
+        c = client or net.client(base, timeout=15.0)
+        try:
+            ok, detail = await media.probe_meta(base, provider.get("api_key") or "", client=c)
+        finally:
+            if own:
+                await c.aclose()
+        # Which model is chosen cannot be verified from here — that API publishes no list — so the
+        # sentence says only what was actually established.
+        return ok, detail if not ok else i18n.pick_now(
+            f"{detail} MetaChat's media API publishes no model list, so which model "
+            f"\"{(model or '').strip() or 'unset'}\" resolves to can only be checked by drawing one.",
+            f"{detail} MetaChat 的媒体接口不提供模型清单,所以「{(model or '').strip() or '未设置'}」"
+            "这个模型名只能靠实际画一张来验证。",
+        )
     url = media.api_url(base, "/v1/models")
     own = client is None
     c = client or net.client(url, timeout=15.0)

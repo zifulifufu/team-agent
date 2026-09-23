@@ -34,7 +34,9 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   const [files, setFiles] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [wsUp, setWsUp] = useState(false);
-  const [panel, setPanel] = useState(() => window.innerWidth >= 1100);
+  // The group's own settings open as a dialog, so they start closed: a dialog that opened itself
+  // on a wide screen would be in the way of the conversation it belongs to.
+  const [panel, setPanel] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("ext");
   const [hl, setHl] = useState<string | null>(null);
   const [ws, setWs] = useState(false);
@@ -249,7 +251,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
             </button>
             <ExportMenu gid={gid} />
             <AddMemberButton group={group} align="right" label={t("Add member")} className="icon-btn" />
-            <button className={"icon-btn" + (panel ? " on" : "")} title={t("Skills / plugins / MCP and prompts")} aria-label={t("Skills, plugins, MCP and prompts panel")} aria-pressed={panel} onClick={() => setPanel((p) => !p)}>
+            <button className={"icon-btn" + (panel ? " on" : "")} title={t("This group's settings: skills, plugins, MCP, knowledge bases, prompt")} aria-label={t("This group's settings")} aria-pressed={panel} onClick={() => setPanel((p) => !p)}>
               <PanelRight size={16} />
             </button>
           </div>
@@ -316,6 +318,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
           onTab={setPanelTab}
           onSettings={onSettings}
           onOpenLibrary={onOpenLibrary}
+          onClose={() => setPanel(false)}
         />
       )}
     </div>

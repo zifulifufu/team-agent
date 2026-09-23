@@ -126,7 +126,15 @@
 .plan-st.pending, .plan-st.off { color: var(--text-3); }
 
 /* ---- 右侧群面板 ---- */
-.gp { width: 316px; flex: none; border-left: 1px solid var(--border); background: var(--bg-sub); display: flex; flex-direction: column; min-height: 0; }
+/* The group's own settings — skills, plugins, MCP, knowledge bases, its prompt. A dialog rather
+   than a third column: as a column it shared its headings with the left sidebar, where the same
+   words are the app-wide pages, and the two showed up side by side. One entrance, from the button
+   in the chat header. */
+.gp-back { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.28); display: flex; align-items: center; justify-content: center; z-index: 40; }
+.gp { width: min(560px, 94vw); max-height: 82vh; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.gp-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 0 14px; flex: none; }
+.gp-head b { font-weight: 600; }
+.gp-head .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gp-tabs { display: flex; gap: 2px; margin: 10px 12px 6px; padding: 3px; border-radius: 9px; background: var(--hover); flex: none; }
 .gp-tabs button { flex: 1; padding: 5px 0; border-radius: 7px; color: var(--text-2); font-size: 13px; }
 .gp-tabs button:hover:not(.on) { color: var(--text); }

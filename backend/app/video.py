@@ -8,10 +8,13 @@ against the other shape's list would be rejected locally for a value the server 
         GET  {base}/v1/videos/{id}         -> {"status": "..."}      poll
         GET  {base}/v1/videos/{id}/content -> the mp4 bytes          download
 
-    MetaChat open media API (kind `metachat_video`; `{base}` is `https://api.mmchat.xyz/open/v1`)
+    MetaChat open media API (kind `metachat_media`; `{base}` is `https://api.mmchat.xyz/open/v1`)
         POST {base}/video/generate         -> {"data": {"id": ...}}  submit
         GET  {base}/video/result/{id}      -> {"data": {...}}        poll
         GET  the `video_url` it reports    -> the mp4 bytes          download
+
+Its drawing endpoints (`image/generate`, `midjourney/imagine`) are reached through
+`app/imagegen.py` — one key, two APIs, and a job is a job in both.
 
 Three things about the MetaChat one are worth stating up front, because they are the API's
 properties and not ours to paper over:
@@ -50,7 +53,7 @@ from pathlib import Path
 
 import httpx
 
-from . import i18n, media
+from . import i18n, media, net
 from .coderun import inside as _inside     # one implementation of "is this still inside the workspace"
 
 # Every provider kind that is a generator rather than a chat model, re-exported from `media`:
@@ -59,10 +62,10 @@ MEDIA_KINDS: tuple[str, ...] = media.MEDIA_KINDS
 # ...while this module only drives its own kinds. The two lists were the same thing until a
 # second generator existed; picking a provider by the union would let the video tool select an
 # image provider, which surfaces as a broken server rather than a wrong lookup.
-KINDS: tuple[str, ...] = ("minimax_video", "metachat_video")
+KINDS: tuple[str, ...] = ("minimax_video", "metachat_media")
 
 H3_KIND = "minimax_video"
-META_KIND = "metachat_video"
+META_KIND = "metachat_media"
 
 # What each shape accepts. Kept per kind rather than as one shared list: the three parameters
 # disagree, and a single union would let the tool send MetaChat a pixel count it does not take,
@@ -74,11 +77,11 @@ SHAPES: dict[str, dict] = {
         "default_ratio": "16:9",
         "model": False,      # the server has one checkpoint; no model id in the request
     },
-    "metachat_video": {
+    "metachat_media": {
         "seconds": (1, 15),                                             # documented as 1-15, 5 by default
         "ratios": ("adaptive", "16:9", "9:16", "4:3", "3:4", "1:1", "3:2", "2:3"),
         "default_ratio": "adaptive",   # follows the reference image, which is the only input it has
-        "model": True,       # every call names the model: the same host serves two of them
+        "model": True,       # every call names the model: the same host serves each of them
     },
 }
 
@@ -99,19 +102,19 @@ ASPECT_RATIOS: tuple[str, ...] = tuple(
 )
 
 # MetaChat's open media API. `{base}` is the API prefix MetaChat's documentation gives for it —
-# `https://api.mmchat.xyz/open/v1` — so these paths are relative to that and not to the host, which
-# is what the user is told to paste into the provider's address field.
+# `https://api.mmchat.xyz/open/v1` — so every path is relative to that and not to the host, which is
+# what the user is told to paste into the provider's address field.
 #
-# `video/result/{id}` is the poll, and `/video/fetch` (which reads like the obvious name) answers 404.
-META_GENERATE = "video/generate"
-META_RESULT = "video/result/{vid}"
-# The only two values that API takes. A named resolution rather than a pixel count, so the user's
-# "output short edge" is mapped onto them instead of duplicated as a second setting — at or below
-# this pivot it is the smaller file.
+# Which path a job goes to, and what it may carry, is per model and lives in `media.MEDIA_MODELS`:
+# Grok takes `video/generate`, Midjourney has its own `midjourney/video` and polls on
+# `midjourney/result/{id}`, and Midjourney accepts none of the duration/ratio knobs. Asking the
+# table is what keeps this module from sending one shape to all of them.
+#
+# The only two resolutions that API takes. A named resolution rather than a pixel count, so the
+# user's "output short edge" is mapped onto them instead of duplicated as a second setting — at or
+# below this pivot it is the smaller file.
 META_RESOLUTIONS = ("480p", "720p")
 META_RESOLUTION_PIVOT = 640
-# Its models are defined once, in `media.BUILTIN_MEDIA_MODELS` — the preset seeds from there and
-# `discovery` answers a refresh with it, so this module deliberately keeps no second copy.
 
 # Status words. Anything that is neither done nor failed counts as "still working" and the
 # deadline decides when to stop, so a server that invents a new word for "queued" does not make
@@ -258,29 +261,38 @@ def resolution_for(short_edge: int) -> str:
     return META_RESOLUTIONS[1] if n > META_RESOLUTION_PIVOT else META_RESOLUTIONS[0]
 
 
+def metachat_params(model: str, *, ratio: str, seconds: int, short_edge: int) -> dict:
+    """Only the parameters *this* model's documentation lists, filled from what the user configured.
+
+    The values that mean something different per family are mapped here (our pixel count becomes the
+    named resolution; our aspect ratio becomes theirs), and everything else is left out on purpose:
+    each model's own defaults are documented, and a parameter a model does not recognise comes back
+    as a failure the user has paid for.
+    """
+    values = {"ratio": ratio, "aspect": ratio, "duration": int(seconds),
+              "resolution": resolution_for(short_edge), "num": 1}
+    want = media.job_of(model, "video")["params"]
+    return {k: values[k] for k in want if k in values}
+
+
 def metachat_payload(
     prompt: str, *, model: str, ratio: str, duration_seconds: int, short_edge: int, frame: str = "",
 ) -> dict:
-    """The body `POST open/v1/video/generate` documents.
+    """The body `POST {base}/<this model's submit path>` documents.
 
     `prompt`, `model` and `params` are all it defines; a reference image goes in `images` as a URL
-    the service fetches itself. One image, not two: both of its models generate *from a keyframe*,
-    so there is no last-frame slot — `_generate_video` refuses a `last_frame` rather than dropping
-    it, because a member that asked for one and silently did not get it would draw the wrong
-    conclusion from the result.
+    the service fetches itself. One image, not two: these models generate *from a keyframe*, so there
+    is no last-frame slot — `_generate_video` refuses a `last_frame` rather than dropping it, because
+    a member that asked for one and silently did not get it would draw the wrong conclusion.
 
-    Of the fields the documentation's example shows, only `url` is sent: `type`, `size`, `w` and
-    `h` describe the caller's own copy of the picture, and filling them in for a URL we were
-    handed would be making up numbers.
+    Of the fields the documentation's example shows, only `url` is sent: `type`, `size`, `w` and `h`
+    describe the caller's own copy of the picture, and filling them in for a URL we were handed would
+    be making up numbers.
     """
     return {
         "prompt": prompt,
         "model": model,
-        "params": {
-            "duration": int(duration_seconds),
-            "ratio": ratio,
-            "resolution": resolution_for(short_edge),
-        },
+        "params": metachat_params(model, ratio=ratio, seconds=duration_seconds, short_edge=short_edge),
         "images": [{"url": frame}] if frame else [],
     }
 
@@ -368,24 +380,29 @@ def clamp_seconds(want: object, cap: int, kind: str | None = None) -> tuple[int,
 
 # ------------------------------------------------------------------ HTTP
 @contextlib.asynccontextmanager
-async def _client(client: httpx.AsyncClient | None, timeout: float):
+async def _client(client: httpx.AsyncClient | None, timeout: float, url: str = ""):
     """The client for one request, when the caller did not bring its own.
 
-    `trust_env=False` on the one we make: a video server usually sits on the local network, and a
-    system proxy would quietly send that traffic somewhere else.
+    The **address decides**, exactly as `net.client` does everywhere else in this app. A video
+    server on this machine or the LAN connects directly — a system proxy would quietly send that
+    traffic somewhere else, which is how a perfectly healthy local server came to report 502. But
+    MetaChat's media API is on the internet, and forcing *that* one direct would break exactly the
+    networks that need a proxy. Getting this wrong is visible in the UI as two "test the service"
+    buttons on the same host disagreeing with each other.
     """
     if client is not None:
         yield client
         return
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+    async with net.client(url, timeout=timeout) as c:
         yield c
 
 
-async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None) -> str:
+async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None,
+                 job: dict | None = None) -> str:
     if prov.get("kind") == META_KIND:
-        return await _meta_submit(prov, payload, client=client)
+        return await _meta_submit(prov, payload, client=client, job=job)
     url = media.api_url(prov["base_url"], "v1/videos")
-    async with _client(client, SUBMIT_TIMEOUT) as c:
+    async with _client(client, SUBMIT_TIMEOUT, url) as c:
         try:
             r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
                              timeout=SUBMIT_TIMEOUT)
@@ -414,11 +431,12 @@ async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None 
     return vid
 
 
-async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None) -> tuple[str, dict]:
+async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None,
+                    job: dict | None = None) -> tuple[str, dict]:
     if prov.get("kind") == META_KIND:
-        return await _meta_status(prov, vid, client=client)
+        return await _meta_status(prov, vid, client=client, job=job)
     url = media.api_url(prov["base_url"], f"v1/videos/{vid}")
-    async with _client(client, STATUS_TIMEOUT) as c:
+    async with _client(client, STATUS_TIMEOUT, url) as c:
         try:
             r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
         except httpx.HTTPError as e:
@@ -463,7 +481,7 @@ async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncC
         headers = media.auth_headers(prov.get("api_key", ""))
         target = media.api_url(prov["base_url"], f"v1/videos/{vid}/content")
         timeout = DOWNLOAD_TIMEOUT
-    async with _client(client, timeout) as c:
+    async with _client(client, timeout, target) as c:
         try:
             r = await c.get(target, headers=headers, timeout=timeout)
         except httpx.HTTPError as e:
@@ -489,30 +507,15 @@ async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncC
 
 
 # ------------------------------------------------------------------ MetaChat's open media API
-def _meta_said(body: object) -> str:
-    """The sentence out of MetaChat's envelope.
-
-    It answers 200 even when it refuses, putting the verdict in `status` and the reason in
-    `message`, so `_why` (which reads a status code) has nothing to report and the body is the
-    only place the real reason exists.
-    """
-    if isinstance(body, dict):
-        said = " ".join(str(body.get("message") or "").split())
-        return said[:300] or str(body)[:200]
-    return str(body)[:200]
-
-
-def _meta_ok(body: object) -> bool:
-    """`status: "Success"` means the call worked. An absent one is treated as success: refusing to
-    parse a body that simply does not carry the field would fail over a cosmetic difference."""
-    if not isinstance(body, dict):
-        return False
-    return str(body.get("status") or "").strip().lower() in ("", "success")
-
-
-async def _meta_submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None) -> str:
-    url = media.api_url(prov["base_url"], META_GENERATE)
-    async with _client(client, SUBMIT_TIMEOUT) as c:
+#
+# Reading the reply envelope (`media.meta_ok` / `meta_said`) and deciding which job a model is
+# (`media.job_of`) live in `media`, because the image tool talks to the same service in the same
+# words. What stays here is the video half: submit, poll, and fetch the clip.
+async def _meta_submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None = None,
+                       job: dict | None = None) -> str:
+    job = job or media.job_of(str(payload.get("model") or ""), "video")
+    url = media.api_url(prov["base_url"], job["submit"])
+    async with _client(client, SUBMIT_TIMEOUT, url) as c:
         try:
             r = await c.post(url, headers=media.auth_headers(prov.get("api_key", "")), json=payload,
                              timeout=SUBMIT_TIMEOUT)
@@ -538,10 +541,10 @@ async def _meta_submit(prov: dict, payload: dict, *, client: httpx.AsyncClient |
             "https://api.mmchat.xyz/open/v1.",
             "MetaChat 没有返回 JSON,读不到任务。请检查地址是不是 https://api.mmchat.xyz/open/v1。",
         )) from None
-    if not _meta_ok(body):
+    if not media.meta_ok(body):
         raise VideoError(i18n.pick_now(
-            f"MetaChat did not accept the job ({_meta_said(body)})",
-            f"MetaChat 没有接受这次生成({_meta_said(body)})",
+            f"MetaChat did not accept the job ({media.meta_said(body)})",
+            f"MetaChat 没有接受这次生成({media.meta_said(body)})",
         ))
     data = (body or {}).get("data") or {}
     vid = str((data or {}).get("id") or "").strip()
@@ -553,16 +556,22 @@ async def _meta_submit(prov: dict, payload: dict, *, client: httpx.AsyncClient |
     return vid
 
 
-async def _meta_status(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None) -> tuple[str, dict]:
+async def _meta_status(prov: dict, vid: str, *, client: httpx.AsyncClient | None = None,
+                       job: dict | None = None) -> tuple[str, dict]:
     """(state word, the inner `data` object).
 
     Returning `data` rather than the envelope is what lets the shared polling loop read a failure
     reason without knowing which service it is talking to: MetaChat calls it `fail_reason` where
     H3 calls it `error`, and `_generate` looks for both.
+
+    `job` carries the model's own result path: a Grok task is polled on `video/result/{id}` and a
+    Midjourney one on `midjourney/result/{id}`. Without it the generic video path is used, which is
+    the right answer for a model name the user typed by hand.
     """
-    path = META_RESULT.format(vid=urllib.parse.quote(vid, safe=""))
+    job = job or media.job_of("", "video")
+    path = job["result"].format(vid=urllib.parse.quote(vid, safe=""))
     url = media.api_url(prov["base_url"], path)
-    async with _client(client, STATUS_TIMEOUT) as c:
+    async with _client(client, STATUS_TIMEOUT, url) as c:
         try:
             r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")), timeout=STATUS_TIMEOUT)
         except httpx.HTTPError as e:
@@ -578,10 +587,10 @@ async def _meta_status(prov: dict, vid: str, *, client: httpx.AsyncClient | None
         body = r.json()
     except ValueError:
         body = {}
-    if not _meta_ok(body):
+    if not media.meta_ok(body):
         raise VideoError(i18n.pick_now(
-            f"MetaChat could not report on the job ({_meta_said(body)})",
-            f"MetaChat 无法汇报任务状态({_meta_said(body)})",
+            f"MetaChat could not report on the job ({media.meta_said(body)})",
+            f"MetaChat 无法汇报任务状态({media.meta_said(body)})",
         ))
     data = (body or {}).get("data") or {}
     return str(data.get("status") or "").strip().lower(), (data if isinstance(data, dict) else {})
@@ -604,7 +613,7 @@ async def probe(prov: dict, *, timeout: float = 5.0, client: httpx.AsyncClient |
     generation costs minutes of GPU time, which is why the UI offers it before anything runs.
     """
     own = client is None
-    c = client or httpx.AsyncClient(timeout=timeout, trust_env=False)
+    c = client or net.client(prov.get("base_url") or "", timeout=timeout)
     try:
         return await _probe(prov, c)
     finally:
@@ -650,37 +659,13 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
 
 
 async def _probe_meta(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
-    """Is MetaChat's media API there, and does it accept this key? Renders nothing.
+    """Is MetaChat's media API there and does it take this key? `media.probe_meta` owns the answer.
 
-    Asking about a task id that cannot exist: that API has no `/health` and no listing to read, and
-    it answers a missing task in its own 200-with-`Fail` envelope. A 401/403 is the one answer that
-    means something is really wrong (the key), and anything else proves the service answered.
+    It lives next to the envelope readers because the *image* tool asks exactly the same question
+    about exactly the same host, and one key serving two APIs should not produce two verdicts.
     """
     base = (prov.get("base_url") or "").strip()
-    url = media.api_url(base, META_RESULT.format(vid="team-agent-probe"))
-    try:
-        r = await c.get(url, headers=media.auth_headers(prov.get("api_key", "")))
-    except httpx.HTTPError as e:
-        return False, i18n.pick_now(
-            f"Could not reach {base}: {type(e).__name__}: {e}", f"连不上 {base}:{type(e).__name__}: {e}"
-        )
-    if r.status_code in (401, 403):
-        return False, i18n.pick_now(
-            f"{base} is up but rejected the key ({r.status_code}). MetaChat's key is created under "
-            "your avatar → API management; the media API uses the same one.",
-            f"{base} 是活的,但密钥被拒绝了({r.status_code})。MetaChat 的密钥在头像 → API 管理里创建,"
-            "媒体接口用的是同一把。",
-        )
-    if r.status_code == 404:
-        return True, i18n.pick_now(
-            f"{base} is reachable: it answered 404 for a task id that does not exist.",
-            f"{base} 可以联通:对不存在的任务 id 返回了 404。",
-        )
-    if r.status_code < 400:
-        return True, i18n.pick_now(
-            f"{base} answered the media API with {r.status_code}.", f"{base} 的媒体接口有响应({r.status_code})。"
-        )
-    return False, i18n.pick_now(f"{base} answered {_why(r)}", f"{base} 返回了 {_why(r)}")
+    return await media.probe_meta(base, prov.get("api_key", ""), client=c)
 
 
 def save(data: bytes, workspace: Path, prompt: str, vid: str) -> Path:
@@ -705,8 +690,9 @@ async def generate(
     """Submit, wait, download, save. Raises VideoError with a message fit to show the user."""
     own = client is None
     # One client for the whole run: polling is many requests, and a fresh pool per poll would be
-    # both wasteful and slow.
-    c = client or httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, trust_env=False)
+    # both wasteful and slow. Its proxy policy is chosen from the provider's address, which is where
+    # every request in the run goes except the last one (MetaChat's object-store link, also remote).
+    c = client or net.client(prov.get("base_url") or "", timeout=DOWNLOAD_TIMEOUT)
     try:
         return await _generate(prov, payload, workspace=workspace, max_bytes=max_bytes,
                                deadline_s=deadline_s, client=c)
@@ -720,12 +706,15 @@ async def _generate(
     client: httpx.AsyncClient,
 ) -> dict:
     t0 = time.time()
-    vid = await submit(prov, payload, client=client)
+    # Which job this is — paths, parameters, where the file ends up — is per model on MetaChat and
+    # uniform on H3, so it is resolved once here and handed to every step of the run.
+    job = media.job_of(str(payload.get("model") or ""), "video") if prov.get("kind") == META_KIND else None
+    vid = await submit(prov, payload, client=client, job=job)
     deadline = time.monotonic() + max(MIN_DEADLINE, deadline_s)
     interval = POLL_START
     detail: dict = {}
     while True:
-        raw, detail = await status_of(prov, vid, client=client)
+        raw, detail = await status_of(prov, vid, client=client, job=job)
         if raw in _DONE:
             break
         if raw in _FAILED:
@@ -748,8 +737,11 @@ async def _generate(
             ))
         await asyncio.sleep(interval)
         interval = min(POLL_MAX, interval * 1.5)
+    # The field the finished clip is in comes from the model's own job description: `video_url`
+    # for every family today, but a table that says so is cheaper than a guess that breaks.
+    field = (job or {}).get("file", "video_url")
     data = await download(prov, vid, max_bytes=max_bytes, client=client,
-                          url=str(detail.get("video_url") or ""))
+                          url=str(detail.get(field) or ""))
     path = save(data, workspace, str(payload.get("prompt", "")), vid)
     return {
         "id": vid, "path": path, "name": path.name, "bytes": len(data),

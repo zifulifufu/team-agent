@@ -295,7 +295,7 @@ WorkBuddy 的插件路径取自它自己的已安装记录而不是通配符—�
 | 能力 | 能否调用 | 说明 |
 |---|---|---|
 | 文本模型 | **能** | OpenAI / Anthropic / Gemini 三种兼容地址,一个密钥全都能用 |
-| 图像生成 | **部分能** | OpenAI 兼容地址上的模型能调,而且**刷新那个服务商的模型列表后会被识别为绘画模型**(GPT-Image、Gemini 的 `*-image`)。MetaChat 的 Midjourney、FLUX、Seedream、Z-Image 走的是**另一个域名**上的异步接口(`api.mmchat.xyz/open/v1`),本程序还没有实现它 |
+| 图像生成 | **能** | 两条路。OpenAI 兼容地址上的绘画模型(GPT-Image、Gemini 的 `*-image`)刷新服务商模型列表后会被识别为绘画模型。而 **Midjourney、FLUX、Seedream、Z-Image、Grok Image 只在另一个域名上**(`api.mmchat.xyz/open/v1` 的异步接口),本程序也**接上了它们**,见下文 |
 | 视频生成 | **能,但只有 2 个模型** | 开放平台的视频接口只有两条:`api.mmchat.xyz/open/v1/video/generate`(Grok Imagine Video,`grok-imagine-video-1.5-preview`)与 `api.mmchat.xyz/open/v1/midjourney/video`(Midjourney Video V1,`mj-video-v1`)。**本程序把这两条接上了**,见下文。**Seedance 2.0、Sora 2、可灵 V3、Veo 3.1 只对网页端开放**:API 文档里没有任何一节提到它们,所以刷新永远刷不出来 |
 | 账户余额 | 能 | MetaChat 提供余额与用量查询 |
 | **智能体** | **不能** | 智能体是**网页应用**里的东西:一段提示词 + 选定的模型。没有任何接口能「运行某个智能体」,所以那个列表搬不过来 |
@@ -304,38 +304,48 @@ WorkBuddy 的插件路径取自它自己的已安装记录而不是通配符—�
 一个服务商在一个接口上列出多种模型时,本程序按多种模型对待:每个模型都带上服务商自己说的用途——
 对话、绘画、视频,或 `responses`(OpenAI 的另一套接口形状)——模型列表里也标出来。这样一来一把
 MetaChat 密钥既能给成员用、也能用来画画,同时成员不会被绑到一个根本不能对话的模型上。
-视频设置找的信号也一样:哪个服务商自报有视频模型,或者它本身就是视频类的服务商(自建 H3、MetaChat 媒体接口),
-它就会出现在那里,不需要再配置一遍。
+绘画与视频设置找的信号是同一个:哪个服务商自报有那个媒介的模型,或者它本身就是那个媒介类的服务商
+(自建 H3、MetaChat 媒体接口),它就会出现在那里,不需要再配置一遍。所以 MetaChat 的媒体服务商会同时
+出现在两个列表里:一把密钥、两个接口,只在这里配置一次。
 
 也就是说:你在那个网站上喜欢的智能体无法被直接调用,但可以**在这里复现** —— 本项目的成员本身就是
 「模型 + 角色提示词」:加一个成员,选同一个模型,把要求写进去即可。参见「成员与角色」。
 
-**绘画已经接好了**(「权限与操控 → 绘画」):先在「模型服务商」里添加服务商
-(预设「绘画(OpenAI 兼容)」指向 MetaChat 的 OpenAI 兼容入口),填上密钥,再打开开关。成员会得到
+**绘画已经接好了**(「权限与操控 → 绘画」),有两条路,任一即可:一条是任何实现 `/images/generations` 的服务
+(预设「绘画(OpenAI 兼容)」就指向 MetaChat 的 OpenAI 兼容入口),填上密钥再打开开关。成员会得到
 `generate_image` 工具,图片落在本群自己的工作目录里,并显示在对话中。**不需要 GPU** —— 一个密钥加一个
 模型名就是全部准备。旁边的「检查」按钮会读取服务方的模型清单,让你在花钱之前就知道模型名对不对。
+另一条是下面的 MetaChat 媒体接口 —— 不在 OpenAI 兼容地址上的那些绘画模型(尤其 Midjourney)只能走它。
 
-**MetaChat 的视频也接好了**(「权限与操控 → 视频生成」):在「模型服务商」里添加预设
-**「MetaChat 视频(开放媒体接口)」**(地址 `https://api.mmchat.xyz/open/v1`,备用
-`https://api2.mmchat.xyz/open/v1`;密钥与 OpenAI 兼容地址是同一把),再到「视频生成」里选那个服务商和模型。
-它和自建 H3 是**两套不同的任务方言**,所以 `app/video.py` 里两种都写:
-自建 H3 是 `/v1/videos` + 轮询 + 按任务 id 下载;MetaChat 是提交 `video/generate` 拿 `data.id`,
-轮询 `video/result/{id}` 读 `data.status`(submitted / in_progress / success / failure),
-成功后再按 `data.video_url` 下载(那一步**不带密钥** —— 链接指向它的对象存储,密钥只该给 MetaChat)。
+**MetaChat 的媒体接口也接好了**,它一把密钥同时覆盖**绘画**和**视频**(「权限与操控 → 绘画」与「→ 视频生成」)。
+在「模型服务商」里添加预设**「MetaChat 媒体接口(绘图与视频)」**(地址 `https://api.mmchat.xyz/open/v1`,
+备用 `https://api2.mmchat.xyz/open/v1`;密钥与 OpenAI 兼容地址是同一把),然后到那两个页面里选服务商与模型。
 
-有三件事必须说清楚,因为它们是接口的性质,不是可以糊过去的:
+它和自建 H3 是**两套不同的任务方言**,也和 OpenAI 兼容的 `/images/generations` 完全不同 —— 都是
+「提交任务、轮询、再按链接下载」的形状,所以 `app/video.py` 与 `app/imagegen.py` 里各写了一套:
 
-* **API 上只有 2 个模型**,而且这个接口**没有模型清单接口**(实测 `/open/v1/models`、
-  `/open/v1/video/models` 都返回 404)。所以那两个模型是**程序内置**的:预设会把它们种进服务商,
-  「刷新模型列表」给出的是同一份内置名单,而不是从网上查来的。这与对话模型「问服务商要清单」的做法不同。
-* **两个模型都是图生视频**,参考图必须是 **http(s) 地址** —— MetaChat 自己去下载图片,也没有上传接口。
+```
+视频   POST video/generate        -> data.id        轮询 video/result/{id}      -> 按 data.video_url 下载
+绘画   POST image/generate        -> data.id        轮询 image/result/{id}      -> 按 data.image_urls 下载
+       POST midjourney/imagine    -> data.id        轮询 midjourney/result/{id} -> 按 data.image_url 下载
+```
+
+下载那一步**不带密钥** —— 链接指向它的对象存储,密钥只该给 MetaChat。
+
+有四件事必须说清楚,因为它们是接口的性质,不是可以糊过去的:
+
+* **路径和参数逐模型不同,所以是一张表而不是一种形状**。绘画有 15 个型号:`image/generate` 那条管
+  Grok Image、FLUX、Seedream、Z-Image,Midjourney 与 niji 走自己的 `midjourney/imagine`,结果是**一张四宫格图**
+  而不是列表。每个型号**只被问到它自己文档里列出的参数**(例如 Grok Image 有 `num`/`aspect`,Seedream 只有 `num`),
+  因为发一个模型不认识的东西是要花钱的失败。
+* **这个接口没有模型清单接口**(实测 `/open/v1/models`、`/open/v1/video/models` 都是 404)。所以这些型号是
+  **程序内置**的:预设会把它们种进服务商,「刷新模型列表」给出的是同一份内置名单,不发任何网络请求。
+  这与对话模型「问服务商要清单」的做法不同。
+* **两个视频模型都是图生视频**,参考图必须是 **http(s) 地址** —— MetaChat 自己去下载图片,也没有上传接口。
   传入工作目录里的本机路径会被明确拒绝,而不是发一个对方取不到的地址过去;`last_frame` 同样会被拒绝,
   因为这个接口只有一个关键帧的位置。
 * **接口没有 seed 参数**(H3 有),`video_short_edge` 对它是**换算**关系:不大于 640 像素算 480p,大于算 720p ——
-  那个接口收的是档位而不是像素。
-
-**尚未接通**:MetaChat 的**异步图像接口**(Seedream / FLUX / Grok Imagine / Midjourney 图片,
-以及 `open/v1/image/generate`)。它们和视频在同一个前缀下,但本程序现在只说了视频那两条。
+  那个接口收的是档位而不是像素。绘画同理:`image_size` 的三个尺寸被换算成它收的 `aspect`。
 
 ## 许可
 

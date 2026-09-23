@@ -362,7 +362,7 @@ assumed:
 | Capability | Reachable | Notes |
 |---|---|---|
 | Text models | **yes** | OpenAI / Anthropic / Gemini-compatible addresses; one key covers all of them |
-| Image generation | **partly** | The models on the OpenAI-compatible address are reachable, and are recognised as image models when that provider's list is refreshed (GPT-Image, Gemini's `*-image`). MetaChat's Midjourney, FLUX, Seedream and Z-Image endpoints are a separate asynchronous API on a **different host** (`api.mmchat.xyz/open/v1`), which nothing here speaks yet |
+| Image generation | **yes** | Two routes. The models on the OpenAI-compatible address are reachable, and are recognised as image models when that provider's list is refreshed (GPT-Image, Gemini's `*-image`). **Midjourney, FLUX, Seedream, Z-Image and Grok Image only exist on a different host** (`api.mmchat.xyz/open/v1`, an asynchronous API) — **this app speaks that too**, see below |
 | Video generation | **yes, 2 models only** | The open platform documents exactly two video endpoints: `api.mmchat.xyz/open/v1/video/generate` (Grok Imagine Video, `grok-imagine-video-1.5-preview`) and `api.mmchat.xyz/open/v1/midjourney/video` (Midjourney Video V1, `mj-video-v1`). **This app speaks both** — see below. **Seedance 2.0, Sora 2, Kling V3 and Veo 3.1 are web-only** — no section of the API documentation mentions them, so refreshing can never reveal them |
 | Account quota | yes | MetaChat exposes balance and usage |
 | **Agents / 智能体** | **no** | an agent is a *web-app* construct: a prompt plus a chosen model. There is no endpoint that runs one, so nothing can be imported from that list |
@@ -372,53 +372,66 @@ A provider that lists several kinds of model on one endpoint is handled as such:
 what the provider said it is for — chat, image, video, or `responses` (OpenAI's other API shape) —
 and the model list shows it. That is what makes one MetaChat key usable both for members and for
 drawing, and what keeps a member from being pointed at a model that cannot hold a conversation.
-The video settings look for the same signal — a provider that reports video models, or one whose
-kind is a video kind at all (self-hosted H3, MetaChat's media API) — so it is offered there without
-any further setup.
+The image and video settings look for the same signal — a provider that reports models for that
+medium, or one whose kind is that medium's kind (self-hosted H3, MetaChat's media API) — so it is
+offered there without any further setup. MetaChat's media provider therefore appears in both lists:
+one key, two APIs, one place to configure it.
 
 So an agent you like on that site cannot be called as such — but it can be **reproduced here**,
 because a member here *is* a model plus a role prompt: add a member, pick the same model, and
 write the instructions. See "Members and roles".
 
-**Image generation is wired up** (*Permissions & control → Image generation*): add the provider
-under Model providers (the "Image generation (OpenAI-compatible)" preset points at MetaChat's
-OpenAI-compatible address), save its key, then switch the tool on. Members get `generate_image`,
-the picture lands in the group's own workspace, and it appears in the transcript. Nothing needs a
-GPU — a key and a model name are the whole setup. The probe button reads the service's model list
-so you can see whether the model name you typed exists before spending anything.
+**Image generation is wired up** (*Permissions & control → Image generation*), by either route:
+any service speaking `/images/generations` works (the "Image generation (OpenAI-compatible)" preset
+points at MetaChat's OpenAI-compatible address) — save its key, switch the tool on, and members get
+`generate_image`. The picture lands in the group's own workspace and appears in the transcript.
+Nothing needs a GPU — a key and a model name are the whole setup, and the probe button reads the
+service's model list so you can see whether the model name you typed exists before spending
+anything. The other route is MetaChat's media API below, which is the only way to reach the drawing
+models that are not on that address — Midjourney in particular.
 
-**MetaChat's video is wired up too** (*Permissions & control → Video generation*): add the
-**"MetaChat video (open media API)"** preset under Model providers — address
-`https://api.mmchat.xyz/open/v1`, backup `https://api2.mmchat.xyz/open/v1`, the same key as the
-OpenAI-compatible address — then pick that provider and its model in the video settings. It is a
-*second job shape* beside the self-hosted H3 one, so `app/video.py` speaks both: H3 is
-`/v1/videos` + polling + download by task id, while MetaChat takes `video/generate`, returns
-`data.id`, is polled on `video/result/{id}` for `data.status` (submitted / in_progress / success /
-failure) and finally fetches `data.video_url` — **without the key**, since that link points at
-MetaChat's object storage and the key belongs to MetaChat alone.
+**MetaChat's media API is wired up too**, and its one key covers **drawing and video** (*Permissions
+& control → Image generation* and *→ Video generation*). Add the **"MetaChat media (drawing and
+video)"** preset under Model providers — address `https://api.mmchat.xyz/open/v1`, backup
+`https://api2.mmchat.xyz/open/v1`, the same key as the OpenAI-compatible address — then pick that
+provider and its model on those two pages.
 
-Three things are properties of that API rather than choices of ours, and they are worth knowing
+It is a *job* shape rather than a reply, and a different job shape from the OpenAI-compatible
+`/images/generations` and from self-hosted H3 — so `app/video.py` and `app/imagegen.py` each speak
+one:
+
+```
+video   POST video/generate        -> data.id   poll video/result/{id}      -> fetch data.video_url
+image   POST image/generate        -> data.id   poll image/result/{id}      -> fetch data.image_urls
+        POST midjourney/imagine    -> data.id   poll midjourney/result/{id} -> fetch data.image_url
+```
+
+That fetch happens **without the key**: the link points at MetaChat's object storage, so the key
+belongs to MetaChat alone.
+
+Four things are properties of that API rather than choices of ours, and they are worth knowing
 before the first generation:
 
-- **Only 2 models, and no model list to fetch.** `/open/v1/models` and `/open/v1/video/models` both
-  answer 404, so the two ids ship with the app: the preset seeds them and "refresh" answers with the
-  same built-in list instead of inventing an endpoint. That is unlike chat models, where the
+- **The paths and the parameters differ per model, so it is a table and not one shape.** Drawing has
+  fifteen models: `image/generate` covers Grok Image, FLUX, Seedream and Z-Image, while Midjourney
+  and niji go to their own `midjourney/imagine` and return **one four-up picture** rather than a
+  list. Each model is asked **only** for the parameters its own page lists — Grok Image takes
+  `num`/`aspect`, Seedream only `num` — because sending something a model does not recognise is a
+  failure the user has paid for.
+- **No model list to fetch.** `/open/v1/models`, `/open/v1/video/models` and `/open/v1/image/models`
+  all answer 404, so the ids ship with the app: the preset seeds them and "refresh" answers with the
+  same built-in list, making no network request at all. That is unlike chat models, where the
   provider is simply asked.
-- **Both models are image-to-video**, and the reference image must be an **http(s) URL** — MetaChat
-  downloads it itself and has no upload endpoint. A local path is refused with the reason rather than
-  sent as something the other side cannot open, and so is `last_frame`, because the API has one
-  keyframe slot.
-- **No `seed` parameter** (H3 has one), and `video_short_edge` is *mapped* for it: 640px or below
-  means 480p, above means 720p — that API takes a named resolution rather than a pixel count.
+- **Both video models are image-to-video**, and the reference image must be an **http(s) URL** —
+  MetaChat downloads it itself and has no upload endpoint. A local path is refused with the reason
+  rather than sent as something the other side cannot open, and so is `last_frame`, because the API
+  has one keyframe slot.
+- **No `seed` parameter** (H3 has one), and both knobs are *mapped* rather than passed through:
+  `video_short_edge` becomes 480p at or below 640px and 720p above, and `image_size` becomes the
+  `aspect` that API takes.
 
-**Not yet wired**: MetaChat's *asynchronous* image endpoints (Seedream / FLUX / Grok Imagine /
-Midjourney, and `open/v1/image/generate`). They sit under the same prefix as the video ones, but
-only the two video endpoints are spoken here today.
-
-One difference is worth knowing up front: **the media API has no model-listing endpoint**
-(`/open/v1/models` and `/open/v1/video/models` both answer 404), so its two video models could only
-be shipped as a built-in list — unlike chat models, where the provider is simply asked for its list.
-This is the natural next step rather than something to pretend works.
+**Seedance 2.0, Sora 2, Kling V3 and Veo 3.1 are web-only** (video): no section of the API
+documentation mentions them, so refreshing can never reveal them and no key reaches them.
 
 ## Licence
 

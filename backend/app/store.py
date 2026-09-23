@@ -266,6 +266,11 @@ class Store(ExtStore):
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
             if col not in cols:
                 self._x(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        # `metachat_video` became `metachat_media` when its one key turned out to reach an image API
+        # as well as a video API. The row is left where it is and only its kind is rewritten: the id
+        # is opaque (settings and model rows point at it), so renaming the provider itself would
+        # break every reference to it. Idempotent, and a no-op on a database that never had one.
+        self._x("UPDATE providers SET kind='metachat_media' WHERE kind='metachat_video'")
         # Indexes on a migrated column cannot live in the schema scripts: on an older database
         # CREATE TABLE IF NOT EXISTS does nothing, so the column only exists after the ALTER
         # above and the index creation would fail with "no such column" before reaching it.

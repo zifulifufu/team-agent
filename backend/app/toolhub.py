@@ -559,7 +559,21 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"「{size}」不是这个服务支持的尺寸,没有生成。可用:{', '.join(imagegen.SIZES)}。",
             ), False, []
         workspace = self.store.workspace_dir(ctx.group["id"])
-        payload = imagegen.build_payload(prompt, model=str(cfg["image_model"]), size=size)
+        model = str(cfg["image_model"])
+        if prov["kind"] == "metachat_media":
+            # Fifteen models behind one key, and the request differs per model (which path, and
+            # which parameters) — so an unset name is a request that would fail rather than draw.
+            if not model.strip():
+                return i18n.pick_now(
+                    "Drawing is set to MetaChat's media API, which serves many models, but none is "
+                    "chosen — so nothing was drawn. Pick one under Permissions & control → Image "
+                    "generation.",
+                    "绘画用的是 MetaChat 的媒体接口,它有很多模型,但没有选定用哪个,所以没有画。"
+                    "请在「权限与操控 → 绘画」里选一个。",
+                ), False, []
+            payload = imagegen.metachat_payload(prompt, model=model, size=size)
+        else:
+            payload = imagegen.build_payload(prompt, model=model, size=size)
         try:
             got = await imagegen.generate(
                 prov, payload,

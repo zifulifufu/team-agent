@@ -11,9 +11,11 @@ kind decides how it maps onto the LiteLLM model string:
                         reaches it only through `app/video.py`. `video.MEDIA_KINDS` is the one
                         list of such kinds, and `store.list_models()` keeps them out of the
                         chat model list.
-  metachat_video     -> the same shape of exception, reached through MetaChat's open media API
+  metachat_media     -> the same shape of exception, reached through MetaChat's open media API
                         (`api.mmchat.xyz/open/v1`) instead of a server you run. Its model list
                         ships with the app rather than being fetched — that API publishes none.
+                        One key covers drawing *and* video, so it is one provider rather than
+                        two entries with the same credential.
 """
 
 from __future__ import annotations
@@ -211,32 +213,43 @@ PRESETS: list[dict] = [
         "hint_zh": "不是对话模型:H3 生成带立体声的视频(4-15 秒、768p)。用 SGLang 或 vLLM 跑起来后,这里填那个服务地址 —— FL2VA 检查点用 30010,Ref2VA 用 30011。之后成员就能用 generate_video 工具。权重几十 GB(精简版也要约 42.5 GB),官方示例用 4 张卡;2K 输出与 H3-Context-IR 提示词预处理未开源。如果跑在租来的云 GPU 上,请把下面的「本地」关掉,让「允许外呼」也能管住它。",
     },
     {
-        # The media kind that needs no GPU and no server: MetaChat's *open media API*, which is a
-        # different host from its OpenAI-compatible one and a different job shape (`app/video.py`
-        # speaks both). One key, and a clip comes back — hence a preset rather than a document.
+        # The media kind that needs no GPU and no server: MetaChat's *open media API*, a different
+        # host from its OpenAI-compatible one, and a different shape from both — a job you submit
+        # and poll rather than a reply. One key covers drawing *and* video, so it is one provider
+        # rather than two entries with the same credential.
         #
         # The models are seeded rather than fetched: that API publishes no model listing at all,
-        # so there is nothing to refresh against. `media.BUILTIN_MEDIA_MODELS` owns the list and
-        # `discovery` answers a refresh with the same two ids. Only MetaChat's *API* models are
-        # listed — its website also runs Seedance, Sora, Kling and Veo, and a key cannot reach any
-        # of them, which is worth knowing before looking for them in the refresh result.
-        "preset": "metachat-video",
-        "name": "MetaChat video (open media API)", "name_zh": "MetaChat 视频(开放媒体接口)",
-        "kind": "metachat_video",
+        # so there is nothing to refresh against. `media.MEDIA_MODELS` owns the list, `discovery`
+        # answers a refresh with it, and each model's own paths and parameters are there too.
+        #
+        # Only MetaChat's *API* catalogue is here. Its website also runs Seedance, Sora, Kling and
+        # Veo video; a key cannot reach any of them, which is worth knowing before looking for them
+        # in the refresh result.
+        "preset": "metachat-media",
+        "name": "MetaChat media (drawing and video)", "name_zh": "MetaChat 媒体接口(绘图与视频)",
+        "kind": "metachat_media",
         "base_url": "https://api.mmchat.xyz/open/v1",
         "is_local": False,
-        "models": list(media.BUILTIN_MEDIA_MODELS["metachat_video"]),
-        "hint": "Not a chat model: it answers /video/generate and needs no GPU. Address https://api.mmchat.xyz/open/v1 (backup https://api2.mmchat.xyz/open/v1), same API key as MetaChat's OpenAI-compatible address. Its two models "
-                "— grok-imagine-video-1.5-preview and mj-video-v1 — ship with this preset instead of being fetched, "
-                "because that API has no model-list endpoint to fetch from. Both generate from a reference image, so a "
-                "member has to pass one as an http(s) URL. Pick the model under Permissions & control → Video generation. "
-                "MetaChat's website also runs Seedance, Sora, Kling and Veo; those are web-only and no key reaches them.",
-        "hint_zh": "不是对话模型:它提供 /video/generate,不需要显卡。地址 https://api.mmchat.xyz/open/v1"
+        # Images first: drawing is the cheaper, more frequent use, and the settings page lists the
+        # models in this order.
+        "models": [*media.BUILTIN_MEDIA_MODELS["metachat_media"]["image"],
+                   *media.BUILTIN_MEDIA_MODELS["metachat_media"]["video"]],
+        "hint": "Not a chat model: it needs no GPU and covers both media. Address "
+                "https://api.mmchat.xyz/open/v1 (backup https://api2.mmchat.xyz/open/v1), same API key as MetaChat's "
+                "OpenAI-compatible address. Drawing goes through it for the models that are not on that address: "
+                "Midjourney, FLUX, Seedream, Z-Image and Grok Image. Every model ships with this preset instead of "
+                "being fetched — that API has no model-list endpoint — and each one is asked only for the parameters "
+                "its own documentation lists, so nothing is sent that a model might reject. Pick the model under "
+                "Permissions & control → Image generation (or → Video generation). Both of its video models generate "
+                "from a reference image, so a member has to pass one as an http(s) URL. MetaChat's website also runs "
+                "Seedance, Sora, Kling and Veo video; those are web-only and no key reaches them.",
+        "hint_zh": "不是对话模型:不需要显卡,绘图和视频都走它。地址 https://api.mmchat.xyz/open/v1"
                    "(备用 https://api2.mmchat.xyz/open/v1),与 MetaChat 的 OpenAI 兼容地址是同一把密钥。"
-                   "它的两个模型 —— grok-imagine-video-1.5-preview 与 mj-video-v1 —— 随这个预设内置,而不是查出来的:"
-                   "这个接口根本没有模型清单接口。两者都要参考图,所以成员必须传一个 http(s) 图片地址。"
-                   "模型在「权限与操控 → 视频生成」里选。MetaChat 网站上还有 Seedance、Sora、可灵、Veo,"
-                   "但那些只对网页端开放,任何密钥都调不到。",
+                   "绘画走它的是那些不在 OpenAI 兼容地址上的模型:Midjourney、FLUX、Seedream、Z-Image 与 Grok Image。"
+                   "所有型号都随这个预设内置,而不是查出来的 —— 这个接口根本没有模型清单接口;每个型号只会被问到"
+                   "它自己文档里列出的参数,不会发它可能不认识的东西。模型在「权限与操控 → 绘画」(或「→ 视频生成」)里选。"
+                   "它的两个视频模型都要参考图,所以成员必须传一个 http(s) 图片地址。"
+                   "MetaChat 网站上还有 Seedance、Sora、可灵、Veo,但那些只对网页端开放,任何密钥都调不到。",
     },
     {
         # The one media kind that is reached through a *gateway* rather than a self-hosted

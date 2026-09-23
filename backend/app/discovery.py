@@ -92,7 +92,9 @@ async def fetch_models(provider: dict, timeout: float = 15.0,
         # what makes "refresh" do the useful thing here — put those models in the list, marked for
         # what they are — instead of reporting a 404 the user has no way to act on. The table and
         # this function are the same fact told twice; `media.BUILTIN_MEDIA_MODELS` owns it.
-        return _merge([{"id": mid, "mode": "video"} for mid in media.BUILTIN_MEDIA_MODELS[kind]])
+        return _merge([{"id": mid, "mode": use}
+                       for use, ids in media.BUILTIN_MEDIA_MODELS[kind].items()
+                       for mid in ids])
 
     if kind == "ollama":
         url = (base or OLLAMA_BASE) + "/api/tags"

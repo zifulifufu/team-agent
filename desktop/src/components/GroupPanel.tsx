@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Settings2, X } from "lucide-react";
 import { api, type Capabilities, type Group } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
@@ -57,9 +58,20 @@ interface Props {
   onSettings: (t: SettingsTab) => void;
   /** Open this group's own library in the main area */
   onOpenLibrary: () => void;
+  onClose: () => void;
 }
 
-export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onTab, onSettings, onOpenLibrary }: Props) {
+/**
+ * This group's own settings: which skills, plugins, MCP servers and knowledge bases it uses, and
+ * its prompt.
+ *
+ * It is a **dialog**, not a third column. It used to be a panel pinned to the right, and that put
+ * the same four words on screen twice — "skills / plugins / MCP" in this panel and again in the
+ * left sidebar, where they are the app-wide pages. Two sidebars with the same headings is how
+ * somebody ends up configuring the wrong one; one button in the chat header gives this scope a
+ * single entrance, and the left sidebar keeps the global pages.
+ */
+export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onTab, onSettings, onOpenLibrary, onClose }: Props) {
   const { t, pick } = useI18n();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const onKey = (e: React.KeyboardEvent, i: number) => {
@@ -69,32 +81,48 @@ export default function GroupPanel({ group, caps, capsErr, refreshCaps, tab, onT
     onTab(n);
     tabRefs.current[n]?.focus();
   };
+  // Escape closes it, the way every other dialog in this app behaves.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [onClose]);
   return (
-    <aside className="gp" aria-label={t("Group settings panel")}>
-      <div className="gp-tabs" role="tablist">
-        {TABS.map((tb, i) => (
-          <button
-            key={tb.id}
-            ref={(el) => { tabRefs.current[tb.id] = el; }}
-            role="tab"
-            id={"gp-tab-" + tb.id}
-            aria-selected={tab === tb.id}
-            aria-controls={"gp-pane-" + tb.id}
-            tabIndex={tab === tb.id ? 0 : -1}
-            className={tab === tb.id ? "on" : ""}
-            onClick={() => onTab(tb.id)}
-            onKeyDown={(e) => onKey(e, i)}
-          >
-            {pick(tb.label, tb.labelZh)}
+    <div className="gp-back" role="dialog" aria-modal="true" aria-label={t("Group settings panel")}>
+      <aside className="gp">
+        <div className="gp-head">
+          <Settings2 size={15} />
+          <b>{t("This group's settings")}</b>
+          <span className="muted small">{group.name}</span>
+          <button className="icon-btn" onClick={onClose} title={t("Close")} aria-label={t("Close")}>
+            <X size={14} />
           </button>
-        ))}
-      </div>
-      <div className="gp-pane" role="tabpanel" id="gp-pane-ext" aria-labelledby="gp-tab-ext" hidden={tab !== "ext"}>
-        <ExtTab group={group} caps={caps} capsErr={capsErr} refreshCaps={refreshCaps} active={tab === "ext"} onSettings={onSettings} onOpenLibrary={onOpenLibrary} />
-      </div>
-      <div className="gp-pane" role="tabpanel" id="gp-pane-prompt" aria-labelledby="gp-tab-prompt" hidden={tab !== "prompt"}>
-        <PromptTab group={group} active={tab === "prompt"} />
-      </div>
-    </aside>
+        </div>
+        <div className="gp-tabs" role="tablist">
+          {TABS.map((tb, i) => (
+            <button
+              key={tb.id}
+              ref={(el) => { tabRefs.current[tb.id] = el; }}
+              role="tab"
+              id={"gp-tab-" + tb.id}
+              aria-selected={tab === tb.id}
+              aria-controls={"gp-pane-" + tb.id}
+              tabIndex={tab === tb.id ? 0 : -1}
+              className={tab === tb.id ? "on" : ""}
+              onClick={() => onTab(tb.id)}
+              onKeyDown={(e) => onKey(e, i)}
+            >
+              {pick(tb.label, tb.labelZh)}
+            </button>
+          ))}
+        </div>
+        <div className="gp-pane" role="tabpanel" id="gp-pane-ext" aria-labelledby="gp-tab-ext" hidden={tab !== "ext"}>
+          <ExtTab group={group} caps={caps} capsErr={capsErr} refreshCaps={refreshCaps} active={tab === "ext"} onSettings={onSettings} onOpenLibrary={onOpenLibrary} />
+        </div>
+        <div className="gp-pane" role="tabpanel" id="gp-pane-prompt" aria-labelledby="gp-tab-prompt" hidden={tab !== "prompt"}>
+          <PromptTab group={group} active={tab === "prompt"} />
+        </div>
+      </aside>
+    </div>
   );
 }

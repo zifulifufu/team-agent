@@ -382,17 +382,26 @@ def test_two_images_with_the_same_prompt_do_not_overwrite_each_other(tmp_path):
 # ------------------------------------------------------------- picking a provider
 def test_an_image_provider_is_not_usable_for_video_and_the_other_way_round(store):
     """Both are "media"; picking by the union of kinds would hand the video tool an image
-    endpoint, which surfaces as a broken server rather than a wrong lookup."""
-    image_prov = store.add_provider_from_preset("openai-image")
-    video_prov = store.add_provider_from_preset("minimax-h3")
-    meta_prov = store.add_provider_from_preset("metachat-video")
-    assert [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)] == [image_prov["id"]]
-    # Both video kinds belong to the video tool, and neither of them to the image one.
-    assert [p["id"] for p in media.providers_of_kind(store, video.KINDS)] == [video_prov["id"], meta_prov["id"]]
-    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_video", "openai_image"}
+    endpoint, which surfaces as a broken server rather than a wrong lookup.
+
+    MetaChat's media provider is the one both tools may pick, because its single key really does
+    reach an image API and a video API. Everything else stays on one side of the line.
+    """
+    image_only = store.add_provider_from_preset("openai-image")
+    video_only = store.add_provider_from_preset("minimax-h3")
+    both = store.add_provider_from_preset("metachat-media")
+
+    assert [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)] == \
+        [image_only["id"], both["id"]]
+    assert [p["id"] for p in media.providers_of_kind(store, video.KINDS)] == \
+        [video_only["id"], both["id"]]
+    # The exclusive ones never cross over, which is the failure this asserts against.
+    assert image_only["id"] not in [p["id"] for p in media.providers_of_kind(store, video.KINDS)]
+    assert video_only["id"] not in [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)]
+    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_media", "openai_image"}
     # and none of them is offered to a member as a chat model
-    assert [m["id"] for m in store.list_models()
-            if m["provider_id"] in (image_prov["id"], video_prov["id"], meta_prov["id"])] == []
+    media_ids = (image_only["id"], video_only["id"], both["id"])
+    assert [m["id"] for m in store.list_models() if m["provider_id"] in media_ids] == []
 
 
 def test_a_configured_id_that_no_longer_exists_is_reported_not_replaced(store):

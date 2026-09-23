@@ -14,6 +14,8 @@ import os
 import time
 from pathlib import Path
 
+import httpx
+
 from . import i18n
 from .coderun import inside as _inside
 
@@ -21,23 +23,219 @@ from .coderun import inside as _inside
 # list `store.list_models()` filters by, so a member can never be pointed at a generator.
 # Each generator imports its own subset for picking a provider (`video.KINDS`,
 # `imagegen.KINDS`) — add the new kind here **and** to that subset.
-MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_video", "openai_image")
+#
+# `metachat_media` covers both media: its one key reaches an image API *and* a video API, so it
+# belongs in both subsets rather than being configured twice under two names.
+MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "openai_image")
 
-# The one media API whose model list cannot be asked for.
+# MetaChat's open media API, one row per model: what it is for, where its job is submitted and
+# polled, which parameters its own page of the documentation lists, and where the finished file
+# is in the reply.
 #
-# `metachat_video` is MetaChat's *open* media API (`api.mmchat.xyz/open/v1`) — a different host
-# from the OpenAI-compatible address, with its own job shape. It documents `video/generate`,
-# `video/result/{id}` and `image/generate`, and **no listing endpoint at all**
-# (`/open/v1/models`, `/open/v1/video/models`: 404). So there is nothing to refresh against, and
-# the models are shipped here instead — this table is their one definition: the preset seeds from
-# it and `discovery` answers a refresh with it.
+# A table rather than one request shape for the whole prefix, because the paths and the parameters
+# genuinely differ. Grok and the image families share the generic `image/generate` and
+# `video/generate`; Midjourney has its own `midjourney/imagine` and `midjourney/video` and polls
+# both on `midjourney/result/{id}`. The knobs are not the same words either — `duration` means
+# nothing to Midjourney (its clips are 5 seconds), whose own parameters are motion / loop / count.
 #
-# What it is *not* is a list of everything MetaChat's website offers. Seedance, Sora, Kling and
-# Veo have web pages and no API; only these two are reachable with a key. Two ids, both taken
-# from MetaChat's own model-price page, and both image-to-video (see `video.py`).
-BUILTIN_MEDIA_MODELS: dict[str, tuple[str, ...]] = {
-    "metachat_video": ("grok-imagine-video-1.5-preview", "mj-video-v1"),
+# `params` lists **only** what that model's documentation shows. Anything left out takes the
+# provider's documented default, which is the safe direction: a parameter a model does not
+# recognise comes back as a failure the user has paid for.
+#
+# `file` is where the result is: `video_url` for a clip, `image_urls` (a list) on the generic image
+# path, `image_url` (one picture) for Midjourney.
+#
+# ⚠️ These ids are MetaChat's *API* catalogue. Its website also offers Seedance, Sora, Kling and
+# Veo video; none of those is reachable with a key, which is why they are absent.
+MEDIA_MODELS: dict[str, dict] = {
+    # ---- video
+    "grok-imagine-video-1.5-preview": {
+        "use": "video", "submit": "video/generate", "result": "video/result/{vid}",
+        "params": ("duration", "ratio", "resolution"), "file": "video_url",
+    },
+    "mj-video-v1": {
+        "use": "video", "submit": "midjourney/video", "result": "midjourney/result/{vid}",
+        "params": ("resolution",), "file": "video_url",
+    },
+    # ---- images
+    "grok-imagine-image-2.0": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("num", "aspect"), "file": "image_urls",
+    },
+    "grok-imagine-image-quality": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("num", "aspect"), "file": "image_urls",
+    },
+    "flux-2-pro": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("aspect",), "file": "image_urls",
+    },
+    "flux-2-max": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("aspect",), "file": "image_urls",
+    },
+    "flux-kontext": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("aspect",), "file": "image_urls",
+    },
+    "z-image-turbo": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("aspect",), "file": "image_urls",
+    },
+    "doubao-seedream-5-0-pro-260628": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("num",), "file": "image_urls",
+    },
+    "doubao-seedream-5-0-260128": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("num",), "file": "image_urls",
+    },
+    "doubao-seedream-4-5-251128": {
+        "use": "image", "submit": "image/generate", "result": "image/result/{vid}",
+        "params": ("num",), "file": "image_urls",
+    },
+    # Midjourney's own image endpoint returns one four-up picture rather than a list, and takes its
+    # own parameter set (stylize, quality, chaos, style, seed…); only the aspect ratio is wired, so
+    # the rest stays at Midjourney's defaults.
+    "mj-v82": {"use": "image", "submit": "midjourney/imagine", "result": "midjourney/result/{vid}",
+               "params": ("aspect",), "file": "image_url"},
+    "mj-v81": {"use": "image", "submit": "midjourney/imagine", "result": "midjourney/result/{vid}",
+               "params": ("aspect",), "file": "image_url"},
+    "mj-v7": {"use": "image", "submit": "midjourney/imagine", "result": "midjourney/result/{vid}",
+              "params": ("aspect",), "file": "image_url"},
+    "mj-v61": {"use": "image", "submit": "midjourney/imagine", "result": "midjourney/result/{vid}",
+               "params": ("aspect",), "file": "image_url"},
+    "niji-7": {"use": "image", "submit": "midjourney/imagine", "result": "midjourney/result/{vid}",
+               "params": ("aspect",), "file": "image_url"},
+    "niji-6": {"use": "image", "submit": "midjourney/imagine", "result": "midjourney/result/{vid}",
+               "params": ("aspect",), "file": "image_url"},
 }
+
+# The one media API whose model list cannot be asked for: `/open/v1/models` and
+# `/open/v1/video/models` both answer 404. So there is nothing to refresh against and these ids
+# ship with the app — the preset seeds from here and `discovery` answers a refresh with the same
+# list. Grouped by what a model is for, which is what the image and video settings ask for.
+BUILTIN_MEDIA_MODELS: dict[str, dict[str, tuple[str, ...]]] = {
+    "metachat_media": {
+        use: tuple(mid for mid, m in MEDIA_MODELS.items() if m["use"] == use)
+        for use in ("image", "video")
+    },
+}
+
+# For `purpose_of`: a model we ship a job for is what that job says it is. Neither "mj-v82" nor
+# "z-image-turbo" is a word the name rules below could be expected to recognise.
+_MEDIA_MODEL_USES: dict[str, str] = {mid.lower(): m["use"] for mid, m in MEDIA_MODELS.items()}
+
+# The generic paths, for a model name typed by hand rather than picked from the shipped list. The
+# names on the settings pages are free text (a newer model should not need a release of this app),
+# so a model we have no description for still gets a request — just one with no parameters, which
+# is the only thing that can be sent without knowing what the model accepts.
+_MEDIA_GENERIC: dict[str, tuple[str, str, tuple[str, ...], str]] = {
+    "image": ("image/generate", "image/result/{vid}", (), "image_urls"),
+    "video": ("video/generate", "video/result/{vid}", (), "video_url"),
+}
+
+
+def job_of(model: str, use: str) -> dict:
+    """How to run one media job: where it is submitted, where it is polled, which parameters it
+    takes, and where the finished file is in the reply.
+
+    `use` is checked rather than trusted: pointing the image tool at a video model is a configuration
+    mistake, and answering it with the image job's paths would turn that into a confusing HTTP error.
+    """
+    m = MEDIA_MODELS.get((model or "").strip())
+    if m and m.get("use") == use:
+        return m
+    submit, result, params, field = _MEDIA_GENERIC[use]
+    return {"use": use, "submit": submit, "result": result, "params": params, "file": field}
+
+
+# --------------------------------------------------- MetaChat's reply envelope, read in both tools
+#
+# The video and image tools talk to the same service and get the same envelope back, so the three
+# ways of reading it live here rather than being written twice and drifting apart.
+def meta_ok(body: object) -> bool:
+    """`status: "Success"` means the call worked. An absent one counts as success too: refusing a
+    body that simply does not carry the field would fail over a cosmetic difference."""
+    if not isinstance(body, dict):
+        return False
+    return str(body.get("status") or "").strip().lower() in ("", "success")
+
+
+def meta_said(body: object) -> str:
+    """The sentence out of the envelope.
+
+    MetaChat answers 200 even when it refuses, putting the verdict in `status` and the reason in
+    `message`, so a status code is no help and the body is the only place the real reason exists.
+    """
+    if isinstance(body, dict):
+        said = " ".join(str(body.get("message") or "").split())
+        return said[:300] or str(body)[:200]
+    return str(body)[:200]
+
+
+def job_links(data: object, field: str) -> list[str]:
+    """The finished files in a job's `data`, as a list.
+
+    One field per family: `video_url` for a clip, `image_urls` on the generic image path where
+    several may come back, and `image_url` for Midjourney's single four-up picture. Normalising here
+    keeps the tools from each growing their own "is it a list or a string" branch.
+    """
+    if not isinstance(data, dict):
+        return []
+    got = data.get(field)
+    if isinstance(got, str):
+        return [got] if got else []
+    if isinstance(got, list):
+        return [u for u in got if isinstance(u, str) and u]
+    return []
+
+
+# Where the probe asks about a task that cannot exist. Any documented path proves the same two
+# things — the service answers, and it takes this key — and this one is shared by every model
+# family, so the probe does not need to know which model is configured. It is a *video* result
+# path even when the question is about drawing: the point is the service, not the medium.
+META_PROBE = "video/result/{vid}"
+
+
+async def probe_meta(base: str, key: str, *, client: "httpx.AsyncClient") -> tuple[bool, str]:
+    """Is MetaChat's media API there, and does it accept this key? Renders and draws nothing.
+
+    Asking about a task id that cannot exist: that API has no `/health` and no listing to read, and
+    it answers a missing task in its own 200-with-`Fail` envelope. A 401/403 is the one answer that
+    means something is really wrong (the key), and anything else proves the service answered.
+
+    Shared by both tools rather than written twice: one key, one host, one question — and a second
+    copy could only drift into asking it differently.
+    """
+    url = api_url(base, META_PROBE.format(vid="team-agent-probe"))
+    try:
+        r = await client.get(url, headers=auth_headers(key))
+    except httpx.HTTPError as e:
+        return False, i18n.pick_now(
+            f"Could not reach {base}: {type(e).__name__}: {e}", f"连不上 {base}:{type(e).__name__}: {e}"
+        )
+    if r.status_code in (401, 403):
+        return False, i18n.pick_now(
+            f"{base} is up but rejected the key ({r.status_code}). MetaChat's key is created under "
+            "your avatar → API management; the media API uses the same one.",
+            f"{base} 是活的,但密钥被拒绝了({r.status_code})。MetaChat 的密钥在头像 → API 管理里创建,"
+            "媒体接口用的是同一把。",
+        )
+    if r.status_code == 404:
+        return True, i18n.pick_now(
+            f"{base} is reachable: it answered 404 for a task id that does not exist.",
+            f"{base} 可以联通:对不存在的任务 id 返回了 404。",
+        )
+    if r.status_code < 400:
+        return True, i18n.pick_now(
+            f"{base} answered the media API with {r.status_code}.", f"{base} 的媒体接口有响应({r.status_code})。"
+        )
+    return False, i18n.pick_now(
+        f"{base} answered HTTP {r.status_code} ({r.text[:200]}).",
+        f"{base} 返回了 HTTP {r.status_code}({r.text[:200]})。",
+    )
+
 
 # ------------------------------------------------------------------ what a model is for
 #
@@ -84,6 +282,9 @@ def purpose_of(model_name: str, mode: str | None = None) -> str:
     if said:
         return said
     low = (model_name or "").strip().lower()
+    known = _MEDIA_MODEL_USES.get(low)
+    if known:
+        return known
     for purpose, needles in _NAME_PURPOSE:
         if any(n in low for n in needles):
             return purpose
