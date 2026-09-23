@@ -92,7 +92,18 @@ export default function RoutingPage() {
       {preview && (
         <div className="card">
           {preview.chain.length === 0 ? (
-            <span className="err">{t("No model is available! Start a local model or configure an API key.")}</span>
+            // Two different situations, two different actions. The chain is an allow-list, so
+            // "nothing is usable" and "plenty is usable and none is in the chain" look identical
+            // from the routing result alone — and telling the second reader to go and check an API
+            // key sends them to fix something that is already working.
+            preview.unchained.length > 0 ? (
+              <span className="err">
+                {t("{n} models can be called right now, but the chain names none of them — and the chain is the allow-list for what may be used.", { n: preview.unchained.length })}
+                {" "}<b>{t("Add one below.")}</b>
+              </span>
+            ) : (
+              <span className="err">{t("No model is available! Start a local model or configure an API key.")}</span>
+            )
           ) : (
             <div className="route-flow">
               {preview.chain.map((c, i) => (

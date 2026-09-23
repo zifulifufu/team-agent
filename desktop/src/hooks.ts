@@ -10,11 +10,11 @@ export function useRoute() {
   useEffect(() => {
     api.routePreview().then(setPreview).catch(() => undefined);
   }, [settings, models, providers]);
-  const { text, offline } = routeText(preview, models);
+  const { text, offline, title } = routeText(preview, models);
   const toggleExternal = async () => {
     if (!settings) return;
     await api.putSettings({ external_calls_enabled: !settings.external_calls_enabled });
     await reload();
   };
-  return { preview, text, offline, toggleExternal };
+  return { preview, text, offline, title, toggleExternal };
 }

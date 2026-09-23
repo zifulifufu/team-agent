@@ -294,6 +294,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
             members={members}
             placeholder={t("Type a message; @mention a member to assign work. Enter to send, Shift+Enter for a new line")}
             routeText={route.text}
+            routeTitle={route.title}
             offline={route.offline}
             onToggleExternal={route.toggleExternal}
             rows={2}

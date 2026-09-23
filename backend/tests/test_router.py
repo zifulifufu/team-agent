@@ -53,6 +53,44 @@ async def test_local_safety_net_appended_when_chain_has_no_local(store, make_rou
     assert r.model_id == "ollama/qwen2.5:7b"
 
 
+# ------------------------------------------------- models that are usable but never chosen
+def test_usable_but_unchained_models_are_reported(store, make_router):
+    """The chain is an **allow-list**, not a preference order: a model that is enabled and has a
+    working key is still never used unless its id is written in the chain.
+
+    That is what makes an empty chain worth explaining — "everything is unusable" can be true while
+    the key is perfectly fine, and the two need different actions."""
+    key_deepseek(store)
+    r = make_router(FakeLLM())
+    assert "deepseek/deepseek-flash" in store.get_settings()["route_chain"]
+
+    # In the chain → not reported; absent from it → reported.
+    assert "deepseek/deepseek-flash" not in [m["id"] for m in r.unchained_usable()]
+    store.update_settings({"route_chain": []})
+    assert {m["id"] for m in r.unchained_usable()} == {m["id"] for m in r.usable_models()}
+    assert "deepseek/deepseek-flash" in [m["id"] for m in r.unchained_usable()]
+
+
+def test_nothing_usable_means_nothing_unchained_either(store, make_router):
+    """So the "configure a key" wording is not watered down for the case it actually describes."""
+    r = make_router(FakeLLM())
+    store.update_settings({"external_calls_enabled": False, "route_chain": []})
+    store.update_provider("ollama", {"enabled": False})      # the local one would still be usable
+    assert r.usable_models() == []
+    assert r.unchained_usable() == []
+
+
+def test_an_unchained_model_is_not_silently_used(store, make_router):
+    """Reporting them must not become spending on them: an empty chain stays empty."""
+    key_deepseek(store)
+    store.update_settings({"route_chain": []})
+    store.update_provider("ollama", {"enabled": False})
+    r = make_router(FakeLLM())
+    unchained = [m["id"] for m in r.unchained_usable()]
+    assert "deepseek/deepseek-flash" in unchained and "deepseek/deepseek-v4-pro" in unchained
+    assert r.build_chain()[0] == [], "an unchained model was promoted into the chain"
+
+
 async def test_agent_preferred_model_goes_first(store, make_router):
     key_deepseek(store)
     kimi = store.add_provider_from_preset("moonshot", api_key="sk-kimi-1234567890")

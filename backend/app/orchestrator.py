@@ -1011,9 +1011,24 @@ protocol and should not decide what the others do."""
                 messages.append({"role": "user", "content": "\n\n".join(results) + i18n.pick_now("\n\nCarry on based on the tool results.", "\n\n请基于工具结果继续。")})
         except AllRoutesFailed as e:
             detail = "; ".join(f"{a.model_id}:{a.detail}" for a in e.attempts) or i18n.pick_now("no model available", "没有可用模型")
+            # Why it is empty matters, because the two causes need different actions and the
+            # wording above only fits one of them. A model has to be named in the priority chain to
+            # be used at all, so "everything is unusable" can be true while a key is perfectly fine.
+            unchained = self.router.unchained_usable()
+            hint = ""
+            if unchained:
+                names = ", ".join(m["model_name"] for m in unchained[:4])
+                more = "" if len(unchained) <= 4 else i18n.pick_now(f" and {len(unchained) - 4} more", f" 等 {len(unchained)} 个")
+                hint = i18n.pick_now(
+                    f" {len(unchained)} other models are usable but none of them is in the priority "
+                    f"chain, which is the allow-list for what may be called ({names}{more}). Add one "
+                    "under Settings → Routing & fallback → Priority chain.",
+                    f" 另有 {len(unchained)} 个模型可用,但都不在「优先级链」里——链是「允许被调用的名单」"
+                    f"({names}{more})。到 「设置 → 路由与回退 → 优先级链」里加一个即可。",
+                )
             await emit({"type": "message_discard", "message_id": mid})
             await self._system(
-                group["id"], i18n.pick_now(f"{agent['name']} cannot reply right now: no model is available ({detail}).", f"「{agent['name']}」暂时无法回复,所有模型均不可用({detail})。"), emit
+                group["id"], i18n.pick_now(f"{agent['name']} cannot reply right now: no model is available ({detail}).{hint}", f"「{agent['name']}」暂时无法回复,所有模型均不可用({detail})。{hint}"), emit
             )
             run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
             return None

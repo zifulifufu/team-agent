@@ -25,6 +25,9 @@ interface Props {
   members: Mentionable[];
   placeholder: string;
   routeText?: string;
+  /** What the routing pill says on hover. The default is about the offline switch, which is the
+   *  wrong explanation when the chain is empty — and that is exactly when someone hovers it. */
+  routeTitle?: string;
   offline?: boolean;
   onToggleExternal?: () => void;
   rows?: number;
@@ -254,7 +257,7 @@ export default function Composer(p: Props) {
           {p.extra}
           <div className="grow" />
           {p.routeText !== undefined && (
-            <button className={"route-pill" + (p.offline ? " off" : "")} onClick={p.onToggleExternal} title={t("Click to allow / block hosted model calls")}>
+            <button className={"route-pill" + (p.offline ? " off" : "")} onClick={p.onToggleExternal} title={p.routeTitle ?? t("Click to allow / block hosted model calls")}>
               {p.offline ? <Lock size={13} /> : <Cloud size={13} />}
               <span>{p.routeText}</span>
             </button>

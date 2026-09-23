@@ -630,6 +630,9 @@ export interface RoutePreview {
   external_calls_enabled: boolean;
   chain: string[];
   skipped: Attempt[];
+  /** Usable models the priority chain does not mention — the chain is an allow-list, so these are
+   *  callable but never chosen. Only used to explain an empty chain honestly. */
+  unchained: string[];
 }
 export interface LocalStatus {
   running: boolean;

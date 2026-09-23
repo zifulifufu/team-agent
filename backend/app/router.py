@@ -142,6 +142,24 @@ class ModelRouter:
                 out.append(m)
         return out
 
+    def unchained_usable(self) -> list[dict]:
+        """Usable models that the priority chain does not mention.
+
+        The chain is an **allow-list**, not a preference order: a model that is enabled, has a key
+        and is allowed to make outbound calls is still never used unless its id is in
+        `route_chain`. That makes "no model is available" two very different situations, and only
+        one of them is the user's fault-in-the-way-they-would-guess:
+
+        * nothing usable exists — the message about a key or a local model is exactly right;
+        * plenty usable exists and none of it is in the chain — and then that same message sends
+          the user to re-check keys that are already fine.
+
+        The routing result is deliberately *not* widened to use these (silently spending on a model
+        nobody approved is worse than saying so). They are reported, and the reader decides.
+        """
+        chained = set(self.store.get_settings()["route_chain"])
+        return [m for m in self.usable_models() if m["id"] not in chained]
+
     def rank_by_tags(self, tags: list[str], limit: int = 5) -> list[dict]:
         """Rank the usable models by strengths. On a tie: cloud beats local (local is kept as a
         fallback), then the order of the priority chain in settings. A local small model is

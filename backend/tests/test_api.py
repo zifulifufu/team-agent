@@ -35,6 +35,33 @@ def test_api_key_is_masked_and_route_preview(client):
     assert prev["skipped"][0]["detail"] == "outbound calls are disabled"
 
 
+def test_route_preview_says_which_models_the_chain_never_mentions(client):
+    """The chain is the allow-list, so this is what lets the UI explain an empty one honestly.
+
+    Reachable and unused is a different situation from unusable, and only the second one is fixed
+    by checking an API key — which is exactly what the old wording told everybody to do.
+
+    Note what an empty chain alone does *not* do: the local model is still appended as a safety
+    net, so a chain of nothing is usable as long as some local model is switched on. The empty
+    result needs both — no chain entries and no local model — which is the state this asserts.
+    """
+    client.patch("/api/providers/deepseek", json={"api_key": "sk-abcdef123456"})
+    client.put("/api/settings", json={"route_chain": []})
+    assert client.get("/api/route/preview").json()["chain"] == ["ollama/qwen2.5:7b"], \
+        "the local safety net still answers, so the chain is not actually empty here"
+
+    client.patch("/api/providers/ollama", json={"enabled": False})
+    prev = client.get("/api/route/preview").json()
+    assert prev["chain"] == [], "an unchained cloud model must not be used on its own"
+    assert "deepseek/deepseek-flash" in prev["unchained"]
+
+    # Naming one in the chain moves it out of the report, which is the whole signal.
+    client.put("/api/settings", json={"route_chain": ["deepseek/deepseek-flash"]})
+    prev = client.get("/api/route/preview").json()
+    assert prev["chain"] == ["deepseek/deepseek-flash"]
+    assert prev["unchained"] == ["deepseek/deepseek-v4-pro"], "the other one is still unchained"
+
+
 def test_add_and_remove_models_and_providers(client):
     p = client.post("/api/providers", json={"preset": "moonshot", "api_key": "sk-x"}).json()
     assert p["id"] == "moonshot" and len(p["models"]) == 1

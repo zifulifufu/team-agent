@@ -469,6 +469,10 @@ def create_app(
             "external_calls_enabled": store.get_settings()["external_calls_enabled"],
             "chain": [c["id"] for c in cands],
             "skipped": [a.to_dict() for a in skipped],
+            # Models that *could* be called but that the chain never mentions. Reported so an empty
+            # chain can be explained honestly: "you have 90 usable models and none of them is in
+            # the chain" is a fixable sentence, while "no model is available" is not.
+            "unchained": [m["id"] for m in router.unchained_usable()],
         }
 
     # --------------------------------------------------------- providers

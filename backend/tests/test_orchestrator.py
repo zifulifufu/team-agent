@@ -147,6 +147,51 @@ async def test_all_models_down_emits_system_notice_not_crash(store, make_router)
     assert last["sender_type"] == "system" and "cannot reply right now" in last["content"]
 
 
+async def test_the_notice_names_the_real_reason_when_the_chain_is_the_problem(store, make_router):
+    """The exact situation that produces a mute group with a working key.
+
+    A model has to be named in the priority chain to be used at all, so a chain full of ids that no
+    longer exist leaves nothing to call **while every credential is fine**. The old notice said
+    "no model is available" and listed only the dead ids, which sends the reader off to re-check
+    keys that already work. Naming what is usable-but-unchained is the actionable half.
+
+    The host is unpinned and untagged first, because both of those are *other* ways in: a member
+    with a model of its own goes to the front of the chain, and one with tags is ranked against
+    every usable model — neither consults the chain.
+    """
+    orch, g, _agents = setup(store, make_router, FakeLLM(default="unused"))
+    store.update_agent(g["host_agent_id"], {"model_id": "", "tags": []})
+    store.update_settings({"route_chain": ["deepseek/deepseek-chat"]})   # renamed since; not a model any more
+    store.update_provider("ollama", {"enabled": False})                   # no local safety net
+    c = Collector()
+
+    await orch.handle_user_message(g["id"], "hi", c)
+
+    last = store.list_messages(g["id"])[-1]
+    assert last["sender_type"] == "system"
+    assert "cannot reply right now" in last["content"]
+    assert "deepseek/deepseek-chat" in last["content"], "the dead chain entry is still reported"
+    assert "none of them is in the priority chain" in last["content"]
+    assert "deepseek-flash" in last["content"], "the models that *could* answer are named"
+    assert "Routing & fallback" in last["content"], "and where to fix it"
+
+
+async def test_the_notice_stays_plain_when_nothing_is_usable(store, make_router):
+    """No hint when there is nothing to hint about: the plain sentence is already the right advice."""
+    orch, g, _agents = setup(store, make_router, FakeLLM(default="unused"))
+    store.update_agent(g["host_agent_id"], {"model_id": "", "tags": []})
+    store.update_settings({"route_chain": []})
+    store.update_provider("deepseek", {"api_key": ""})                    # setup() adds one
+    store.update_provider("ollama", {"enabled": False})
+    c = Collector()
+
+    await orch.handle_user_message(g["id"], "hi", c)
+
+    last = store.list_messages(g["id"])[-1]
+    assert "cannot reply right now" in last["content"]
+    assert "priority chain" not in last["content"]
+
+
 async def test_fallback_is_recorded_on_message(store, make_router):
     fake = FakeLLM({"deepseek/": RuntimeError("timeout")}, default="本地回复")
     orch, g, ag = setup(store, make_router, fake)

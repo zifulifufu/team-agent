@@ -8,11 +8,44 @@ import { tr } from "./i18n";
 export const levelLabel = (level: string): string =>
   ({ read: tr("Read-only"), edit: tr("Can edit files"), full: tr("Full access") })[level] ?? level;
 
-export function routeText(preview: RoutePreview | null, models: Model[]): { text: string; offline: boolean } {
-  if (!preview) return { text: "", offline: false };
-  if (!preview.external_calls_enabled) return { text: tr("Offline mode · local models only"), offline: true };
+/**
+ * What the pill at the bottom-right of the composer says.
+ *
+ * It is a *display* of the routing result, not a picker: the model is chosen under
+ * Settings → Routing & fallback → Priority chain (or per member). So the useful thing it can do
+ * when there is no model is say **why**, because the two reasons need different actions:
+ *
+ * * nothing usable exists — a key or a local model is genuinely missing;
+ * * plenty is usable and none of it is in the chain — where "configure an API key" would send the
+ *   reader to re-check keys that are already working.
+ *
+ * `title` carries the longer explanation for the hover tooltip; `text` has to stay short enough to
+ * sit in the pill.
+ */
+export function routeText(
+  preview: RoutePreview | null,
+  models: Model[],
+): { text: string; offline: boolean; title: string } {
+  if (!preview) return { text: "", offline: false, title: "" };
+  if (!preview.external_calls_enabled) {
+    return { text: tr("Offline mode · local models only"), offline: true,
+             title: tr("Click to allow / block hosted model calls") };
+  }
   const names = preview.chain.map((c) => modelLabel(c, models));
-  return { text: names.length ? names.join(" → ") : tr("No model available"), offline: false };
+  if (names.length) {
+    return { text: names.join(" → "), offline: false,
+             title: tr("Models are tried in this order. Click to allow / block hosted model calls.") };
+  }
+  const unchained = preview.unchained ?? [];
+  if (!unchained.length) {
+    return { text: tr("No model available"), offline: false,
+             title: tr("No model can be called right now: add a provider and a key, or start a local model.") };
+  }
+  return {
+    text: tr("Not in the chain · {n} usable", { n: unchained.length }),
+    offline: false,
+    title: tr("{n} models can be called right now, but the priority chain names none of them — and the chain is the allow-list for what may be used. Add one under Settings → Routing & fallback.", { n: unchained.length }),
+  };
 }
 
 /**
