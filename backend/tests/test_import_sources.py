@@ -183,12 +183,12 @@ def test_importing_a_skill_writes_it_and_a_second_import_skips_it(home):
     write(home, ".claude/skills/writer/SKILL.md",
           "---\nname: writer\ndescription: Formal notices\n---\n\n写公告的步骤")
     got = I.import_skills(store, "claude-skills", ["writer"])
-    assert got == {"added": ["writer"], "skipped": [], "copied": {}}
+    assert got == {"added": ["writer"], "skipped": [], "copied": {}, "truncated": {}}
     saved = (store.data_dir / "skills" / "writer" / "SKILL.md").read_text(encoding="utf-8")
     assert "写公告的步骤" in saved and "Formal notices" in saved
     # a second run must not overwrite what is already there
     again = I.import_skills(store, "claude-skills", ["writer"])
-    assert again == {"added": [], "skipped": ["writer"], "copied": {}}
+    assert again == {"added": [], "skipped": ["writer"], "copied": {}, "truncated": {}}
     assert [i["name"] for i in servers_of(store, "claude-skills")][0] == "writer"
     assert servers_of(store, "claude-skills")[0]["exists"] is True
 
@@ -730,6 +730,33 @@ def test_a_symlink_inside_an_imported_skill_is_skipped_not_followed(home):
     (src / "references" / "link.md").symlink_to(outside)
 
     dest = home / "installed"
-    assert copy_skill_files(src, dest) == 1
+    assert copy_skill_files(src, dest) == (1, 0)
     assert (dest / "references" / "real.md").is_file()
     assert not (dest / "references" / "link.md").exists()
+
+
+def test_a_skill_that_hits_a_ceiling_is_reported_as_incomplete(home, tmp_path, monkeypatch):
+    """The ceilings exist so a copy cannot run away, but a skill that stops at one is *half a skill*
+    — and the half that gets left behind is whatever sorts last, which is not necessarily the half
+    that does not matter (in the real case it was `references/`, while README screenshots sorted
+    ahead of it and came in fine).
+
+    So it is never silent: the copy reports what it left, and the import result carries it. The
+    ceilings themselves are deliberately generous now — a published skill is a repository, and the
+    first version's 40 MB cut a real 67 MB one in half.
+    """
+    from app import tools
+
+    write(home, ".claude/skills/big/SKILL.md", "---\nname: big\ndescription: d\n---\n\ntext\n")
+    write(home, ".claude/skills/big/references/a.md", "a" * 400)
+    write(home, ".claude/skills/big/references/b.md", "b" * 400)
+
+    # Smaller than one file, so the second one cannot fit: the first is copied, the second is
+    # reported as left behind.
+    monkeypatch.setattr(tools, "SKILL_EXTRA_MAX_BYTES", 100)
+    data = tmp_path / "data"
+    app = create_app(data, completion_fn=FakeLLM(default="ok"))
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        got = c.post("/api/import/skills", json={"source": "claude-skills", "names": ["big"]}).json()
+        assert got["added"] == ["big"]
+        assert got["copied"] == {"big": 1} and got["truncated"] == {"big": 1}, got

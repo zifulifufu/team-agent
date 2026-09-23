@@ -488,14 +488,23 @@ def delete_skill(skills_dir: Path, name: str) -> bool:
 # What an imported skill may drag along: the files its own text tells the reader to open or run
 # (`references/*.md`, `scripts/*.mjs`). Bounded at every level, because this copies out of a
 # directory another application wrote and neither side is trusted to be reasonable.
-SKILL_EXTRA_MAX_FILES = 400
-SKILL_EXTRA_MAX_FILE = 8 * 1024 * 1024        # one file
-SKILL_EXTRA_MAX_BYTES = 40 * 1024 * 1024      # the whole skill
+#
+# The ceilings are deliberately generous. A published skill is a repository: it carries its
+# references, its scripts, its assets, and — as often as not — the screenshots its README uses. A
+# real one measured 67 MB, of which the `references/` tree the text actually points at was a
+# fraction. The first ceilings here (8 MB per file, 40 MB total, 400 files) truncated that skill,
+# and because the copy walks in sorted order it dropped `references/` — the files that matter —
+# rather than the marketing images that sorted ahead of them. A limit that removes exactly the wrong
+# thing is worse than no limit; what is still needed is that the copy cannot run away, and that a
+# truncation is never silent (`copy_skill_files` reports it).
+SKILL_EXTRA_MAX_FILES = 2000
+SKILL_EXTRA_MAX_FILE = 48 * 1024 * 1024       # one file
+SKILL_EXTRA_MAX_BYTES = 400 * 1024 * 1024     # the whole skill
 
 
 def copy_skill_files(src_dir: Path, dest_dir: Path, *, skip: tuple[str, ...] = ("SKILL.md",),
-                     only_missing: bool = False) -> int:
-    """Copy a skill's supporting files next to its SKILL.md; returns how many were copied.
+                     only_missing: bool = False) -> tuple[int, int]:
+    """Copy a skill's supporting files next to its SKILL.md; returns `(copied, skipped)`.
 
     **A skill is not always one file.** The ones worth importing are exactly the ones that are not:
     HyperFrames' creation workflows and WorkBuddy's media skills ship a `references/` tree their own
@@ -506,12 +515,15 @@ def copy_skill_files(src_dir: Path, dest_dir: Path, *, skip: tuple[str, ...] = (
 
     Links are skipped rather than followed and every directory is re-checked for containment: the
     source belongs to another application and the destination is this app's own data directory.
+
+    Returns `(copied, skipped)`. `skipped` counts files left behind because a ceiling was reached —
+    the caller reports it rather than presenting a partial skill as a whole one.
     """
     if not src_dir.is_dir():
-        return 0
+        return 0, 0
     dest_dir.mkdir(parents=True, exist_ok=True)
     root = dest_dir.resolve()
-    copied = files = total = 0
+    copied = files = total = skipped = 0
     for path in sorted(src_dir.rglob("*")):
         if path.is_symlink() or not path.is_file():
             continue
@@ -520,12 +532,14 @@ def copy_skill_files(src_dir: Path, dest_dir: Path, *, skip: tuple[str, ...] = (
         if rel.as_posix() in skip or any(part.startswith(".") for part in rel.parts):
             continue
         if files >= SKILL_EXTRA_MAX_FILES or total >= SKILL_EXTRA_MAX_BYTES:
-            break
+            skipped += 1
+            continue
         try:
             size = path.stat().st_size
         except OSError:
             continue
         if size > SKILL_EXTRA_MAX_FILE:
+            skipped += 1
             continue
         target = dest_dir / rel
         if only_missing and target.is_file():
@@ -545,7 +559,7 @@ def copy_skill_files(src_dir: Path, dest_dir: Path, *, skip: tuple[str, ...] = (
         copied += 1
         files += 1
         total += len(data)
-    return copied
+    return copied, skipped
 
 
 def skill_extra_files(skill: "Skill") -> int:

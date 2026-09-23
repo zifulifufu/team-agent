@@ -394,7 +394,7 @@ Claude Code、Codex、Cursor、Windsurf、Cline、Roo Code、Continue、LM Studi
 
 | 资产 | 从哪里读 | 变成什么 |
 | --- | --- | --- |
-| 技能 | `~/.workbuddy/skills`,以及它已安装插件里的 `skills/` | 技能(同一个 `SKILL.md` 格式,文本原样搬) |
+| 技能 | `~/.workbuddy/skills`、它已安装插件里的 `skills/`、以及**它随应用自带**的技能与自带插件的技能 | 技能(同一个 `SKILL.md` 格式,文本原样搬;**技能自带的其他文件也会一起搬过来**) |
 | 专家 | 已安装插件与专家包里的 `agents/*.md` | 一位成员:名称、专业方向与提示词都来自那个包 |
 | 连接器 | `~/.workbuddy/connectors/*/mcp.json`,以及它的整个连接器目录 | MCP 服务器(远端),导入后为停用状态 |
 

@@ -74,6 +74,7 @@ const ZH: Record<string, string> = {
   // 带附属文件的技能 = 一本手册,不是一段规则;导入时会把它们一起装进来
   "{n} files": "{n} 个文件",
   "This skill came with files of its own; they are installed next to it and the prompt tells members where to find them.": "这个技能自带文件,导入时一起装在了它旁边,提示词里会告诉成员去哪里找。",
+  "{n} of them are incomplete: the skill is bigger than the import limit, so some of the files its own text points at were not copied.": "其中 {n} 个不完整:技能超过了导入上限,它正文里引用的部分文件没有被复制进来。",
   "Plugins": "插件",
   "Prompts": "提示词",
   "Library": "资料库",

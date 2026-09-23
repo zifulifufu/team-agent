@@ -17,7 +17,7 @@ type ImportKind = "mcp" | "skill" | "expert";
 export default function ImportFromApps({ kind, onClose, onDone }: {
   kind: ImportKind;
   onClose: () => void;
-  onDone: (added: number, skipped: number) => void;
+  onDone: (added: number, skipped: number, incomplete: number) => void;
 }) {
   const { t } = useI18n();
   const [sources, setSources] = useState<ImportSource[] | null>(null);
@@ -72,16 +72,24 @@ export default function ImportFromApps({ kind, onClose, onDone }: {
     try {
       // One call per source: a source is the unit the backend re-reads, and grouping by it
       // keeps the request honest about where each entry came from.
-      let added = 0, skipped = 0;
+      let added = 0, skipped = 0, incomplete = 0;
       for (const source of [...new Set(chosen.map((i) => i.source))]) {
         const names = chosen.filter((i) => i.source === source).map((i) => i.name);
-        const r = kind === "mcp" ? await api.importMcpFrom(source, names)
-          : kind === "skill" ? await api.importSkillsFrom(source, names)
+        if (kind === "skill") {
+          const r = await api.importSkillsFrom(source, names);
+          added += r.added.length;
+          skipped += r.skipped.length;
+          // A skill stopped by a size ceiling is here but not whole, and what it is missing is the
+          // part its own text refers to. Counted so the caller can say so.
+          incomplete += Object.keys(r.truncated ?? {}).length;
+        } else {
+          const r = kind === "mcp" ? await api.importMcpFrom(source, names)
             : await api.importExpertsFrom(source, names);
-        added += r.added.length;
-        skipped += r.skipped.length;
+          added += r.added.length;
+          skipped += r.skipped.length;
+        }
       }
-      onDone(added, skipped);
+      onDone(added, skipped, incomplete);
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);

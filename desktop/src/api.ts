@@ -1231,8 +1231,13 @@ export const api = {
   /** Imports land disabled; the names are re-read from the source file server-side. */
   importMcpFrom: (source: string, names: string[]) =>
     post<{ added: string[]; skipped: string[] }>("/api/import/mcp", { source, names }),
+  /** Imports land disabled; the names are re-read from the source file server-side.
+   *  `copied` counts the files each skill brought besides its SKILL.md (a skill can be a folder);
+   *  `truncated` names the ones a size ceiling cut short, so a half-copied skill is never shown as
+   *  a whole one. */
   importSkillsFrom: (source: string, names: string[]) =>
-    post<{ added: string[]; skipped: string[] }>("/api/import/skills", { source, names }),
+    post<{ added: string[]; skipped: string[]; copied: Record<string, number>;
+           truncated: Record<string, number> }>("/api/import/skills", { source, names }),
   /** Expert packages become members. No model is pinned and no skill is attached — that is
    *  a decision for whoever reads what the package actually says. */
   importExpertsFrom: (source: string, names: string[]) =>

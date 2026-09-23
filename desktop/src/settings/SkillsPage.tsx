@@ -234,7 +234,19 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
       )}
       {fromApps && (
         <ImportFromApps kind="skill" onClose={() => setFromApps(false)}
-                        onDone={async (added) => { setFromApps(false); await load(); if (added) setCheckMsg({ ok: true, text: t("Imported {n} skill(s) from another app.", { n: added }) }); }} />
+                        onDone={async (added, _skipped, incomplete) => {
+                          setFromApps(false);
+                          await load();
+                          if (added) {
+                            setCheckMsg({
+                              ok: incomplete === 0,
+                              text: t("Imported {n} skill(s) from another app.", { n: added })
+                                + (incomplete
+                                  ? " " + t("{n} of them are incomplete: the skill is bigger than the import limit, so some of the files its own text points at were not copied.", { n: incomplete })
+                                  : ""),
+                            });
+                          }
+                        }} />
       )}
       {discover && <RepoDiscoverModal kind="skill" onClose={() => setDiscover(false)} onInstalled={async () => { setDiscover(false); await Promise.all([load(), reloadUpdates()]); }} />}
     </div>

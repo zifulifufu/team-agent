@@ -226,6 +226,26 @@ SOURCES: list[dict[str, Any]] = [
      "notes": ("Skills that the plugins installed in WorkBuddy ship with. Read from its own "
                "record of what is installed, so a plugin kept at several versions is offered once.",
                "WorkBuddy 里已安装插件附带的技能。按它自己的已安装记录读取,所以同一个插件存了多个版本也只出现一次。")},
+    # The skills WorkBuddy *ships with*. They are not the ones an installed plugin brought: its own
+    # record of installed plugins (`installed_plugins.json`) lists what was downloaded, so it does
+    # not reach these, and a shipped skill like `humanizer` was therefore not offered at all. What
+    # is read here is the app's copy of the marketplace it ships — the built-in skills, and the
+    # skills of the plugins that come with the app rather than with your installation.
+    {"key": "workbuddy-builtin-skills", "app": "WorkBuddy built-in skills", "kind": "skill",
+     "format": "tree", "root": "~/.workbuddy/plugins/marketplaces/workbuddy-builtin/skills",
+     "notes": ("The skills WorkBuddy ships with, rather than the ones an installed plugin brought. "
+               "They are not in its record of installed plugins, so they are read from the "
+               "marketplace it carries.",
+               "WorkBuddy **随应用自带**的技能(不是已安装插件带来的那些)。它们不在它的已安装记录里,"
+               "所以从它自带的那份市场里读。")},
+    {"key": "workbuddy-builtin-plugin-skills", "app": "WorkBuddy built-in plugin skills",
+     "kind": "skill", "format": "tree",
+     "root": "~/.workbuddy/plugins/marketplaces/workbuddy-builtin/builtin-plugins/*/skills",
+     "notes": ("Skills of the plugins that ship with WorkBuddy itself, for example the writing "
+               "plugin's. They exist only in that copy, so an installed cache that trimmed them "
+               "hides them.",
+               "WorkBuddy 自带那些插件(例如写作插件)附带的技能。它们只存在于那份副本里,"
+               "所以被裁过的安装缓存会把它们藏起来。")},
     {"key": "workbuddy-experts", "app": "WorkBuddy experts", "kind": "expert",
      "format": "installed", "sub": "agents", "glob": "*.md", "root": "~/.workbuddy/plugins",
      "notes": ("Expert packages: each `agents/*.md` is a name, a profession and the prompt, and "
@@ -946,7 +966,7 @@ def restore_imported_skill_files(store: Any) -> list[tuple[str, int]]:
             # there alone. Deciding from "does this skill have any extra files" instead — the first
             # version — wrote off a skill whose copy was interrupted halfway, because a single file
             # was enough for it to look complete.
-            files = copy_skill_files(origin, skills_dir / folder, only_missing=True)
+            files, _left_out = copy_skill_files(origin, skills_dir / folder, only_missing=True)
             if files:
                 fixed.append((skill.name, files))
             break
@@ -973,32 +993,38 @@ def import_skills(store: Any, source: str, names: list[str]) -> dict:
     src = BY_KEY.get(source)
     if not src or src["kind"] != "skill":
         raise ValueError(i18n.pick_now("That is not a skill source", "这不是一个技能来源"))
-    added, skipped, copied = [], [], {}
+    added, skipped_names, copied, truncated = [], [], {}, {}
     skills_dir = store.data_dir / "skills"
     for item in _skill_items(src, store):
         if item["name"] not in names:
             continue
         if item["exists"]:
-            skipped.append(item["name"])
+            skipped_names.append(item["name"])
             continue
         origin = Path(item["path"])
         try:
             text = origin.read_text(encoding="utf-8", errors="ignore")
         except OSError:
-            skipped.append(item["name"])
+            skipped_names.append(item["name"])
             continue
         skill = parse_skill_text(text, default_name=item["folder"], path=item["path"])
         if not (skill.body or "").strip():
-            skipped.append(item["name"])
+            skipped_names.append(item["name"])
             continue
         write_skill(skills_dir, skill.name, skill.description, skill.body, "member")
-        files = copy_skill_files(origin.parent, skills_dir / (safe_skill_name(skill.name) or item["folder"]))
+        files, left_out = copy_skill_files(
+            origin.parent, skills_dir / (safe_skill_name(skill.name) or item["folder"]))
         added.append(skill.name)
         if files:
             # Reported rather than left for the reader to discover: this skill is a folder, not a
             # paragraph, and it brought `files` of them.
             copied[skill.name] = files
-    return {"added": added, "skipped": skipped, "copied": copied}
+        if left_out:
+            # A ceiling was reached, so this skill is here but incomplete — said out loud instead of
+            # being presented as whole, because the missing half is exactly the half its text refers
+            # to and the silence would only surface as an instruction that leads nowhere.
+            truncated[skill.name] = left_out
+    return {"added": added, "skipped": skipped_names, "copied": copied, "truncated": truncated}
 
 
 def import_experts(store: Any, source: str, names: list[str]) -> dict:

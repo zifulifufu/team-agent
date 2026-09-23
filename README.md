@@ -485,7 +485,7 @@ and each is kept in a different shape on disk, so all three are read:
 
 | What | Where it is read from | What it becomes |
 | --- | --- | --- |
-| Skills | `~/.workbuddy/skills`, plus the `skills/` of the plugins it has installed | a skill (same `SKILL.md`, so the text moves unchanged) |
+| Skills | `~/.workbuddy/skills`, the `skills/` of the plugins it has installed, and the skills it **ships with** (including those of its own bundled plugins) | a skill (same `SKILL.md`, so the text moves unchanged — **and the files a skill comes with move too**) |
 | Experts | the `agents/*.md` of the installed plugins and of the expert packages | a member: the package's name, profession and prompt |
 | Connectors | `~/.workbuddy/connectors/*/mcp.json`, plus its whole connector catalogue | an MCP server (remote), imported disabled |
 
