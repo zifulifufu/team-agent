@@ -330,9 +330,8 @@ def path_for_row(store, row: dict) -> Path | None:
     """
     rel = (row.get("rel_path") or "").strip()
     if rel:
-        from . import coderun
         try:
-            workspace = coderun.workspace_path(store.data_dir, store.get_settings(), row["group_id"])
+            workspace = store.workspace_path(row["group_id"])
         except ValueError:
             return None
         found = resolve(workspace, rel)

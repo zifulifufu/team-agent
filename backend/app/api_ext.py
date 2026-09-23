@@ -799,7 +799,7 @@ def build_router(c: Ctx) -> APIRouter:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.mp4", name):
             raise HTTPException(400, i18n.pick_now("That is not a video file name", "这不是一个视频文件名"))
         # `workspace_path`, not `workspace_dir`: a GET must not create directories as a side effect
-        ws = coderun.workspace_path(Path(store.data_dir), store.get_settings(), gid)
+        ws = store.workspace_path(gid)
         folder = ws / "video"
         path = folder / name
         # The regex above only constrains the *requested* name, and `.resolve()` on its own is not a
@@ -833,7 +833,7 @@ def build_router(c: Ctx) -> APIRouter:
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.png", name):
             raise HTTPException(400, i18n.pick_now("That is not an image file name", "这不是一个图片文件名"))
-        ws = coderun.workspace_path(Path(store.data_dir), store.get_settings(), gid)
+        ws = store.workspace_path(gid)
         path = ws / "image" / name
         if path.is_symlink():
             raise HTTPException(404, i18n.pick_now("That image is not there any more", "这张图片已经不在了"))
@@ -1121,7 +1121,7 @@ def build_router(c: Ctx) -> APIRouter:
             raise HTTPException(400, problem)
         kind, mime, ext = attachments_lib.classify(data, filename)
         aid = new_id()
-        workspace = coderun.workspace_dir(store.data_dir, cfg, gid)
+        workspace = store.workspace_dir(gid)
         try:
             rel = attachments_lib.save(workspace, aid, filename, ext, data)
         except (OSError, ValueError) as e:
@@ -1190,18 +1190,21 @@ def build_router(c: Ctx) -> APIRouter:
     # there and handing a file back. Nothing here accepts a path it has not resolved inside it.
     @r.get("/api/groups/{gid}/workspace")
     async def workspace_list(gid: str) -> dict:
-        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        g = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         cfg = store.get_settings()
-        root = coderun.workspace_dir(store.data_dir, cfg, gid)
+        root = store.workspace_dir(gid)
         return {"path": str(root), "base": str(coderun.base_dir(store.data_dir, cfg)),
+                # Whether this is a folder the user picked, or one the app manages for the group.
+                # The panel words it differently — and only the picked case can be reset to the
+                # managed one.
+                "managed": not (g.get("workspace") or "").strip(),
                 "files": await asyncio.to_thread(workspace_files, root),
                 "tasks": await asyncio.to_thread(workspace_tasks, root)}
 
     @r.get("/api/groups/{gid}/workspace/file")
     async def workspace_file(gid: str, path: str) -> Response:
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
-        cfg = store.get_settings()
-        root = coderun.workspace_dir(store.data_dir, cfg, gid)
+        root = store.workspace_dir(gid)
         target = attachments_lib.resolve(root, path)
         if not target or not target.is_file():
             raise HTTPException(404, i18n.pick_now("No such file in this workspace",
@@ -1213,8 +1216,7 @@ def build_router(c: Ctx) -> APIRouter:
     @r.post("/api/groups/{gid}/workspace/folder")
     async def workspace_folder(gid: str, body: WorkspaceFolder) -> dict:
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
-        cfg = store.get_settings()
-        root = coderun.workspace_dir(store.data_dir, cfg, gid)
+        root = store.workspace_dir(gid)
         rel = (body.path or "").strip().strip("/")
         if not rel:
             raise HTTPException(400, i18n.pick_now("A folder needs a name", "文件夹要有名字"))

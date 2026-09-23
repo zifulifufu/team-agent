@@ -439,7 +439,7 @@ When it is not supplied, calls needing confirmation are always denied."""
             ), False, []
         # The workspace is created here rather than assumed to exist: this is the first thing a
         # fresh group does with it.
-        workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg, ctx.group["id"])
+        workspace = self.store.workspace_dir(ctx.group["id"])
         want_first = str(args.get("first_frame") or "").strip()
         want_last = str(args.get("last_frame") or "").strip()
         seconds, clamped = video.clamp_seconds(args.get("duration_seconds"), int(cfg["video_max_seconds"]), prov["kind"])
@@ -558,7 +558,7 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"\"{size}\" is not a size this service produces, so nothing was drawn. Use one of: {', '.join(imagegen.SIZES)}.",
                 f"「{size}」不是这个服务支持的尺寸,没有生成。可用:{', '.join(imagegen.SIZES)}。",
             ), False, []
-        workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg, ctx.group["id"])
+        workspace = self.store.workspace_dir(ctx.group["id"])
         payload = imagegen.build_payload(prompt, model=str(cfg["image_model"]), size=size)
         try:
             got = await imagegen.generate(
@@ -627,7 +627,7 @@ When it is not supplied, calls needing confirmation are always denied."""
             cfg = self.store.get_settings()
             # Each group runs in its own workspace, so one project's files are never in reach of
             # another's code.
-            workspace = coderun.workspace_dir(Path(self.store.data_dir), cfg, group["id"])
+            workspace = self.store.workspace_dir(group["id"])
             cwd, why = coderun.resolve_cwd(workspace, str(args.get("cwd") or ""))
             if cwd is None:
                 return why, False

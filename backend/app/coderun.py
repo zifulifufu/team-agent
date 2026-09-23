@@ -59,15 +59,58 @@ def inside(root: Path, target: Path) -> bool:
     return t == r or r in t.parents
 
 
-def workspace_path(data_dir: Path, settings: dict, gid: str = "") -> Path:
+def normalise_workspace(raw: object) -> Path | None:
+    """The directory a user pointed at, or None when they did not choose one.
+
+    `expanduser` and `resolve` rather than storing the string as typed: the value is written to the
+    database and read back by a later process, so a `~` must not survive into it, and two spellings
+    of the same folder must not look like two different workspaces.
+    """
+    s = str(raw or "").strip()
+    return Path(s).expanduser().resolve() if s else None
+
+
+def check_workspace(path: Path) -> str:
+    """Why this directory cannot be a group's workspace, or "" when it can.
+
+    It has to exist. A path the app will write into is not something to find out about later, and
+    creating the missing directories instead would turn a typo (`/User/me/prj`) into a stray tree
+    on disk that nothing points at. The app-managed workspace is the case where the app *is*
+    allowed to make the folder, and that one is not passed through here.
+    """
+    if not path.exists():
+        return i18n.pick_now(
+            f"There is no directory at \"{path}\". Create it first, or pick one that exists.",
+            f"「{path}」不存在。请先创建它,或另选一个已存在的目录。",
+        )
+    if not path.is_dir():
+        return i18n.pick_now(
+            f"\"{path}\" is a file, not a directory.", f"「{path}」是一个文件,不是目录。"
+        )
+    if not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+        return i18n.pick_now(
+            f"This programme may not read, write or enter \"{path}\".",
+            f"本程序没有「{path}」的读、写或进入权限。",
+        )
+    return ""
+
+
+def workspace_path(data_dir: Path, settings: dict, gid: str = "", explicit: object = "") -> Path:
     """A group's workspace, without touching the filesystem.
 
-    Reading is separated from creating so a page that only wants to show the path (the
-    Permissions page) does not create a directory as a side effect of being opened. With no
+    Reading is separated from creating so a page that only wants to show the path (the Permissions
+    page, the member dock) does not create a directory as a side effect of being opened. With no
     group there is nowhere to run, and the base is returned for display only.
+
+    `explicit` is a directory the user picked for this group. It wins over the app-managed default
+    (`<code_workdir or data dir>/<group id>`), and that is the point of it: what an agent writes
+    should land where the user keeps that project, not inside the app's data directory.
     """
     if gid and not safe_gid(gid):
         raise ValueError(f"unusable group id: {gid!r}")
+    chosen = normalise_workspace(explicit)
+    if chosen:
+        return chosen
     base = base_dir(data_dir, settings)
     return base / gid if gid else base
 
@@ -161,27 +204,37 @@ def kill_group(pgid: int) -> None:
             pass
 
 
-def workspace_dir(data_dir: Path, settings: dict, gid: str = "") -> Path:
-    """A group's workspace. The model may only ever use this directory as its cwd."""
-    base = workspace_path(data_dir, settings, gid)
+def workspace_dir(data_dir: Path, settings: dict, gid: str = "", explicit: object = "") -> Path:
+    """A group's workspace, made if it is missing. The model may only ever use this as its cwd."""
+    base = workspace_path(data_dir, settings, gid, explicit)
     if not gid:
         raise ValueError("a code run needs a group workspace")
     base.mkdir(parents=True, exist_ok=True)
-    if not inside(base_dir(data_dir, settings), base):
+    if not normalise_workspace(explicit) and not inside(base_dir(data_dir, settings), base):
+        # Only the app-managed case is checked against the base: a directory the user picked is by
+        # definition outside it. What still has to hold is the rule below — nothing is ever written
+        # outside the workspace — which every writer enforces against the workspace itself.
         raise ValueError(f"workspace escapes its base: {base}")
     return base
 
 
-def ensure_workspaces(data_dir: Path, settings: dict, group_ids: Iterable[str]) -> int:
-    """Give every group a workspace; returns how many were missing.
+def ensure_workspaces(data_dir: Path, settings: dict, targets: Iterable[tuple[str, str]]) -> int:
+    """Give every group an **app-managed** workspace; returns how many were missing.
 
     Groups used to get their folder only when a member first ran code, so most had none and "the
     group's workspace" was a promise the app never kept. Called when a group is created, and once
     at startup for the groups that already existed (the same shape as the other backfills).
+
+    `targets` is `(group id, the directory its user picked)`. A group with a picked directory is
+    skipped on purpose: that folder belongs to the user, and recreating it at every start would
+    resurrect one they deleted deliberately. It is made again when something actually needs it
+    (`workspace_dir`), which is a decision somebody can undo — a startup backfill is not.
     """
     made = 0
-    for gid in group_ids:
+    for gid, explicit in targets:
         try:
+            if str(explicit or "").strip():
+                continue
             if not safe_gid(gid):
                 continue
             if not workspace_path(data_dir, settings, gid).is_dir():

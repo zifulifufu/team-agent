@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { LayoutTemplate, LoaderCircle, Sparkles } from "lucide-react";
+import { FolderOpen, LayoutTemplate, LoaderCircle, Sparkles, Users } from "lucide-react";
 import { api, type GroupTemplate } from "../api";
 import { useData } from "../data";
 import { useRoute } from "../hooks";
@@ -18,6 +18,11 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   const [target, setTarget] = useState("new");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // What the new group is made of: where it works, and who is in it. Both are the user's choice.
+  // A group used to arrive with the scene's three stock members, so every group started with
+  // people nobody had picked — and with nowhere of its own to put their files.
+  const [workspace, setWorkspace] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
   const [templates, setTemplates] = useState<GroupTemplate[]>([]);
   const [tplErr, setTplErr] = useState("");
   const [tplBusy, setTplBusy] = useState("");
@@ -48,30 +53,49 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   // Only the common templates go on the home page; the rest live in Settings → Template gallery
   const homeTemplates = useMemo(() => templates.filter((tpl) => tpl.home !== false), [templates]);
   const scene = SCENES.find((s) => s.id === sceneId)!;
-  const sceneAgents = useMemo(() => {
-    // `/api/agents` answers with the name in the request language, so look up the list of
-  // that same language rather than always the English one.
-  const names = lang === "zh" ? scene.membersZh : scene.members;
-  const picked = names.map((n) => agents.find((a) => a.name === n)).filter(Boolean) as typeof agents;
-    return picked.length ? picked : agents;
-  }, [scene, agents]);
+  const creating = target === "new";
+  // Who a new group can be built from. The same rule the member adder uses: a "model member" is a
+  // handle the app created for a model, not somebody the user made, so it is not offered here —
+  // models join a group through the member adder's model list.
+  const pickable = useMemo(() => agents.filter((a) => a.origin !== "model"), [agents]);
+  // The scene's own lineup, offered as a *suggestion* rather than applied: the scene tabs used to
+  // fill a new group with these three names whether or not anybody wanted them. Now nothing is
+  // added until the button is pressed. `/api/agents` answers with the name in the request
+  // language, so the lookup uses that language's list.
+  const suggested = useMemo(() => {
+    const names = lang === "zh" ? scene.membersZh : scene.members;
+    return names.map((n) => pickable.find((a) => a.name === n)).filter(Boolean) as typeof agents;
+  }, [scene, pickable, lang, agents]);
+  const members = useMemo(
+    () => picked.map((id) => agents.find((a) => a.id === id)).filter(Boolean) as typeof agents,
+    [picked, agents],
+  );
+  const toggle = (id: string) => setPicked((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
 
-  const targetGroup = target === "new" ? null : groups.find((g) => g.id === target) ?? null;
+  const targetGroup = creating ? null : groups.find((g) => g.id === target) ?? null;
   const mentionable = useMemo(() => {
     if (targetGroup) return targetGroup.member_ids.map((i) => agents.find((a) => a.id === i)).filter(Boolean) as typeof agents;
-    return sceneAgents;
-  }, [targetGroup, sceneAgents, agents]);
+    return members;
+  }, [targetGroup, members, agents]);
+
+  const chooseFolder = async () => {
+    const dir = await window.teamAgent?.pickFolder?.();
+    if (dir) setWorkspace(dir);
+  };
 
   const start = async () => {
     const task = text.trim();
     if (!task || busy) return;
     setErr("");
+    if (creating && members.length === 0) {
+      setErr(t("Choose who is in this group chat first — a group needs somebody to do the work."));
+      return;
+    }
     setBusy(true);
     try {
       if (targetGroup) return onOpen(targetGroup.id, task);
-      if (sceneAgents.length === 0) throw new Error(t("No members yet — create some under Members in the sidebar first"));
       const title = task.replace(/@\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 14) || pick(scene.label, scene.labelZh);
-      const g = await api.createGroup(title, sceneAgents.map((a) => a.id), sceneAgents[0].id);
+      const g = await api.createGroup(title, members.map((a) => a.id), members[0].id, { workspace });
       await reloadGroups();
       onOpen(g.id, task);
     } catch (e) {
@@ -98,13 +122,58 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           ))}
         </div>
 
+        {creating && (
+          <div className="ng" aria-label={t("New group chat")}>
+            <div className="ng-row">
+              <span className="ng-label"><FolderOpen size={13} aria-hidden /> {t("Workspace")}</span>
+              <span className="ng-path" title={workspace || undefined}>
+                {workspace || t("Managed by the app, under its own data folder")}
+              </span>
+              <button className="btn small" onClick={() => void chooseFolder()}>{t("Choose folder")}</button>
+              {workspace !== "" && (
+                <button className="btn small" onClick={() => setWorkspace("")} title={t("Go back to the folder the app manages")}>
+                  {t("Use the default")}
+                </button>
+              )}
+            </div>
+            <div className="ng-row">
+              <span className="ng-label"><Users size={13} aria-hidden /> {t("Members")}</span>
+              <div className="ng-members">
+                {pickable.map((a) => (
+                  <button
+                    key={a.id}
+                    className={"ng-mem" + (picked.includes(a.id) ? " on" : "")}
+                    aria-pressed={picked.includes(a.id)}
+                    onClick={() => toggle(a.id)}
+                  >
+                    <span className="ng-ava">{a.avatar}</span>{a.name}
+                  </button>
+                ))}
+                {pickable.length === 0 && (
+                  <span className="ng-hint">{t("No members yet — make one under Members in the sidebar first.")}</span>
+                )}
+                {pickable.length > 0 && picked.length === 0 && (
+                  <>
+                    <span className="ng-hint">{t("Pick who is in this group chat. The first one becomes the host.")}</span>
+                    {suggested.length > 0 && (
+                      <button className="ng-suggest" onClick={() => setPicked(suggested.map((a) => a.id))}>
+                        {t("Use the {scene} lineup: {names}", { scene: pick(scene.label, scene.labelZh), names: suggested.map((a) => a.name).join(", ") })}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         <Composer
           value={text}
           onChange={setText}
           onSend={start}
           busy={busy}
           members={mentionable}
-          placeholder={t("Describe your task; type @ to assign members, or leave it and Aide will coordinate")}
+          placeholder={t("Describe the task; type @ to hand it to a member")}
           routeText={route.text}
           offline={route.offline}
           onToggleExternal={route.toggleExternal}
@@ -114,7 +183,7 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           extra={
             <label className="target-select" title={t("Which group chat to send to")}>
               <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("Send to")}>
-                <option value="new">{t("New group chat · {names}", { names: sceneAgents.map((a) => a.name).join("、") })}</option>
+                <option value="new">{t("New group chat")}</option>
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>{t('Send to "{name}"', { name: g.name })}</option>
                 ))}

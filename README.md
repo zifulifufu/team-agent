@@ -83,9 +83,9 @@ to keep it that way, and removing that variable is what makes the real keychain 
 
 | Area | What you get |
 | --- | --- |
-| Group chat | Members, a host, `@`-hand-off, role statements, and a live task board |
+| Group chat | Members, a host, `@`-hand-off, role statements, and a live task board; a group chat is created by **picking its workspace and then its members**, and both stay editable |
 | Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
-| Workspace | Every group has one, created with the group; each task delivers into its own folder, and the panel lists and downloads what is in there |
+| Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
 | Tools | Text-protocol calls (max 3 per reply), five built-ins, Python plugins, MCP over stdio / SSE / HTTP |
@@ -156,6 +156,31 @@ Every group has a workspace, created when the group is created. It is the one di
 tool calls may use as their working directory, and it is where everything a group produces lands —
 including one folder per task (`tasks/<task>/`), so two tasks running in one plan do not write over
 each other. The workspace button in the chat header lists what is in there and downloads it.
+
+**Which directory that is, is yours to decide.** It is picked while the group is being created, and
+can be changed afterwards from the workspace panel:
+
+* **Pick one of your own folders** (a native folder chooser) and the members work in *your* project
+  directory — the files they write appear where you keep that project, instead of being buried in
+  the app's data folder. The directory has to exist already: a mistyped path is refused with the
+  reason rather than turned into a stray tree on disk.
+* **Pick nothing** and the app manages one for the group
+  (`<data dir>/workspaces/<group id>`, with the base configurable as `code_workdir` under
+  *Permissions & control*).
+
+Two things worth being explicit about:
+
+* **The folder you pick *is* the workspace** — no group-id subfolder is nested inside it.
+* **Changing it does not move files.** What was already written stays where it was written; the
+  choice only decides where future work happens.
+* A picked folder that you delete is **not** recreated at startup — resurrecting it is not a call a
+  startup routine should make. It comes back when something actually needs it.
+
+**Members are picked too.** While creating a group you tick who is in it (the first one you tick
+becomes the host); tick nobody and there is nothing to create. Each scene used to fill the new group
+with its three stock members — now it starts empty, and the scene tab offers that lineup as a
+one-click *suggestion* instead. The sample group a fresh install comes with ("Product launch group")
+is still there; say the word if you want it gone too.
 
 Attachments are any kind of file. The kind is decided by the file's own bytes, not by its name:
 

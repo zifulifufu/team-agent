@@ -217,6 +217,22 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .chip-btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 18px; color: var(--text-2); background: var(--card); font-size: 13px; }
 .chip-btn:hover { border-color: var(--primary); color: var(--text); background: var(--primary-soft); }
 .target-select select { border: 0; background: var(--hover); border-radius: 16px; padding: 5px 26px 5px 12px; font-size: 12.5px; width: auto; max-width: 250px; color: var(--text-2); cursor: pointer; }
+/* Building a group chat: where it works, and who is in it. Shown while the target is "new", so
+   the two decisions come before the task rather than being made for the user. */
+.ng { border: 1px solid var(--border); background: var(--card); border-radius: 14px; padding: 10px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+.ng-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ng-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-3); flex: none; width: 84px; }
+.ng-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+.ng-members { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* A member chip is a toggle, not a button: `aria-pressed` carries that, and the colour is the
+   only other signal, so it has to be unmistakable in both themes. */
+.ng-mem { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 6px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); color: var(--text-2); font-size: 12.5px; }
+.ng-mem:hover { border-color: var(--primary); color: var(--text); }
+.ng-mem.on { background: var(--primary-soft); border-color: var(--primary); color: var(--text); font-weight: 600; }
+.ng-ava { font-size: 13px; }
+.ng-hint { font-size: 12px; color: var(--text-3); }
+.ng-suggest { font-size: 12px; color: var(--primary); background: transparent; border: 1px dashed var(--border-strong); border-radius: 16px; padding: 3px 10px; }
+.ng-suggest:hover { border-color: var(--primary); background: var(--primary-soft); }
 
 /* ---- 输入框 ---- */
 .composer { position: relative; }

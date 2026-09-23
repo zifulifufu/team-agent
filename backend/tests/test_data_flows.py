@@ -39,13 +39,16 @@ def make_v031_db(path):
     for t in ("model_health", "obsidian_map"):        # tables added in v0.4.0
         dst.execute(f"DROP TABLE IF EXISTS {t}")
     for table, col in [("agents", "origin"), ("agents", "tags"), ("groups", "ext"), ("groups", "prompt"),
+                       ("groups", "workspace"),
                        ("mcp_servers", "transport"), ("mcp_servers", "headers"), ("mcp_servers", "description"),
                        ("models", "strengths")]:
         dst.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
     dst.commit()
     cols = {r[1] for r in dst.execute("PRAGMA table_info(agents)")}
+    gcols = {r[1] for r in dst.execute("PRAGMA table_info(groups)")}
     dst.close()
     assert "origin" not in cols and "tags" not in cols
+    assert "workspace" not in gcols, "this fixture has to predate the column, or the upgrade is not tested"
     return path
 
 
@@ -57,6 +60,9 @@ def test_opening_an_old_database_upgrades_it_in_place(tmp_path):
     cols = {r["name"] for r in st._q("PRAGMA table_info(agents)")}
     assert {"origin", "tags"} <= cols
     assert st.list_groups()[0]["ext"]["library"]["mode"] in ("all", "off", "selected")
+    # A group from before the column: it reads as "the app manages a folder for me", which is
+    # exactly what it did then, so nothing has to be migrated or flagged.
+    assert st.list_groups()[0]["workspace"] == ""
     assert [m["content"] for m in st.list_memories()] == ["升级前的记忆"]
     assert any(x["content"] == "升级前的消息" for x in st.list_messages(st.list_groups()[0]["id"]))
     assert st.list_mcp()[0]["headers"] == {} and st.list_mcp()[0]["name"] == "旧 MCP"
@@ -91,6 +97,9 @@ def test_backup_restore_round_trip_preserves_everything_visible(tmp_path):
     a.post("/api/library/note", json={"title": "文档 A", "content": "独角兽资料"})
     st.add_message(g["id"], "agent", st.list_agents()[0]["id"], "Aide", "一条回复", meta={"tools": [{"name": "t", "status": "ok"}]})
     st.set_health("ollama/qwen2.5:7b", "ok", "", 12, "test")
+    # A workspace the user picked is data, like the group prompt: it has to survive the trip. It
+    # needs to be a real directory, because that is what the API accepts — `tmp_path` is one.
+    assert a.patch(f"/api/groups/{g['id']}", json={"workspace": str(tmp_path)}).status_code == 200
     before = {"groups": a.get("/api/groups").json(), "agents": a.get("/api/agents").json(),
               "messages": a.get(f"/api/groups/{g['id']}/messages").json(), "settings": a.get("/api/settings").json(),
               "memories": a.get("/api/memories").json()["memories"]}
@@ -100,7 +109,13 @@ def test_backup_restore_round_trip_preserves_everything_visible(tmp_path):
     after = {"groups": b.get("/api/groups").json(), "agents": b.get("/api/agents").json(),
              "messages": b.get(f"/api/groups/{g['id']}/messages").json(), "settings": b.get("/api/settings").json(),
              "memories": b.get("/api/memories").json()["memories"]}
+    # The one field two installations legitimately disagree about is the *resolved* workspace path:
+    # it is derived from where the app keeps its data, and A and B keep theirs elsewhere. The
+    # choice itself (`workspace`) is compared below with everything else.
+    for row in [*before["groups"], *after["groups"]]:
+        row.pop("workspace_path", None)
     assert after["groups"] == before["groups"] and after["agents"] == before["agents"] and after["messages"] == before["messages"]
+    assert after["groups"][0]["workspace"] == str(tmp_path), "the picked folder came back with the group"
     assert after["memories"] == before["memories"]
     for k in ("max_hops", "perm_mode", "perm_allow", "route_chain", "history_clip"):
         assert after["settings"][k] == before["settings"][k]

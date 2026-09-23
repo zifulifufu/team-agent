@@ -199,7 +199,9 @@ class Orchestrator:
         hooks: Any = None,
     ):
         self.store = store
-        self.external = external_runner or ExternalRunner(store.data_dir)
+        # The runner is handed the store because an engine bound to a model provider (MetaChat)
+        # takes its address, its key and its model list from that provider row.
+        self.external = external_runner or ExternalRunner(store.data_dir, store=store)
         self.router = router
         self.library = library or Library(store)
         self.memory = memory or MemoryService(store, router)
@@ -616,8 +618,12 @@ class Orchestrator:
         A group always has one — it is made when the group is made, and `ensure_workspaces` fills
         in the ones that existed before that. This is the third guarantee, for the case that
         matters most: a member is about to run code, and there would be nowhere to run it.
+
+        Which directory that is comes from the store, because the user may have picked one for
+        this group; asking here rather than rebuilding `<base>/<gid>` is what keeps a run inside
+        the folder the user chose.
         """
-        return coderun.workspace_dir(self.store.data_dir, self.store.get_settings(), gid)
+        return self.store.workspace_dir(gid)
 
     # ------------------------------------------------------------------ per-task folders
     def _task_dir(self, group: dict, task: Any) -> str:

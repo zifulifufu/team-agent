@@ -15,6 +15,7 @@ from typing import Any
 from . import media
 from . import strengths as strength_lib
 from . import channels
+from . import coderun
 from . import video
 from .catalog import Catalog
 from .local_models import LocalCatalog
@@ -235,6 +236,11 @@ class Store(ExtStore):
             ("agents", "engine_cfg", "TEXT NOT NULL DEFAULT '{}'"),           # settings of the external agent (permission level, working directory, ...)
             ("groups", "ext", "TEXT NOT NULL DEFAULT '{}'"),
             ("groups", "prompt", "TEXT NOT NULL DEFAULT ''"),
+            # A directory the user picked for this group ("work in my project folder"). Empty means
+            # the app manages one under `<data dir>/workspaces/<group id>`, which is what every
+            # group did before this existed — so an older database needs no backfill, only the
+            # column.
+            ("groups", "workspace", "TEXT NOT NULL DEFAULT ''"),
             ("mcp_servers", "transport", "TEXT NOT NULL DEFAULT ''"),      # stdio | sse | http, empty = auto-detect
             ("mcp_servers", "headers", "TEXT NOT NULL DEFAULT '{}'"),
             ("mcp_servers", "description", "TEXT NOT NULL DEFAULT ''"),
@@ -912,6 +918,7 @@ already exists, otherwise create it (name and strengths are both taken from the 
     def _group_row(g: dict | None) -> dict | None:
         if g:
             g["ext"] = normalize_ext(json.loads(g.get("ext") or "{}"))
+            g["workspace"] = str(g.get("workspace") or "")
         return g
 
     def list_groups(self) -> list[dict]:
@@ -943,15 +950,33 @@ already exists, otherwise create it (name and strengths are both taken from the 
         return [a for a in (self.get_agent(i) for i in self.member_ids(gid)) if a]
 
     def create_group(self, name: str, host_agent_id: str | None = None, member_ids: list[str] | None = None,
-                     ext: dict | None = None, prompt: str = "") -> dict:
+                     ext: dict | None = None, prompt: str = "", workspace: str = "") -> dict:
         gid = new_id()
         self._x(
-            "INSERT INTO groups(id,name,host_agent_id,created_at,ext,prompt) VALUES(?,?,?,?,?,?)",
-            (gid, name, host_agent_id, time.time(), json.dumps(normalize_ext(ext), ensure_ascii=False), prompt),
+            "INSERT INTO groups(id,name,host_agent_id,created_at,ext,prompt,workspace) VALUES(?,?,?,?,?,?,?)",
+            (gid, name, host_agent_id, time.time(), json.dumps(normalize_ext(ext), ensure_ascii=False),
+             prompt, workspace),
         )
         for i, aid in enumerate(member_ids or []):
             self.add_member(gid, aid, i)
         return self.get_group(gid)  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------ where a group works
+    #
+    # The two methods below answer "which directory is this group's workspace", which the rest of
+    # the app asks in a dozen places (the code tool, attachments, exports, the page that displays
+    # it). They live here rather than at each call site because the answer depends on the *group*
+    # — the user may have picked a directory for it — and a caller that forgot to look that up
+    # would silently write into the app-managed folder instead of the one the user chose.
+    def workspace_path(self, gid: str) -> Path:
+        """A group's workspace, without touching the filesystem."""
+        g = self.get_group(gid) or {}
+        return coderun.workspace_path(self.data_dir, self.get_settings(), gid, str(g.get("workspace") or ""))
+
+    def workspace_dir(self, gid: str) -> Path:
+        """A group's workspace, created if it is missing. The model's cwd is only ever this."""
+        g = self.get_group(gid) or {}
+        return coderun.workspace_dir(self.data_dir, self.get_settings(), gid, str(g.get("workspace") or ""))
 
     def update_group(self, gid: str, patch: dict) -> dict | None:
         if patch.get("name"):
@@ -960,6 +985,8 @@ already exists, otherwise create it (name and strengths are both taken from the 
             self._x("UPDATE groups SET host_agent_id=? WHERE id=?", (patch["host_agent_id"], gid))
         if patch.get("prompt") is not None:
             self._x("UPDATE groups SET prompt=? WHERE id=?", (patch["prompt"], gid))
+        if patch.get("workspace") is not None:
+            self._x("UPDATE groups SET workspace=? WHERE id=?", (patch["workspace"], gid))
         if isinstance(patch.get("ext"), dict):
             cur = self.get_group(gid)
             cur_ext = dict(cur["ext"]) if cur else {}

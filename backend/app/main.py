@@ -112,6 +112,8 @@ class GroupIn(BaseModel):
     host_agent_id: str | None = None
     ext: dict | None = None
     prompt: str = ""
+    # A directory the user picked for this group; empty = the app manages one under the data dir.
+    workspace: str = ""
 
 
 class GroupPatch(BaseModel):
@@ -119,6 +121,7 @@ class GroupPatch(BaseModel):
     host_agent_id: str | None = None
     prompt: str | None = None
     ext: dict | None = None
+    workspace: str | None = None
 
 
 class MemberIn(BaseModel):
@@ -243,9 +246,10 @@ def create_app(
     backfill_notice_languages(store)
     drop_stale_check_snapshot(store)
     # Every group has a workspace. Groups made before this existed get theirs now, so a
-    # member asked to "put it in the workspace" always has somewhere to put it.
+    # member asked to "put it in the workspace" always has somewhere to put it. Groups whose
+    # workspace the user picked themselves are skipped — see `coderun.ensure_workspaces`.
     coderun.ensure_workspaces(store.data_dir, store.get_settings(),
-                              [g["id"] for g in store.list_groups()])
+                              [(g["id"], g.get("workspace") or "") for g in store.list_groups()])
     router = ModelRouter(store, completion_fn)
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
@@ -713,9 +717,41 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         return {"ok": True}
 
     # ------------------------------------------------------------ groups
+    def check_workspace(raw: str) -> str:
+        """Validate a directory the user picked, and return it in the form that gets stored.
+
+        "" means "the app manages one", which is what a group had before this was choosable. A
+        path that is there but unusable is refused *before* the group is made rather than stored
+        and failed on later, when the reason is harder to see.
+        """
+        s = str(raw or "").strip()
+        if not s:
+            return ""
+        p = coderun.normalise_workspace(s)
+        assert p is not None
+        why = coderun.check_workspace(p)
+        if why:
+            raise HTTPException(400, why)
+        return str(p)
+
+    def group_out(g: dict | None) -> dict | None:
+        """A group plus where its workspace actually is.
+
+        The stored value is what the user picked, which is usually empty — "the app manages one".
+        A page that showed that empty value would look like the group has no workspace at all, so
+        the resolved directory is sent alongside it.
+        """
+        v = templates.group_view(g)
+        if v:
+            try:
+                v["workspace_path"] = str(store.workspace_path(v["id"]))
+            except (OSError, ValueError):
+                v["workspace_path"] = ""
+        return v
+
     @app.get("/api/groups")
     async def groups() -> list[dict]:
-        return [templates.group_view(g) for g in store.list_groups()]  # type: ignore[misc]
+        return [group_out(g) for g in store.list_groups()]  # type: ignore[misc]
 
     @app.post("/api/groups")
     async def create_group(body: GroupIn) -> dict:
@@ -723,15 +759,17 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         if any(i not in known for i in [*body.member_ids, *([body.host_agent_id] if body.host_agent_id else [])]):
             raise HTTPException(400, i18n.pick_now("A member or the host does not exist", "成员或群主不存在"))
         check_host(body.host_agent_id)
-        created = store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt)
+        workspace = check_workspace(body.workspace)
+        created = store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt,
+                                     workspace)
         # The workspace is made with the group, not when someone first runs code: a group that has
         # a workspace only sometimes is a group where "put the file in your workspace" is a
         # promise the app cannot keep.
         try:
-            coderun.workspace_dir(store.data_dir, store.get_settings(), created["id"])
+            store.workspace_dir(created["id"])
         except (OSError, ValueError) as e:  # noqa: BLE001 — a group without a folder is still usable
             print("could not create the group workspace:", e)
-        return templates.group_view(created)
+        return group_out(created)
 
     def check_host(host_id: str | None) -> None:
         host = store.get_agent(host_id) if host_id else None
@@ -743,8 +781,18 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         if body.host_agent_id:
             check_host(body.host_agent_id)
-        return templates.group_view(
-            store.update_group(gid, body.model_dump(exclude_unset=True)))  # type: ignore[arg-type]
+        patch = body.model_dump(exclude_unset=True)
+        if patch.get("workspace") is not None:
+            # Validated here rather than in the store: the store writes what it is given, and this
+            # is the one place that knows the difference between "no value sent" and "cleared".
+            patch["workspace"] = check_workspace(patch["workspace"])
+        updated = store.update_group(gid, patch)
+        if patch.get("workspace"):
+            try:
+                store.workspace_dir(gid)
+            except (OSError, ValueError) as e:  # noqa: BLE001
+                print("could not create the group workspace:", e)
+        return group_out(updated)
 
     @app.delete("/api/groups/{gid}")
     async def del_group(gid: str) -> dict:
@@ -757,13 +805,13 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         need(store.get_agent(body.agent_id), i18n.pick_now("Member", "成员"))
         store.add_member(gid, body.agent_id)
-        return templates.group_view(store.get_group(gid))  # type: ignore[arg-type]
+        return group_out(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.delete("/api/groups/{gid}/members/{aid}")
     async def remove_member(gid: str, aid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         store.remove_member(gid, aid)
-        return templates.group_view(store.get_group(gid))  # type: ignore[arg-type]
+        return group_out(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.get("/api/groups/{gid}/messages")
     async def messages(gid: str) -> list[dict]:

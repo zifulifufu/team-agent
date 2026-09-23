@@ -304,6 +304,10 @@ export interface Group {
   member_ids: string[];
   ext: GroupExt;
   prompt: string;                  // Group prompt (supports {{variables}})
+  /** A directory the user picked for this group; empty = the app manages one under its data dir */
+  workspace: string;
+  /** Where the group's files really are, resolved by the backend (the picked one, or the managed one) */
+  workspace_path?: string;
   last_message?: string;
   last_at?: number;
 }
@@ -547,6 +551,8 @@ export interface WorkspaceTask {
 export interface WorkspaceView {
   path: string;
   base: string;
+  /** true = the app manages this folder for the group; false = the user picked it */
+  managed: boolean;
   files: WorkspaceFile[];
   tasks: WorkspaceTask[];
 }
@@ -1142,9 +1148,9 @@ export const api = {
   delAgent: (id: string) => del(`/api/agents/${id}`),
   agentPresets: () => get<AgentPreset[]>("/api/agent-presets"),
   groups: () => get<Group[]>("/api/groups"),
-  createGroup: (name: string, member_ids: string[], host_agent_id: string | null, extra?: { ext?: Partial<GroupExt>; prompt?: string }) =>
+  createGroup: (name: string, member_ids: string[], host_agent_id: string | null, extra?: { ext?: Partial<GroupExt>; prompt?: string; workspace?: string }) =>
     post<Group>("/api/groups", { name, member_ids, host_agent_id, ...extra }),
-  patchGroup: (id: string, b: { name?: string; host_agent_id?: string | null; prompt?: string; ext?: Partial<GroupExt> }) =>
+  patchGroup: (id: string, b: { name?: string; host_agent_id?: string | null; prompt?: string; ext?: Partial<GroupExt>; workspace?: string }) =>
     patch<Group>(`/api/groups/${id}`, b),
   delGroup: (id: string) => del(`/api/groups/${id}`),
   addMember: (gid: string, agent_id: string) => post<Group>(`/api/groups/${gid}/members`, { agent_id }),
