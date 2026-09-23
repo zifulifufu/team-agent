@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FolderOpen, LayoutTemplate, LoaderCircle, Sparkles, Users } from "lucide-react";
 import { api, type GroupTemplate } from "../api";
 import { useData } from "../data";
+import { HOME_DRAFT, draftText, setDraftText } from "../drafts";
 import { useRoute } from "../hooks";
 import { useI18n } from "../i18n";
 import { SCENES } from "../lib";
@@ -14,7 +15,10 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   const { agents, groups, reload, reloadGroups } = useData();
   const route = useRoute();
   const [sceneId, setSceneId] = useState(SCENES[0].id);
-  const [text, setText] = useState("");
+  // The task being described is kept outside this component: opening a group unmounts the home
+  // screen, and the same draft loss that hit the chat box would hit this one — with the extra cost
+  // that what is lost here is the whole description of the job.
+  const [text, setText] = useState(() => draftText(HOME_DRAFT));
   const [target, setTarget] = useState("new");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -27,6 +31,10 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   const [tplErr, setTplErr] = useState("");
   const [tplBusy, setTplBusy] = useState("");
   const [presetAva, setPresetAva] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    setDraftText(HOME_DRAFT, text);
+  }, [text]);
 
   useEffect(() => {
     api.templates().then(setTemplates).catch((e) => setTplErr((e as Error).message));
@@ -97,10 +105,18 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     }
     setBusy(true);
     try {
-      if (targetGroup) return onOpen(targetGroup.id, task);
+      // The task is handed over and the draft goes with it. It used to disappear on its own,
+      // because opening a group unmounted this page; now that the draft is kept, clearing it has
+      // to be deliberate — otherwise walking back to the home screen shows the last task again as
+      // if it had never been sent. On failure the text stays, which is the point of keeping it.
+      if (targetGroup) {
+        setText("");
+        return onOpen(targetGroup.id, task);
+      }
       const title = task.replace(/@\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 14) || pick(scene.label, scene.labelZh);
       const g = await api.createGroup(title, members.map((a) => a.id), members[0].id, { workspace });
       await reloadGroups();
+      setText("");
       onOpen(g.id, task);
     } catch (e) {
       setErr((e as Error).message);

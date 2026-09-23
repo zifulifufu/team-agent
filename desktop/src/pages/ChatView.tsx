@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Eraser, FolderOpen, PanelRight } from "lucide-react";
 import { api, downloadChat, downloadTasks, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
 import { useData } from "../data";
+import { draftFiles, draftText, setDraftFiles, setDraftText } from "../drafts";
 import { useRoute } from "../hooks";
 import { useConfirm, useOutside } from "../ui";
 import { useI18n } from "../i18n";
@@ -30,8 +31,10 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   const confirm = useConfirm();
   const route = useRoute();
   const [msgs, setMsgs] = useState<Message[]>([]);
-  const [text, setText] = useState("");
-  const [files, setFiles] = useState<Attachment[]>([]);
+  // Initialised from the draft store, not from "": this component is remounted whenever the group
+  // changes (`key={view.gid}` in App), and a draft that lives only here dies with the mount.
+  const [text, setText] = useState(() => draftText(gid));
+  const [files, setFiles] = useState<Attachment[]>(() => draftFiles(gid));
   const [busy, setBusy] = useState(false);
   const [wsUp, setWsUp] = useState(false);
   // The group's own settings open as a dialog, so they start closed: a dialog that opened itself
@@ -92,6 +95,16 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
     if (everUp.current) void resync().catch(() => undefined);   // reconnected: catch up on messages, approvals and run state
     everUp.current = true;
   }, [wsUp, resync]);
+
+  // Save the draft under this group as it changes, so it is already stored by the time something
+  // unmounts this view.
+  //
+  // `gid` comes from the closure, which is only safe because App keys this view by group id
+  // (`key={view.gid}`): one mount therefore belongs to exactly one group. Without that key a
+  // switch would write one group's text into another's slot — visible, not silent, but worth
+  // knowing before removing it.
+  useEffect(() => { setDraftText(gid, text); }, [gid, text]);
+  useEffect(() => { setDraftFiles(gid, files); }, [gid, files]);
 
   useEffect(() => {
     const el = listRef.current;
