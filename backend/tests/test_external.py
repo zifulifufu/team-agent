@@ -200,7 +200,13 @@ def test_parser_error_result_unknown_events_and_non_json_fallback():
 
 
 def test_explain_failure_adds_login_hint():
-    assert "codebuddy" in external.explain_failure(1, "Error: not logged in", "")
+    msg = external.explain_failure(1, "Error: not logged in", "")
+    assert "codebuddy" in msg
+    # The hint has to name a route that works for an app started from Finder: signing in once is
+    # stored next to the user's home directory, whereas a shell export never reaches a GUI app.
+    # "Export the variable and restart" was advice the user could carry out and still be stuck.
+    assert "/login" in msg
+    assert "launchctl setenv" in msg
     assert "not signed in" not in external.explain_failure(2, "segfault", "")
     assert "exit code 2" in external.explain_failure(2, "segfault", "")
 

@@ -734,7 +734,21 @@ def explain_failure(rc: int | None, stderr: str, error: str) -> str:
     if detail:
         msg += f":{detail}"
     if AUTH_HINT.search(detail):
-        msg += i18n.pick_now(". It looks like you are not signed in: run codebuddy once in a terminal to sign in, or set the CODEBUDDY_API_KEY environment variable and restart Team Agent", "。看起来是没登录:先在终端里运行一次 codebuddy 完成登录,或设置环境变量 CODEBUDDY_API_KEY 后重启 Team Agent")
+        # Two routes, and the wording has to be honest about which one actually works here. The
+        # signed-in state the CLI keeps next to the user's home directory is independent of how this
+        # app was started, so it is the one to lead with. An *exported* variable is not: an app
+        # opened from Finder never sees a shell's environment, so "export CODEBUDDY_API_KEY and
+        # restart" is advice that silently does nothing — which is worse than no advice, because the
+        # user does it and comes back with the same error.
+        msg += i18n.pick_now(
+            ". It looks like you are not signed in: run codebuddy once in a terminal and type /login —"
+            " that is stored in your home folder, so it works however this app was started. (An API key"
+            " works too, but a variable exported in a shell never reaches an app opened from Finder: use"
+            " `launchctl setenv CODEBUDDY_API_KEY <key>` and then reopen this app.)",
+            "。看起来是没登录:在终端里运行一次 codebuddy 并输入 /login 即可 —— 登录信息存在你的主目录,"
+            "无论本程序怎么启动都有效。(用 CODEBUDDY_API_KEY 也可以,但在终端里 export 的变量到不了从访达"
+            "启动的 app:请用 `launchctl setenv CODEBUDDY_API_KEY <密钥>`,然后重开本程序。)",
+        )
     return msg
 
 
