@@ -275,6 +275,8 @@ would only get each of them half right.
 | **Voicebox** | a desktop app on this machine, **serving MCP** over HTTP | Template gallery → MCP → *Voicebox (voice on this machine)* | Install and start Voicebox first; its MCP server listens on `127.0.0.1:17493`. Speaking comes out of your speakers |
 | **HeyGen** | stdio MCP (`uvx heygen-mcp`) | Template gallery → MCP → *HeyGen (avatar video)* | Needs an API key from your HeyGen account; rendering happens on their servers and **is billed to that account** |
 | **ChatCut** | a **hosted** HTTP MCP with a Bearer header | Template gallery → MCP → *ChatCut (edit video by describing it)* | You obtain the token yourself with their sign-in flow; it is short-lived (about an hour), so **a 401 later usually means refreshing it, not a wrong key** |
+| **DaVinci Resolve** | stdio MCP (`uvx --python 3.11 --with 'mcp<2' davinci-resolve-mcp`) | Template gallery → MCP → *DaVinci Resolve (cut on a real timeline)* | Needs **Resolve Studio** (the free version exposes no scripting API), external scripting set to Local, and **Resolve open before you press test**. The `--python 3.11` and `mcp<2` pins are not optional: without either one the server dies at import |
+| **Jianying / CapCut** | no installable MCP exists — the code route: `uv run --with pyJianYingDraft` | built-in skill *Jianying (CapCut) drafts* | It writes Jianying's own draft files, so the **draft folder has to be asked for** — write it anywhere else and the user opens Jianying and sees nothing |
 
 Three rules, the same ones the rest of this app follows:
 
@@ -393,6 +395,16 @@ Nothing else does: **a plugin here is a Python file calling `register()`**, whic
 application produces; a ChatGPT GPT is a prompt plus authenticated actions behind a login;
 a Cursor or VS Code extension is TypeScript against a different host API. The importer says
 so rather than offering buttons that would silently import nothing.
+
+**⚠️ An entry can arrive and still be unable to run — and the reason is always specific.** Two
+servers in one config here did exactly that: one was a **relative path** (`./Xxx.app/…`), the other
+was the owning application's **own executable**. The first can never resolve — this app starts an MCP
+server with its own working directory, and the `cwd` that made that path meaningful is known only to
+the application it came from — so it is now refused outright, with "use the absolute path". The second
+only ever printed its own log lines and never spoke JSON-RPC, so **a failed test now quotes the last
+lines that process printed** (it used to say only "Connection timed out", which blames the network and
+gives no clue at all). A relative path is also flagged **at import time**, rather than waiting for you
+to press test and find out.
 
 **WorkBuddy, if you also run it.** Three of its assets map onto something that exists here,
 and each is kept in a different shape on disk, so all three are read:

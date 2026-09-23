@@ -266,6 +266,35 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "6. 渲染要几分钟,而 `run_code` 超时会终止调用。时间不够就直说、要求放宽——不要为了塞进去而把视频剪短或丢帧。\n"
                    "7. 在回复里给出 .mp4 路径和你跑过的命令。你看不到成片。",
     },
+    "capcut-draft": {
+        "name": "Jianying (CapCut) drafts", "name_zh": "剪映草稿(Jianying / CapCut)",
+        "description": "Build a video by generating a Jianying draft the user opens themselves",
+        "description_zh": "生成一份剪映草稿,由用户自己在剪映里打开的做法", "scope": "member",
+        "body": "There is no packaged MCP server for Jianying, so this is the code route: write a Python "
+                "program that builds a Jianying draft, and the user opens Jianying to see it. Work inside the "
+                "group workspace.\n"
+                "1. Ask where the draft folder is before writing anything. In Jianying it is the draft box → right-click a draft → open its location; on macOS the path is usually ~/Movies/JianyingPro/User Data/Projects/com.lveditor.draft. Do not guess: a draft written anywhere else is one the user cannot open, and they will see nothing and conclude the work failed.\n"
+                "2. Do not install anything permanently — run the program with `uv run --with pyJianYingDraft python build.py`. That library writes Jianying's own draft files, so what the user gets is an ordinary project they can go on editing by hand.\n"
+                "3. Build it in the documented order: `DraftFolder(<draft folder>).create_draft(width, height, fps)` returns the script object; append tracks; add the material before the segment that uses it; `save()` at the end. Match the size to the footage (portrait 1080x1920, landscape 1920x1080) — nothing is resized for you.\n"
+                "4. Only reference files that really exist, and give Jianying absolute paths: it reads the media itself, so a file in this workspace has to stay where it is. Say which paths you used.\n"
+                "5. Report the draft name and what is in it, and ask the user to open Jianying to check. You cannot watch the result: never describe how it looks.\n"
+                "6. If the user asks for a Jianying MCP connection rather than a generated draft, say plainly that the ones that exist are not packaged — they would have to be cloned from a repository by hand — and that this route needs nothing installed beyond uv.",
+        "body_zh": "剪映没有现成的、可以直接装上的 MCP 服务器,所以走代码这条路:写一个 Python 程序生成剪映草稿,"
+                   "由用户在剪映里打开看。工作在本群工作目录里进行。\n"
+                   "1. 动手之前先问草稿目录在哪。剪映里是「草稿箱 → 右键某个草稿 → 打开草稿位置」;"
+                   "macOS 上路径通常是 ~/Movies/JianyingPro/User Data/Projects/com.lveditor.draft。不要猜:"
+                   "写到别处的草稿用户根本打不开,他会什么都看不到,然后以为活没干成。\n"
+                   "2. 不要永久安装任何东西——用 `uv run --with pyJianYingDraft python build.py` 跑那段程序。"
+                   "这个库写的是剪映自己的草稿文件,所以用户拿到的就是一个普通工程,之后还能手工再改。\n"
+                   "3. 按文档的顺序搭:`DraftFolder(<草稿目录>).create_draft(宽, 高, 帧率)` 返回脚本对象,"
+                   "再追加轨道;先加素材、再加用它做的那一段;最后 `save()`。画幅要跟素材一致"
+                   "(竖屏 1080x1920,横屏 1920x1080)——没有人会替你缩放。\n"
+                   "4. 只引用真实存在的文件,而且要给剪映绝对路径:素材是它自己去读的,所以工作目录里的文件必须留在原地。"
+                   "在回复里说明你用了哪些路径。\n"
+                   "5. 回复里给出草稿名和里面有什么,并请用户打开剪映核对。你看不到成片:不要描述画面。\n"
+                   "6. 如果用户问的是「能不能连剪映的 MCP」而不是生成草稿,就直说:现有的那几个都没有打包发布,"
+                   "得自己把仓库 clone 下来;而这条代码路线除了 uv 不需要装别的东西。",
+    },
 }
 
 

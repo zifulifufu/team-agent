@@ -168,6 +168,25 @@ MCP_TEMPLATES: list[dict] = [
                 "这是它的托管服务,所以 Authorization 头要填**你自己** ChatCut 账号的 Bearer token——"
                 "它那份接入说明里有换取 token 的登录流程;token 有效期不长(约 1 小时),之后报 401 通常是该换一个,"
                 "而不是填错了。注意计费记在那个账号上,不是本程序。"},
+    {"key": "davinci-resolve", "name": "DaVinci Resolve (cut on a real timeline)",
+     "name_zh": "达芬奇(DaVinci Resolve 剪辑)",
+     "command": "uvx",
+     # Two pins, each one a wall somebody would otherwise walk into: Resolve's own scripting module
+     # imports `imp`, which Python removed in 3.12, so the interpreter has to be 3.11; and this
+     # package still uses the MCP v1 API (`mcp.server.fastmcp`), which the v2 SDK dropped — without
+     # the pin the server dies at import with a message about FastMCP being renamed.
+     "args": ["--python", "3.11", "--with", "mcp<2", "davinci-resolve-mcp"],
+     "env_keys": [],
+     "note": "Edit on the real timeline: lay out a cut list, place clips, add Fusion effects and "
+             "titles, grade, and queue renders, through Resolve's own scripting API. Three "
+             "prerequisites, and it will not answer without them: DaVinci Resolve Studio (the free "
+             "version exposes no scripting API at all), Preferences → System → General → External "
+             "scripting using → Local, and Resolve itself open before you press test — the server "
+             "exits immediately when it cannot reach Resolve. Requires uv (uvx).",
+     "note_zh": "在真实时间线上剪辑:按剪辑清单搭结构、放片段、加 Fusion 特效与字幕、调色、排队渲染,"
+                "走的是 Resolve 自己的脚本 API。三个前提缺一不可:DaVinci Resolve Studio"
+                "(免费版根本没有对外脚本 API)、偏好设置 → 系统 → 常规 → 外部脚本 设为 Local、"
+                "以及按测试之前 Resolve 已经开着——连不上它,这个服务器会立刻退出。需要 uv(uvx)。"},
 ]
 
 HOOK_TEMPLATES: list[dict] = [

@@ -589,3 +589,34 @@ def test_skill_discovery_is_bounded_while_it_walks(home, monkeypatch):
     got = I.scan(store, ["claude-skills"])
     assert len(got["items"]) == 1 and got["truncated"] is True, got
     assert any("partial" in n for n in got["notes"]), got["notes"]
+
+
+def test_a_codex_relative_command_is_resolved_against_its_absolute_cwd(tmp_path):
+    """Codex writes a working directory next to a relative command, and when that directory is
+    absolute it is the only thing that makes the command resolvable — `parse_mcp_json` keeps a
+    fixed set of keys, so dropping `cwd` produced an entry pointing at `./server` with nothing to
+    resolve against: a server that could never start, reported later as a missing file.
+
+    A *relative* `cwd` is deliberately left alone. Codex resolves it against the plugin it came
+    from, which this app cannot know, and inventing a base would produce a path that looks right
+    and is wrong — worse than saying out loud that the path is relative.
+    """
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[mcp_servers.resolvable]\n"
+        'command = "./server"\n'
+        'cwd = "/opt/thing"\n'
+        "\n[mcp_servers.relative]\n"
+        'command = "./Codex Computer Use.app/Contents/x"\n'
+        'cwd = "."\n',
+        encoding="utf-8",
+    )
+    servers, _ = I._read_toml_servers(cfg, "mcp_servers")
+    by = {s["name"]: s for s in servers}
+    assert by["resolvable"]["command"] == "/opt/thing/server"
+    assert by["relative"]["command"] == "./Codex Computer Use.app/Contents/x"
+
+    notes = I.risk_notes(by["relative"])
+    assert any("relative path" in n for n in notes), notes
+    assert not any("relative path" in n for n in I.risk_notes(by["resolvable"])), \
+        "the one that was resolved is not relative any more"

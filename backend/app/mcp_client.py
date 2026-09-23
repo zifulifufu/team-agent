@@ -15,6 +15,7 @@ from . import i18n
 import asyncio
 import json
 import re
+import tempfile
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -34,6 +35,37 @@ def pick_transport(cfg: dict) -> str:
         return "stdio"
     url = cfg.get("url") or ""
     return "sse" if re.search(r"/sse/?$", url) else "http"
+
+
+def looks_relative(command: str) -> bool:
+    """Is this start command a path that cannot resolve when *this app* runs it?
+
+    Three shapes, and only the middle one is broken: a bare name (`npx`, `uvx`) is looked up on
+    PATH, and an absolute path is itself. A path *containing a separator but not starting with `/`*
+    — `./Thing.app/…`, `scripts/run.sh`, `~/bin/x` — is resolved against this app's own working
+    directory, which is not the directory its author meant. Codex writes exactly this shape: its
+    `cwd` decides the base and a third party cannot guess it, so importing one of its entries used
+    to produce a server that could never start, failing with a bare "No such file or directory".
+    """
+    c = (command or "").strip()
+    if not c or c.startswith("/"):
+        return False
+    return "/" in c or "\\" in c
+
+
+def relative_command_message(command: str) -> tuple[str, str]:
+    """The one wording for a relative start command, shared by the three places that meet it:
+    validation on the way in, the note an import shows, and a connection attempt on a row that was
+    stored before this rule existed. Two wordings would drift, and the drift would be a reader told
+    to fix a path in a way that does not fix it."""
+    shown = (command or "").strip()
+    return (
+        f'The start command "{shown}" is a relative path, and an MCP server is started with this '
+        "app's own working directory — so that file can never be found. Use the absolute path "
+        "(starting with /) instead.",
+        f"启动命令「{shown}」是相对路径。MCP 服务器是以本程序**自己的工作目录**启动的,所以永远找不到那个文件。"
+        "请改成绝对路径(以 / 开头)。",
+    )
 
 
 # A config file's own contents bound how many servers can be in it, and the 200KB text limit
@@ -121,6 +153,8 @@ def validate_cfg(name: str, command: str, url: str, transport: str) -> tuple[str
     if url and not re.match(r"^https?://", url):
         return ("The service URL must start with http:// or https://",
                 "服务地址必须以 http:// 或 https:// 开头")
+    if looks_relative(command):
+        return relative_command_message(command)
     return None
 
 
@@ -178,6 +212,39 @@ class _Conn:
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
         self._task: asyncio.Task | None = None
+        # Whatever the child prints on stderr is kept, not forwarded: when a start command is not
+        # really an MCP server — a GUI application's binary, say — the only trace of that is what
+        # it printed, and the report without it is "Connection timed out", which names neither the
+        # cause nor the program and reads as a network problem.
+        #
+        # A real temporary file rather than `io.StringIO`: the stdio client wants something it can
+        # hand to the child as a descriptor, and a StringIO has no fileno.
+        self._errlog = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+
+    def said(self, keep: int = 3) -> str:
+        """The last few non-empty lines the child printed on stderr, as one line."""
+        try:
+            self._errlog.flush()
+            self._errlog.seek(0)
+            text = self._errlog.read()
+        except (OSError, ValueError):   # already closed, or a child that replaced the handle
+            return ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return " · ".join(lines[-keep:])[:300]
+
+    def timeout_message(self, timeout: float) -> str:
+        base = i18n.pick_now(f"Connection timed out ({int(timeout)}s)", f"连接超时({int(timeout)} 秒)")
+        said = self.said()
+        if said:
+            return base + i18n.pick_now(f" — the process printed: {said}",
+                                        f" —— 但那个进程输出了:{said}")
+        # Nothing at all is its own diagnosis: a program that never speaks is not a server that is
+        # slow, and sending the reader off to check their network would be advice that cannot work.
+        return base + i18n.pick_now(
+            ". It printed nothing, so it may not be an MCP server at all — check that the command "
+            "is the server itself and not an application that has to be told to serve MCP.",
+            "。它什么都没有输出,所以它可能根本不是 MCP 服务器 —— 请确认那条命令就是服务器本身,"
+            "而不是一个还需要额外参数才会进入 MCP 模式的应用程序。")
 
     async def start(self, timeout: float) -> None:
         if self._task and not self._task.done():
@@ -185,12 +252,14 @@ class _Conn:
         else:
             self._stop.clear()
             self._ready.clear()
+            self._errlog.seek(0)
+            self._errlog.truncate(0)
             self.state.status, self.state.error = "connecting", ""
             self._task = asyncio.create_task(self._run(), name=f"mcp-{self.cfg['id']}")
         try:
             await asyncio.wait_for(self._ready.wait(), timeout)
         except asyncio.TimeoutError:
-            self.state.status, self.state.error = "error", i18n.pick_now(f"Connection timed out ({int(timeout)}s)", f"连接超时({int(timeout)} 秒)")
+            self.state.status, self.state.error = "error", self.timeout_message(timeout)
             await self.stop()
 
     async def _run(self) -> None:
@@ -205,10 +274,15 @@ class _Conn:
 
                     if not cfg.get("command"):
                         raise RuntimeError(i18n.pick_now("The stdio transport needs a start command", "stdio 方式需要填写启动命令"))
+                    if looks_relative(cfg["command"]):
+                        # Checked before spawning so the report is an explanation rather than
+                        # `FileNotFoundError: './Thing.app/…'`, which reads as "the file is gone"
+                        # when the truth is "that path was never resolvable from here".
+                        raise RuntimeError(i18n.pick_now(*relative_command_message(cfg["command"])))
                     params = StdioServerParameters(
                         command=cfg["command"], args=list(cfg.get("args") or []), env=dict(cfg.get("env") or {}) or None
                     )
-                    streams = await stack.enter_async_context(stdio_client(params))
+                    streams = await stack.enter_async_context(stdio_client(params, errlog=self._errlog))
                 elif kind == "sse":
                     from mcp.client.sse import sse_client
 

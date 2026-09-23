@@ -241,6 +241,8 @@ hooks/my-hook/hook.py       def handle(event, payload): ...
 | **Voicebox** | 本机桌面应用,**自带 MCP**(HTTP) | 模板中心 → MCP →「Voicebox(本机语音)」 | 要先装并启动 Voicebox;它的 MCP 监听 `127.0.0.1:17493`。朗读从你的音箱出来 |
 | **HeyGen** | stdio MCP(`uvx heygen-mcp`) | 模板中心 → MCP →「HeyGen(数字人视频)」 | 需要 HeyGen 账号的 API key;渲染在它服务器上,**按你那个账号计费** |
 | **ChatCut** | **托管** HTTP MCP + Bearer | 模板中心 → MCP →「ChatCut(用描述剪视频)」 | 要自己按它的接入说明换一个 token;有效期约 1 小时,**之后报 401 通常是该换 token,不是填错** |
+| **达芬奇** | stdio MCP(`uvx --python 3.11 --with 'mcp<2' davinci-resolve-mcp`) | 模板中心 → MCP →「达芬奇(DaVinci Resolve 剪辑)」 | 要 **Resolve Studio**(免费版没有对外脚本 API)、外部脚本设为 Local、**按测试前 Resolve 已开着**。`--python 3.11` 与 `mcp<2` 两个钉子不是可选项,少一个服务器就在导入阶段死掉 |
+| **剪映** | 没有可装的 MCP,走**代码**:`uv run --with pyJianYingDraft` | 内置技能「剪映草稿(Jianying / CapCut)」 | 生成的是剪映自己的草稿文件,**草稿目录必须问用户**(写错地方等于他打开剪映什么都看不到) |
 
 三条约定,和本程序其他部分一致:
 
@@ -324,6 +326,13 @@ Claude Code、Codex、Cursor、Windsurf、Cline、Roo Code、Continue、LM Studi
 因为本项目自己的技能就是同一个格式。除此之外都不行:**本项目的插件是调用 `register()` 的 Python 文件**,
 别的应用不会产出这种东西;ChatGPT 的 GPT 是「提示词 + 登录后的动作」;Cursor / VS Code 扩展是针对另一套
 宿主 API 的 TypeScript。导入界面会直接把这一点说清楚,而不是摆几个「点了也没反应」的按钮。
+
+**⚠️ 搬过来也可能跑不起来,而且原因一定是具体的。** 这一条踩过:某份配置里的两条服务器,
+一条是 **相对路径**(`./Xxx.app/…`),另一条干脆是**那个应用自己的可执行文件**。前者永远解析不了——
+本程序是以自己的工作目录启动 MCP 服务器的,`cwd` 只有原来那个应用知道,所以现在直接拒绝并说明
+「请改成绝对路径」;后者启动后只会往 stderr 打印它自己的日志、永远不说 JSON-RPC,所以**测试连接会把
+那个进程输出的最后几行引出来**(以前只说一句「连接超时」,把责任推给网络,什么线索都没有)。
+导入时也会**就地把相对路径标出来**,而不是等你去点「测试连接」才发现。
 
 **如果你也装了 WorkBuddy,它有三样东西能搬。** 三者在磁盘上的形态各不相同,所以三条路都读:
 

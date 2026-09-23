@@ -26,7 +26,7 @@ from . import vision
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
 from .library import Library, LibraryError
-from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug
+from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug, validate_cfg
 from .presets import builtin_names, localize_prompt, localize_system_prompt
 from .templates import group_view, member_view, skill_list_view, template_rows
 from .gallery import MCP_TEMPLATES, mcp_display_name as display_mcp_name
@@ -900,14 +900,15 @@ def build_router(c: Ctx) -> APIRouter:
         }
 
     def check_mcp_cfg(name: str, command: str, url: str, transport: str) -> None:
-        if not name.strip():
-            raise HTTPException(400, i18n.pick_now("A name is required", "请填写名称"))
-        if not command.strip() and not url.strip():
-            raise HTTPException(400, i18n.pick_now("Enter a start command (local) or a service URL (remote)", "请填写启动命令(本地)或服务地址(远程)"))
-        if transport and transport not in ("stdio", "sse", "http"):
-            raise HTTPException(400, i18n.pick_now("The transport must be one of stdio / sse / http", "传输方式只能是 stdio / sse / http"))
-        if url and not re.match(r"^https?://", url):
-            raise HTTPException(400, i18n.pick_now("The service URL must start with http:// or https://", "服务地址必须以 http:// 或 https:// 开头"))
+        """Hand the form's values to the one rule set in `mcp_client.validate_cfg`.
+
+        This used to be a second copy of those checks, and a second copy is how a rule ends up
+        enforced on the typed path but not on the pasted-JSON one — which is exactly what happened
+        when the relative-path rule was added.
+        """
+        message = validate_cfg(name, command, url, transport)
+        if message:
+            raise HTTPException(400, i18n.pick_now(*message))
 
     @r.get("/api/mcp/templates")
     async def mcp_templates() -> list[dict]:

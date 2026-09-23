@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from . import i18n
-from .mcp_client import parse_mcp_json
+from .mcp_client import looks_relative, parse_mcp_json
 from .tools import frontmatter_value
 
 # Bounds: a config file is a few kilobytes, and a skill is a document. Anything larger is
@@ -401,6 +401,20 @@ def _read_toml_servers(path: Path, key: str) -> tuple[list[dict], list[str]]:
     block = data.get(key)
     if not isinstance(block, dict) or not block:
         return [], []
+    # Codex writes a working directory next to a relative command, and when that directory is
+    # absolute it is the only thing that makes the command resolvable — so it is joined in here
+    # rather than dropped. (`parse_mcp_json` keeps a fixed set of keys: `cwd` is not one of them,
+    # and dropping it turned `/abs/dir` + `./server` into a server that could never start.)
+    # A *relative* `cwd` is left alone deliberately: Codex resolves it against the plugin it came
+    # from, which is not a directory this app can know, and guessing would produce a plausible
+    # path that is wrong — worse than the honest "this is a relative path" note.
+    for entry in block.values():
+        if not isinstance(entry, dict):
+            continue
+        cwd = str(entry.get("cwd") or "").strip()
+        cmd = str(entry.get("command") or "").strip()
+        if cwd.startswith("/") and cmd and not cmd.startswith("/"):
+            entry["command"] = str(Path(cwd) / cmd)
     # Re-serialised as JSON so one parser handles every shape: a Codex table is only a
     # different notation for the same command/args/env object.
     return parse_mcp_json(json.dumps({"mcpServers": block}))
@@ -431,6 +445,11 @@ def risk_notes(server: dict) -> list[str]:
     if url and not url.startswith("https://"):
         out.append(i18n.pick_now("talks over a plain-text connection", "通过明文连接通信"))
     command = str(server.get("command") or "")
+    if looks_relative(command):
+        # Said here as well as at connection time: the reader is looking at the entry *now*, and
+        # "it will fail when you press test" is cheaper to learn from a note than from an error.
+        out.append(i18n.pick_now(f'"{command}" is a relative path, which this app cannot resolve — use the absolute path',
+                                 f"「{command}」是相对路径,本应用解析不了——请改成绝对路径"))
     if command.startswith("/") and not command.startswith(str(_home())):
         out.append(i18n.pick_now("runs a program from outside your home directory",
                                  "运行的是你个人目录之外的程序"))

@@ -366,6 +366,40 @@ def test_mcp_connect_real_server_and_offline_blocks_remote(client):
     assert client.post(f"/api/mcp/{remote['id']}/connect").status_code == 403
 
 
+def test_a_relative_start_command_is_refused_with_a_reason(client):
+    """A path that is not absolute cannot resolve, because an MCP server is started with this app's
+    own working directory. The entry imported from Codex — `./Codex Computer Use.app/…`, whose base
+    only Codex knows — was exactly this shape, and the report was a bare `FileNotFoundError`, which
+    reads as "the file is gone" rather than "that path was never resolvable from here"."""
+    r = client.post("/api/mcp", json={"name": "rel", "command": "./Thing.app/Contents/x"})
+    assert r.status_code == 400
+    assert "relative path" in r.json()["detail"] and "./Thing.app/Contents/x" in r.json()["detail"]
+
+    # A bare name is a PATH lookup and an absolute path is itself — both still accepted.
+    assert client.post("/api/mcp", json={"name": "bare", "command": "npx"}).status_code == 200
+    assert client.post("/api/mcp", json={"name": "abs", "command": "/usr/bin/true"}).status_code == 200
+
+
+async def test_a_stdio_command_that_never_answers_is_quoted_back(store, make_router):
+    """The other imported entry was the ChatGPT application's own binary. It printed its log lines
+    and never spoke JSON-RPC, and the whole report was "Connection timed out" — which blames the
+    network and names neither the program nor the cause. What the process printed *is* the
+    diagnosis, so it has to survive into the message."""
+    from app.mcp_client import McpManager
+
+    mgr = McpManager()
+    st = await mgr.connect(
+        {"id": "q", "name": "not-a-server", "command": "/bin/sh",
+         "args": ["-c", "echo 'AppServerConnection: ready' 1>&2; sleep 30"],
+         "env": {}, "url": "", "transport": "stdio", "headers": {}},
+        timeout=2,
+    )
+    assert st.status == "error"
+    assert "AppServerConnection: ready" in st.error, st.error
+    assert "timed out" in st.error.lower()
+    await mgr.disconnect("q")
+
+
 # ------------------------------------------------------------------- plugins
 def test_plugins_listing_reload_source_delete_and_group_enablement(client):
     pdir = client.data / "plugins"
