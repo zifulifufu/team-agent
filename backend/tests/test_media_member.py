@@ -18,8 +18,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import attachments as attachments_lib
-from app import imagegen, media, video
+from app import imagegen, library, media, video
 from app.main import create_app
+from app.orchestrator import split_ungrounded
 from tests.conftest import FakeLLM
 from tests.test_ark_video import MODEL, FakeArk
 from tests.test_collab import Collector, setup
@@ -402,3 +403,155 @@ async def test_a_member_gets_exactly_the_one_tool_it_is(store, make_router):
     assert set(ctx.tools) == {"generate_image"}
     assert ctx.media == {"provider_id": prov["id"], "model": "z-image-turbo", "use": "image"}
     assert imagegen.KINDS and not ctx.problems
+
+
+# ------------------------------------------------- can the picture rest on anything
+def test_the_write_line_is_split_off_the_prompt():
+    """The writer is asked for one extra line — what it could not establish from the material — and
+    that line must not be filmed as text. A writer that ignores the request costs nothing: the whole
+    answer is then the prompt."""
+    prompt, ungrounded = split_ungrounded("写实镜头:导管进入颈内动脉。\n\n未确证: 病灶尺寸、真实患者影像")
+    assert prompt == "写实镜头:导管进入颈内动脉。"
+    assert ungrounded == "病灶尺寸、真实患者影像"
+    assert split_ungrounded("一只猫") == ("一只猫", "")
+    # "nothing to report" in either language is not a finding, and neither is a missing line.
+    assert split_ungrounded("一只猫\nUngrounded: none") == ("一只猫", "")
+    assert split_ungrounded("一只猫\n未确证:无") == ("一只猫", "")
+
+
+def write_call(fake) -> str:
+    """The user message the writer was given. The writer is always the *last* call: the search-terms
+    call (`_media_search_terms`) can come first, and only when a search found nothing."""
+    return str(fake.calls[-1][1][1]["content"])
+
+
+async def test_the_writer_is_given_the_text_of_what_was_attached(studio, ark_call):
+    """The material a group actually has reaches the one step that needs it. It did not before, and
+    that is the whole of "the picture is invented": a chat says what the clip is about, so every
+    structure in it was filled in by the writer."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+    workspace = Path(store.workspace_dir(group["id"]))
+    body = "颅内动脉瘤介入治疗:弹簧圈填塞瘤腔,载瘤动脉保持通畅;S05 不出现血喷与碎片。".encode()
+    rel = attachments_lib.save(workspace, "att-script", "脚本.md", ".md", body)
+    store.add_attachment(group["id"], "att-script", "脚本.md", "text/markdown", len(body),
+                         kind="document", rel_path=rel)
+    store.set_attachment_text("att-script", body.decode())
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 按脚本做第 5 段",
+                                   files=[{"id": "att-script", "name": "脚本.md", "kind": "document",
+                                           "mime": "text/markdown", "bytes": len(body)}])
+
+    told = write_call(fake)
+    assert "弹簧圈填塞瘤腔" in told, told
+    # And the clip says what it was built on, so "invented" and "unfounded" can be told apart.
+    assert "脚本.md" in saved["content"] and "was built on" in saved["content"], saved["content"]
+
+
+async def test_the_writer_is_given_what_the_knowledge_base_holds_on_the_subject(studio, ark_call):
+    """The library is searched for the generating member, because it has no tools and no turn to
+    spare: every other member searches it itself, and this step used to skip it entirely."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+    lib = library.Library(store)
+    lib.add_file("颅内动脉瘤介入.md",
+                 "颈内动脉分为七段;颅内动脉瘤介入治疗用弹簧圈填塞瘤腔,载瘤动脉保持通畅。".encode(),
+                 kb_id=lib.shared_kb()["id"])
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 做一段动脉瘤介入的画面")
+
+    told = write_call(fake)
+    assert "弹簧圈填塞瘤腔" in told, told
+    assert "《颅内动脉瘤介入》" in told and "《颅内动脉瘤介入》" in saved["content"], saved["content"]
+
+
+async def test_a_group_with_the_knowledge_base_off_searches_nothing(studio, ark_call):
+    """One gate decides what a group may read (`scope_kbs`/`scope_ids`), and the generation path is
+    not an exception to it — the same rule the reference block and every tool already follow."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+    lib = library.Library(store)
+    lib.add_file("颅内动脉瘤介入.md", "弹簧圈填塞瘤腔。".encode(), kb_id=lib.shared_kb()["id"])
+    store.update_group(group["id"], {"ext": {**group["ext"],
+                                             "library": {"mode": "off", "kb_ids": [], "collection_ids": []}}})
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 做一段动脉瘤介入的画面")
+
+    told = write_call(fake)
+    assert "弹簧圈填塞瘤腔" not in told, told
+    # No material found is said out loud rather than smoothed over: the writer is told it has none,
+    # and the group is told the picture rests on nothing.
+    assert "knowledge base found nothing" in told, told
+    assert "No material was found" in saved["content"], saved["content"]
+
+
+async def test_a_prompt_written_from_nothing_says_so_under_the_clip(studio, ark_call):
+    """The one answer that must never read as if it had sources. The clip is still generated — it is
+    a picture, and refusing would not help — but the group is told the picture rests on nothing and
+    what to do about it."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 一只猫在键盘上睡着")
+
+    assert "No material was found" in saved["content"], saved["content"]
+    assert "Add the material" in saved["content"], saved["content"]
+
+
+def test_the_note_under_a_clip_says_what_it_rests_on():
+    """All four shapes of the two lines that go under an artefact, including the drawing case, which
+    is asked for with nothing to go on far more often than a clip is."""
+    from app.orchestrator import Orchestrator
+
+    cited = Orchestrator._grounding_note(["1 attached file(s): 脚本.md"], "", "video")
+    assert "脚本.md" in cited and "built on" in cited
+
+    bare_clip = Orchestrator._grounding_note([], "", "video")
+    assert "No material was found" in bare_clip and "ask again" in bare_clip
+
+    bare_drawing = Orchestrator._grounding_note([], "", "image")
+    assert "No material was found" in bare_drawing and "ask again" not in bare_drawing
+
+    both = Orchestrator._grounding_note(["the 1 knowledge-base excerpt(s): 《颅内动脉瘤介入》"],
+                                        "病灶尺寸", "video")
+    assert "《颅内动脉瘤介入》" in both and "病灶尺寸" in both
+
+
+async def test_a_chinese_request_finds_an_english_document(studio, ark_call):
+    """Measured on a real library: a knowledge base of surgical atlases is English while the group
+    talks Chinese, and BM25 over bigrams shares no tokens between the two — the group's own words
+    matched nothing at all, while the same question carrying its English name matched the right
+    document immediately. So when the group's words find nothing, one short call names the subject in
+    both languages before the search is given up on."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+    lib = library.Library(store)
+    lib.add_file("Internal Carotid Artery Segments.md",
+                 "Internal Carotid Artery (Cervical): the carotid bifurcation, up to the entry of the "
+                 "petrous bone. Coiling the aneurysm keeps the parent artery open.".encode(),
+                 kb_id=lib.shared_kb()["id"])
+    # The terms call is the first one; the writer's is the one after it.
+    fake.default = lambda messages: ("internal carotid artery segments aneurysm coiling"
+                                     if len(fake.calls) == 1 else WRITTEN)
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 做一段颈内动脉动脉瘤栓塞的画面")
+
+    told = write_call(fake)
+    assert "carotid bifurcation" in told, told
+    assert "《Internal Carotid Artery Segments》" in saved["content"], saved["content"]
+
+
+async def test_the_note_says_which_of_the_two_kinds_of_nothing_it_was(studio, ark_call):
+    """A library of 300 documents that matched none of the words and a library with nothing in it
+    look identical from outside, and they call for different things: reword the request, or add the
+    material. The note names which one happened."""
+    orch, store, group, member, prov, fake = studio
+    ark_call()
+    lib = library.Library(store)
+    lib.add_file("Internal Carotid Artery Segments.md", "carotid bifurcation".encode(),
+                 kb_id=lib.shared_kb()["id"])
+    fake.default = lambda messages: ("unrelated terms" if len(fake.calls) == 1 else WRITTEN)
+
+    _c, saved, _ends = await speak(orch, group, f"@{member['name']} 做一段完全无关的东西的画面")
+
+    assert "none of the 1 documents in the knowledge base matched" in saved["content"], saved["content"]

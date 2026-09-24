@@ -678,6 +678,31 @@ every enabled model that generates — including the drawing models a gateway re
   @图片1, and makes sound by default; H3 wants shots and then sound), which is the one thing it
   cannot guess. The result lands in the group's workspace and appears exactly as a tool call does —
   the same pill, the same player.
+- **The prompt is built on the group's material, and the picture is only allowed to state what that
+  material states.** This is the difference between "the clip ignored the discussion" and "the picture
+  invented anatomy", and it is the reason a chat log is not enough on its own: a chat says *what* the
+  clip is about, so a writer with nothing else fills in every structure itself. So the writer is
+  given, as its own section: the text of the files attached to the message (documents as extracted at
+  upload, pictures as the description worked out for them), whatever the message referenced
+  (`@file:` / `@doc:` / `#title` / `@msg:`), and what the group's knowledge bases hold on the subject
+  — searched for it, in the same scope and with the same `library_top_k` as any member's own search.
+  It is then told that everything factual in the picture (structures, instruments, places, numbers,
+  on-screen text, the order of a procedure) has to come from that material, that the discussion is
+  **not** a source of facts, and that what the material does not state must be left out rather than
+  guessed at; matters of taste (framing, light, colour, rhythm, style) stay the writer's own.
+- **Every artefact says what it rests on.** Under the clip the group is told which material was
+  handed over (`(This prompt was built on: …)`), and — in the writer's own words — which facts it
+  could not establish and therefore left out. When nothing was found, that is said in as many words,
+  with the two causes named apart: no library to search, or a library of *N* documents that matched
+  none of the words (the second is usually a request to reword, not a document to go and find). A
+  writer that answers with no such line costs nothing: the whole answer is then the prompt.
+- **A Chinese request finds an English document.** A knowledge base of surgical atlases is English
+  while the group talks Chinese, and the library is BM25 over words and bigrams — the two share almost
+  no tokens. So when a library is there, one short call names the subject in **both** languages, and
+  the search runs on the group's words *and* those terms. Measured on a real library: the group's own
+  words around "aneurysm coiling" surfaced collection listings and clip-shortening cases, and the same
+  search with the subject named in both languages landed on the two coiling cases that segment was
+  actually about.
 - **It runs on the provider it came from**, so the group's own video provider setting cannot redirect
   a member that names its own model.
 - **The master switches still govern it**: with *Permissions & control → Video generation* (or →

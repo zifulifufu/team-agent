@@ -195,6 +195,30 @@ def _clean_prompt(text: str) -> str:
     return s.strip()
 
 
+# The optional last line of a generation-prompt answer: what the writer could not establish from the
+# material and therefore left out of the picture. Both spellings are accepted because the writer is
+# told to answer in the language of the conversation, which need not be the language of this program.
+_UNGROUNDED_RE = re.compile(r"^[ \t]*(?:未确证|未证实|未能确证|Ungrounded|Not\s+(?:established|grounded))"
+                            r"[ \t]*[:：][ \t]*(.*)$", re.I | re.M)
+_NOTHING_RE = re.compile(r"^(?:无|没有|none|nothing|n/?a)[。.!\s]*$", re.I)
+
+
+def split_ungrounded(answer: str) -> tuple[str, str]:
+    """"(the prompt, what the writer could not ground)" out of one answer.
+
+    The writer is asked for one extra line saying which facts it could not establish from the
+    material. Splitting it off here is what keeps that line out of the video model's text field —
+    and what lets the group be told, next to the clip, which parts of the picture have nothing
+    behind them. A writer that ignores the request costs nothing: the whole answer is the prompt.
+    """
+    found = _UNGROUNDED_RE.search(answer or "")
+    if not found:
+        return (answer or "").strip(), ""
+    said = found.group(1).strip()
+    prompt = (answer[:found.start()] + answer[found.end():]).strip()
+    return prompt, ("" if _NOTHING_RE.match(said) else said)
+
+
 # The host says this when it produced a plan but no prose. Kept as a pair so the value
 # follows the request language instead of freezing at import time.
 PLAN_FALLBACK = ("The work is split — see the task board.", "已做好分工,见任务板。")
@@ -558,22 +582,24 @@ class Orchestrator:
                 out.append((ref["value"], target))
         return out
 
-    def _refs_block(self, group: dict, text: str, workspace: Path) -> str:
-        """What the user asked for by reference, as text.
+    def _refs_items(self, group: dict, text: str, workspace: Path) -> list[tuple[str, str]]:
+        """What the user asked for by reference, as (a name to cite it by, the text itself).
 
-        Documents the knowledge base can reach, files and folders in this group's workspace, and
-        earlier messages of this conversation. Everything is clipped into a budget, and whatever is
-        clipped says so together with the path, because the member can go and read the rest.
+        Documents the knowledge base can reach (by `#title` or `@doc:`), folders and earlier
+        messages of this conversation, already clipped into the reference budget. The name is what
+        makes the same material citable somewhere else — a generation prompt says which documents it
+        was built on, and that has to come from the thing that resolved them, not from a second
+        guess at what the `#`-tokens meant.
         """
         budget = int(self.store.get_settings()["refs_budget"])
-        out: list[str] = []
+        out: list[tuple[str, str]] = []
         used = 0
 
-        def take(chunk: str) -> bool:
+        def take(name: str, chunk: str) -> bool:
             nonlocal used
             if used + len(chunk) > budget:
                 return False
-            out.append(chunk)
+            out.append((name, chunk))
             used += len(chunk)
             return True
 
@@ -583,7 +609,7 @@ class Orchestrator:
             for m in re.finditer(r"#([^\s#@,,。;;::!!??]{2,40})", text):   # i18n-keep: hashtag regex; the CJK punctuation set is the delimiter list
                 doc = self.library.find_by_title(m.group(1))
                 if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed):
-                    take(self._library_chunk(doc))
+                    take(doc["title"], self._library_chunk(doc))
                 if len(out) >= 3:
                     break
 
@@ -591,19 +617,24 @@ class Orchestrator:
             if ref["kind"] == "doc":
                 doc = self.store.get_doc(ref["value"])
                 if doc and doc["enabled"] and (allowed is None or doc["id"] in allowed):
-                    take(self._library_chunk(doc))
+                    take(doc["title"], self._library_chunk(doc))
             elif ref["kind"] == "msg":
                 chunk = self._message_chunk(group, ref["value"])
                 if chunk:
-                    take(chunk)
+                    take(f"@msg:{ref['value']}", chunk)
             elif ref["kind"] == "dir":
                 chunk = self._folder_chunk(workspace, ref["value"])
                 if chunk:
-                    take(chunk)
-        if not out:
+                    take(f"{ref['value']}/", chunk)
+        return out
+
+    def _refs_block(self, group: dict, text: str, workspace: Path) -> str:
+        """`_refs_items` as one block of text, with the budget applied across all of them."""
+        items = self._refs_items(group, text, workspace)
+        if not items:
             return ""
         head = i18n.pick_now("[What the user referenced]\n", "【用户引用的内容】\n")
-        return head + "\n\n".join(out)
+        return head + "\n\n".join(chunk for _, chunk in items)
 
     def _library_chunk(self, doc: dict) -> str:
         r = self.library.read(doc["id"], 0, 2500)
@@ -1383,7 +1414,7 @@ class Orchestrator:
         if use == "video":
             args.update(self._media_refs(group, run))
         prompt, note = await self._media_prompt(group, members, run, instruction,
-                                                use=use, target=target, refs=args)
+                                                use=use, target=target, refs=args, agent=agent)
         args["prompt"] = prompt
 
         ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
@@ -1440,9 +1471,145 @@ class Orchestrator:
         })
         return TurnOut(content, content, saved)
 
+    # How much of the knowledge base may enter one generation prompt. A generation prompt is a
+    # sentence or two for a diffusion model: what its writer needs from the library is the facts its
+    # wording rests on, not a report. Per-hit first, then across all hits.
+    MEDIA_KB_CHARS = 700
+    MEDIA_KB_TOTAL = 3500
+
+    def _media_kb_hits(self, group: dict, query: str) -> list[tuple[str, str]]:
+        """The knowledge base, searched for the thing this generation is about.
+
+        Every other member searches the library with a tool and decides for itself what to read. A
+        generating member has no tools and no turn to spare — it produces a prompt and runs — so the
+        search happens here, on the same scope (`scope_kbs`/`scope_ids`: nothing reaches outside what
+        the group may read) and the same knob (`library_top_k`) as everywhere else.
+
+        One chunk per document: the ranking already puts the best match first, and five chunks of one
+        long document crowd a prompt that only has room for the gist.
+        """
+        ext = (group.get("ext") or {}).get("library") or {}
+        if ext.get("mode") == "off":
+            return []
+        ids = self.library.scope_ids(ext, group["id"])
+        if not ids or not query.strip():
+            return []
+        k = max(1, int(self.store.get_settings()["library_top_k"]))
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        used = 0
+        for hit in self.library.search(query, k, ids):
+            if hit["doc_id"] in seen:
+                continue
+            seen.add(hit["doc_id"])
+            text = clip_middle(str(hit["text"] or ""), self.MEDIA_KB_CHARS)
+            if used + len(text) > self.MEDIA_KB_TOTAL:
+                break
+            used += len(text)
+            out.append((str(hit["title"] or hit["doc_id"]), text))
+        return out
+
+    async def _media_search_terms(self, instruction: str, context: str) -> str:
+        """Search terms for the knowledge base, in both languages — the one step a token index
+        cannot do for itself.
+
+        Measured on a real library: a knowledge base of surgical atlases is usually **English**
+        ("Internal Carotid Artery Segments") while the group talks Chinese, and BM25 over bigrams
+        shares almost no tokens between the two — the subject's English name found the right cases
+        immediately, while the group's own words around them found collection listings. Naming the
+        subject in both languages is exactly what the model about to write the prompt is good at, and
+        it costs one short call; with the writer unavailable there is no answer to add, and the
+        search falls back to the words the group used.
+        """
+        ask = i18n.pick_now(
+            "Below is a request to generate a picture, and what a group said around it. Write the "
+            "search terms that would find the material it should rest on in a knowledge base: the "
+            "subject in the language used **and** its standard professional name in English, one term "
+            "per line, at most 10 lines, nothing else.",
+            "下面是「要求生成一张画面」的要求,以及群里围绕它说过的话。请写出用来在知识库里检索"
+            "「它可以依据的材料」的检索词:把主题用**中文**和**标准英文专业名**都写出来,"
+            "一行一个,最多 10 行,不要写别的内容。")
+        body = "\n\n".join(x for x in (instruction, clip_middle(context, 1500)) if x.strip())
+        try:
+            res = await self.router.complete([{"role": "user", "content": f"{ask}\n\n{body}"}])
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — an unavailable writer only costs the terms, not the search
+            return ""
+        return " ".join(line.strip() for line in str(res.text or "").splitlines() if line.strip())[:400]
+
+    async def _media_material(self, group: dict, run: "RunState", instruction: str,
+                              agent: dict) -> tuple[str, list[str], int]:
+        """The real material a generation prompt may be built on, the names of what went in, and how
+        many documents the group's knowledge base holds.
+
+        The writer used to see the chat and nothing else, which is how a group working on a medical
+        clip got prompts that invented anatomy: the discussion said what the clip was about, and every
+        structure in the picture was then filled in by the writer. The material this group actually
+        has was already here — attachment text extracted at upload, `@`/`#` references, and the
+        knowledge bases it may search — it simply never reached this one step. So it does now, in the
+        same shape every other member receives (see `_files_for_turn`, `_refs_items`), plus a library
+        search nobody else has to do for it (`_media_kb_hits`, reached through `_media_search_terms`
+        so a Chinese request can find an English document).
+
+        The document count comes back with it so the note can tell "the library found nothing" from
+        "there is no library to search": the first is a search to reword, the second is material to
+        add, and they look identical from the outside.
+        """
+        workspace = self.workspace(group["id"])
+        parts: list[str] = []
+        cited: list[str] = []
+
+        files = await self._files_for_turn(group, agent, run)
+        names = [str(f.get("name") or "") for f in run.files if str(f.get("name") or "")]
+        if files.block:
+            parts.append(files.block)
+            if names:
+                cited.append(i18n.pick_now(
+                    f"the {len(names)} attached file(s): {', '.join(names)}",
+                    f"消息里附带的 {len(names)} 个文件:{', '.join(names)}"))
+
+        refs = self._refs_items(group, run.user_text, workspace)
+        if refs:
+            head = i18n.pick_now("[What the user referenced]\n", "【用户引用的内容】\n")
+            parts.append(head + "\n\n".join(chunk for _, chunk in refs))
+            cited.append(i18n.pick_now(
+                f"the {len(refs)} referenced item(s): {', '.join(name for name, _ in refs)}",
+                f"引用的 {len(refs)} 项:{', '.join(name for name, _ in refs)}"))
+
+        ext = (group.get("ext") or {}).get("library") or {}
+        kb_docs = len(self.library.scope_ids(ext, group["id"])) if ext.get("mode") != "off" else 0
+        query = f"{instruction}\n{run.user_text}"
+        if kb_docs:
+            # Always worth the one short call, even when the group's own words already match
+            # something: measured on a real library, they picked up loosely related clips, and the
+            # same search with the subject named in both languages landed on the two coiling cases
+            # that segment was actually about. With the writer down there are no terms to add and the
+            # search falls back to the group's words — which is what it did before this existed.
+            terms = await self._media_search_terms(instruction, run.user_text)
+            query = " ".join(x for x in (query, terms) if x.strip())
+        hits = self._media_kb_hits(group, query)
+        if hits:
+            head = i18n.pick_now(
+                "[From the knowledge base — the material to stay inside]\n",
+                "【知识库里找到的相关内容 —— 事实以这些为准】\n")
+            parts.append(head + "\n\n".join(f"《{title}》\n{text}" for title, text in hits))
+            cited.append(i18n.pick_now(
+                f"{len(hits)} knowledge-base excerpt(s): {', '.join(f'《{t}》' for t, _ in hits)}",
+                f"知识库命中的 {len(hits)} 段:{', '.join(f'《{t}》' for t, _ in hits)}"))
+
+        block = "\n\n".join(parts)
+        budget = int(self.store.get_settings()["refs_budget"])
+        if len(block) > budget:
+            keep = max(0, budget - 200)
+            block = block[:keep] + "\n\n" + i18n.pick_now(
+                "(the rest was cut to keep this prompt within its budget)",
+                "(其余内容因超出预算已截断)")
+        return block, cited, kb_docs
+
     async def _media_prompt(
         self, group: dict, members: list[dict], run: RunState, instruction: str, *,
-        use: str, target: dict, refs: dict,
+        use: str, target: dict, refs: dict, agent: dict,
     ) -> tuple[str, str]:
         """(the prompt to generate with, a note to show when it is not what we wanted).
 
@@ -1452,6 +1619,13 @@ class Orchestrator:
         (clipped with the same budgets as any other turn), the instruction that addressed this
         member, and an inventory of what the generator is about to receive, so it can point at a
         reference by position instead of describing a picture it cannot see.
+
+        It also sees the group's **material** (`_media_material`): the text of what was attached,
+        what was referenced, and what the knowledge base holds on the subject. That is the substance
+        of "make the picture true to something" — a chat tells you what the clip is about, not what
+        a structure looks like, so a writer with no material fills every detail in itself and the
+        result is a confident picture of nothing in particular. The note that comes back says which
+        material was handed over, and which parts the writer could not ground at all.
 
         It is told to leave an already-complete prompt alone: someone who pasted a hand-written,
         shot-by-shot description means it, and paraphrasing that would be the same bug in the other
@@ -1463,6 +1637,10 @@ class Orchestrator:
         """
         provider = target["provider"]
         model = target["model"]
+        # Gathered before the writer is told anything, because whether there is any decides what it
+        # is allowed to do: with material it may state what the material states, without it may only
+        # describe a look.
+        material, cited, kb_docs = await self._media_material(group, run, instruction, agent)
         rows = self.store.list_messages(group["id"])
         cfg = self.store.get_settings()
         budget = int(cfg["history_clip"])
@@ -1486,8 +1664,22 @@ class Orchestrator:
             "what the group said before it. Build the prompt on what the conversation established — "
             "the subject, the style, the mood, the length, and above all the conclusions the members "
             "arrived at, including any wording they agreed on. If the instruction is already a "
-            "complete description, keep it as it is instead of rewriting it. Never invent facts "
-            "nobody mentioned. "
+            "complete description, keep it as it is instead of rewriting it. "
+            "Everything factual in the picture — anatomical structures, instruments, places, numbers, "
+            "text that appears on screen, organisations, people, the order of a procedure — has to "
+            "come from the material given below. What that material does not state must not be "
+            "written as if it were known: leave it out, or describe only how the shot looks. Matters "
+            "of taste stay yours: framing, camera movement, light, colour, texture, rhythm, duration "
+            "and overall style. "
+            + ("That material is the only source of facts here; the discussion above may be wrong "
+               "about them and is not one. "
+               if material else
+               "There is no material for this one at all: write about how the shot looks and nothing "
+               "else — no named structures, no numbers, no on-screen text, and no claim about how "
+               "anything works. ")
+            + "Then, on its own line after the prompt, write “Ungrounded: ” followed by what you "
+            "could not establish from the material and therefore left out of the picture (write "
+            "“none” if there was nothing). That last line is not part of the prompt. "
             f"{video.prompt_note(provider['kind']) if use == 'video' else imagegen.PROMPT_NOTE}",
             "你要根据一段群聊,为一个人工智能模型写一条生成提示词。"
             f"那个模型是 {model['model_name']}({provider['name']}),它生成{'视频' if use == 'video' else '图片'}。"
@@ -1496,16 +1688,37 @@ class Orchestrator:
             "下面最后一段是「要求这次生成」的那句话,前面的都是群里之前说过的内容。"
             "提示词要建立在讨论已经确立的东西上 —— 主体、风格、氛围、时长,尤其是成员们商定的结论,"
             "包括他们已经定下来的措辞。如果那句话本身就已经是一份完整的描述,那就原样保留,不要改写。"
-            "任何人没有提到过的事实都不要编。"
+            "画面里一切**事实性**的东西 —— 解剖结构、器械、部位、数字、画面上要出现的文字、机构、人物、"
+            "操作顺序 —— 都必须来自下面给出的素材;素材没有写到的,不要写成已知的既定事实:"
+            "要么不写,要么只写「这个镜头看起来是什么样」。属于审美取舍的部分仍然由你决定:"
+            "构图、镜头运动、光线、色彩、质感、节奏、时长和整体风格。"
+            + ("在这些素材之外没有别的事实来源;上面的讨论可能把事实说错,不算依据。"
+               if material else
+               "这一条**完全没有素材**:只写画面与风格,不要写任何具体结构、数字、画面文字,"
+               "也不要写任何关于「原理是什么」的断言。")
+            + "然后在提示词之后**另起一行**写「未确证: 」,后面写你无法从素材确证、因此没有写进画面的东西"
+            "(没有就写「无」)。这一行不属于提示词本身。"
             f"{video.prompt_note(provider['kind'], 'zh') if use == 'video' else imagegen.PROMPT_NOTE_ZH}",
         )
         inventory = self._refs_inventory(refs)
+        # The material is put in front of the writer as its own section, and when there is none that
+        # is said in as many words: an empty section reads like "nothing relevant", and the one answer
+        # that must never come back is a confident description of material nobody provided.
+        asked = i18n.pick_now(
+            f"[Material you may build the prompt on]\n{material}" if material else
+            "[Material you may build the prompt on]\n(None — no file came with the message, nothing "
+            "was referenced, and the knowledge base found nothing for this.)",
+            f"【你可以据以写提示词的素材】\n{material}" if material else
+            "【你可以据以写提示词的素材】\n(没有 —— 这条消息没有带文件,没有引用任何内容,"
+            "知识库里也没有检索到相关材料。)")
         user = i18n.pick_now(
             f"[Conversation so far]\n{convo}\n\n"
             f"[The instruction that asked for this]\n{instruction}\n\n"
+            f"{asked}\n\n"
             f"[What the generator will receive alongside your prompt]\n{inventory}",
             f"【到目前为止的对话】\n{convo}\n\n"
             f"【要求这次生成的那句话】\n{instruction}\n\n"
+            f"{asked}\n\n"
             f"【生成器会和你写的提示词一起收到的东西】\n{inventory}",
         )
         try:
@@ -1520,11 +1733,67 @@ class Orchestrator:
                 f"used as the prompt as written. {type(e).__name__}: {e})",
                 f"(没有可用的对话模型来读这段讨论,所以直接把上面那句话当提示词用了。{type(e).__name__}: {e})",
             )
-        text = _clean_prompt(res.text)
+        raw, ungrounded = split_ungrounded(res.text)
+        text = _clean_prompt(raw)
         self._notify("media.prompt", group["id"], group,
                      {"ok": True, "model": res.model_id, "chars": len(text),
+                      "cited": cited, "grounded": bool(material),
                       "fallback_from": res.fallback_from or ""})
-        return text, ""
+        return text, self._grounding_note(cited, ungrounded, use, kb_docs)
+
+    @staticmethod
+    def _grounding_note(cited: list[str], ungrounded: str, use: str, kb_docs: int = 0) -> str:
+        """The two lines that go under a generated clip: what it was built on, and what was not.
+
+        Both are shown to the group rather than logged, because "the picture invented anatomy" and
+        "there was nothing in here to build it on" look identical in the artefact and call for
+        opposite actions from the user: the first is a generation to redo, the second is material to
+        add. Written from what was actually handed over (`cited`, which the gathering step fills in),
+        never from what the writer claims to have used.
+
+        Within "nothing to build on" the two causes are named apart as well: nothing to search, or a
+        library of `kb_docs` that matched none of the words used. The second is usually a search to
+        reword, and saying "nothing in the knowledge base" about it would send the user looking for a
+        document that is already there.
+
+        The advice to add material is for video only: a clip is usually asked for *because* something
+        is known about the subject, while a drawing is often asked for with nothing to go on and no
+        claim to make, and a line telling that user to go and find documents is noise.
+        """
+        if cited:
+            first = i18n.pick_now(
+                f"(This prompt was built on: {'; '.join(cited)})",
+                f"(这条提示词依据的材料:{'; '.join(cited)})")
+        else:
+            nothing = (i18n.pick_now(
+                f"no attachment, no reference, and none of the {kb_docs} documents in the knowledge "
+                "base matched", f"没有附件、没有引用,知识库里那 {kb_docs} 份文档也都没有命中")
+                if kb_docs else
+                i18n.pick_now("no attachment, no reference, and nothing to search in the knowledge "
+                              "base", "没有附件、没有引用,知识库里也没有可检索的内容"))
+            if use == "video":
+                first = i18n.pick_now(
+                    f"(No material was found for this prompt — {nothing}, so it describes the look "
+                    "only. Add the material (or @ a document) and ask again to have the picture rest "
+                    "on something.)",
+                    f"(这条提示词没有找到可依据的材料 —— {nothing},所以它只描述了画面本身。"
+                    "把资料加进来(或在消息里 @ 上文档)再让它生成一次,画面才有依据。)")
+            else:
+                first = i18n.pick_now(
+                    f"(No material was found for this drawing — {nothing}, so it follows your sentence "
+                    "as written.)",
+                    f"(这幅图没有找到可依据的材料 —— {nothing},所以它只按你这句话展开。)")
+        lines = [first]
+        if ungrounded:
+            lines.append(i18n.pick_now(
+                f"(Not established from the material, so left out of the picture: {ungrounded})",
+                f"(没能从材料确证、因此没有写进画面的:{ungrounded})"))
+        return "\n".join(lines)
+        if ungrounded:
+            lines.append(i18n.pick_now(
+                f"(Not established from the material, so left out of the picture: {ungrounded})",
+                f"(没能从材料确证、因此没有写进画面的:{ungrounded})"))
+        return "\n".join(lines)
 
     @staticmethod
     def _refs_inventory(refs: dict) -> str:
