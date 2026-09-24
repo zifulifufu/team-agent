@@ -78,9 +78,12 @@ BUILTIN_SPECS: dict[str, dict] = {
     "library_search": {
         "description": "Search the library for passages relevant to a question (returns document "
                        "titles and the original text). Reach for this first whenever you need to "
-                       "cite a fact, a figure or a rule.",
+                       "cite a fact, a figure or a rule. The knowledge base may be in another "
+                       "language than this conversation: if a search comes back empty, try the "
+                       "subject's name in English before concluding nothing is there.",
         "description_zh": "在资料库里检索与问题相关的片段(返回文档标题和原文)。需要引用事实、数据、"
-                          "规定时先用它。",
+                          "规定时先用它。注意资料库的语言可能和这段对话不同:一次没命中就换用主题的"
+                          "英文名再搜一次,别直接下结论说没有。",
         "risk": "read",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Keywords or a question to search for",
@@ -752,6 +755,34 @@ When it is not supplied, calls needing confirmation are always denied."""
         ]
         return "\n".join(lines), True, [{"kind": "image", "name": path.name, "bytes": got["size"]}]
 
+    MEDIA_INDEX_TITLES = 24      # names listed when a search came back empty
+
+    def _library_index(self, group: dict) -> str:
+        """What this group can search, named — appended to a search that found nothing.
+
+        A search that comes back empty used to be a dead end, and on the knowledge bases this app
+        is most often pointed at (English atlases, papers, manuals) it is the *usual* end: BM25
+        matches words, and a question asked in Chinese shares none with an English document. Naming
+        what is in there turns that into a next step — search again with the subject's English name,
+        or open the document that obviously is the one — instead of the member concluding the group
+        has nothing and answering from memory.
+        """
+        docs = self.library.scope_docs(group["ext"]["library"], group["id"])
+        if not docs:
+            return i18n.pick_now("(This group can reach no knowledge base at all, so there is nothing to search.)",
+                                 "(本群没有任何可检索的知识库,所以没有可搜的内容。)")
+        names = "、".join(f"《{d['title']}》" for d in docs[: self.MEDIA_INDEX_TITLES])
+        more = i18n.pick_now(f" …and {len(docs) - self.MEDIA_INDEX_TITLES} more",
+                             f"…等共 {len(docs)} 份") if len(docs) > self.MEDIA_INDEX_TITLES else ""
+        return i18n.pick_now(
+            f"The {len(docs)} document(s) this group can search are: {names}{more}."
+            " The knowledge base may be in another language than this conversation — if the words you"
+            " used found nothing, search again with the subject's English name, or read one of these"
+            " by title with library_read.",
+            f"这个群能搜的 {len(docs)} 份文档是:{names}{more}。"
+            "知识库的语言可能和这段对话不同 —— 如果刚才那组词什么都没命中,换用主题的英文名再搜一次,"
+            "或者直接用 library_read 按标题打开上面某一份。")
+
     async def _builtin(self, ctx: ToolContext, name: str, args: dict) -> tuple[str, bool]:
         group, agent = ctx.group, ctx.agent
         if name == "current_time":
@@ -765,12 +796,14 @@ When it is not supplied, calls needing confirmation are always denied."""
                 self.library.search, str(args["query"]), k, self.library.scope_ids(group["ext"]["library"], group["id"])
             )
             if not hits:
-                return i18n.pick_now("Nothing relevant was found in the library.", "资料库里没有找到相关内容。"), True
+                return i18n.pick_now("Nothing relevant was found in the library.", "资料库里没有找到相关内容。") \
+                    + " " + self._library_index(group), True
             return "\n\n".join(i18n.pick_now(f"[{h['title']} · passage {h['idx'] + 1}]\n{h['text'][:900]}", f"[《{h['title']}》第 {h['idx'] + 1} 段]\n{h['text'][:900]}") for h in hits), True
         if name == "library_read":
             doc = self.library.find_by_title(str(args["doc"]))
             if not doc or not doc["enabled"]:
-                return i18n.pick_now(f"The library has no document called {args['doc']}.", f"资料库里没有《{args['doc']}》。"), False
+                return i18n.pick_now(f"The library has no document called {args['doc']}.", f"资料库里没有《{args['doc']}》。") \
+                    + " " + self._library_index(group), False
             allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
             if allowed is not None and doc["id"] not in allowed:
                 return i18n.pick_now("This document is not enabled for this group.", "本群没有启用这份文档。"), False

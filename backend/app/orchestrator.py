@@ -699,6 +699,13 @@ class Orchestrator:
             run = RunState(gid, text, read_only=read_only)
             run.files = list(files or [])
             workspace = self.workspace(gid)
+            # This group's own material, brought up to date *before* anybody reads it: what has been
+            # extracted from its attachments, and the documents sitting in its workspace
+            # (`Library.sync_group_material`). Runs here rather than on a timer because the question
+            # is "does this conversation see what the group has now" — a file written a minute ago by
+            # a member, or a document just added, is exactly what must not be missing from the search
+            # this turn will make.
+            self._sync_group_material(group, workspace)
             run.refs_block = self._refs_block(group, text, workspace)
             self._notify("round.start", gid, group,
                          {"sender": sender_name, "chars": len(text),
@@ -712,6 +719,31 @@ class Orchestrator:
             "agents": [s.get("agent") for s in run.steps],
             "answer_chars": len(run.final_text or ""),
         })
+
+    def _sync_group_material(self, group: dict, workspace: Any) -> None:
+        """Keep this group's own knowledge base level with what the group has (see `Library`).
+
+        Two things decide how far it goes, and both are the user's: a workspace the *user* picked is
+        left alone unless the group's knowledge-base settings turn watching on (it may be a code
+        repository, and importing one is nobody's idea of a good time), while a workspace this app
+        manages is watched by default. The switch lives beside the knowledge-base scope on purpose —
+        "which knowledge bases does this group search" and "where does its own material come from"
+        are the same question asked twice.
+        """
+        ext = (group.get("ext") or {}).get("library") or {}
+        if ext.get("mode") == "off":
+            return
+        watch = ext.get("watch_workspace")
+        if watch is None:
+            watch = not str(group.get("workspace") or "").strip()   # empty = this app manages it
+        try:
+            out = self.library.sync_group_material(gid=group["id"], workspace=Path(workspace),
+                                                   with_files=bool(watch))
+        except Exception as e:  # noqa: BLE001 — housekeeping must never cost the turn itself
+            self._notify("library.sync", group["id"], group, {"ok": False, "error": type(e).__name__})
+            return
+        if out["added"] or out["updated"]:
+            self._notify("library.sync", group["id"], group, {"ok": True, **out})
 
     def workspace(self, gid: str) -> Any:
         """The group's workspace, created if it is somehow missing.

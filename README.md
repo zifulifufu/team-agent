@@ -261,6 +261,38 @@ Paths are resolved inside the group's workspace and re-checked after resolving l
 reference cannot reach outside it. How much referenced content one prompt may carry is
 `refs_budget` under Settings → General.
 
+### A group's own material: the workspace, its attachments, and its knowledge base
+
+A group is a workspace, so it has **its own knowledge base** — it exists from the moment the group
+does (named after it, numbered when two groups share a name), and it is what "this group's own
+material" means. Three things that used to be three separate places are joined into it:
+
+* **what has already been read out of the group's attachments** — a document's extracted text, a
+  picture's description, a recording's transcript. Nothing is extracted *for* this: it is the cached
+  result of work the app already did, so a file nobody has opened yet simply is not in there yet
+  (turn on cloud vision and let a member look at it, and it appears);
+* **the documents in the workspace** — a script a member wrote, a table someone dropped in;
+* everything anyone imports by hand (notes, URLs, folders, uploads), as before.
+
+The join runs **before each turn**, so a file written a minute ago and a document just added are
+searchable in the turn that follows. It is also cheap by construction: a directory walk with the
+machinery pruned out (frames, checkouts, virtualenvs), only document kinds, at most 40 documents and
+a few megabytes read per run, and nothing rewritten while it is unchanged. A document that *did*
+change is replaced, not stacked — the earlier version's passages are dropped, or a search would
+still find what it used to say.
+
+Two switches decide how far it goes, and both are the user's. Which knowledge bases a group searches
+is already `all / chosen ones / off`; beside it, **"Keep this group's own material in its knowledge
+base"** decides whether the workspace feeds the group's own base. On by default for a workspace this
+app manages; off for one you picked, because a directory you chose may be a project rather than
+material (it is one switch away, on the same panel).
+
+And when a search still comes back empty, the member is told **what this group can search**: the
+document titles it can reach, plus the note that the knowledge base may be in another language than
+the conversation. That is the difference between a dead end and a next step — BM25 matches words,
+and a question asked in Chinese shares none with an English document, which is the usual shape of a
+library here (atlases, papers, manuals).
+
 ## Making video: bringing mature video tools in
 
 The sections above are about this app *generating* video itself (`generate_video`, and the three

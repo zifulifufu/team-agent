@@ -305,7 +305,11 @@ export interface GroupExt {
   plugins: string[];               // Enabled plugin IDs
   mcp: string[];                   // Enabled MCP server IDs
   /** Which knowledge bases this group searches; selection is by base, not by document */
-  library: { mode: LibraryMode; kb_ids: string[]; collection_ids: string[] };
+  library: { mode: LibraryMode; kb_ids: string[]; collection_ids: string[];
+             /** Whether this group's workspace also feeds its own knowledge base. Absent = the
+              *  default, which the backend decides from where the workspace is: a folder this app
+              *  manages is watched, one the user picked is not. */
+             watch_workspace?: boolean };
   plan: PlanMode;                  // inherit = follow the global setting
   memory: boolean;
 }

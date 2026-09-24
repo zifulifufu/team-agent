@@ -13,6 +13,7 @@ from . import i18n
 
 import io
 import json
+import os
 import re
 import threading
 from html.parser import HTMLParser
@@ -414,6 +415,18 @@ skipped, files whose size changed are replaced with the new version."""
                 out.append(visible[kid])
         return out
 
+    def scope_docs(self, ext_library: dict, gid: str = "") -> list[dict]:
+        """The documents a group may search, with their titles.
+
+        `scope_ids` is this without the rows; both go through `scope_kbs`, so the boundary is decided
+        in one place. The rows are what something needs when it has to say *what* a group can reach —
+        a search that came back empty, or a member asking what is in there.
+        """
+        kbs = self.scope_kbs(ext_library, gid)
+        if not kbs:
+            return []
+        return [d for d in self.store.list_docs(kb_ids=[k["id"] for k in kbs]) if d["enabled"]]
+
     def scope_ids(self, ext_library: dict, gid: str = "") -> list[str]:
         """The document ids a group may search.
 
@@ -421,10 +434,7 @@ skipped, files whose size changed are replaced with the new version."""
         "no restriction", so returning it here would let a member open any document in the
         database by title.
         """
-        kbs = self.scope_kbs(ext_library, gid)
-        if not kbs:
-            return []
-        return [d["id"] for d in self.store.list_docs(kb_ids=[k["id"] for k in kbs]) if d["enabled"]]
+        return [d["id"] for d in self.scope_docs(ext_library, gid)]
 
     def workspace_kb(self, gid: str, create: bool = True) -> dict | None:
         """The knowledge base a new document goes into when it is added from a group's library.
@@ -442,3 +452,113 @@ skipped, files whose size changed are replaced with the new version."""
         for kb in self.store.list_kbs(""):
             return kb
         return self.store.add_kb("Shared knowledge base", "Documents every group can search", "") if create else None
+
+    # ------------------------------------------------- a group's own material, kept up to date
+    # The three things a group has used to be three separate places: the chat (which is the context),
+    # the knowledge bases (only what someone remembered to import), and the workspace (files nothing
+    # could search). Keeping them joined means a group's own material is *its own* knowledge base, and
+    # the join has to be cheap enough to run on every turn — hence: nothing is extracted here, only
+    # what a file already carries is indexed, and every run is capped.
+    SYNC_MAX_FILES = 40            # documents picked up in one run, so a first pass cannot stall a turn
+    SYNC_MAX_FILE_BYTES = 4_000_000  # one file this big is already unusual for a document
+    SYNC_SCAN_LIMIT = 3000         # entries walked before the rest is left for the next run
+    SYNC_SKIP_DIRS = {".frames", ".git", "node_modules", "__pycache__", ".venv", "venv", ".cache"}
+
+    def sync_group_material(self, gid: str, workspace: Path | None = None, *,
+                            with_files: bool = True) -> dict:
+        """Bring this group's own material into this group's own knowledge base.
+
+        Two sources, both re-read every time and only rewritten when they changed:
+
+        * **attachments that already carry text** — a document's extracted text, a picture's
+          description, a recording's transcript. Nothing is extracted here on purpose: a picture
+          nobody has looked at has no description yet, and this is not the place to spend a vision
+          call on it (that happens the first time a member is shown it, and the cached result is what
+          this picks up);
+        * **documents in the workspace** (`with_files`) — what the group itself accumulated: a script
+          a member wrote, a table someone dropped in.
+
+        Documents are keyed by where they came from (`attachment:<id>` / `workspace:<relative path>`),
+        so re-running replaces rather than duplicates, and a file that changed keeps its id — a
+        document already enabled or selected for a group is not lost by an update.
+        """
+        kb = self.workspace_kb(gid)
+        if not kb:
+            return {"added": 0, "updated": 0, "skipped": 0, "documents": 0}
+        existing = {d["filename"]: d for d in self.store.list_docs(kb["id"]) if d.get("filename")}
+        added = updated = skipped = 0
+
+        def put(key: str, title: str, text: str, kind: str, size: int) -> None:
+            """Add or replace one document. An empty extraction keeps the version already there —
+            a document that cannot be read this time must not vanish from the library."""
+            nonlocal added, updated, skipped
+            try:
+                _check_text(text)
+            except LibraryError:
+                skipped += 1
+                return
+            old = existing.get(key)
+            self.add_text(title.strip()[:200] or key, text, key, kind, size,
+                          did=old["id"] if old else None, kb_id=kb["id"])
+            if old is None:
+                added += 1
+            else:
+                updated += 1
+
+        for row in self.store.list_attachments(gid):
+            body = (str(row.get("text") or "").strip() or str(row.get("vision_text") or "").strip())
+            if not body:
+                continue
+            key = f"attachment:{row['id']}"
+            old = existing.get(key)
+            if old is not None and int(old.get("chars") or 0) == len(body):
+                skipped += 1
+                continue
+            put(key, str(row.get("name") or row["id"]), body, str(row.get("kind") or "note"),
+                int(row.get("bytes") or 0))
+
+        if with_files and workspace and workspace.is_dir():
+            for rel, path in self._workspace_documents(workspace):
+                if added + updated >= self.SYNC_MAX_FILES:
+                    break
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                key = f"workspace:{rel}"
+                old = existing.get(key)
+                if old is not None and int(old.get("size") or 0) == size:
+                    skipped += 1
+                    continue
+                if size > self.SYNC_MAX_FILE_BYTES:
+                    skipped += 1
+                    continue
+                try:
+                    kind, text = extract_text(path.name, path.read_bytes())
+                except (LibraryError, OSError):
+                    skipped += 1
+                    continue
+                put(key, path.stem or rel, text, kind, size)
+        return {"added": added, "updated": updated, "skipped": skipped,
+                "documents": len(self.store.list_docs(kb["id"]))}
+
+    def _workspace_documents(self, workspace: Path):
+        """(relative path, path) for the importable documents in a workspace, bounded by a scan.
+
+        `os.walk` rather than `rglob` so the directories that are machinery rather than material are
+        pruned where they stand: a workspace holds generated frames, videos and often an environment
+        of its own, and this walk happens before every single turn.
+        """
+        seen = 0
+        for root, dirs, files in os.walk(workspace):
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in self.SYNC_SKIP_DIRS)
+            for name in sorted(files):
+                seen += 1
+                if seen > self.SYNC_SCAN_LIMIT:
+                    return
+                if name.startswith(".") or Path(name).suffix.lower() not in DIR_EXT:
+                    continue
+                path = Path(root) / name
+                if path.is_symlink() or not path.is_file():
+                    continue
+                yield str(path.relative_to(workspace)), path

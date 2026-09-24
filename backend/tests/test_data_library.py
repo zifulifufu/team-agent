@@ -183,3 +183,130 @@ def test_export_every_task_list_as_one_table(tmp_path):
     md = c.get(f"/api/groups/{g['id']}/export").text
     assert "[Done] 文案:写开场白" in md and "[Failed] 校对:检查错别字 — 模型调用失败" in md
     assert c.get("/api/groups/nope/export-tasks").status_code == 404
+
+
+# ------------------------------------------- a group's own material, kept where it is searched
+def test_a_new_group_has_its_own_knowledge_base(store):
+    """Every group is a workspace, so every group has its own knowledge base from the moment it
+    exists — not from the first time somebody happens to add a document. Otherwise the relationship
+    is invisible until it is used, and "the group's own material" has nowhere to be."""
+    g = store.create_group("视频制作", None, [])
+
+    kbs = [k for k in store.list_kbs() if k["group_id"] == g["id"]]
+
+    assert len(kbs) == 1 and kbs[0]["name"] == "视频制作"
+    assert store.list_docs(kbs[0]["id"]) == []
+
+
+def test_the_groups_own_material_lands_in_its_own_knowledge_base(store, tmp_path):
+    """The join that was missing: attachments whose content has already been read out, and the
+    documents in the workspace, become documents of *that* group's knowledge base — so the next
+    search, in the next turn, finds what the group has now."""
+    from app.library import Library
+
+    lib = Library(store)
+    g = store.create_group("视频制作", None, [])
+    other = store.create_group("别的群", None, [])
+    workspace = tmp_path / "ws"
+    (workspace / "草稿").mkdir(parents=True)
+    (workspace / "草稿" / "脚本.md").write_text("颅内动脉瘤介入治疗:弹簧圈填塞瘤腔。", encoding="utf-8")
+    (workspace / "分镜.txt").write_text("B05:载瘤动脉保持通畅。", encoding="utf-8")
+    (workspace / "成片.mp4").write_bytes(b"\x00" * 32)              # not a document: not indexed
+    (workspace / ".frames").mkdir()
+    (workspace / ".frames" / "f1.jpg").write_bytes(b"\xff\xd8")     # internal: never walked
+    store.add_attachment(g["id"], "att-1", "纪要.txt", "text/plain", 20,
+                         kind="document", text="会上确认:无血喷、无碎片。")
+
+    out = lib.sync_group_material(g["id"], workspace)
+
+    assert out["added"] == 3, out          # the mp4 and the frames folder are not material at all
+    assert {d["title"] for d in lib.scope_docs({"mode": "all"}, g["id"])} == {"分镜", "脚本", "纪要.txt"}
+    # …and a member's search now finds them
+    assert lib.search("弹簧圈填塞瘤腔", 3, lib.scope_ids({"mode": "all"}, g["id"]))
+    assert lib.search("无血喷", 3, lib.scope_ids({"mode": "all"}, g["id"]))
+    # Another group's search does not: a group's own material stays its own
+    assert lib.search("弹簧圈填塞瘤腔", 3, lib.scope_ids({"mode": "all"}, other["id"])) == []
+
+
+def test_the_material_is_replaced_when_it_changes_and_left_alone_when_it_does_not(store, tmp_path):
+    """A document that changed must not keep its earlier passages (a search would still find what it
+    used to say), and one that did not change must not be rewritten on every turn."""
+    from app.library import Library
+
+    lib = Library(store)
+    g = store.create_group("群", None, [])
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    note = workspace / "标准.md"
+    note.write_text("住宿标准:每人每晚不超过 500 元。", encoding="utf-8")
+
+    first = lib.sync_group_material(g["id"], workspace)
+    again = lib.sync_group_material(g["id"], workspace)
+    note.write_text("住宿标准:每人每晚不超过 800 元,按城市分档。", encoding="utf-8")
+    third = lib.sync_group_material(g["id"], workspace)
+
+    assert (first["added"], first["updated"]) == (1, 0)
+    assert (again["added"], again["updated"]) == (0, 0) and again["skipped"] == 1
+    assert (third["added"], third["updated"]) == (0, 1)
+    doc = [d for d in store.list_docs() if d["title"] == "标准"][0]
+    assert len(store.doc_chunks(doc["id"])) == 1                      # the old version is gone, not stacked
+    assert store._q("select count(*) n from library_chunks")[0]["n"] == 1
+    assert lib.search("800 元", 3, lib.scope_ids({"mode": "all"}, g["id"]))
+    # The passage that answers with the old figure is gone: this is what "the knowledge base was
+    # updated" has to mean for the next search.
+    assert all("500" not in h["text"] for h in lib.search("500 元 住宿标准", 5, lib.scope_ids({"mode": "all"}, g["id"])))
+
+
+async def test_a_search_that_finds_nothing_says_what_the_group_can_search(store, make_router, tmp_path):
+    """A dead end is the most common outcome on the knowledge bases this app is pointed at (English
+    atlases, papers, manuals) — BM25 matches words, and a question asked in Chinese shares none with
+    an English document. Naming what is in there turns "nothing found" into "try the English name",
+    which is the difference between using the knowledge base and answering from memory."""
+    from app.library import Library
+    from tests.conftest import FakeLLM
+    from tests.test_collab import setup
+
+    lib = Library(store)
+    kb = lib.shared_kb()
+    lib.add_file("Internal Carotid Artery Segments.md", "Coiling an aneurysm keeps it open.".encode(),
+                 kb_id=kb["id"])
+    orch, g = setup(store, make_router, FakeLLM(default="x"))
+    ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0], connect=False)
+
+    miss = await orch.toolhub.call(ctx, "library_search", {"query": "颅内动脉瘤怎么处理"}, None)
+
+    assert miss.ok and "Internal Carotid Artery Segments" in miss.text
+    assert "English" in miss.text and "library_read" in miss.text, miss.text   # and what to do about it
+    # A hit is still reported as a hit, with its passage.
+    hit = await orch.toolhub.call(ctx, "library_search", {"query": "coiling aneurysm"}, None)
+    assert "Coiling an aneurysm keeps it open." in hit.text
+
+
+async def test_the_turn_brings_the_groups_own_material_up_to_date_first(store, make_router, tmp_path):
+    """The mechanism under test is *when* it runs: before anybody reads, so a script written a minute
+    ago and a document just dropped in are both searchable in this very turn."""
+    from app.library import Library
+    from tests.conftest import FakeLLM
+    from tests.test_collab import Collector, setup
+
+    orch, g = setup(store, make_router, FakeLLM(default="好"))
+    workspace = store.workspace_dir(g["id"])
+    (workspace / "脚本.md").write_text("第 5 段:弹簧圈填塞瘤腔,不出现血喷。", encoding="utf-8")
+
+    await orch.handle_user_message(g["id"], "我们按脚本继续", Collector())
+
+    lib = Library(store)
+    assert lib.search("弹簧圈填塞瘤腔", 3, lib.scope_ids({"mode": "all"}, g["id"])), \
+        "what the group wrote before this turn is searchable in it"
+
+
+def test_two_groups_with_the_same_name_get_distinguishable_knowledge_bases(store):
+    """Group names are the user's, and they repeat (the app's own list has three called the same
+    thing). Two knowledge bases called the same thing cannot be told apart in the picker, so the
+    later one is numbered — the same way member names already are."""
+    a = store.create_group("视频制作", None, [])
+    b = store.create_group("视频制作", None, [])
+
+    names = {k["group_id"]: k["name"] for k in store.list_kbs() if k["group_id"] in (a["id"], b["id"])}
+
+    assert names[a["id"]] == "视频制作" and names[b["id"]] == "视频制作 2"

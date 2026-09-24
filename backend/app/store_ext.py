@@ -415,13 +415,26 @@ class ExtStore:
 
     def add_doc(self, title: str, filename: str, kind: str, size: int, chunks: list[str],
                 did: str | None = None, kb_id: str = "") -> dict:
+        """Add a document, or replace the one with this id if it is already there.
+
+        Replacing means the row goes first (which takes its chunks with it) rather than being
+        written over: a document whose text changed must not keep the passages of its earlier
+        version, or a search would still find what it used to say. `enabled` is carried across, so
+        replacing a document a user had switched off does not quietly switch it back on.
+        """
         did = did or self.new_id()  # type: ignore[attr-defined]
         with self._lock:  # type: ignore[attr-defined]
             try:
+                enabled = 1
+                old = self._one("SELECT enabled FROM library_docs WHERE id=?", (did,))  # type: ignore[attr-defined]
+                if old is not None:
+                    enabled = int(old["enabled"])
+                    self._db.execute("DELETE FROM library_docs WHERE id=?", (did,))  # type: ignore[attr-defined]
                 self._db.execute(  # type: ignore[attr-defined]
                     "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,kb_id,created_at) "
-                    "VALUES(?,?,?,?,?,?,?,1,?,?)",
-                    (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks), kb_id, time.time()),
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks),
+                     enabled, kb_id, time.time()),
                 )
                 self._db.executemany(  # type: ignore[attr-defined]
                     "INSERT INTO library_chunks(doc_id,idx,text) VALUES(?,?,?)",

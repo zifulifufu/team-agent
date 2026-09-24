@@ -157,6 +157,11 @@ def normalize_ext(ext: Any) -> dict:
         for key in ("kb_ids", "collection_ids"):
             if isinstance(lib.get(key), list):
                 out["library"][key] = [str(x) for x in dict.fromkeys(lib[key])]
+        # Whether this group's workspace also feeds its own knowledge base. Absent = the default,
+        # which `Library.sync_group_material` decides from where the workspace is (a directory the
+        # user picked is not watched unless they say so; the app-managed one is).
+        if isinstance(lib.get("watch_workspace"), bool):
+            out["library"]["watch_workspace"] = lib["watch_workspace"]
     if ext.get("plan") in ("inherit", "auto", "on", "off"):
         out["plan"] = ext["plan"]
     if isinstance(ext.get("memory"), bool):
@@ -999,7 +1004,26 @@ already exists, otherwise create it (name and strengths are both taken from the 
         )
         for i, aid in enumerate(member_ids or []):
             self.add_member(gid, aid, i)
+        # Every group gets its own knowledge base the moment it exists, rather than the first time
+        # somebody adds a document to it. "This group's own material" then has somewhere to be from
+        # the start (see `Library.sync_group_material`, which fills it with what the group itself
+        # accumulates), and the knowledge-base list shows it as this group's own rather than the
+        # relationship being invisible until it is used.
+        self.add_kb(self._free_kb_name(name), "This group's own material", gid)
         return self.get_group(gid)  # type: ignore[return-value]
+
+    def _free_kb_name(self, name: str) -> str:
+        """A knowledge base name that is not taken yet. Two groups may carry the same name (this
+        app's own list has three called the same thing), and two knowledge bases called the same
+        thing are impossible to tell apart in the picker — so the later one gets a number, the way
+        member names already do."""
+        taken = {k["name"] for k in self.list_kbs()}
+        if name not in taken:
+            return name
+        n = 2
+        while f"{name} {n}" in taken:
+            n += 1
+        return f"{name} {n}"
 
     # ------------------------------------------------------------------ where a group works
     #

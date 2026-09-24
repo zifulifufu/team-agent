@@ -1584,6 +1584,8 @@ const ZH: Record<string, string> = {
   "Knowledge base": "知识库",
   "Knowledge base name": "知识库名称",
   "Knowledge base scope": "知识库范围",
+  "Keep this group's own material in its knowledge base": "把本群自己的资料收进本群知识库",
+  "Before each turn, what has already been read out of this group's attachments (a document's text, a picture's description, a recording's transcript) and the documents in its workspace are indexed into this group's own knowledge base, so the next search finds them. On by default for a folder this app manages; for a folder you picked, turning it on is your call.": "每次发言之前,程序会把两样东西收进本群自己的知识库:一是已经从附件里读出来的内容(文档正文、图片描述、录音转写),二是本群工作目录里的文档 —— 这样下一次检索就能找到它们。工作目录由本程序管理时默认开启;是你自己选的目录时,开不开由你决定。",
   "Collections": "合集",
   "Belongs to": "归属",
   "Documents": "文档数",

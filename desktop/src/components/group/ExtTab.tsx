@@ -134,6 +134,11 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
   // Selection is by knowledge base (and by collection), never by individual document
   const setLib = (mode: LibraryMode, patch: Partial<GroupExt["library"]> = {}) =>
     void save({ library: { mode, kb_ids: lib.kb_ids, collection_ids: lib.collection_ids, ...patch } });
+  // Absent means the default, and the default depends on where the workspace is: a folder this app
+  // manages is kept in the group's own knowledge base, one the user picked is not (it may be a
+  // project, not material). Showing the resolved value rather than "unset" is what makes the switch
+  // honest — and writing it down makes it the user's choice from then on.
+  const watching = lib.watch_workspace ?? !group.workspace;
   const toggleKb = (id: string, on: boolean) =>
     setLib("selected", { kb_ids: on ? [...lib.kb_ids.filter((x) => x !== id), id] : lib.kb_ids.filter((x) => x !== id) });
   const toggleCol = (id: string, on: boolean) =>
@@ -287,6 +292,16 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
             </button>
           ))}
         </div>
+        {lib.mode !== "off" && (
+          <div className="gp-switch-row">
+            <div>
+              <div className="gp-sw-title">{t("Keep this group's own material in its knowledge base")}</div>
+              <div className="gp-note">{t("Before each turn, what has already been read out of this group's attachments (a document's text, a picture's description, a recording's transcript) and the documents in its workspace are indexed into this group's own knowledge base, so the next search finds them. On by default for a folder this app manages; for a folder you picked, turning it on is your call.")}</div>
+            </div>
+            <Switch checked={watching} onChange={(v) => setLib(lib.mode, { watch_workspace: v })} label={t("Keep this group's own material in its knowledge base")} />
+          </div>
+        )}
+
         {lib.mode === "selected" && (
           <div className="gp-doclist">
             {loadErr.docs && <div className="err gp-err">{loadErr.docs}</div>}

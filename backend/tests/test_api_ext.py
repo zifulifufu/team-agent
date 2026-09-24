@@ -504,7 +504,9 @@ def test_upgrade_moves_old_documents_into_knowledge_bases(tmp_path):
 
     st = Store(d)
     kbs = {k["group_id"]: k for k in st.list_kbs()}
-    assert set(kbs) == {"", "grp1"}
+    # Two buckets to move, and whatever knowledge bases the app made for its own groups on the way
+    # in (every group gets one now, see `Store.create_group`).
+    assert {"", "grp1"} <= set(kbs)
     assert kbs[""].name if hasattr(kbs[""], "name") else kbs[""]["name"]
     assert [d_["title"] for d_ in st.list_docs(kbs[""]["id"])] == ["旧共享"]
     assert [d_["title"] for d_ in st.list_docs(kbs["grp1"]["id"])] == ["旧私有"]
@@ -513,7 +515,7 @@ def test_upgrade_moves_old_documents_into_knowledge_bases(tmp_path):
 
     # Reopening must not migrate a second time
     again = Store(d)
-    assert len(again.list_kbs()) == 2 and len(again.list_docs()) == 2
+    assert len(again.list_kbs()) == len(kbs) and len(again.list_docs()) == 2
 
 
 def test_upgrade_from_the_very_first_library_shape(tmp_path):
@@ -534,9 +536,9 @@ def test_upgrade_from_the_very_first_library_shape(tmp_path):
     db.close()
 
     st = Store(d)
-    kbs = st.list_kbs()
-    assert len(kbs) == 1 and kbs[0]["group_id"] == ""
-    assert [d_["title"] for d_ in st.list_docs(kbs[0]["id"])] == ["古早资料"]
+    shared = [k for k in st.list_kbs() if k["group_id"] == ""]
+    assert len(shared) == 1                     # exactly one shared base, however many groups exist
+    assert [d_["title"] for d_ in st.list_docs(shared[0]["id"])] == ["古早资料"]
 
 
 def test_upgrade_from_old_database_backfills_seed_tags_once(tmp_path):
@@ -581,12 +583,12 @@ def test_an_old_document_with_no_owner_at_all_is_still_assigned(tmp_path):
     db.close()
 
     st = Store(d)
-    kbs = st.list_kbs()
-    assert len(kbs) == 1, f"one shared base, not one per startup: {[k['group_id'] for k in kbs]}"
+    kbs = [k for k in st.list_kbs() if k["group_id"] == ""]
+    assert len(kbs) == 1, f"one shared base, not one per startup: {[k['group_id'] for k in st.list_kbs()]}"
     assert sorted(x["title"] for x in st.list_docs(kbs[0]["id"])) == ["共享资料", "无主资料"]
 
     again = Store(d)                       # the second open has nothing left to do
-    assert len(again.list_kbs()) == 1 and len(again.list_docs()) == 2
+    assert len([k for k in again.list_kbs() if k["group_id"] == ""]) == 1 and len(again.list_docs()) == 2
 
 
 def test_a_partial_library_patch_keeps_the_rest_of_the_selection(tmp_path):
