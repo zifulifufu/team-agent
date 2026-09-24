@@ -321,6 +321,22 @@ class ExtStore:
     def get_kb(self, kb_id: str) -> dict | None:
         return self._one("SELECT * FROM knowledge_bases WHERE id=?", (kb_id,))  # type: ignore[attr-defined]
 
+    def ensure_group_kbs(self) -> int:
+        """Give every group its own knowledge base; returns how many were missing.
+
+        Same shape as the other backfills (see `coderun.ensure_workspaces`): a group's own knowledge
+        base is created with the group now, and this fills in the groups that already existed.
+        Re-running does nothing — it only looks at groups with none — so it is safe at every start.
+        """
+        have = {k["group_id"] for k in self.list_kbs() if k["group_id"]}
+        made = 0
+        for g in self.list_groups():
+            if g["id"] in have:
+                continue
+            self.add_kb(self._free_kb_name(g["name"]), "This group's own material", g["id"])
+            made += 1
+        return made
+
     def add_kb(self, name: str, description: str = "", group_id: str = "", kid: str | None = None) -> dict:
         kid = kid or self.new_id()  # type: ignore[attr-defined]
         self._x(  # type: ignore[attr-defined]

@@ -310,3 +310,15 @@ def test_two_groups_with_the_same_name_get_distinguishable_knowledge_bases(store
     names = {k["group_id"]: k["name"] for k in store.list_kbs() if k["group_id"] in (a["id"], b["id"])}
 
     assert names[a["id"]] == "视频制作" and names[b["id"]] == "视频制作 2"
+
+
+def test_groups_that_existed_before_get_their_knowledge_base_on_the_next_start(store):
+    """The backfill, so the relationship shows up for groups that were already there rather than
+    waiting for somebody to talk in each one."""
+    g = store.create_group("旧群", None, [])
+    for kb in store.list_kbs(g["id"]):
+        store.delete_kb(kb["id"])                 # pretend this group predates the rule
+
+    assert store.ensure_group_kbs() == 1
+    assert [k["name"] for k in store.list_kbs(g["id"]) if k["group_id"] == g["id"]] == ["旧群"]
+    assert store.ensure_group_kbs() == 0           # nothing left to do on the next start

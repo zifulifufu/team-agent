@@ -261,6 +261,9 @@ def create_app(
     # workspace the user picked themselves are skipped — see `coderun.ensure_workspaces`.
     coderun.ensure_workspaces(store.data_dir, store.get_settings(),
                               [(g["id"], g.get("workspace") or "") for g in store.list_groups()])
+    # …and every group's own knowledge base, for the groups made before that existed: a group is a
+    # workspace, and its own material has to have somewhere to live from the start.
+    store.ensure_group_kbs()
     router = ModelRouter(store, completion_fn)
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
