@@ -247,6 +247,11 @@ class Store(ExtStore):
             ("agents", "origin", "TEXT NOT NULL DEFAULT ''"),                 # 'model' = a member created automatically by pulling a model straight into a group
             ("agents", "engine", "TEXT NOT NULL DEFAULT ''"),                 # non-empty = external agent member (e.g. workbuddy), which skips model routing
             ("agents", "engine_cfg", "TEXT NOT NULL DEFAULT '{}'"),           # settings of the external agent (permission level, working directory, ...)
+            # A member that watches but never appears: the process engineer. It is a real agent row —
+            # that is where its ledger entries get their author from — but it is filtered out of
+            # `list_agents`/`group_members` unless the caller asks for it, which is what keeps it out
+            # of the member list, the @-candidates, the planning roster and every turn.
+            ("agents", "hidden", "INTEGER NOT NULL DEFAULT 0"),
             ("groups", "ext", "TEXT NOT NULL DEFAULT '{}'"),
             ("groups", "prompt", "TEXT NOT NULL DEFAULT ''"),
             # A directory the user picked for this group ("work in my project folder"). Empty means
@@ -254,6 +259,14 @@ class Store(ExtStore):
             # group did before this existed — so an older database needs no backfill, only the
             # column.
             ("groups", "workspace", "TEXT NOT NULL DEFAULT ''"),
+            # A group is a project: `status` is its own state ("active" | "done"), and `archived`
+            # takes it out of the normal list without deleting anything. Both are set by hand —
+            # nothing infers "done" from the messages, because "the conversation stopped" and "the
+            # work is finished" are not the same statement. Archived rows keep everything: the
+            # workspace, the knowledge base, the history.
+            ("groups", "status", "TEXT NOT NULL DEFAULT 'active'"),
+            ("groups", "archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("groups", "archived_at", "REAL"),
             ("mcp_servers", "transport", "TEXT NOT NULL DEFAULT ''"),      # stdio | sse | http, empty = auto-detect
             ("mcp_servers", "headers", "TEXT NOT NULL DEFAULT '{}'"),
             ("mcp_servers", "description", "TEXT NOT NULL DEFAULT ''"),
@@ -870,6 +883,7 @@ plaintext (non-macOS / keychain unavailable)."""
         if r:
             r["skills"] = json.loads(r["skills"])
             r["tags"] = json.loads(r.get("tags") or "[]")
+            r["hidden"] = bool(r.get("hidden"))
             try:
                 cfg = json.loads(r.get("engine_cfg") or "{}")
             except ValueError:
@@ -877,8 +891,16 @@ plaintext (non-macOS / keychain unavailable)."""
             r["engine_cfg"] = cfg if isinstance(cfg, dict) else {}
         return r
 
-    def list_agents(self) -> list[dict]:
-        return [self._agent_row(r) for r in self._q("SELECT * FROM agents ORDER BY rowid")]  # type: ignore[misc]
+    def list_agents(self, include_hidden: bool = False) -> list[dict]:
+        """Members, by default the visible ones.
+
+        ⚠️ Hidden ones are the process engineer: an agent row that exists so its work can be
+        attributed, but that must not appear anywhere a person or a model chooses who speaks. Every
+        caller that has to *recognise* it rather than *offer* it — the preset lookup, the template
+        gallery's "already added" flag, the process panel — passes `include_hidden=True` on purpose.
+        """
+        rows = self._q("SELECT * FROM agents ORDER BY rowid")  # type: ignore[misc]
+        return [self._agent_row(r) for r in rows if include_hidden or not r.get("hidden")]
 
     def get_agent(self, aid: str) -> dict | None:
         return self._agent_row(self._one("SELECT * FROM agents WHERE id=?", (aid,)))
@@ -886,16 +908,20 @@ plaintext (non-macOS / keychain unavailable)."""
     def create_agent(
         self, name: str, avatar: str = "🤖", role: str = "", prompt: str = "",
         model_id: str | None = None, skills: list[str] | None = None, tags: list[str] | None = None,
-        origin: str = "", engine: str = "", engine_cfg: dict | None = None,
+        origin: str = "", engine: str = "", engine_cfg: dict | None = None, hidden: bool = False,
     ) -> dict:
         aid = new_id()
         self._x(
-            "INSERT INTO agents(id,name,avatar,role,prompt,model_id,skills,tags,origin,engine,engine_cfg) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO agents(id,name,avatar,role,prompt,model_id,skills,tags,origin,engine,engine_cfg,hidden) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (aid, name, avatar, role, prompt, model_id, json.dumps(skills or []),
              json.dumps(strength_lib.clean_tags(tags or []), ensure_ascii=False), origin, engine,
-             json.dumps(engine_cfg or {}, ensure_ascii=False)),
+             json.dumps(engine_cfg or {}, ensure_ascii=False), 1 if hidden else 0),
         )
         return self.get_agent(aid)  # type: ignore[return-value]
+
+    def set_agent_hidden(self, aid: str, hidden: bool) -> None:
+        """Show or hide a member. Hiding keeps the row (and everything that points at it) intact."""
+        self._x("UPDATE agents SET hidden=? WHERE id=?", (1 if hidden else 0, aid))
 
     MODEL_AVATARS = ("🐋", "🌙", "🔮", "🧠", "⚡", "🌟", "🦉", "🐼", "🦊", "🐙", "🌿", "🪐")
 
@@ -964,6 +990,8 @@ already exists, otherwise create it (name and strengths are both taken from the 
         if g:
             g["ext"] = normalize_ext(json.loads(g.get("ext") or "{}"))
             g["workspace"] = str(g.get("workspace") or "")
+            g["status"] = str(g.get("status") or "active")
+            g["archived"] = bool(g.get("archived"))
         return g
 
     def list_groups(self) -> list[dict]:
@@ -979,20 +1007,41 @@ already exists, otherwise create it (name and strengths are both taken from the 
             g["last_at"] = last["created_at"] if last else g["created_at"]
         return groups
 
-    def get_group(self, gid: str) -> dict | None:
+    def get_group(self, gid: str, include_hidden: bool = False) -> dict | None:
         g = self._group_row(self._one("SELECT * FROM groups WHERE id=?", (gid,)))
         if g:
-            g["member_ids"] = self.member_ids(gid)
+            g["member_ids"] = self.member_ids(gid, include_hidden=include_hidden)
         return g
 
-    def member_ids(self, gid: str) -> list[str]:
-        return [
+    def member_ids(self, gid: str, include_hidden: bool = False) -> list[str]:
+        """The ids in this group, in order — by default the members a person can see and address.
+
+        ⚠️ Filtering here rather than at each call site is what keeps the hidden process engineer out
+        of everything built from a group row: the member list, the `@`-candidates, the rail's count,
+        the planner's roster. A caller that has to *recognise* it (the "keep it in every group" pass,
+        the process panel) asks for `include_hidden=True` on purpose.
+        """
+        ids = [
             r["agent_id"]
             for r in self._q("SELECT agent_id FROM group_members WHERE group_id=? ORDER BY position", (gid,))
         ]
+        if include_hidden:
+            return ids
+        return [i for i in ids if not (self.get_agent(i) or {}).get("hidden")]
 
-    def group_members(self, gid: str) -> list[dict]:
-        return [a for a in (self.get_agent(i) for i in self.member_ids(gid)) if a]
+    def group_members(self, gid: str, include_hidden: bool = False) -> list[dict]:
+        """The members of a group — by default only the ones that can be seen and addressed.
+
+        This is the single place the invisibility of the process engineer is decided: everything that
+        builds a roster, an `@`-candidate list or a turn queue reads the members from here, so a
+        hidden member cannot leak into any of them by being forgotten somewhere else.
+        """
+        out = []
+        for i in self.member_ids(gid, include_hidden=include_hidden):
+            a = self.get_agent(i)
+            if a and (include_hidden or not a.get("hidden")):
+                out.append(a)
+        return out
 
     def create_group(self, name: str, host_agent_id: str | None = None, member_ids: list[str] | None = None,
                      ext: dict | None = None, prompt: str = "", workspace: str = "") -> dict:
@@ -1051,6 +1100,14 @@ already exists, otherwise create it (name and strengths are both taken from the 
             self._x("UPDATE groups SET prompt=? WHERE id=?", (patch["prompt"], gid))
         if patch.get("workspace") is not None:
             self._x("UPDATE groups SET workspace=? WHERE id=?", (patch["workspace"], gid))
+        if patch.get("status") is not None:
+            self._x("UPDATE groups SET status=? WHERE id=?", (patch["status"], gid))
+        if patch.get("archived") is not None:
+            # `archived_at` is stamped here rather than by the caller: it is a fact about when this
+            # app did it, and clearing it on unarchive keeps "archived at" meaning what it says.
+            arch = 1 if patch["archived"] else 0
+            self._x("UPDATE groups SET archived=?, archived_at=? WHERE id=?",
+                    (arch, time.time() if arch else None, gid))
         if isinstance(patch.get("ext"), dict):
             cur = self.get_group(gid)
             cur_ext = dict(cur["ext"]) if cur else {}
@@ -1146,6 +1203,24 @@ already exists, otherwise create it (name and strengths are both taken from the 
 
     def clear_messages(self, gid: str) -> None:
         self._x("DELETE FROM messages WHERE group_id=?", (gid,))
+
+    def recover_interrupted_plans(self) -> int:
+        """A process restart cannot resume an in-flight model/tool call automatically."""
+        changed = 0
+        for row in self._q("SELECT id, meta FROM messages WHERE sender_type='plan'"):
+            meta = json.loads(row["meta"] or "{}")
+            if meta.get("status") not in ("running", "integrating"):
+                continue
+            meta["status"] = "stopped"
+            for task in meta.get("tasks", []):
+                if task.get("status") in ("running", "pending"):
+                    task["status"] = "stopped" if task["status"] == "running" else "skipped"
+                    task["error"] = i18n.pick_now("Interrupted by a backend restart", "后端重启,任务已中断")
+            content = "\n".join(f"{t.get('id', '')} {t.get('owner', '')}:{t.get('title', '')} [{t.get('status', '')}]"
+                                for t in meta.get("tasks", []))
+            self.update_message(row["id"], content=content, meta=meta)
+            changed += 1
+        return changed
 
     def clear_all_messages(self) -> int:
         with self._lock:

@@ -127,6 +127,7 @@ class Channels:
             return
         gid = group["id"]
         replies: list[str] = []
+        completed = False
 
         async def emit(ev: dict) -> None:
             await self.hub.broadcast(gid, ev)
@@ -146,6 +147,7 @@ class Channels:
             # the tool list is filtered, not merely discouraged.
             await self.orch.handle_user_message(gid, item.text, emit,
                                                  sender_name=self._label(cid, item), read_only=True)
+            completed = True
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — surfaced in the status, not swallowed
@@ -153,8 +155,7 @@ class Channels:
             await self._system(gid, i18n.pick_now(f"This {cid} round failed: {e}",
                                                   f"这条来自 {cid} 的协作出错了:{e}"))
         finally:
-            await self.hub.broadcast(gid, {"type": "idle"})
-            if replies:
+            if completed and replies:
                 allowed, text = await self._before_send(gid, replies[-1])
                 if allowed:
                     body = channels.format_reply(cid, cfg, text)
@@ -313,12 +314,17 @@ class Channels:
 
     async def shutdown(self) -> None:
         self.polling_running = False
+        pending = set(self.tasks)
         if self.supervisor:
+            pending.add(self.supervisor)
             self.supervisor.cancel()
         for cid in list(self.pollers):
             self._stop_poller(cid)
         for t in list(self.tasks):
             t.cancel()
+        # Cancellation is only a request. Let HTTP clients and child coroutines
+        # finish their cleanup before the application's event loop is closed.
+        await asyncio.gather(*pending, return_exceptions=True)
 
     # --------------------------------------------------------------- routes
     def _routes(self) -> None:

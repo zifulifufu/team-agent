@@ -155,25 +155,58 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .shell { display: flex; height: 100%; overflow: hidden; }
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; background: var(--bg); }
 .banner { background: var(--warn-bg); color: var(--warn); text-align: center; font-size: 13px; padding: 6px; z-index: 5; }
-.expand-btn { position: absolute; top: 10px; left: 12px; z-index: 10; }
-.is-mac .expand-btn { left: 84px; }
 
 /* ---- 侧边栏(WorkBuddy 风格) ---- */
 .sidebar { width: 280px; flex: none; background: var(--bg-side); display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
-.side-top { display: flex; align-items: center; gap: 2px; height: 46px; padding: 0 10px; flex: none; }
-.is-mac .side-top { padding-left: 82px; }
-.brand { display: flex; align-items: baseline; gap: 8px; padding: 6px 18px 12px; }
-.brand-name { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
-.ver { font-size: 11px; color: var(--text-3); background: var(--hover); padding: 0 6px; border-radius: 8px; }
-.side-search { display: flex; align-items: center; gap: 6px; margin: 0 12px 8px; padding: 0 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text-3); }
-.side-search input { border: 0; box-shadow: none !important; background: transparent; padding: 6px 0; }
+/* Two lines: the window's own controls on top, the app's name under them — and both flush to the
+   panel's left edge, which is what keeps the toggle in one place. On macOS the traffic lights sit
+   over this corner of the window, so the top line starts *below* them rather than 82px to their
+   right: hugging the edge is the point, because the same button has to still be there when the panel
+   is gone.
+   Collapsed, this line is all that is left. The panel itself goes to zero width — fully retracted,
+   not a strip — and the line overflows it, so the button stays on exactly the coordinates it had.
+   (`.shell` clips nothing and `.main` is positioned, hence the z-index: the line must paint over the
+   main area it now sits on, or the button would be visible-but-unclickable.) */
+.sidebar { --side-pad: 12px; }
+.side-top { position: relative; z-index: 30; display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 10px 0 var(--side-pad); flex: none; }
+/* The lights are ~70x26 in this corner, so the first line starts below them. */
+.is-mac .side-top { margin-top: 26px; }
+.brand-row { padding: 0 18px 6px var(--side-pad); flex: none; }
+.brand-name { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar.collapsed { width: 0; border-right: 0; background: transparent; }
+/* The strip stays wide enough to be the window's drag handle — a collapsed panel with nothing to
+   grab is a window you can no longer move. */
+.sidebar.collapsed .side-top { width: 68px; }
+.sidebar.collapsed > *:not(.side-top) { display: none; }
+/* With the panel gone the main area starts at the window's left edge, so its headers have to clear the
+   button (and, on macOS, the lights) that now sit over them. */
+.sidebar.collapsed ~ .main .chat-head { padding-left: 64px; }
+.sidebar.collapsed ~ .main .page-cols .page-list-head { padding-left: 64px; }
+.sidebar.collapsed ~ .main .tool-page { padding-top: 44px; }
+.is-mac .sidebar.collapsed ~ .main .chat-head { padding-left: 88px; }
+.is-mac .sidebar.collapsed ~ .main .page-cols .page-list-head { padding-left: 88px; }
+/* The filter, opened from the button in the top row. It is drawn over the list instead of pushing it
+   down (the row it hangs from is the only thing above the project list), so opening it never moves
+   the project you were about to click. `left/right: 0` are the top row's own padding box, which lines
+   this up with the panel's other content. */
+.side-filter { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; }
+.sf-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; border-radius: 8px; font-size: 12.5px; color: var(--text-2); text-align: left; }
+.sf-row:hover { background: var(--hover); color: var(--text); }
+.sf-row[aria-checked="true"] { background: var(--active); color: var(--text); font-weight: 600; }
+.sf-row .n { margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sf-row[aria-checked="true"] .n { color: var(--text-2); }
+.sf-tick { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border-strong); color: var(--on-primary); flex: none; }
+.sf-row[aria-checked="true"] .sf-tick { background: var(--primary); border-color: var(--primary); }
+.sf-sep { height: 1px; background: var(--border); margin: 4px 2px; }
 .side-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 10px; }
 .nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text); text-align: left; width: 100%; }
 .nav-item:hover { background: var(--hover); }
 .nav-item.on { background: var(--active); font-weight: 600; }
 .nav-item svg { color: var(--text-2); flex: none; }
 .nav-cap { padding: 12px 18px 4px; color: var(--text-3); font-size: 12px; }
+/* 项目列表的标题:带数量,点一下把列表折起来。它固定在工具那一组下面 —— 导航在上、列表在下。 */
 .side-section { display: flex; align-items: center; gap: 4px; padding: 14px 18px 6px; color: var(--text-3); font-size: 12px; text-align: left; }
+.side-section:hover { color: var(--text-2); }
 .side-section .count { margin-left: 2px; }
 .side-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 8px; }
 .side-empty { color: var(--text-3); font-size: 12.5px; padding: 8px 10px; }
@@ -184,9 +217,48 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .conv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv.on .conv-name { font-weight: 600; }
 .conv-time { font-size: 11.5px; color: var(--text-3); flex: none; }
-.conv-del { position: absolute; right: 6px; opacity: 0; background: var(--bg-side); }
-.conv:hover .conv-del, .conv-del:focus-visible { opacity: 1; }
-.conv:hover .conv-time { visibility: hidden; }
+/* A project's state, written on its row: three words, one of which is almost always the same, so
+   they are small and go quiet on hover where the actions take over. */
+/* A project that is working right now. A dot rather than a word: it is the one state that changes on
+   its own, and it has to be noticeable without being read. */
+.conv-run { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; margin-right: 6px;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); animation: conv-run 1.6s ease-out infinite; }
+@keyframes conv-run { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+                     70% { box-shadow: 0 0 0 5px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .conv-run { animation: none; } }
+.conv-state { font-size: 10.5px; color: var(--text-3); flex: none; }
+.conv-state.done { color: var(--ok); }
+.conv.arch .conv-name { color: var(--text-3); }
+.conv-acts { position: absolute; right: 4px; display: flex; gap: 1px; padding-left: 10px; background: var(--bg-side); opacity: 0; }
+.conv:hover .conv-acts, .conv-acts:focus-within { opacity: 1; }
+.conv:hover .conv-state, .conv:hover .conv-time { visibility: hidden; }
+
+/* There was a "Projects" heading here with four state tabs under it, and a search field of its own.
+   The states are the filter button in the top row now, and the search is a floating box of its own
+   (below), so the list starts right under the app name. (.sp-head and .sp-title still exist for the
+   settings pages, defined further down.) */
+
+/* 搜索框:单独浮在窗口正中间,可以拖动(见 components/SearchPalette.tsx)。
+   层序:侧栏自己的浮层是 30,设置页是 100,对话框是 200 —— 它夹在侧栏与设置之间。 */
+.search-pal-back { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, 0.22); }
+.search-pal { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 91;
+  width: min(560px, calc(100vw - 48px)); max-height: min(64vh, 560px); display: flex; flex-direction: column;
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+/* 拖过一次以后就由内联 left/top 决定位置,不再居中 */
+.search-pal.moved { transform: none; }
+.search-pal-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 6px; border-bottom: 1px solid var(--border); cursor: move; }
+.search-pal-grip { color: var(--text-3); flex: none; }
+.search-pal-head input { flex: 1; border: 0; box-shadow: none !important; background: transparent; padding: 4px 0; cursor: text; }
+.search-pal-list { overflow-y: auto; padding: 6px; overscroll-behavior: contain; }
+.search-pal-hint, .search-pal-empty { color: var(--text-3); font-size: 12px; padding: 6px 10px 8px; }
+.search-pal-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; }
+.search-pal-row .conv-name { flex: 1; min-width: 0; }
+.search-pal-row.sel { background: var(--hover); }
+.search-pal-row.sel .conv-name { font-weight: 600; }
+/* 正开着的那个项目,和侧栏里高亮它的方式一致 */
+.search-pal-row.on { background: var(--active); }
+.search-pal-row.on .conv-name { font-weight: 600; }
+
 
 .user-wrap { position: relative; padding: 8px 10px 12px; border-top: 1px solid var(--border); flex: none; }
 .user-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 8px; border-radius: 10px; text-align: left; }
@@ -217,13 +289,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .chip-btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 18px; color: var(--text-2); background: var(--card); font-size: 13px; }
 .chip-btn:hover { border-color: var(--primary); color: var(--text); background: var(--primary-soft); }
 .target-select select { border: 0; background: var(--hover); border-radius: 16px; padding: 5px 26px 5px 12px; font-size: 12.5px; width: auto; max-width: 250px; color: var(--text-2); cursor: pointer; }
-/* Building a group chat: where it works, and who is in it. Shown while the target is "new", so
-   the two decisions come before the task rather than being made for the user. */
-.ng { border: 1px solid var(--border); background: var(--card); border-radius: 14px; padding: 10px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
-.ng-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ng-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-3); flex: none; width: 84px; }
-.ng-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; color: var(--text-2); }
-.ng-members { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* Building a group chat: where it works and who is in it. Both are chips in the row under the box,
+   next to the other send controls — they used to be a card above it, and the member half of that
+   card was 227px of chips (23 of them, six rows), which pushed the box down the window and left the
+   description the user came to write with the least room on the page. The pickers are unchanged;
+   they just open upward out of the composer now. */
+.hsetup { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.hsetup-wide { width: min(760px, calc(100vw - 32px)); }
+.hsetup-note { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.ng-members { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 /* A member chip is a toggle, not a button: `aria-pressed` carries that, and the colour is the
    only other signal, so it has to be unmistakable in both themes. */
 .ng-mem { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 6px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); color: var(--text-2); font-size: 12.5px; }
@@ -262,7 +336,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .composer-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .round-btn { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); flex: none; }
 .round-btn:hover { background: var(--hover); color: var(--text); }
-.route-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); padding: 4px 10px; border-radius: 14px; background: var(--hover); max-width: 320px; }
+.route-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); padding: 4px 10px; border-radius: 14px; background: var(--hover); max-width: 320px; min-width: 0; }
+.route-pill > svg { flex: none; }
 .route-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .route-pill:hover { background: var(--active); }
 .route-pill.off { background: var(--warn-bg); color: var(--warn); }
@@ -270,23 +345,24 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .send-btn:disabled { background: var(--border-strong); color: #fff; opacity: 1; }
 .send-btn.stop { background: var(--danger); color: #fff; }
 .composer-err { margin: 0 6px 6px; }
-.mention-pop { position: absolute; left: 0; bottom: calc(100% + 6px); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 4px; min-width: 220px; z-index: 20; }
-.mention-pop button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: 8px; text-align: left; }
+/* The @ picker. Bounded in both directions, and both bounds were paid for: it is anchored above the
+   composer, so with no max-height the list grew upward past the top of the window — measured at
+   1305px tall in a 733px window with the 10-member group, which pushed all 11 member rows off the
+   screen and left only files visible. `max-width` contains the other direction: the roles of the
+   generating members are long lines, and without it the popup stretched wider than the composer and
+   covered the conversation it floats over. */
+.mention-pop { position: absolute; left: 0; bottom: calc(100% + 6px); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 4px; min-width: 220px; max-width: 100%; max-height: min(46vh, 380px); overflow-y: auto; overscroll-behavior: contain; z-index: 20; }
+.mention-pop button { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 7px 10px; border-radius: 8px; text-align: left; }
 .mention-pop button.on, .mention-pop button:hover { background: var(--hover); }
-.mp-ava { width: 22px; text-align: center; }
+.mention-pop button b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-pop button .muted { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-ava { width: 22px; text-align: center; flex: none; }
 
 /* ---- 群聊 ---- */
 .chat-layout { flex: 1; min-height: 0; display: flex; }
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .chat-head { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 16px 0 22px; border-bottom: 1px solid var(--border); flex: none; }
-.expand-btn ~ .chat-layout .chat-head { padding-left: 56px; }
-.is-mac .expand-btn ~ .chat-layout .chat-head { padding-left: 122px; }
-.expand-btn ~ .page-cols .page-list-head { padding-left: 56px; }
-.is-mac .expand-btn ~ .page-cols .page-list-head { padding-left: 122px; }
 .chat-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ava-stack { display: flex; }
-.ava-stack span { width: 24px; height: 24px; border-radius: 50%; background: var(--hover); border: 2px solid var(--bg); margin-left: -6px; display: flex; align-items: center; justify-content: center; font-size: 12px; }
-.ava-stack span:first-child { margin-left: 0; }
 .head-actions { display: flex; gap: 2px; }
 .msg-list { flex: 1; overflow-y: auto; min-height: 0; }
 .msg-inner { max-width: 820px; margin: 0 auto; padding: 22px 24px 8px; display: flex; flex-direction: column; gap: 18px; }
@@ -477,7 +553,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 
 /* 主区里的「技能 / 插件 / MCP」页(和设置里是同一批页面) */
 .tool-page { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
-.expand-btn ~ .tool-page { padding-top: 40px; }
 
 /* 通道页:平台选择条 */
 .chan-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }

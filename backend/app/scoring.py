@@ -189,7 +189,23 @@ def _prob(value: Any) -> float | None:
 
 
 # ------------------------------------------------------------------ judge selection
-def pick_judge(store: Any, router: Any, group: dict) -> str:
+def member_models(store: Any, router: Any, group: dict) -> set[str]:
+    """Member IDs are agent IDs; resolve their configured/default model separately."""
+    models: set[str] = set()
+    for aid in group.get("member_ids") or []:
+        member = store.get_agent(aid)
+        if not member:
+            continue
+        if member.get("model_id"):
+            models.add(member["model_id"])
+        else:
+            selected = router.resolve(tags=member.get("tags") or [])
+            if selected:
+                models.add(selected["id"])
+    return models
+
+
+def pick_judge(store: Any, router: Any, group: dict, used_models: set[str] | None = None) -> str:
     """Which model grades the round.
 
     Deliberately never one of the group's own members: a model that just answered is the worst
@@ -197,7 +213,7 @@ def pick_judge(store: Any, router: Any, group: dict) -> str:
     one that needs the strongest model, and keeping it on-device means the contents of a round do not
     leave the machine merely to be scored.
     """
-    members = set(group.get("member_ids") or [])
+    members = member_models(store, router, group) | (used_models or set())
     try:
         models = router.usable_models()
     except Exception:  # noqa: BLE001
@@ -262,10 +278,11 @@ async def score_round(
     threshold = max(0.0, min(1.0, float(cfg["score_threshold"]) / 100.0))
     excerpt = max(100, int(cfg["score_excerpt_chars"]))
     by_owner = {s.get("agent"): s for s in steps}
+    by_task = {s["task_id"]: s for s in steps if s.get("task_id") and s.get("plan_id") == plan.message_id}
 
     scores: list[TaskScore] = []
     for t in plan.tasks:
-        m = mechanical(t, outputs.get(t.id) or "", by_owner.get(t.owner))
+        m = mechanical(t, outputs.get(t.id) or "", by_task.get(t.id, by_owner.get(t.owner)))
         scores.append(TaskScore(task_id=t.id, owner=t.owner, title=t.title,
                                 verdict=verdict_of(m, None, threshold), mechanical=m))
 
@@ -279,7 +296,12 @@ async def score_round(
         card["skipped"] = "no tasks"
         return _finish(card)
 
-    judge = str(cfg["score_judge_model"] or "").strip() or pick_judge(store, router, group)
+    used_models = {s["model"] for s in steps if s.get("model")}
+    judge = str(cfg["score_judge_model"] or "").strip() or pick_judge(store, router, group, used_models)
+    if judge and judge in member_models(store, router, group) | used_models:
+        card["judge_error"] = i18n.pick_now("The selected judge participated in this round; only mechanical checks were used.",
+                                           "所选评分模型参与了本轮任务,仅保留机械检查结果。")
+        return _finish(card)
     if not judge:
         card["judge_error"] = i18n.pick_now(
             "no model is available to grade this round (every usable model is a member of it)",
@@ -302,7 +324,8 @@ async def score_round(
             s.delivered, s.usable, s.reason = judged["delivered"], judged["usable"], judged["reason"]
         s.verdict = verdict_of(s.mechanical, judged, threshold)
 
-    card["lessons"] = _write_lessons(store, group, scores)
+    if cfg["memory_enabled"] and (group.get("ext") or {}).get("memory", True):
+        card["lessons"] = _write_lessons(store, group, scores)
     return _finish(card)
 
 

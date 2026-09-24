@@ -393,6 +393,23 @@ DEFAULT_SETTINGS: dict = {
     # downloaded behind the user's back. Empty means "use whichever of the known transcribers is
     # installed"; a command here wins, with {audio} and {out} as placeholders.
     "transcribe_cmd": "",
+    # ---- asking an AI outside this group (see advisor.py). The two commands this app knows about
+    # (Claude Code, codex) are a starting point, not the whole list, so the field accepts the user's
+    # own command: `{dir}` becomes the group's workspace and the question goes in on stdin unless the
+    # command mentions `{prompt}`. A call really does take minutes — 39 seconds was measured for a
+    # one-line question, and a real review runs into several — so the ceiling is generous.
+    "advisor_cmd": "",
+    "advisor_timeout": 900,
+    # ---- the process engineer: a member that watches every group without appearing in any of them.
+    # `process_autojoin` keeps it in every group (created hidden, never a turn, never an @-candidate);
+    # `process_autolog` has the app record the defects it can decide *by measurement* — a task marked
+    # done whose file is not on disk, a task whose every tool call failed, a plan nobody could use —
+    # which costs nothing; `process_review` additionally asks a model outside the group for the cause
+    # and the fix of the entries that are new. That last one is the only part with a price: one short
+    # call per round that produced a defect, and nothing at all in a round that went well.
+    "process_autojoin": True,
+    "process_autolog": True,
+    "process_review": True,
     "refs_budget": 24000,      # characters of referenced content per round
     # ---- video generation, off by default. Two shapes reach it: self-hosted MiniMax H3, and
     # MetaChat's open media API (Grok Video / Midjourney Video, no GPU). Neither is a chat model:
@@ -518,7 +535,8 @@ SEED_AGENTS: list[dict] = [
         "prompt_zh": (
             "你擅长视频脚本与分镜设计。输出时用表格列出:镜号、画面、台词/旁白、时长、镜头运动、配乐/音效。"
         ),
-        "skills": ["Short video storyboards"],
+        "skills": ["Short video storyboards", "Check the result before you sign it off",
+                               "Work from a reference instead of from memory"],
     },
     {
         "name": "Proofreader",
@@ -624,6 +642,48 @@ ROLE_PRESETS: list[dict] = [
         "prompt_zh": "你负责把事排开:拆出可交付的里程碑,标出每个里程碑的负责人、依赖和输入;"
                       "指出关键路径与最容易延期的地方,并给出一个这周就能启动的最小动作。",
     },
+    {
+        "key": "process", "name": "Process engineer", "name_zh": "流程工程师", "avatar": "🧭",
+        "role": "Workflow supervision", "role_zh": "流程监督", "tags": ["reasoning", "long-context", "tool-use"],
+        # ⚠️ `system`: this one is **not offered in the member picker**. The app keeps it in every
+        # group by itself, hidden — it never takes a turn and is never addressed, so offering "add it
+        # to this group" would promise something that cannot happen. What it produces is the ledger in
+        # the group's workspace. (Its `prompt` is not decoration: it is the system prompt of the
+        # review pass that writes the causes and fixes — see `orchestrator._process_review`.)
+        "system": True,
+        # The one role whose subject is the group itself. Its instruments are named in the prompt
+        # because they are what makes the difference between an audit and an opinion: `process_log`
+        # measures the run and keeps the ledger, `ask_advisor` reaches a model outside the group.
+        "skills": ["Workflow audit"],
+        "prompt": (
+            "You look after the way this group works, not the content of what it produces. "
+            "Your instrument is `process_log`: `scan` first — it measures the run (who spoke, which "
+            "calls failed and why, which tasks never finished, which promised files are missing) — "
+            "then `report` one entry per defect with a measured line as its evidence, and `update` "
+            "when something changes. Three rules you do not bend: no entry without evidence; "
+            "`open` never becomes `verified` without running the same situation again; and you audit "
+            "the flow, so you never rewrite somebody else's draft to \"fix\" the process.\n"
+            "When the defect is in the flow itself and reasoning inside the group has already failed "
+            "once, put a narrow question to an outside model with `ask_advisor`, handing it the scan "
+            "output. What comes back is a hypothesis, not a verdict: check each claim, then record "
+            "what survived as an entry that names the outside model as its source.\n"
+            "Report in this order: what is broken (with the measurement), what it costs, what you "
+            "changed, and what is still unverified. Say plainly which stages you looked at and found "
+            "clean."
+        ),
+        "prompt_zh": (
+            "你盯着的是**这个群怎么干活**,不是产出的内容好不好。你的工具是 `process_log`:先 `scan` —— "
+            "它会把这轮量出来(谁发过言、哪些调用失败了以及为什么、哪些任务没做完、计划里承诺的文件哪些不在)"
+            "—— 再用 `report` 把每个毛病记成一条,`evidence` 写量到的那一行;改动之后用 `update` 推进状态。"
+            "三条不让步的规矩:没有依据的条目不写;没把同样的场景再跑一遍就不许把 `open` 标成 `verified`;"
+            "你审的是流程,所以绝不靠改写别人的稿子来「修流程」。\n"
+            "当毛病就出在流程本身、而群里已经自己推过一遍没推通时,用 `ask_advisor` 把 scan 的输出交给外部模型,"
+            "问一个窄问题。回来的东西是**假设**不是判决:逐条核对,再把活下来的结论记成条目,"
+            "并注明来源是外部模型。\n"
+            "汇报顺序:哪里坏了(附量到的依据)、代价是什么、你改了什么、还有什么没复核。"
+            "你看过且没问题的环节要明确说 —— 「无发现」和「没看过」不能长得一样。"
+        ),
+    },
 ]
 # ---------------------------------------------------------------- domain experts
 # Same shape as the roles above, one extra `kind` field so the picker can show a separate section.
@@ -719,6 +779,16 @@ EXPERT_PRESETS: list[dict] = [
 # Experts are ordinary members too — same shape, plus the `kind` field the picker groups by.
 AGENT_PRESETS: list[dict] = [{**p, "kind": "role"} for p in ROLE_PRESETS] + EXPERT_PRESETS
 AGENT_PRESET_BY_KEY = {a["key"]: a for a in AGENT_PRESETS}
+
+# Presets the app places itself instead of offering them to be added. Today that is the process
+# engineer: it is already in every group (hidden), so a picker row for it would be a promise the app
+# cannot keep — either it is already there, or it would arrive invisible and silent.
+SYSTEM_PRESET_KEYS = frozenset(p["key"] for p in AGENT_PRESETS if p.get("system"))
+
+
+def offered_presets() -> list[dict]:
+    """The presets a person may pull into a group from the picker."""
+    return [p for p in AGENT_PRESETS if p["key"] not in SYSTEM_PRESET_KEYS]
 
 
 # ---------------------------------------------------------------- built-in member aliases
@@ -962,7 +1032,8 @@ TEMPLATES: list[dict] = [
         "desc": "Topic -> script -> storyboard -> review.",
         "desc_zh": "选题 → 脚本 → 分镜 → 审校。",
         "members": ["Aide", "Copywriter", "Storyboard", "Proofreader"], "host": "Aide",
-        "skills": ["Short video storyboards"], "prompt": "", "prompt_zh": "",
+        "skills": ["Short video storyboards", "Check the result before you sign it off",
+                               "Work from a reference instead of from memory"], "prompt": "", "prompt_zh": "",
     },
     {
         "id": "writing", "name": "Creative writing", "name_zh": "创作写作", "scene": "writing",

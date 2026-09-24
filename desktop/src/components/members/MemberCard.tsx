@@ -105,7 +105,7 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
           {err && <div className="err mc-err" role="alert">{err}</div>}
           <div className="mc-acts">
             {ext && agent && <button className="btn small" disabled={busy} onClick={() => setExtOpen(true)}><Settings2 size={12} /> {t("Settings")}</button>}
-            {!m.is_host && !ext && <button className="btn small" disabled={busy} onClick={() => void run(() => api.patchGroup(group.id, { host_agent_id: m.agent_id }))}><Crown size={12} /> {t("Make host")}</button>}
+            {!m.is_host && !ext && m.origin !== "media" && <button className="btn small" disabled={busy} onClick={() => void run(() => api.patchGroup(group.id, { host_agent_id: m.agent_id }))}><Crown size={12} /> {t("Make host")}</button>}
             <button className="btn small" disabled={busy} onClick={() => void remove()}><UserMinus size={12} /> {t("Remove from group")}</button>
           </div>
         </div>

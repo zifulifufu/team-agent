@@ -1,12 +1,13 @@
 import { useEffect, type ComponentType } from "react";
-import { ArrowLeft, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Cpu, Database, Download, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Compass, Cpu, Database, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Package, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import ProvidersPage from "./ProvidersPage";
 import RoutingPage from "./RoutingPage";
 import LocalPage from "./LocalPage";
 import GalleryPage from "./GalleryPage";
-import UpdatesPage from "./UpdatesPage";
+import DiscoverPage from "./DiscoverPage";
+import VersionPage from "./VersionPage";
 import GeneralPage from "./GeneralPage";
 import PermissionsPage from "./PermissionsPage";
 import DataPage from "./DataPage";
@@ -20,7 +21,7 @@ import PromptsPage from "../pages/PromptsPage";
 export type SettingsTab =
   | "providers" | "routing" | "local"
   | "skills" | "plugins" | "mcp" | "hooks" | "external" | "channels" | "gallery" | "prompts" | "library" | "memory"
-  | "general" | "permissions" | "updates" | "appearance" | "data" | "stats" | "deps" | "about";
+  | "general" | "permissions" | "discover" | "version" | "appearance" | "data" | "stats" | "deps" | "about";
 
 /** Each settings page may take an `onTab` so it can jump to another settings tab. */
 export interface PageProps {
@@ -65,7 +66,11 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
     items: [
       { id: "general", label: "General", icon: SlidersHorizontal, page: GeneralPage },
       { id: "permissions", label: "Permissions & control", icon: ShieldCheck, page: PermissionsPage },
-      { id: "updates", label: "Updates", icon: Download, page: UpdatesPage },
+      // Discover (skills, plugins, catalogs, models) and Software update (the app itself) used to be
+      // one page: the first is a list of things you may act on, the second is a download you do by
+      // hand, and mixing them made the one that needs a person look like the ones that do not.
+      { id: "discover", label: "Discover", icon: Compass, page: DiscoverPage },
+      { id: "version", label: "Software update", icon: Package, page: VersionPage },
       { id: "data", label: "Data", icon: Database, page: DataPage },
       { id: "stats", label: "Usage stats", icon: BarChart3, page: StatsPage },
       { id: "deps", label: "Dependencies", icon: Cpu, page: DepsPage },
@@ -84,8 +89,14 @@ export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { ta
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  const { updateCount } = useData();
+  const { updateCount, appUpdateCount } = useData();
   const { t } = useI18n();
+  // Each page carries its own count: the two sets are shown in different places, and a badge on the
+  // wrong entry sends the reader to a page where the reminder is not.
+  const badge = (id: SettingsTab) =>
+    id === "version" && appUpdateCount > 0 ? appUpdateCount
+      : id === "discover" && updateCount - appUpdateCount > 0 ? updateCount - appUpdateCount
+        : 0;
   // A tab that is not in the nav means it belongs to the main area (see App.goTab). Falling back
   // to the first item keeps this from rendering a page with no highlighted nav entry.
   const items = GROUPS.flatMap((g) => g.items);
@@ -105,7 +116,7 @@ export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { ta
               {g.items.map((i) => (
                 <button key={i.id} className={"nav-item" + (active.id === i.id ? " on" : "")} onClick={() => onTab(i.id)}>
                   <i.icon size={16} /> {t(i.label)}
-                  {i.id === "updates" && updateCount > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{updateCount}</span>}
+                  {badge(i.id) > 0 && <span className="count-badge" style={{ marginLeft: "auto" }}>{badge(i.id)}</span>}
                 </button>
               ))}
             </div>

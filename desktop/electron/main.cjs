@@ -4,6 +4,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { isAppUrl } = require("./navigation.cjs");
 
 const PORT = process.env.TEAM_AGENT_PORT || "8765";
 const DEV = !!process.env.TEAM_AGENT_DEV;
@@ -83,9 +84,9 @@ async function createWindow() {
   // The window must stay on its own pages. A Markdown link in a message, or one in a GitHub note,
   // navigates the whole window by default when it has no target — and the page it lands on would
   // get the backend token. Everything else is blocked here and handed to the system browser.
-  const isAppUrl = (url) => (DEV ? url.startsWith(DEV_URL) : url.startsWith("file://"));
   const guard = (e, url) => {
-    if (isAppUrl(url)) return;
+    if (isAppUrl(url, { dev: DEV, devUrl: DEV_URL,
+                        indexPath: path.join(__dirname, "..", "dist", "index.html") })) return;
     e.preventDefault();
     openExternal(url);
   };

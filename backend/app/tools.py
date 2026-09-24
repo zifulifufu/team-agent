@@ -58,6 +58,206 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "2. 前 3 秒必须有钩子;\n3. 分镜表列:镜号 | 画面 | 旁白/台词 | 时长 | 镜头 | 音效;\n"
                    "4. 总时长控制在用户要求内,并在末尾给出总时长核算。",
     },
+    "imitate-reference": {
+        "name": "Work from a reference instead of from memory", "name_zh": "照着参考片做",
+        "description": "Group prompt: how to learn a reference video's format first, then build a new "
+                       "film against it, and what may not be copied",
+        "description_zh": "群聊提示词:先把参考视频的版式研究清楚,再照着做一支新片,以及什么东西不能照抄",
+        "scope": "group",
+        "body": "When the user points at a video and says \"do something like this\":\n"
+                "1. STUDY IT FIRST, with `study_video` — a link or a file in this workspace. Do not "
+                "describe the style from memory or from the user's one-sentence summary; the tool "
+                "measures the file (length, frame size, frame rate, every cut and its timing, how loud "
+                "the audio is, what the speech says) and looks at frames across it. Its answer names a "
+                "`参考风格-….md` brief in this workspace, and that brief is in this group's knowledge "
+                "base, so `library_search` can find it later.\n"
+                "2. THE BRIEF IS THE SPEC. The storyboard is written against it: same aspect, same "
+                "number of shots at the same sort of length, captions in the same place and size, sound "
+                "used the same way. If the brief gives a cut every 1.8 seconds, write shots of about "
+                "1.8 seconds — a shot list that ignores the reference's rhythm is not imitating it, it "
+                "is only claiming to.\n"
+                "3. WHAT IS REUSED IS THE FORM, NOT THE MATERIAL. Framing, pacing, layout, the way text "
+                "sits on the picture: those are how film language works and may be followed. The "
+                "reference's own footage, stills, music and the likeness of the people in it are not "
+                "ours to reuse — make each shot fresh (`make_figure` / `make_animation` / a generating "
+                "member / a clip the user owns), and say plainly which parts came from where.\n"
+                "4. THEN BUILD AND CHECK IT: assemble, look at it (`review_picture` on stills and on "
+                "frames of the clips), hear it (`review_audio`), and compare the finished film against "
+                "the brief's numbers — length, count of shots, aspect. Where it does not match, say so "
+                "rather than calling it done.\n"
+                "5. If `study_video` cannot read the reference (no `yt-dlp` for a link, nothing that can "
+                "look at a picture, the link needs a sign-in), report exactly that to the user and ask "
+                "for the file itself. Never proceed by guessing what the reference looked like.",
+        "body_zh": "当用户指着某个视频说「照这个做一个」时:\n"
+                   "1. **先用 `study_video` 把它研究清楚**(链接,或本工作目录里的文件)。不要凭印象、也不要凭"
+                   "用户那一句概括去描述它的风格:这个工具会量文件(时长、画面尺寸、帧率、每一次切点及其时刻、"
+                   "音量、说了什么),并看散布在全片的若干帧。它的回答会指向工作目录里的 `参考风格-….md`,"
+                   "这份规格同时进了本群知识库,以后 `library_search` 能搜到。\n"
+                   "2. **那份规格就是规范**。分镜照它写:同样的画幅、数量相当的镜头且长度同一量级、字幕在同样的"
+                   "位置与大小、声音的用法一致。如果规格说平均每 1.8 秒切一次,就写 1.8 秒左右的镜头 —— "
+                   "无视参考片节奏的分镜不是在模仿,只是自称在模仿。\n"
+                   "3. **沿用形式,不沿用素材**。构图、节奏、版式、文字压在图上的方式 —— 这是电影语言的用法,"
+                   "可以照做;参考片自己的画面、剧照、音乐、以及片中出现的人的形象**不是我们的** —— "
+                   "每个镜头都要另做(`make_figure` / `make_animation` / 生成成员 / 用户自己拥有的片段),"
+                   "并如实说明各部分从哪里来。\n"
+                   "4. **做完要核对**:装配之后看它(静帧与片段各取一帧交给 `review_picture`)、听它"
+                   "(`review_audio`),并把成片和规格里的数字对一遍 —— 时长、镜头数量、画幅。对不上的地方"
+                   "要说出来,不要宣布完成。\n"
+                   "5. 如果 `study_video` 读不了这个参考片(链接缺 `yt-dlp`、没有能看图的模型、链接需要登录),"
+                   "就**如实报告**并请用户把文件本身给过来。绝不靠猜「参考片大概是什么样」往下做。",
+    },
+    "verify-before-signoff": {
+        "name": "Check the result before you sign it off", "name_zh": "交付前核验规范",
+        "description": "Group prompt: what has to be looked at, heard and measured before a picture, a clip or a film is called done",
+        "description_zh": "群聊提示词:图、片段、成片在宣布「做好了」之前,必须被看、被听、被量到什么程度",
+        "scope": "group",
+        "body": "Before anything is called finished in this group:\n"
+                "1. Fix the spec first — frame size, total length, and the longest single clip this app "
+                "can make. If the film is longer than one clip, the storyboard must state the number of "
+                "segments and each one's length. A target nobody wrote down is a target nobody can hit.\n"
+                "2. Every picture is LOOKED AT before it is signed off: call `review_picture` on the "
+                "still, and on a frame of any clip by naming the second, then quote what came back. A "
+                "member that cannot see says so — it never approves a picture it has not seen.\n"
+                "3. Every recording is LISTENED TO before narration or a cloned voice goes into the "
+                "film: call `review_audio`, quote the transcript, and check it against the script. If "
+                "this machine has no transcriber, say that plainly and hand the user the install "
+                "command — never guess what a recording says.\n"
+                "4. A clip that came back in a different shape or length than was asked for does NOT go "
+                "into the film. Regenerate it, or re-agree the target size first.\n"
+                "5. The verdict says what was checked, with what, and by whom — and what could NOT be "
+                "checked. \"Looks fine\" on its own is not a verdict.",
+        "body_zh": "在本群,任何东西在被称为「做好了」之前:\n"
+                   "1. 先把规格定死 —— 画幅、总时长、以及本程序单条片段最长能做多少秒。"
+                   "若成片比一条片段长,分镜必须写明拆几段、每段多少秒。没写下来的目标,没人能达标。\n"
+                   "2. 每一张图在签字前都要**被看过**:对静帧调 `review_picture`,对片段则指定第几秒取那一帧,"
+                   "并把报回来的内容照录。看不见的成员要明说 —— 绝不为一张自己没看过的图签字。\n"
+                   "3. 每一段录音在进成片前都要**被听过**:调 `review_audio`,把转写原文照录,并与脚本核对。"
+                   "若这台机器没有转写器,就如实说明并把安装命令转交用户 —— 不要猜录音里说了什么。\n"
+                   "4. 回来的片段若与要求的画幅或时长不一致,**不许进成片**。重新生成,或先把目标规格重新定下来。\n"
+                   "5. 结论要写明:核了什么、用什么核的、谁核的,以及**什么还没法核**。只写「看着没问题」不算结论。",
+    },
+    "deliver-a-file": {
+        "name": "Deliver a file, not a monologue", "name_zh": "交付必须落盘",
+        "description": "Group prompt: what \"done\" means for a task whose result is a document, a deck, a worksheet or a paper — a file in the workspace, checked, and named in the final answer",
+        "description_zh": "群聊提示词:「交付一份文档/课件/表格/论文」这类任务,什么才算做完 —— 落盘的文件、核过、并在最终答复里点名",
+        "scope": "group",
+        "body": "A deliverable is a FILE, not a description of one. In this group:\n"
+                "1. The host writes `deliverable` as a real file name in the workspace — "
+                "\"交付/科普脚本.docx\" — not \"a script\". A task whose deliverable names a file is "
+                "checked against the workspace, and one whose file is missing is reported as not done.\n"
+                "2. The member who owns it writes that file itself with the tool that produces it: "
+                "`write_document` for .docx/.pptx/.xlsx/.md, `make_figure`/`generate_image` for a "
+                "picture, `assemble_video` for a film. Words in the chat are never the deliverable.\n"
+                "3. `write_document` takes the draft as it was written — headings, bullets, numbered "
+                "steps, tables — and the same text works in every format. Hand in the 正文 in full: a "
+                "summary of what you would have written is not a draft.\n"
+                "4. Revising means writing the SAME file name again (that replaces it). Never deliver "
+                "\"定稿.docx\" beside \"定稿-v2.docx\": the user cannot tell which one to open.\n"
+                "5. Someone reads it back before it is signed off — a member that can open it checks "
+                "the file's own numbers against the request (slide count, length, sections), and the "
+                "final answer lists the files by path. A file nobody checked is a draft.\n"
+                "6. What cannot go in the file says so out loud: a poster's印刷稿, a layout the "
+                "provider has to render, anything needing a program this machine does not have — "
+                "name it as a limitation instead of quietly delivering less.",
+        "body_zh": "交付物是**文件**,不是对文件的描述。在本群:\n"
+                   "1. 群主把 `deliverable` 写成工作目录里的**真实文件名** —— 例如「交付/科普脚本.docx」,"
+                   "而不是「一份脚本」。凡写了文件名,程序会去工作目录核对;文件不在,任务就报未完成。\n"
+                   "2. 负责的成员**自己用产它的工具把文件写出来**:`write_document` 写 .docx/.pptx/.xlsx/.md,"
+                   "`make_figure`/`generate_image` 出图,`assemble_video` 出片。在群里写了多少字都不算交付。\n"
+                   "3. `write_document` 收的是**你写好的正文**(标题、条目、编号、表格都认),同一份正文四种格式通用。"
+                   "请把正文**交齐**:「我本来打算写什么」的摘要不是稿子。\n"
+                   "4. 改稿就是**再用同一个文件名写一遍**(会覆盖)。不要交「定稿.docx」又留着「定稿-v2.docx」—— "
+                   "用户不知道该打开哪个。\n"
+                   "5. 签字前要有人**读回来核对**:能打开文件的成员把页数/段数/篇幅与要求对一遍,"
+                   "最终答复里按路径把文件列出来。没人核过的文件只是草稿。\n"
+                   "6. 做不到的部分要**说出来**:海报的印刷稿、必须由服务商渲染的版式、需要本机没有的程序的事 —— "
+                   "点明它是限制,不要悄悄少交。",
+    },
+    "process-audit": {
+        "name": "Workflow audit", "name_zh": "流程巡检",
+        "description": "How to supervise the way a group works: measure the run first, name the defect "
+                       "classes worth looking for, log one entry each, and never call a fix verified "
+                       "without re-running",
+        "description_zh": "监督一个群「怎么干活」的方法:先量这一轮,列出值得找的毛病类别,逐条记账,"
+                          "没重跑过就不算复核",
+        "scope": "member",
+        "body": "You supervise the way this group works, not the content it produces.\n"
+                "0. THE LEDGER FILLS ITSELF. After every round the app writes down the defects it can "
+                "measure by itself, marked `by: auto`, and a defect seen again is counted (`seen`) "
+                "instead of being repeated. Do not report what is already there — `update` the entry "
+                "that is open under that key, or leave it alone. The part a program cannot write is "
+                "the prose: the cause, the fix, and the verification.\n"
+                "1. MEASURE FIRST. Run `process_log` with `action=scan` before judging anything: it "
+                "counts who spoke and who never did, which tool calls failed and with what, which "
+                "tasks never finished, which files the plan promised and are NOT on disk, what is in "
+                "the workspace, and which system notes repeated. An audit written from memory of the "
+                "chat is an opinion; every finding has to quote a line of that scan.\n"
+                "2. THE DEFECT CLASSES WORTH LOOKING FOR, in this order, each with the way to check "
+                "it:\n"
+                "   - *nobody was assigned*: a task board with no owner on a task, or no task board at "
+                "all when the request needed several steps;\n"
+                "   - *a promised file does not exist*: `deliverable` names a file and the workspace "
+                "has none (`scan` lists exactly these);\n"
+                "   - *a failing call retried unchanged*: the same tool, the same argument, the same "
+                "failure — the member is looping;\n"
+                "   - *a hand-off that lost content*: the next member contradicts or ignores the "
+                "upstream result, which usually means it arrived clipped, empty or as a task that "
+                "never ran;\n"
+                "   - *a member that never spoke* while others repeated its job;\n"
+                "   - *the round ran out* with work unfinished and no closing statement about what is "
+                "missing;\n"
+                "   - *the same fix failing twice*: that is a defect in how the work is arranged, not "
+                "in the model that runs it.\n"
+                "3. ONE ENTRY PER DEFECT (`action=report`): the measured line as `evidence`, the "
+                "`stage` it belongs to, and one sentence on the fix. Never write an entry about the "
+                "content of somebody's document — that is the reviewer's job. An entry without "
+                "evidence is not written down at all, because a week later it cannot be checked.\n"
+                "4. A FIX IS NOT DONE WHEN IT IS WRITTEN. `open` -> `fixed` when something changed; "
+                "only running the same situation again can make it `verified`, and what that run "
+                "showed goes in `verify`. Say it still fails when it still fails.\n"
+                "5. ASK OUTSIDE WHEN THE INSIDE HAS ALREADY FAILED ONCE. `ask_advisor` puts a narrow "
+                "question to the codex/Claude Code command line installed on this machine, read-only, "
+                "in this group's workspace. Hand it the scan output and ask about the mechanism, not "
+                "the content. Its answer is a hypothesis from a model that cannot see this chat: "
+                "check each claim against the record or the code before acting, and write up what "
+                "survived as an entry that names the outside model as its source. The user approves "
+                "each of those calls, so ask once and ask well.\n"
+                "6. REPORT TO THE USER IN THIS ORDER: what is broken (with the measurement), what it "
+                "costs, what you changed, what is still unverified. State plainly which stages you "
+                "looked at and found clean — \"no finding\" and \"not looked at\" must never look "
+                "alike.\n"
+                "The ledger is a file in this group's workspace (`process-log.md`) and is in the "
+                "group's library, so anyone can open it and the next round can read what has already "
+                "been ruled out.",
+        "body_zh": "你监督的是这个群**怎么干活**,不是内容好坏。\n"
+                   "0. **账本会自己填**。每一轮结束后,程序会把它量得出来的毛病写进去,标着 `by: auto`;同一个毛病再出现是**计数**(`seen`),不是多写一条。别重复报已有的东西 —— 要么 `update` 那条还开着的,要么不动它。程序写不了的正是文字部分:根因、修法、复核。\n"
+                   "1. **先量再判断**。任何结论之前先跑 `process_log` 的 `action=scan`:它会数出谁发过言、谁一次没发,"
+                   "哪些工具调用失败了、失败原因是什么,哪些任务没做完,计划里承诺过哪些文件而**工作目录里并没有**,"
+                   "工作目录里实际有什么,哪条系统提示重复出现。凭对聊天的记忆写的审核是意见;每条发现都必须引用 "
+                   "scan 里的某一行为据。\n"
+                   "2. **值得找的毛病类别**(按这个顺序,每条都写了怎么核):\n"
+                   "   - *没有人被指派*:任务板里有任务没有负责人,或者本来需要多步的请求根本没有任务板;\n"
+                   "   - *承诺的文件不存在*:`deliverable` 写了文件名,工作目录里却没有(scan 会直接列出来);\n"
+                   "   - *失败后原样重试*:同一个工具、同样的参数、同样的失败 —— 成员在空转;\n"
+                   "   - *交接丢了内容*:下游成员和上游成果对不上或干脆无视,通常说明上游成果到手时已被截断、为空,"
+                   "或者那个任务压根没跑;\n"
+                   "   - *有成员一次没发言*,而它的活被别人重复做了;\n"
+                   "   - *轮数用完*了活还没干完,而且没人说明缺什么;\n"
+                   "   - *同一个修法失败两次*:这是「活是怎么安排的」有毛病,不是跑它的模型有毛病。\n"
+                   "3. **一个毛病记一条**(`action=report`):`evidence` 写量到的那一行,标出所属 `stage`,"
+                   "再给一句话的修法。**不要**为别人文档的内容写条目 —— 那是评审的活。没有依据的条目不要写,"
+                   "因为一周之后它无法被核对。\n"
+                   "4. **改完不等于结束**。改了东西才从 `open` 到 `fixed`;只有把同样的场景**再跑一遍**才能标 "
+                   "`verified`,`verify` 里写那一遍看到了什么。还是失败就写还是失败。\n"
+                   "5. **内部已经失败过一次时,去问外面**。`ask_advisor` 会把一个窄问题交给本机装的 "
+                   "codex / Claude Code 命令行,只读、在本群工作目录里跑。把 scan 的输出交给它,问机制而不是内容。"
+                   "它的回答是一个看不到这段对话的模型提出的**假设**:每条都要对着记录或代码核过再动手,"
+                   "然后把活下来的结论记成条目,并注明来源是外部模型。这类调用每次都要用户批准,所以要一次问透。\n"
+                   "6. **向用户汇报的顺序**:哪里坏了(附量到的依据)、代价是什么、改了什么、还有什么没复核。"
+                   "你看过且没问题的环节要明确说出来 —— 「无发现」和「没看过」绝不能长得一样。\n"
+                   "账本是本群工作目录里的 `process-log.md`(中文界面下是 `流程日志.md`),并已进本群知识库,"
+                   "所以谁都能打开,下一轮也能看到哪些已经被排除。",
+    },
     "brainstorming": {
         "name": "Brainstorming rules", "name_zh": "头脑风暴规则",
         "description": "Group prompt: diverge first, converge second",
@@ -855,13 +1055,17 @@ SKILL_CATEGORY_ORDER: tuple[str, ...] = (
 # The built-in skills, filed by hand. Their descriptions are written to be read by a model, so
 # guessing a section from one files about half of them somewhere surprising.
 BUILTIN_SKILL_CATEGORY: dict[str, str] = {
+    "process-audit": "meta",
     "office-writing": "writing",
+    "deliver-a-file": "writing",
     "report-structure": "writing",
     "relay-writing": "writing",
     "research-findings": "research",
     "data-analysis": "analysis",
     "code-review": "code",
     "short-video-storyboard": "video",
+    "verify-before-signoff": "video",
+    "imitate-reference": "video",
     "remotion-video": "video",
     "hyperframes-video": "video",
     "capcut-draft": "video",

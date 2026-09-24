@@ -553,3 +553,34 @@ def test_the_rendered_clip_is_served_from_its_own_group_only(client):
     assert client.get(f"/api/groups/{g}/video/.hidden.mp4").status_code == 400
     for bad in ("..%2f..%2fclip.mp4", "%2e%2e%2f%2e%2e%2fpasswd.mp4"):
         assert client.get(f"/api/groups/{g}/video/{bad}").status_code in (400, 404)
+
+
+# ------------------------------------------------------------------ what came back
+def test_a_clip_that_came_back_the_wrong_shape_is_flagged_not_reported_as_asked(store, make_router,
+                                                                               tmp_path):
+    """The check that was missing from the generation path itself.
+
+    The reply used to repeat the *request* back — "a 9:16 clip" — whether or not that is what came out,
+    and a provider is free to ignore a parameter: this group's own history has four clips that came back
+    16:9 after a 9:16 request, reported as if honoured, and nobody could tell until the film would not
+    fit. So the file is measured, and a mismatch is said before anything else in the answer.
+    """
+    import asyncio
+    from app import assemble, ffmpeg
+    if not assemble.available()[0]:
+        pytest.skip("measuring a clip needs ffmpeg and ffprobe")
+    orch, g = setup(store, make_router, FakeLLM(default="好"))
+    clip = tmp_path / "landscape.mp4"
+    code, detail = assemble._run([ffmpeg.path(), "-hide_banner", "-loglevel", "error", "-y",
+                                  "-f", "lavfi", "-i", "color=c=gray:size=320x180:rate=8",
+                                  "-t", "1.5", *ffmpeg.encoder(), "-pix_fmt", "yuv420p", str(clip)], 90)
+    assert code == 0, detail
+
+    wrong = orch.toolhub._measure_clip(clip, "9:16", 15)
+    assert wrong["ratio"] == "16:9"
+    assert "mismatch" in wrong and "9:16" in wrong["mismatch"]
+
+    # And when it is what was asked for, there is nothing to warn about — a check that cries wolf is
+    # one nobody reads.
+    right = orch.toolhub._measure_clip(clip, "16:9", 1.5)
+    assert "mismatch" not in right and right["ratio"] == "16:9"

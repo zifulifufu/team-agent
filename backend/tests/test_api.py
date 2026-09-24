@@ -246,7 +246,9 @@ def test_a_builtin_skill_seeded_twice_is_merged_on_startup(tmp_path):
     # a new built-in skill to this list.
     doubled = {k: e for k, e in tools.EXAMPLE_SKILLS.items()
                if e.get("name_zh") and k not in ("remotion-video", "hyperframes-video",
-                                                 "capcut-draft", "long-form-video")}
+                                                 "capcut-draft", "long-form-video",
+                                                 "verify-before-signoff", "imitate-reference",
+                                                 "deliver-a-file")}
     for e in doubled.values():
         folder = data / "skills" / tools.safe_skill_name(e["name_zh"])
         folder.mkdir(parents=True, exist_ok=True)

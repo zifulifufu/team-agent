@@ -187,7 +187,10 @@ def test_export_strips_keys_by_default(client, tmp_path):
             con.close()
 
     key, agents = dump("/api/data/export")
-    assert key == "" and agents == 4
+    # Four seeded members plus the process engineer, which is in every group and hidden from the
+    # member list but *is* part of the data: a backup that left it out would come back with a
+    # ledger whose entries name an author that no longer exists.
+    assert key == "" and agents == 5
     assert dump("/api/data/export?include_keys=true")[0] == "sk-very-secret-1234"
     # exporting must not disturb the keys in the live database
     assert client.get("/api/providers").json()[0]["has_key"] is True

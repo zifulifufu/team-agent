@@ -459,7 +459,9 @@ def test_external_disabled_or_offline_is_skipped_with_notice(store, make_router,
     orch, g, a = group_with_external(store, make_router, fake)
     col = Collector()
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
-    assert not col.ends() and any(e["type"] == "message_discard" for e in col.events)
+    # Skipped *before* it is given a turn, so there is no placeholder bubble to discard: the member
+    # never spoke and the reason is stated once, up front.
+    assert not col.ends() and not any(e["type"] == "message_discard" for e in col.events)
     sys_msgs = [e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system"]
     assert any("master switch" in t for t in sys_msgs)
     assert not fake_env.exists()                                  # the CLI was never launched

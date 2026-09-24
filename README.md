@@ -85,12 +85,15 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | --- | --- |
 | Group chat | Members, a host, `@`-hand-off, role statements, and a live task board; a group chat is created by **picking its workspace and then its members**, and both stay editable |
 | Generating members | A video or image model can join a group as a member of its own: **discuss the clip with everybody, then say "make that"** — a chat model reads the conversation into one prompt and hands it over, and the result comes back as a file. It does not chat, plan or hand off itself |
+| Reading a reference | `study_video`: a link or a local file, measured by ffmpeg (aspect, length, every cut and its timing, audio level), transcribed on this machine and looked at frame by frame; it leaves a `参考风格-….md` brief in the workspace and in the group's knowledge base. **The form is reused; the material is not** |
 | Making a film | A clip is seconds and a film is minutes, so the shots are **joined by a built-in tool every member has**: `assemble_video` records the narration with the machine's own voice, draws the subtitles in (this `ffmpeg` has no `drawtext`, so they are drawn with Pillow and overlaid), and writes a `.mp4` plus a `.srt` and an editable shot sheet. Local, free, and it says what it could not do |
+| Delivering the file | `write_document` turns a finished draft into the file the user opens — `.docx` (Word), `.pptx` (slides), `.xlsx` (a workbook) or `.md` — written into the group's workspace and indexed into its library in the same turn. One Markdown-ish body works in all four formats (`#`/`##` headings, `- ` bullets, `1. ` steps, `| a | b |` tables); in `.pptx` each `##` is a slide and in `.xlsx` each `##` is a sheet. It lays out text — it does not write or check it — and a task whose deliverable names a file is **checked against the workspace**, so "the report is written" and "there is a report.docx" stop being two different things |
 | Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
+| Watching the process | A built-in **process engineer** is kept in **every group and is invisible in all of them**: not in the member list, not `@`-mentionable, never a turn, never the host. After each round it records the defects a program can *measure* — a task marked done whose file is not on disk, a task whose every tool call failed, a plan nobody could use, the same call failing twice — into that group's `process-log.md`, counting a repeat (`seen ×N`) instead of writing it twice; one short call to a model that is **not a member** then adds the likely cause and a concrete fix, and never overwrites a cause written by hand. The watcher itself appears only in Settings → General, where its switches and everything it has recorded are shown. Visible members still have `process_log` (measure, record, move an entry `open → fixed → verified`, and only a re-run makes something verified) and `ask_advisor` (a narrow question to the codex / Claude Code on this machine, **read-only and inside the group's workspace**, each call approved by the user) |
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
-| Tools | Text-protocol calls (max 3 per reply), twelve built-ins, Python plugins, MCP over stdio / SSE / HTTP |
+| Tools | Text-protocol calls (max 3 per reply), eighteen built-ins, Python plugins, MCP over stdio / SSE / HTTP |
 | Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references; **the pictures a note came with**, reachable by document |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
@@ -247,8 +250,10 @@ Note that a transcriber is found **by name** along PATH plus `/opt/homebrew/bin`
 which land in `~/.local/bin`, are found as they are, while one installed inside this app's own
 virtualenv is not: write the full path under *Transcribe audio* for that.
 
-Referencing something with `@` in the composer offers members, files, folders and documents, and
-inserts a token the backend understands:
+Referencing something with `@` in the composer offers the group's members first, and once a
+character is typed it also offers files, folders and documents, inserting a token the backend
+understands. Members come on their own for an empty query on purpose: the picker is bounded in
+height, and listing every file and document alongside them buried the people the `@` is for.
 
 ```
 @file:reports/q3.xlsx     one file from the workspace, inlined (text clipped to the budget)
@@ -362,6 +367,38 @@ Two tools carry it:
   naming a part (`at_part: "sac"`) rather than by guessing a fraction — the drawing knows where its own
   parts are and hands those positions back, because a mark placed from a guess points somewhere else.
   A schematic also says on the frame that it is a drawing.
+
+### Read someone else's film before making your own (`study_video`)
+
+"Make one like this" is not an instruction that can be executed as written. So there is a tool for the step
+in between: **`study_video`**. Give it a link (YouTube, Bilibili, Douyin — anything `yt-dlp` knows) or a video
+file in the workspace, and it will
+
+1. **measure the file with ffmpeg** — length, frame size and aspect, frame rate, *every cut and when it
+   happens* (rhythm is counted, not described), and the audio's mean and peak level (which is what tells
+   narration from a music bed from near-silence);
+2. **listen** — the speech is transcribed on this machine, and if no transcriber is installed it says
+   "not heard" rather than inventing narration;
+3. **look** — frames are sampled across the film and described one by one by a model that can see: where the
+   text sits and how big, the palette, the framing, whether it is footage, a drawing, an animation or a
+   screen recording, and which frames share a look and which change;
+4. **write it up as a brief** at `参考风格-<title>.md` in the workspace, and into the group's knowledge base
+   under the same name — so **the whole group can search it**, instead of one member holding it in context.
+
+The brief has a fixed shape: format / shot list / on-screen text / sound / what makes it recognisable /
+**what must be made fresh**. That last section is not optional: **the form may be reused — aspect, pacing,
+caption placement, framing — and the reference's own footage, music and people may not.** The line travels
+with the brief, so the next member does not read it as "copy this".
+
+One built-in skill, "Work from a reference instead of from memory", fixes the order: study first → write the
+storyboard against the brief's numbers (a brief that says a cut every 1.8s means shots of about 1.8s) → make
+each shot fresh → assemble → look at frames, hear the audio, compare the finished film with the brief's
+numbers — and only then call it done.
+
+**What it cannot do** (each of these is reported rather than worked around): links that need a sign-in,
+a membership or a region; a machine without `yt-dlp` (it names the install command — local files still work);
+nothing that can look at a picture (the missing piece is named); and it reads the first ten minutes of a
+film, not all of it. It is not an editor either: what it produces is a written spec, not a copy.
 
 #### Every shot has to move — a film of stills is a slide show
 
@@ -923,6 +960,14 @@ from other projects.
 - The model catalog is a snapshot; strength tags are heuristic, not benchmarks.
 - Planning quality depends on the host model following the plan format; a malformed plan falls back to a
   plain relay.
+- Tasks execute serially in dependency order; parallel scheduling is not implemented. Unknown or self
+  dependencies, duplicate IDs and excess tasks are rejected. Failed prerequisites skip their dependants,
+  independent work continues, and the round is not marked finished. Restarted plans are marked stopped.
+- Each plan has a separate delivery directory, `tasks/<plan message ID>/<task directory>/`, so later
+  rounds do not overwrite earlier deliveries. Finished means execution completed, not that the
+  deliverable passed a quality review; important outputs still need verifiable acceptance checks.
+- A working directory and tool approvals are not an operating-system sandbox. Approved code, plugins
+  and MCP processes retain the current user's filesystem permissions.
 - PDF extraction has no OCR, so scanned documents cannot be read.
 - Re-importing a library folder detects changes by file size, so a same-size edit is missed.
 - With a single provider, strength-based model selection adds little — more models make it worthwhile.

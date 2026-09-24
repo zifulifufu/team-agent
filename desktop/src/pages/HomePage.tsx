@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FolderOpen, LayoutTemplate, LoaderCircle, Sparkles, Users } from "lucide-react";
+import { LayoutTemplate, LoaderCircle, Sparkles } from "lucide-react";
 import { api, type GroupTemplate } from "../api";
 import { useData } from "../data";
 import { HOME_DRAFT, draftText, setDraftText } from "../drafts";
@@ -7,6 +7,7 @@ import { useRoute } from "../hooks";
 import { useI18n } from "../i18n";
 import { SCENES } from "../lib";
 import Composer from "../components/Composer";
+import HomeSetup from "../components/HomeSetup";
 import type { SettingsTab } from "../settings/SettingsModal";
 import "../styles/chat.css";
 
@@ -86,15 +87,6 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     return members;
   }, [targetGroup, members, agents]);
 
-  const chooseFolder = async () => {
-    const dir = await window.teamAgent?.pickFolder?.();
-    if (dir) setWorkspace(dir);
-  };
-  // The folder chooser is a native dialog, so it only exists inside the desktop shell. Without it
-  // the button is not offered at all — the established rule in this app — rather than sitting
-  // there doing nothing when the page is opened in a browser.
-  const canPickFolder = !!window.teamAgent?.pickFolder;
-
   const start = async () => {
     const task = text.trim();
     if (!task || busy) return;
@@ -142,53 +134,6 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           ))}
         </div>
 
-        {creating && (
-          <div className="ng" aria-label={t("New group chat")}>
-            <div className="ng-row">
-              <span className="ng-label"><FolderOpen size={13} aria-hidden /> {t("Workspace")}</span>
-              <span className="ng-path" title={workspace || undefined}>
-                {workspace || t("Managed by the app, under its own data folder")}
-              </span>
-              {canPickFolder && (
-                <button className="btn small" onClick={() => void chooseFolder()}>{t("Choose folder")}</button>
-              )}
-              {workspace !== "" && (
-                <button className="btn small" onClick={() => setWorkspace("")} title={t("Go back to the folder the app manages")}>
-                  {t("Use the default")}
-                </button>
-              )}
-            </div>
-            <div className="ng-row">
-              <span className="ng-label"><Users size={13} aria-hidden /> {t("Members")}</span>
-              <div className="ng-members">
-                {pickable.map((a) => (
-                  <button
-                    key={a.id}
-                    className={"ng-mem" + (picked.includes(a.id) ? " on" : "")}
-                    aria-pressed={picked.includes(a.id)}
-                    onClick={() => toggle(a.id)}
-                  >
-                    <span className="ng-ava">{a.avatar}</span>{a.name}
-                  </button>
-                ))}
-                {pickable.length === 0 && (
-                  <span className="ng-hint">{t("No members yet — open the member column beside the sidebar and create one there.")}</span>
-                )}
-                {pickable.length > 0 && picked.length === 0 && (
-                  <>
-                    <span className="ng-hint">{t("Pick who is in this group chat. The first one becomes the host.")}</span>
-                    {suggested.length > 0 && (
-                      <button className="ng-suggest" onClick={() => setPicked(suggested.map((a) => a.id))}>
-                        {t("Use the {scene} lineup: {names}", { scene: pick(scene.label, scene.labelZh), names: suggested.map((a) => a.name).join(", ") })}
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
         <Composer
           value={text}
           onChange={setText}
@@ -203,14 +148,31 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           autoFocus
           error={err}
           extra={
-            <label className="target-select" title={t("Which group chat to send to")}>
-              <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("Send to")}>
-                <option value="new">{t("New group chat")}</option>
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>{t('Send to "{name}"', { name: g.name })}</option>
-                ))}
-              </select>
-            </label>
+            <>
+              <label className="target-select" title={t("Which group chat to send to")}>
+                <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label={t("Send to")}>
+                  <option value="new">{t("New group chat")}</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>{t('Send to "{name}"', { name: g.name })}</option>
+                  ))}
+                </select>
+              </label>
+              {/* Where it works and who is in it: the same row as the other send controls, instead of
+                  a card above the box that pushed the box down the window. Only while a *new* group is
+                  being made — sending to an existing group has no draft to configure. */}
+              {creating && (
+                <HomeSetup
+                  workspace={workspace}
+                  onWorkspace={setWorkspace}
+                  members={pickable}
+                  picked={picked}
+                  onToggle={toggle}
+                  onPicked={setPicked}
+                  suggested={suggested}
+                  sceneName={pick(scene.label, scene.labelZh)}
+                />
+              )}
+            </>
           }
         />
 

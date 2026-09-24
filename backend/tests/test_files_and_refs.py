@@ -665,9 +665,9 @@ def test_a_task_gets_its_own_folder_inside_the_group_workspace(store, make_route
     asyncio.run(orch.drain())
 
     workspace = coderun.workspace_dir(store.data_dir, store.get_settings(), group["id"])
-    made = sorted(p.name for p in (workspace / "tasks").iterdir())
-    assert len(made) == 2, made
     board = [m for m in store.list_messages(group["id"]) if m["sender_type"] == "plan"][0]
+    made = sorted(p.name for p in (workspace / "tasks" / board["id"]).iterdir())
+    assert len(made) == 2, made
     dirs = [t["dir"] for t in board["meta"]["tasks"]]
     assert all(d.startswith("tasks/") for d in dirs), dirs
 
@@ -716,3 +716,72 @@ def test_the_readers_of_the_new_file_kinds_are_declared_as_dependencies():
     declared = (pathlib.Path(__file__).resolve().parents[1] / "requirements.txt").read_text(encoding="utf-8")
     for package in ("openpyxl", "python-pptx", "pillow"):
         assert package in declared, f"{package} is used but not declared in requirements.txt"
+
+
+# ------------------------------------------------------------------ running the transcriber
+def test_the_transcriber_is_given_the_directories_it_needs(store, monkeypatch, tmp_path):
+    """A transcriber needs ffmpeg to decode the audio, and the app is commonly launched from Finder —
+    whose PATH has no /usr/local/bin. So an *installed* transcriber failed with
+    `FileNotFoundError: 'ffmpeg'` and read to everyone as "this machine cannot listen". `bindirs`
+    exists so that cannot happen; this was the consumer nobody had added to it.
+    """
+    seen: dict = {}
+
+    class Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        seen["env"] = kw.get("env")
+        (tmp_path / "out.txt").write_text("你好")          # what a working transcriber writes
+        return Done()
+
+    monkeypatch.setattr(attachments, "transcriber", lambda s=None: ("/x/mlx_whisper", ["{audio}"]))
+    monkeypatch.setattr(attachments.subprocess, "run", fake_run)
+    monkeypatch.setattr(attachments, "tempfile", type("T", (), {"mkdtemp": staticmethod(lambda **k: str(tmp_path))}))
+    text, why = attachments.transcribe_with_reason(tmp_path / "a.m4a", store.get_settings())
+
+    assert text == "你好" and why == ""
+    path = (seen["env"] or {}).get("PATH") or ""
+    from app.bindirs import TOOL_DIRS
+    # Whatever is on the app's own PATH is kept, and the tool directories are appended to it — the
+    # order matters, because a version the user put first deliberately must still win.
+    assert any(d in path.split(":") for d in TOOL_DIRS if pathlib.Path(d).is_dir())
+
+
+def test_a_transcriber_that_exits_zero_without_writing_is_not_heard_as_silence(store, monkeypatch,
+                                                                              tmp_path):
+    """The failure that actually happens here, and it exits **0**.
+
+    With the model fetch blocked, `mlx_whisper` logs `Skipping <file> due to ProxyError: 502 Bad
+    Gateway` and returns success. Trusting the exit code would report "this recording is empty" — the
+    one answer that is worse than an error, because a member would then write the narration out of its
+    own head. So the output is what is checked, and a mirror is tried once.
+    """
+    calls: list = []
+
+    class Done:
+        def __init__(self, code=0):
+            self.returncode = code
+            self.stdout = ""
+            self.stderr = "Skipping a.m4a due to ProxyError: 502 Bad Gateway"
+
+    def fake_run(cmd, **kw):
+        calls.append((kw.get("env") or {}).get("HF_ENDPOINT"))
+        return Done()                                    # exits 0 and writes nothing, both times
+
+    monkeypatch.setattr(attachments, "transcriber", lambda s=None: ("/x/mlx_whisper", ["{audio}"]))
+    monkeypatch.setattr(attachments.subprocess, "run", fake_run)
+    monkeypatch.setattr(attachments, "tempfile", type("T", (), {"mkdtemp": staticmethod(lambda **k: str(tmp_path))}))
+    text, why = attachments.transcribe_with_reason(tmp_path / "a.m4a", store.get_settings())
+
+    assert text is None and "wrote no text" in why
+    assert calls == [None, attachments.HF_MIRROR], "the mirror was not tried exactly once"
+
+    # A user who set HF_ENDPOINT themselves is left alone: their endpoint is what the child gets,
+    # and no mirror is tried behind their back.
+    calls.clear()
+    monkeypatch.setenv("HF_ENDPOINT", "https://my-own-mirror.example")
+    attachments.transcribe_with_reason(tmp_path / "a.m4a", store.get_settings())
+    assert calls == ["https://my-own-mirror.example"]

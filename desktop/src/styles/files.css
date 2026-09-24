@@ -82,26 +82,58 @@
 .quote-btn:hover { background: var(--hover); color: var(--text); }
 
 /* ---- the group workspace --------------------------------------------------------------------- */
-.ws-back {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.28);
-  display: flex;
+/* A chip in the row under the message box, opening a list upward out of the composer. It used to be
+   a modal over the middle of the window; this says which folder the members are writing into while
+   the conversation stays in front of you. */
+.wspick { display: flex; align-items: center; min-width: 0; }
+.wspick-btn {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  z-index: 40;
+  gap: 5px;
+  max-width: 220px;
+  min-width: 0;
+  /* Sized by its label, not by the bar. `width: 100%` was fine while this chip was the only one in
+     the row; with two of them (the home page) each asked for the whole row and flex duly split the
+     leftovers, which squeezed both labels down to an ellipsis — "程序管理" came out as "程…". */
+  width: auto;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--hover);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
-.ws-panel {
-  width: min(720px, 92vw);
-  max-height: 78vh;
-  overflow: auto;
+.wspick-btn:hover { background: var(--active); color: var(--text); }
+.wspick-btn.on { border-color: var(--primary); color: var(--text); }
+.wspick-btn > svg { flex: none; }
+.wspick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wspick-chev { color: var(--text-3); }
+/* Absolute inside `.composer` (the bar is not positioned), so `bottom: 100%` clears the whole box —
+   the same anchoring as the @ picker. Bounded: a list hanging off the bottom of the window has
+   nowhere to grow but off the top of the screen. The scrolling part is `.wspick-body`. */
+.wspick-pop {
+  position: absolute;
+  /* Right-aligned to the composer, not left: the composer sits centred in the main column, so its
+     left edge is already most of a screen in from the window's left — a 760px panel hung there runs
+     off the right edge and cuts its own right-hand chips in half. The composer's right edge, on the
+     other hand, is always inside the window with a margin. */
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  width: min(560px, 86vw);
+  max-height: min(60vh, 520px);
+  display: flex;
+  flex-direction: column;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: var(--shadow);
-  padding: 14px 16px 18px;
+  padding: 12px 14px 14px;
 }
-.ws-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.wspick-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.ws-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex: none; }
 .ws-path {
   flex: 1;
   overflow: hidden;

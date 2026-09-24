@@ -80,7 +80,7 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
   const done = tasks.filter((t) => t.status === "done").length;
   const total = tasks.length;
   const pct = total ? Math.round((done / total) * 100) : status === "done" ? 100 : 0;
-  const fin = finalStatus(status);
+  const fin = finalMessageId ? { status: "done" as const, label: t("Done") } : finalStatus(status);
   const conventions = (meta.conventions ?? "").trim();
 
   const rowProps = (mid: string | undefined) =>
@@ -178,7 +178,7 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
                 {task.deliverable && (
                   <div className="plan-deliv"><span>{t("Deliverable")}</span>{task.deliverable}</div>
                 )}
-                {task.status === "failed" && task.error && <div className="plan-err">{task.error}</div>}
+                {task.error && <div className="plan-err">{task.error}</div>}
                 {(() => {
                   // The grade for this task, when the round was graded. Both numbers are shown
                   // rather than one combined score: "delivered but unusable downstream" is the

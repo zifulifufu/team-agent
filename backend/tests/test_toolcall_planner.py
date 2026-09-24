@@ -105,11 +105,48 @@ def test_build_plan_rejects_unknown_owner_cycle_and_empty():
         planner.build_plan(_obj([{"owner": "Copywriter"}]), MEMBERS)
 
 
-def test_build_plan_caps_tasks_dedups_ids_and_drops_bad_needs():
+def test_an_owner_may_be_named_the_way_the_group_talks_about_them():
+    """The failure this fixes, in full: a group whose members are stored under English names but
+    addressed in Chinese had **twelve consecutive plans thrown away** because the owner was written
+    「文案」 and only the stored name was accepted — so the run silently fell back to round-robin and
+    the whole division of labour never happened. Every spelling the rest of the app understands has to
+    be understood here too."""
+    members = [{"id": "1", "name": "Aide", "role": "Coordinator"},
+               {"id": "2", "name": "Copywriter", "role": "Copywriter"},
+               {"id": "3", "name": "Storyboard", "role": "Video storyboard artist"}]
+    plan = planner.build_plan(_obj([
+        {"id": "t1", "owner": "文案", "instruction": "写脚本"},
+        {"id": "t2", "owner": "Storyboard", "instruction": "做分镜", "needs": ["t1"]},
+        {"id": "t3", "owner": "视频分镜", "instruction": "补分镜", "needs": ["t2"]},
+    ]), members)
+    # 「文案」 is Copywriter's `name_zh` in the built-in presets — the same alias the @mention resolver
+    # reads, which is why the two must not have separate rules.
+    assert [t.owner for t in plan.tasks] == ["Copywriter", "Storyboard", "Storyboard"]
+    assert planner._match_member("小助", members)["id"] == "1"        # a built-in member's other name
+    assert planner._match_member("copywriter", members)["id"] == "2"  # spelling, not case
+    assert planner._match_member("路人", members) is None
+
+
+def test_a_rejected_owner_is_told_who_the_owners_are():
+    """Being told "no" with nothing to correct towards is how a model repeats itself — which is
+    exactly what the twelve rejections looked like. The message names the ways to write an owner."""
+    with pytest.raises(planner.PlanError) as e:
+        planner.build_plan(_obj([{"owner": "张三", "instruction": "x"}]), MEMBERS)
+    text = str(e.value)
+    assert "Copywriter" in text and "Aide" in text
+
+
+def test_the_planning_prompt_lists_the_writeable_owner_spellings():
+    """Prevention rather than recovery: the model is shown the accepted spellings before it decides,
+    so the commonest mistake (writing the role instead of the name) never happens."""
+    text = planner.planning_instruction(8, "auto", "", planner.owner_list(MEMBERS))
+    assert "Copywriter" in text and "文案" in text
+
+
+def test_build_plan_rejects_excess_tasks_instead_of_silently_dropping_work():
     tasks = [{"id": "t1", "owner": "Copywriter", "instruction": str(i), "needs": ["t1", "ghost"]} for i in range(6)]
-    plan = planner.build_plan(_obj(tasks), MEMBERS, max_tasks=3)
-    assert len(plan.tasks) == 3 and len({t.id for t in plan.tasks}) == 3
-    assert all("ghost" not in t.needs and t.id not in t.needs for t in plan.tasks)
+    with pytest.raises(planner.PlanError, match="limit"):
+        planner.build_plan(_obj(tasks), MEMBERS, max_tasks=3)
 
 
 def test_task_prompt_carries_conventions_upstream_and_declaration():

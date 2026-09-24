@@ -268,3 +268,163 @@ def test_a_recording_is_not_a_still_and_the_answer_says_what_to_do_instead(store
     out = asyncio.run(orch.toolhub.call(ctx, "make_figure", {"doc": "Case", "figure": "1"}, None))
 
     assert not out.ok and "assemble_video" in out.text
+
+
+# ------------------------------------------------------------------ looking at the result
+def _png(path, colour=(200, 60, 60), size=(120, 90)):
+    from PIL import Image
+    Image.new("RGB", size, colour).save(path)
+    return path
+
+
+def test_a_member_that_cannot_see_can_have_the_picture_looked_at_for_it(store, make_router, tmp_path):
+    """The sense organ the workflow was missing.
+
+    A session ran for twenty turns on a film none of the members had looked at, while the writer, the
+    storyboard artist and the proofreader each said, correctly, "I cannot see the picture" — and every
+    quality complaint the user eventually raised was something none of them could have noticed. This
+    tool is how a member that cannot see gets the picture read to it, by the model that can.
+    """
+    import asyncio
+    import pathlib
+    st = store
+    st.add_model("ollama", "qwen3.5:9b")                 # the catalog lists this one as vision-capable
+    orch, g = setup(st, make_router, FakeLLM(script={"ollama": "画面里是一根红色的管子,中段偏亮。"},
+                                             default="好"))
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+    assert "review_picture" in ctx.tools
+
+    ws = pathlib.Path(st.workspace_dir(g["id"]))
+    _png(ws / "shot.png")
+    out = asyncio.run(orch.toolhub.call(
+        ctx, "review_picture", {"path": "shot.png", "question": "管子是圆的吗?"}, None))
+
+    assert out.ok, out.text
+    assert "红色的管子" in out.text          # what the model reported, not a summary of the question
+    assert "shot.png" in out.text
+
+
+def test_a_review_says_which_model_looked_and_not_to_take_it_as_truth(store, make_router, tmp_path):
+    """Two things a reader has to be told: who looked, and that a description is not a clinical
+    judgement. A member that treats "the model said it looks fine" as verification is back where it
+    started."""
+    import asyncio
+    import pathlib
+    st = store
+    st.add_model("ollama", "qwen3.5:9b")
+    orch, g = setup(st, make_router, FakeLLM(script={"ollama": "一根淡蓝色的直管。"}, default="好"))
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+    _png(pathlib.Path(st.workspace_dir(g["id"])) / "a.png")
+
+    out = asyncio.run(orch.toolhub.call(ctx, "review_picture", {"path": "a.png"}, None))
+
+    assert out.ok, out.text
+    assert "qwen3.5:9b" in out.text or "qwen3.5" in out.text
+    # The caveat travels with the answer, in whichever language the request is in.
+    assert "This is what the model reported" in out.text or "以上是那个模型报回来的" in out.text
+
+
+def test_a_review_that_cannot_happen_says_why_rather_than_pretending(store, make_router, tmp_path):
+    """No model can look: the answer has to name the reason and the way out — the same rule the
+    attachment path follows — instead of an empty description a member would read as "fine"."""
+    import asyncio
+    import pathlib
+    st = store
+    # A text-only machine: nothing here carries `multimodal`, and cloud vision is off, so the tool
+    # is not even offered (a member is never handed one that cannot work).
+    st.update_settings({"vision_cloud": False})
+    orch, g = setup(st, make_router, FakeLLM(default="好"))
+    for m in st.list_models():
+        st.update_model(m["id"], {"strengths": []})
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+
+    assert "review_picture" not in ctx.tools
+
+
+def test_a_review_cannot_be_pointed_outside_the_workspace(store, make_router, tmp_path):
+    """A path is data from a model. `/etc/passwd` is not a picture, and neither is anything that
+    climbs out of the group's own directory."""
+    import asyncio
+    st = store
+    st.add_model("ollama", "qwen3.5:9b")
+    orch, g = setup(st, make_router, FakeLLM(script={"ollama": "x"}, default="好"))
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+    assert "review_picture" in ctx.tools
+
+    for path in ("/etc/passwd", "../../../../etc/hosts"):
+        out = asyncio.run(orch.toolhub.call(ctx, "review_picture", {"path": path}, None))
+        assert not out.ok, path
+    out = asyncio.run(orch.toolhub.call(ctx, "review_picture", {"path": "nope.png"}, None))
+    assert not out.ok and "nope.png" in out.text
+
+
+# ------------------------------------------------------------------ hearing
+def test_a_machine_with_no_transcriber_says_so_and_hands_over_the_command(store, make_router,
+                                                                          tmp_path, monkeypatch):
+    """The other missing sense, and the more dangerous one.
+
+    A member cannot hear, so the only honest answers about a recording are a real transcript or a
+    refusal. A model asked to "check the voice sample" with neither will describe it anyway — so when
+    this machine has no transcriber, the answer has to name the gap *and* the one command that closes
+    it. That is also how the user finds out that a whole class of verification was never possible.
+    """
+    import asyncio
+    import pathlib
+    from app import attachments
+    st = store
+    orch, g = setup(st, make_router, FakeLLM(default="好"))
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+    assert "review_audio" in ctx.tools
+
+    ws = pathlib.Path(st.workspace_dir(g["id"]))
+    (ws / "voice.m4a").write_bytes(b"\x00" * 64)
+    monkeypatch.setattr(attachments, "transcriber", lambda settings=None: None)
+    monkeypatch.setattr(attachments, "suggested_transcriber_install", lambda: "uv tool install mlx-whisper")
+
+    out = asyncio.run(orch.toolhub.call(ctx, "review_audio", {"path": "voice.m4a"}, None))
+
+    assert not out.ok
+    assert "uv tool install mlx-whisper" in out.text
+    assert "voice.m4a" in out.text
+
+
+def test_a_recording_that_is_read_comes_back_as_what_it_says(store, make_router, tmp_path,
+                                                              monkeypatch):
+    """With a transcriber present the answer is the words, and the measurement travels with them —
+    a narration checked against a shot list needs both its length and its text."""
+    import asyncio
+    import pathlib
+    from app import attachments
+    st = store
+    orch, g = setup(st, make_router, FakeLLM(default="好"))
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+    ws = pathlib.Path(st.workspace_dir(g["id"]))
+    (ws / "take.wav").write_bytes(b"\x00" * 64)
+    monkeypatch.setattr(attachments, "transcriber", lambda settings=None: ("whisper", []))
+    monkeypatch.setattr(attachments, "transcribe_with_reason",
+                        lambda path, settings=None: ("这是旁白的第一句。", ""))
+
+    out = asyncio.run(orch.toolhub.call(ctx, "review_audio", {"path": "take.wav"}, None))
+
+    assert out.ok, out.text
+    assert "这是旁白的第一句。" in out.text
+
+
+def test_a_file_with_no_sound_track_is_not_dressed_up_as_a_recording(store, make_router, tmp_path,
+                                                                     monkeypatch):
+    """A silent video has nothing to hear, and "it is silent" is a fact — not an invitation to
+    describe what the narrator probably said."""
+    import asyncio
+    import pathlib
+    from app import attachments
+    st = store
+    orch, g = setup(st, make_router, FakeLLM(default="好"))
+    ctx = asyncio.run(orch.toolhub.context(st.get_group(g["id"]), st.list_agents()[0], connect=False))
+    (pathlib.Path(st.workspace_dir(g["id"])) / "mute.mp4").write_bytes(b"\x00" * 64)
+    monkeypatch.setattr(type(orch.toolhub), "_measure_sound", lambda self, t: (12.0, False))
+    monkeypatch.setattr(attachments, "transcriber", lambda settings=None: ("whisper", []))
+
+    out = asyncio.run(orch.toolhub.call(ctx, "review_audio", {"path": "mute.mp4"}, None))
+
+    assert not out.ok
+    assert "12.0" in out.text

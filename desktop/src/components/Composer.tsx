@@ -54,6 +54,7 @@ export default function Composer(p: Props) {
   const [docs, setDocs] = useState<{ id: string; title: string }[]>([]);
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
   const files = p.files ?? [];
   const canAttach = !!p.groupId && !!p.onFiles;
 
@@ -97,6 +98,7 @@ export default function Composer(p: Props) {
   const candidates = useMemo(() => {
     if (!mention) return [];
     const q = mention.q.toLowerCase();
+    const typed = mention.q.trim().length > 0;
     const hit = (s: string) => !q || s.toLowerCase().includes(q);
     const everyone: Mentionable = {
       name: t("Everyone"),
@@ -106,18 +108,25 @@ export default function Composer(p: Props) {
       group: "member",
     };
     const people = [everyone, ...p.members].filter((a) => hit(a.name)).map((m) => ({ ...m, group: "member" as const }));
+    // Empty query = members only. This is not a preference, it is the fix for a measured bug: with an
+    // empty query every file and document in a well-used workspace matches too, so pressing "@" on the
+    // 10-member video group produced 37 rows — which, anchored above the composer with no height limit,
+    // stood 1305px tall in a 733px window. The popup grew upward and its first 733px (exactly the 11
+    // member rows) were off the top of the screen: the user saw files and reported "I can't see the
+    // members". The member picker is what "@" means; files and documents are a typed-query convenience,
+    // and they come back the moment there is a character to match against.
     const folders = new Set(tree.map((f) => f.folder).filter(Boolean));
-    const folderEntries: Mentionable[] = [...folders]
+    const folderEntries: Mentionable[] = !typed ? [] : [...folders]
       .filter(hit)
-      .slice(0, 6)
+      .slice(0, 5)
       .map((f) => ({ name: `${f}/`, insert: `@dir:${f} `, avatar: "", role: t("folder"), group: "folder" as const }));
-    const fileEntries: Mentionable[] = tree
+    const fileEntries: Mentionable[] = !typed ? [] : tree
       .filter((f) => hit(f.path))
-      .slice(0, 12)
+      .slice(0, 10)
       .map((f) => ({ name: f.path, insert: `@file:${f.path} `, avatar: "", role: f.kind, group: "file" as const }));
-    const docEntries: Mentionable[] = docs
+    const docEntries: Mentionable[] = !typed ? [] : docs
       .filter((d) => hit(d.title))
-      .slice(0, 8)
+      .slice(0, 6)
       .map((d) => ({ name: d.title, insert: `@doc:${d.id} `, avatar: "", role: t("document"), group: "document" as const }));
     return [...people, ...folderEntries, ...fileEntries, ...docEntries];
   }, [mention, p.members, tree, docs, t, lang]);
@@ -128,6 +137,14 @@ export default function Composer(p: Props) {
     const m = /@([^\s@]*)$/.exec(v.slice(0, pos));
     setMention(m ? { q: m[1], idx: 0 } : null);
   };
+
+  // Keep the highlighted row inside the popup. The list is scrollable now (it has to be: see the note
+  // in `candidates`), and arrow keys that move a highlight off-screen look exactly like a dead key.
+  useEffect(() => {
+    if (!mention) return;
+    const row = pop.current?.children[mention.idx] as HTMLElement | undefined;
+    row?.scrollIntoView({ block: "nearest" });
+  }, [mention?.idx, mention !== null, candidates.length]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Replace the half-typed @mention at the caret with the chosen entry. */
   const chooseMention = (c: Mentionable) => {
@@ -192,7 +209,7 @@ export default function Composer(p: Props) {
   return (
     <div className="composer">
       {mention && candidates.length > 0 && (
-        <div className="mention-pop" role="listbox">
+        <div className="mention-pop" role="listbox" ref={pop}>
           {candidates.map((c, i) => (
             <button key={`${c.group}-${c.name}`} role="option" aria-selected={i === mention.idx}
               className={(i === mention.idx ? "on " : "") + "mp-" + (c.group ?? "member")}

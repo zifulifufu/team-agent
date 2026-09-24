@@ -40,7 +40,8 @@ export default function GeneralPage() {
   const { settings } = useData();
   const { set, err } = useSettingsSaver();
   const [vision, setVision] = useState<VisionStatus | null>(null);
-  const [caps, setCaps] = useState<{ audio_transcribe: boolean; transcriber_install: string } | null>(null);
+  const [caps, setCaps] = useState<{ audio_transcribe: boolean; transcriber_install: string; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string } } | null>(null);
+  const [proc, setProc] = useState<Awaited<ReturnType<typeof api.process>> | null>(null);
   useEffect(() => { void api.vision().then(setVision).catch(() => undefined); }, [settings?.vision_model_id, settings?.vision_cloud]);
   // Asked again whenever the command changes, so the chip reflects what would actually happen — and
   // on demand, because installing a transcriber changes no setting at all: without a button the
@@ -48,7 +49,13 @@ export default function GeneralPage() {
   const checkCaps = useCallback(async () => {
     try { setCaps(await api.machineCapabilities()); } catch { /* the row keeps what it had */ }
   }, []);
-  useEffect(() => { void checkCaps(); }, [checkCaps, settings?.transcribe_cmd]);
+  useEffect(() => { void checkCaps(); }, [checkCaps, settings?.transcribe_cmd, settings?.advisor_cmd]);
+  // The process panel is read separately from the capabilities list: it changes on every round (the
+  // ledger grows), so it is asked again on demand and whenever one of its switches moves.
+  const checkProcess = useCallback(async () => {
+    try { setProc(await api.process()); } catch { /* the panel keeps what it had */ }
+  }, []);
+  useEffect(() => { void checkProcess(); }, [checkProcess]);
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
 
   // Only models that can really look are offered. The list used to be every enabled model, and a
@@ -113,8 +120,24 @@ export default function GeneralPage() {
           ? t("{name} — cannot look at images", { name: namedLabel })
           : t("no model here can look at images");
 
-  const numRows = (rows: NumRow[]) =>
-    rows.map((r) => {
+  // The process engineer, said in one line: where it is, and what its ledgers hold. Counted from the
+  // files themselves, so a group whose log was deleted by hand reads as one with no log.
+  const procCounts = proc?.entries ?? {};
+  const procChip = !proc
+    ? t("Checking…")
+    : settings.process_autojoin
+      ? t("in {n} of {total} groups · {open} to deal with, {verified} re-checked", {
+          n: proc.in_groups, total: proc.groups,
+          open: procCounts.open ?? 0, verified: procCounts.verified ?? 0,
+        })
+      : t("kept out of the groups by the switch above");
+  const processText = !proc
+    ? t("Checking what the process engineer has recorded…")
+    : t("It never speaks, cannot be @-mentioned and is never given a task — what it produces is a file, 流程日志.md (process-log.md in English) in the workspace of every group it watches, indexed into that group's library so the next round can search it. Entries move open → changed → re-checked, and only a re-run makes something re-checked. {written} of {total} groups have a log so far.", {
+        written: proc.ledgers, total: proc.groups,
+      });
+
+  const numRows = (rows: NumRow[]) =>    rows.map((r) => {
       const title = pick(r.title, r.titleZh);
       return (
         <Row key={r.key} title={title} desc={pick(r.desc, r.descZh)}>
@@ -177,7 +200,7 @@ export default function GeneralPage() {
         <Row title={t("Transcribe audio")}
              desc={t("Speech needs a program, not a model: nothing is bundled and nothing is downloaded for you. Leave this empty to use a transcriber that is already installed; write a command to use your own. {out} is the folder to write the text into, and {audio} is the file — if the command does not mention it, the path is added at the end.")}>
           <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-            <input className="pm-text" value={settings.transcribe_cmd} placeholder={t("(an installed transcriber, if there is one)")}
+            <input className="pm-text" style={{ width: 260 }} value={settings.transcribe_cmd} placeholder={t("(an installed transcriber, if there is one)")}
                    aria-label={t("Transcribe audio")}
                    onChange={(e) => void set({ transcribe_cmd: e.target.value })} />
             <span className={"chip" + (caps?.audio_transcribe ? "" : " warn")}>
@@ -199,12 +222,94 @@ export default function GeneralPage() {
             )}
           </span>
         </Row>
+        <Row title={t("Ask an AI outside this group")}
+             desc={t("The process engineer can put a narrow question to a command-line model installed on this machine — Claude Code or codex — read-only, inside the group's workspace. Leave this empty to use whichever of them is installed; write a command to use your own. {dir} is the group's workspace, and the question is written to its input unless the command mentions {prompt}. Every such call starts a program on this machine, so it is asked for approval each time (Permissions & control).")}>
+          <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <input className="pm-text" style={{ width: 260 }} value={settings.advisor_cmd}
+                   placeholder={t("(an installed model, if any)")}
+                   aria-label={t("Ask an AI outside this group")}
+                   onChange={(e) => void set({ advisor_cmd: e.target.value })} />
+            <span className={"chip" + (caps?.advisor?.ready ? "" : " warn")}>
+              {caps?.advisor?.ready ? (caps.advisor.label || t("ready")) : t("nothing found")}
+            </span>
+            {caps?.advisor && !caps.advisor.ready && (
+              <>
+                <span className="muted small" style={{ maxWidth: 330, textAlign: "right" }}>
+                  {caps.advisor.reason}
+                </span>
+                <span className="muted small" style={{ maxWidth: 330, textAlign: "right" }}>
+                  {t("Install one — this app will find it by itself afterwards:")} <code>{caps.advisor.install}</code>
+                </span>
+                <button className="btn small" onClick={() => void checkCaps()}>{t("Check again")}</button>
+              </>
+            )}
+          </span>
+        </Row>
+        <Row title={t("How long to wait for that answer")}
+             desc={t("A narrow question takes a few minutes; a real review of a run can take much longer. Past this the program is stopped, and the member is told so instead of waiting forever. It costs nothing to leave it generous — the call ends as soon as the answer does.")}>
+          <NumInput v={settings.advisor_timeout} min={60} max={3600} unit={pick("s", "秒")}
+                    onCommit={(n) => set({ advisor_timeout: n })} label={t("How long to wait for that answer")} />
+        </Row>
       </div>
 
       <div className="sec">{t("Handing work over")}</div>
       <div className="card flush">
         {numRows(BUDGET_ROWS)}
       </div>
+
+      {/* The process engineer: it is in every group and invisible in all of them, so this panel is
+          the only place it exists on screen. Three switches and one honest status line — the numbers
+          come from the ledgers themselves, not from a count kept somewhere else. */}
+      <div className="sec">{t("Process engineer")}</div>
+      <div className="card flush">
+        <Row title={t("Keep it in every group")}
+             desc={t("A member that watches how the group works and never appears: it is not in the member list, cannot be @-mentioned, never speaks, and is never handed a task. It is added to every group (including the ones you make later) and left out of the chair. Turn this off and the member you removed stays removed.")}>
+          <Switch checked={settings.process_autojoin} label={t("Keep it in every group")}
+                  onChange={(v) => { void set({ process_autojoin: v }); void checkProcess(); }} />
+        </Row>
+        <Row title={t("Record what this app can measure")}
+             desc={t("After each round the app writes down the defects it can decide by itself — a task marked done whose file is not on disk, a task whose every tool call failed, a plan that had to be abandoned, a call that failed twice — into that group's process log. Measured, not judged, and free: no model is called, and nothing appears in the chat.")}>
+          <Switch checked={settings.process_autolog} label={t("Record what this app can measure")}
+                  onChange={(v) => void set({ process_autolog: v })} />
+        </Row>
+        <Row title={t("Ask a model for the cause and the fix")}
+             desc={t("For the defects the app just recorded, one short call asks a model that is not a member of the group for the likely cause and a concrete fix, and writes them into the log. It only runs when a round actually produced a new defect, and it never overwrites a cause that was written by hand.")}>
+          <Switch checked={settings.process_review} label={t("Ask a model for the cause and the fix")}
+                  onChange={(v) => void set({ process_review: v })} />
+        </Row>
+        <Row title={t("What it has found")} desc={processText}>
+          <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6, maxWidth: 420 }}>
+            <span className={"chip" + (proc && proc.in_groups && proc.in_groups === proc.groups ? "" : " warn")}>{procChip}</span>
+            {proc?.not_in?.length ? (
+              <span className="muted small" style={{ textAlign: "right" }}>
+                {t("Not in: {names}", { names: proc.not_in.join("、") })}
+              </span>
+            ) : null}
+            <button className="btn small" onClick={() => void checkProcess()}>{t("Refresh")}</button>
+          </span>
+        </Row>
+      </div>
+      {proc?.recent?.length ? (
+        <div className="card flush">
+          <div className="setting-row pad">
+            <div>
+              <div className="sr-title">{t("Latest entries")}</div>
+              <div className="sr-desc">{t("Newest first. The file itself is 流程日志.md (process-log.md in English) in each group's workspace, and it is searchable in that group's library.")}</div>
+            </div>
+          </div>
+          {proc.recent.map((r) => (
+            <div className="setting-row pad" key={r.gid + r.id}>
+              <div style={{ minWidth: 0 }}>
+                <div className="sr-title">{r.sentence}</div>
+                <div className="sr-desc">
+                  {r.group} · {r.by ? t("written by {who}", { who: r.by }) : t("written by a member")}
+                  {r.cause ? ` · ${t("cause")}: ${r.cause}` : ""}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

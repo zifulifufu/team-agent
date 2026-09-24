@@ -228,3 +228,38 @@ async def test_cancel_discards_streaming_message_and_saves_nothing(store, make_r
         pass
     assert any(e["type"] == "message_discard" for e in c.events)
     assert not any(m["sender_type"] == "agent" for m in store.list_messages(g["id"]))
+
+
+# ------------------------------------------------- a member that keeps failing
+def test_a_member_that_keeps_failing_is_told_how_many_times_and_that_it_can_be_taken_out(
+        store, make_router):
+    """One failure is noise; twelve is a workstream that never happened.
+
+    In one session a member failed twelve times — with the audio and assembly work assigned to it — and
+    the app said the same "could not reply" every time, as if it were the first. A member that keeps
+    failing is occupying a slot in every round, and the two real fixes are to repair it or to take it
+    out of the group; the second one lives on the member's card, so the failure note says so.
+    """
+    orch, g, agents = setup(store, make_router, FakeLLM(default="好"))
+    victim = agents["Aide"]
+    other = agents["Librarian"] if "Librarian" in agents else list(agents.values())[1]
+
+    def note_saying(name: str, times: int) -> None:
+        for _ in range(times):
+            store.add_message(g["id"], "system", None, "系统",
+                              f"「{name}」没能回复:命令行引擎报告了错误。")
+
+    # Nothing yet, and one failure, are both just noise.
+    assert orch._repeat_failure_note(g["id"], victim) == ""
+    note_saying(victim["name"], 1)
+    assert orch._repeat_failure_note(g["id"], victim) == ""
+
+    # Failures of *other* members do not inflate this one's count.
+    note_saying(other["name"], 5)
+    assert orch._repeat_failure_note(g["id"], victim) == ""
+
+    # Two prior failures → the next one is the third, and that is a pattern worth saying out loud.
+    note_saying(victim["name"], 1)
+    note = orch._repeat_failure_note(g["id"], victim)
+    assert "3" in note
+    assert "移出本群" in note or "take it out of this group" in note

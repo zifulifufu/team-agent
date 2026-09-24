@@ -45,6 +45,7 @@ from .presets import (
     builtin_for,
     builtin_names,
     display_name,
+    offered_presets,
     prompt_for,
     prompt_titles,
 )
@@ -60,7 +61,7 @@ from .tools import (
     write_skill,
 )
 
-CATALOG_VERSION = "2.2.0"      # semantic version of the catalog contents: bump it when templates are added or changed
+CATALOG_VERSION = "2.4.0"      # semantic version of the catalog contents: bump it when templates are added or changed
 SCHEMA_VERSION = 1            # file format version of custom templates
 CUSTOM_DIRNAME = "templates"  # subdirectory of the data directory holding custom templates
 CUSTOM_MAX_BYTES = 512 * 1024
@@ -476,7 +477,10 @@ def _team_rows() -> list[dict]:
 
 def _agent_rows() -> list[dict]:
     out = []
-    for p in AGENT_PRESETS:
+    # Only the presets a person can actually add: the process engineer is kept in every group by the
+    # app (hidden, never addressed), so a gallery entry offering to install it would be a promise the
+    # app cannot keep — see `presets.offered_presets`.
+    for p in offered_presets():
         # `<field>_zh` is carried alongside the English base value so that
         # i18n.localize() can swap it in for the Chinese UI. Built-in names are
         # English on purpose — see presets.SEED_AGENTS.

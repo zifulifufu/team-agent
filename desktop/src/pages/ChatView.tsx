@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Eraser, FolderOpen, PanelRight } from "lucide-react";
+import { Download, Eraser, PanelRight } from "lucide-react";
 import { api, downloadChat, downloadTasks, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
 import { useData } from "../data";
 import { draftFiles, draftText, setDraftFiles, setDraftText } from "../drafts";
@@ -11,7 +11,7 @@ import Composer from "../components/Composer";
 import ApprovalBar from "../components/ApprovalBar";
 import PlanCard from "../components/PlanCard";
 import GroupPanel, { useCapabilities, type PanelTab } from "../components/GroupPanel";
-import WorkspacePanel from "../components/WorkspacePanel";
+import WorkspacePicker from "../components/WorkspacePicker";
 import AddMemberButton from "../components/members/AddMemberButton";
 import "../styles/members.css";
 import type { SettingsTab } from "../settings/SettingsModal";
@@ -42,7 +42,6 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   const [panel, setPanel] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("ext");
   const [hl, setHl] = useState<string | null>(null);
-  const [ws, setWs] = useState(false);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [err, setErr] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -172,6 +171,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
         }
       });
       if (e.type === "approval") setApprovals((cur) => (cur.some((a) => a.id === e.approval.id) ? cur : [...cur, e.approval]));
+      if (e.type === "message_start" || (e.type === "message" && e.message.sender_type === "user")) setBusy(true);
       if (e.type === "approval_done") setApprovals((cur) => cur.filter((a) => a.id !== e.id));
       if (e.type === "stopped") {
         setApprovals([]);
@@ -236,11 +236,6 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
           <div className="chat-title">
             {group.name} <span className="muted">({members.length})</span>
           </div>
-          <div className="ava-stack" aria-hidden>
-            {members.slice(0, 5).map((a) => (
-              <span key={a.id} title={a.name}>{a.avatar}</span>
-            ))}
-          </div>
           {!wsUp && <span className="chip warn">{t("Live connection lost, reconnecting…")}</span>}
           <div className="grow" />
           <div className="head-actions nodrag">
@@ -248,19 +243,20 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
               className="icon-btn"
               title={t("Clear chat history")}
               aria-label={t("Clear chat history")}
+              disabled={busy}
               onClick={async () => {
                 if (await confirm(t("Clear this group's chat history?"), { okText: t("Clear all") })) {
-                  await api.clearMessages(gid);
-                  setMsgs([]);
-                  await reloadGroups();
+                  try {
+                    await api.clearMessages(gid);
+                    setMsgs([]);
+                    await reloadGroups();
+                  } catch (e) {
+                    setErr((e as Error).message);
+                  }
                 }
               }}
             >
               <Eraser size={16} />
-            </button>
-            <button className={"icon-btn" + (ws ? " on" : "")} title={t("Workspace")} aria-label={t("Workspace")}
-              aria-pressed={ws} onClick={() => setWs((v) => !v)}>
-              <FolderOpen size={16} />
             </button>
             <ExportMenu gid={gid} />
             <AddMemberButton group={group} align="right" label={t("Add member")} className="icon-btn" />
@@ -303,7 +299,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
             onChange={setText}
             onSend={send}
             busy={busy}
-            onStop={() => api.stop(gid)}
+            onStop={() => { void api.stop(gid).catch((e) => setErr((e as Error).message)); }}
             members={members}
             placeholder={t("Type a message; @mention a member to assign work. Enter to send, Shift+Enter for a new line")}
             routeText={route.text}
@@ -315,12 +311,12 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
             groupId={gid}
             files={files}
             onFiles={setFiles}
+            extra={<WorkspacePicker gid={gid} group={group} />}
           />
           <div className="composer-hint">{t(busy ? "Members are working — you can stop at any time" : "With no @mention, the group host answers")}</div>
         </div>
       </section>
 
-      {ws && <WorkspacePanel gid={gid} onClose={() => setWs(false)} />}
 
       {panel && (
         <GroupPanel

@@ -1,5 +1,4 @@
 import { useEffect, useState, type ComponentType } from "react";
-import { PanelLeftOpen } from "lucide-react";
 import { useData } from "./data";
 import { useI18n } from "./i18n";
 import { prefs } from "./theme";
@@ -44,7 +43,13 @@ export default function App() {
   // The member column beside the sidebar. It remembers its own choice, and it starts showing
   // because this is where a group's members have always been visible — moving it out of the
   // sidebar was about *where* it is, not about hiding it.
-  const [rail, setRail] = useState(() => prefs.read("ta.memberrail") !== "0");
+  //
+  // The key gained a `.v2` on purpose. The old one was written by builds in which this same toggle
+  // meant two other things (a column, then a popover beside the sidebar entry), so whatever it holds
+  // is not an instruction about the column as it exists now — and reading it as one is how the user
+  // ends up opening the app to find the column they just asked for missing. Nothing is migrated: the
+  // first click writes the new key and it persists from then on.
+  const [rail, setRail] = useState(() => prefs.read("ta.memberrail.v2") !== "0");
   // Which group the column lists. Kept here rather than inside the sidebar so the count printed on
   // the sidebar's "Members" entry and the column it opens cannot be about two different groups —
   // that mismatch is what this change is fixing.
@@ -62,7 +67,7 @@ export default function App() {
   };
   const setMemberRail = (on: boolean) => {
     setRail(on);
-    prefs.write("ta.memberrail", on ? "1" : "0");
+    prefs.write("ta.memberrail.v2", on ? "1" : "0");
   };
 
   // Go back to the home view when the open group is deleted
@@ -93,18 +98,22 @@ export default function App() {
 
   return (
     <div className="shell">
-      {!collapsed && (
-        <Sidebar
-          view={view}
-          onView={setView}
-          onSettings={goTab}
-          onCollapse={() => setSide(true)}
-          version={APP_VERSION}
-          rail={rail}
-          onRail={() => setMemberRail(!rail)}
-          memberCount={railGroup ? railCount : null}
-        />
-      )}
+      {/* Always mounted, never unmounted: the sidebar collapses to its own top strip, so the control
+          that put it away is still on screen and in the same place to bring it back. When this was
+          `{!collapsed && <Sidebar/>}`, the way back lived inside the main area instead — 173px away
+          from the button that had just been pressed — and pressing the old spot hit the page behind
+          it. A collapse with no visible way back is not a collapse, it is a disappearance. */}
+      <Sidebar
+        view={view}
+        onView={setView}
+        onSettings={goTab}
+        collapsed={collapsed}
+        onCollapse={() => setSide(!collapsed)}
+        version={APP_VERSION}
+        rail={rail}
+        onRail={() => setMemberRail(!rail)}
+        memberCount={railGroup ? railCount : null}
+      />
       {!collapsed && rail && (
         <MemberRail
           group={railGroup}
@@ -114,11 +123,6 @@ export default function App() {
         />
       )}
       <main className="main" key={epoch}>
-        {collapsed && (
-          <button className="icon-btn expand-btn" title={t("Expand the sidebar")} aria-label={t("Expand the sidebar")} onClick={() => setSide(false)}>
-            <PanelLeftOpen size={17} />
-          </button>
-        )}
         {!online && <div className="banner">{t("The backend is not connected; retrying… (the first start needs a few seconds to load LiteLLM)")}</div>}
         {view.kind === "home" && <HomePage onOpen={(gid, autoSend) => setView({ kind: "chat", gid, autoSend })} onSettings={goTab} />}
         {view.kind === "chat" && (

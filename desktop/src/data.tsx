@@ -16,6 +16,8 @@ interface Data {
   reloadGroups: () => Promise<void>;
   /** Number of unhandled update notices (app / model catalog / skills / plugins / new models), for the sidebar badge */
   updateCount: number;
+  /** Of those, the ones about the app itself — they are shown on their own settings page (Software update) */
+  appUpdateCount: number;
   reloadUpdates: () => Promise<void>;
   /** Model connectivity lights: model_id → status */
   health: Record<string, ModelHealth>;
@@ -33,6 +35,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [updateCount, setUpdateCount] = useState(0);
+  const [appUpdateCount, setAppUpdateCount] = useState(0);
   const [health, setHealth] = useState<Record<string, ModelHealth>>({});
   const [epoch, setEpoch] = useState(0);
 
@@ -68,7 +71,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const reloadUpdates = useCallback(async () => {
     try {
-      setUpdateCount((await api.updates()).items.length);
+      const items = (await api.updates()).items;
+      setUpdateCount(items.length);
+      setAppUpdateCount(items.filter((i) => i.kind === "app").length);
     } catch {
       /* ignore */
     }
@@ -107,6 +112,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(t);
   }, [online, reloadUpdates]);
 
+  // The project list is re-read on a slow clock: "which project is working right now" is a fact about
+  // this moment, and a project that started a turn after the last manual refresh would show as idle.
+  // Cheap — one query, and only while the window is visible.
+  useEffect(() => {
+    if (!online) return;
+    const t = window.setInterval(() => { if (!document.hidden) void reloadGroups(); }, 5000);
+    return () => window.clearInterval(t);
+  }, [online, reloadGroups]);
+
   // Heartbeat: notice when the backend exits mid-session (two failures in a row count), so the UI can show Reconnecting and retry
   useEffect(() => {
     if (!online) return;
@@ -136,8 +150,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ online, agents, groups, providers, models, settings, reload, refreshAll, epoch, reloadGroups, updateCount, reloadUpdates, health, reloadHealth, checkHealth }),
-    [online, agents, groups, providers, models, settings, reload, refreshAll, epoch, reloadGroups, updateCount, reloadUpdates, health, reloadHealth, checkHealth],
+    () => ({ online, agents, groups, providers, models, settings, reload, refreshAll, epoch, reloadGroups, updateCount, appUpdateCount, reloadUpdates, health, reloadHealth, checkHealth }),
+    [online, agents, groups, providers, models, settings, reload, refreshAll, epoch, reloadGroups, updateCount, appUpdateCount, reloadUpdates, health, reloadHealth, checkHealth],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

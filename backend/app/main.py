@@ -123,6 +123,9 @@ class GroupPatch(BaseModel):
     prompt: str | None = None
     ext: dict | None = None
     workspace: str | None = None
+    # A group is a project: its own state, and whether it has been filed away. Both are set by hand.
+    status: str | None = None
+    archived: bool | None = None
 
 
 class MemberIn(BaseModel):
@@ -148,6 +151,11 @@ class ModelBatchIn(BaseModel):
 
 
 APP_VERSION = "0.5.1"
+
+# A project's own state. Two values, both set by hand ("active" is what every project starts as);
+# the labels the user sees are 进行中 / 已完成. Nothing infers "done" from the messages, because "the
+# conversation stopped" and "the work is finished" are not the same statement.
+GROUP_STATUS = ("active", "done")
 
 
 def _pkg_version(name: str) -> str | None:
@@ -188,7 +196,6 @@ class Hub:
 
 # ------------------------------------------------------------------ factory
 DEV_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
-
 
 # How long to wait before paying the slow imports, so the window's opening requests (settings,
 # groups, models) are served first. Measured on this machine: `import litellm` takes ~3.1 s, i.e.
@@ -239,6 +246,7 @@ def create_app(
     token = token if token is not None else os.environ.get("TEAM_AGENT_TOKEN") or None
     ensure_loopback_no_proxy()
     store = Store(data_dir)
+    store.recover_interrupted_plans()
     ensure_example_skills(store.data_dir / "skills", store._flag)
     # Installs that predate the bilingual built-in skills have every one of them twice — the seed
     # marker was keyed by the skill's name, and the name changed from Chinese to English when the
@@ -264,6 +272,10 @@ def create_app(
     # …and every group's own knowledge base, for the groups made before that existed: a group is a
     # workspace, and its own material has to have somewhere to live from the start.
     store.ensure_group_kbs()
+    # …and the process engineer, in every group. A watcher that has to be added by hand to each new
+    # group is a watcher that is missing from the groups where something went wrong; the setting is
+    # what makes it optional, and the groups that already have it are left alone.
+    templates.keep_process_engineer(store)
     router = ModelRouter(store, completion_fn)
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
@@ -274,7 +286,7 @@ def create_app(
     ensure_example_hooks(store.data_dir)
     hooks = HookManager(store.data_dir)
     hooks.load()
-    toolhub = ToolHub(store, registry, mcp, library, memory, hooks=hooks)
+    toolhub = ToolHub(store, registry, mcp, library, memory, hooks=hooks, router=router)
     board = HealthBoard(store, router)
     prompts = PromptBuilder(store, router)
     approvals = Approvals(store)
@@ -288,7 +300,15 @@ def create_app(
     # orchestrator needs somewhere to hand each finished answer.
     chan = build_channels(store, orch, hub)
     orch.on_answer = chan.push_answer
-    tasks: dict[str, set[asyncio.Task]] = {}
+    tasks = orch.tasks
+
+    def busy(gid: str) -> bool:
+        return any(not t.done() for t in tasks.get(gid, ()))
+
+    def require_idle(gid: str) -> None:
+        if busy(gid):
+            raise HTTPException(409, i18n.pick_now("This project is working — stop it before changing its workspace or members, or clearing it.",
+                                                  "项目正在工作,请先停止再修改工作空间、成员或清空项目。"))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
@@ -322,6 +342,10 @@ def create_app(
                 t.cancel()
             if background:
                 await chan.shutdown()
+            active = [t for group_tasks in tasks.values() for t in group_tasks if not t.done()]
+            for t in active:
+                t.cancel()
+            await asyncio.gather(*active, *bg, return_exceptions=True)
             await orch.drain()
             await hooks.drain()      # let a running observer finish rather than cutting it off
             await mcp.shutdown()
@@ -361,6 +385,10 @@ def create_app(
     @app.middleware("http")
     async def require_token(request, call_next):  # type: ignore[no-untyped-def]
         path = request.url.path
+        origin = request.headers.get("origin")
+        # CORS hides responses; it does not prevent a simple cross-origin POST.
+        if not token and request.method != "OPTIONS" and path.startswith("/api") and origin is not None and not re.fullmatch(DEV_ORIGIN_RE, origin):
+            return JSONResponse({"detail": "untrusted origin"}, status_code=403)
         if (
             token
             and request.method != "OPTIONS"
@@ -427,6 +455,9 @@ def create_app(
               # assembling: local ffmpeg work, so the floor is a real render and the ceiling is an
               # unusually long film rather than a service's patience
               "assemble_timeout": (60, 7200),
+              # asking an outside model: a narrow question takes minutes, a real review of a run
+              # takes longer, and the ceiling is a person's patience rather than a service's
+              "advisor_timeout": (60, 3600),
               # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
               "image_timeout": (20, 900), "image_max_mb": (1, 128),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
@@ -649,6 +680,8 @@ backup file cannot leak secrets."""
 
     @app.delete("/api/data/messages")
     async def data_clear_messages() -> dict:
+        for gid in tasks:
+            require_idle(gid)
         return {"deleted": store.clear_all_messages()}
 
     # ------------------------------------------------------ local (Ollama)
@@ -780,7 +813,11 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
 
     @app.get("/api/groups")
     async def groups() -> list[dict]:
-        return [group_out(g) for g in store.list_groups()]  # type: ignore[misc]
+        # `busy` rides along with every row. Whether a turn is running is something this process
+        # knows and the database does not, and the sidebar shows it live — a stored flag would be a
+        # stale copy of a fact that changes by the second. One request, so the panel can show
+        # "which project is working right now" without asking once per project.
+        return [{**group_out(g), "busy": busy(g["id"])} for g in store.list_groups()]  # type: ignore[misc]
 
     @app.post("/api/groups")
     async def create_group(body: GroupIn) -> dict:
@@ -788,6 +825,8 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         if any(i not in known for i in [*body.member_ids, *([body.host_agent_id] if body.host_agent_id else [])]):
             raise HTTPException(400, i18n.pick_now("A member or the host does not exist", "成员或群主不存在"))
         check_host(body.host_agent_id)
+        if body.host_agent_id and body.host_agent_id not in body.member_ids:
+            raise HTTPException(400, i18n.pick_now("The host must be a member of this group", "群主必须是本群成员"))
         workspace = check_workspace(body.workspace)
         created = store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt,
                                      workspace)
@@ -798,10 +837,17 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
             store.workspace_dir(created["id"])
         except (OSError, ValueError) as e:  # noqa: BLE001 — a group without a folder is still usable
             print("could not create the group workspace:", e)
+        # The process engineer joins after the user's own members, so the chair is never the watcher.
+        templates.keep_process_engineer(store, created["id"])
         return group_out(created)
 
     def check_host(host_id: str | None) -> None:
         host = store.get_agent(host_id) if host_id else None
+        if host_id and not host:
+            raise HTTPException(400, i18n.pick_now("The host does not exist", "群主不存在"))
+        if host and host.get("origin") == "media":
+            raise HTTPException(400, i18n.pick_now("A media generator cannot host a group; choose a conversational member.",
+                                                  "绘画或视频生成成员不能当群主,请选择对话成员。"))
         if host and host.get("engine"):
             raise HTTPException(400, i18n.pick_now("An external agent cannot be the host (the host splits the work, so it has to be a model member)", "外部智能体不能当群主(群主负责分工,需要是模型成员)"))
 
@@ -810,7 +856,23 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         if body.host_agent_id:
             check_host(body.host_agent_id)
+            if body.host_agent_id not in store.member_ids(gid):
+                raise HTTPException(400, i18n.pick_now("The host must be a member of this group", "群主必须是本群成员"))
         patch = body.model_dump(exclude_unset=True)
+        if any(k in patch for k in ("workspace", "host_agent_id", "ext")):
+            require_idle(gid)
+        if patch.get("status") is not None and patch["status"] not in GROUP_STATUS:
+            raise HTTPException(400, i18n.pick_now(
+                f"A project is either {GROUP_STATUS[0]} or {GROUP_STATUS[1]}, not \"{patch['status']}\"",
+                f"项目状态只能是 active(进行中)或 done(已完成),不是「{patch['status']}」"))
+        if patch.get("archived"):
+            # Same rule WorkBuddy uses for tasks ("任务进行中，无法归档"): a project that is working
+            # right now cannot be filed away, because archiving hides it and its members are still
+            # writing into it. Saying so is the whole point — silently refusing would look broken.
+            if any(not t.done() for t in tasks.get(gid, ())):
+                raise HTTPException(409, i18n.pick_now(
+                    "This project is working right now — stop it before archiving.",
+                    "这个项目正在工作,先让它停下来再归档。"))
         if patch.get("workspace") is not None:
             # Validated here rather than in the store: the store writes what it is given, and this
             # is the one place that knows the difference between "no value sent" and "cleared".
@@ -826,6 +888,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     @app.delete("/api/groups/{gid}")
     async def del_group(gid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        require_idle(gid)
         store.delete_group(gid)
         return {"ok": True}
 
@@ -833,12 +896,14 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     async def add_member(gid: str, body: MemberIn) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         need(store.get_agent(body.agent_id), i18n.pick_now("Member", "成员"))
+        require_idle(gid)
         store.add_member(gid, body.agent_id)
         return group_out(store.get_group(gid))  # type: ignore[arg-type]
 
     @app.delete("/api/groups/{gid}/members/{aid}")
     async def remove_member(gid: str, aid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        require_idle(gid)
         store.remove_member(gid, aid)
         return group_out(store.get_group(gid))  # type: ignore[arg-type]
 
@@ -850,6 +915,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     @app.delete("/api/groups/{gid}/messages")
     async def clear_messages(gid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        require_idle(gid)
         store.clear_messages(gid)
         return {"ok": True}
 
@@ -875,8 +941,6 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
                     await orch._system(gid, i18n.pick_now(f"Something went wrong in this round of collaboration: {e}", f"这一轮协作出错了:{e}"), emit)
                 except Exception:  # noqa: BLE001
                     pass
-            finally:
-                await emit({"type": "idle"})  # this round of collaboration is over (normally, with an error, or stopped)
 
         task = asyncio.create_task(run())
         tasks.setdefault(gid, set()).add(task)
@@ -892,19 +956,18 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     @app.get("/api/groups/{gid}/status")
     async def group_status(gid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
-        return {"busy": any(not t.done() for t in tasks.get(gid, ()))}
+        return {"busy": busy(gid)}
 
     @app.post("/api/groups/{gid}/stop")
     async def stop(gid: str) -> dict:
-        n = 0
-        for t in list(tasks.get(gid, ())):
+        active = [t for t in tasks.get(gid, ()) if not t.done()]
+        for t in active:
             t.cancel()
-            n += 1
-        await hub.broadcast(gid, {"type": "stopped"})
-        if not n:   # with nothing running (for instance the backend just restarted), the UI has to go back to
-# idle as well
+        await asyncio.gather(*active, return_exceptions=True)
+        if not busy(gid):
+            await hub.broadcast(gid, {"type": "stopped"})
             await hub.broadcast(gid, {"type": "idle"})
-        return {"cancelled": n}
+        return {"cancelled": len(active)}
 
     @app.websocket("/ws/groups/{gid}")
     async def ws_group(ws: WebSocket, gid: str) -> None:

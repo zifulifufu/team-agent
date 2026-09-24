@@ -5,8 +5,8 @@ import { useCapabilities } from "../GroupPanel";
 import MemberCard, { type MemberRow } from "./MemberCard";
 import { useI18n } from "../../i18n";
 
-/** Under "Members" in the sidebar: the current group's members (expandable at any
- * time; switch their model or remove them). */
+/** The current group's members (switch their model, set the host, remove them) — rendered inside the
+ *  popover that hangs off the chat header's avatars. */
 export default function MemberDock({ group }: { group: Group }) {
   const { t } = useI18n();
   const { agents } = useData();

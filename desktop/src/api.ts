@@ -324,6 +324,14 @@ export interface Group {
   workspace: string;
   /** Where the group's files really are, resolved by the backend (the picked one, or the managed one) */
   workspace_path?: string;
+  /** A group is a project: its own state, set by hand. "active" is what every project starts as. */
+  status: "active" | "done";
+  /** Filed away: kept out of the normal list, still searchable, workspace and history intact */
+  archived: boolean;
+  /** A turn is running in this project *right now* — a fact about the process, not the database, so
+   *  it only comes with the list and it goes stale within seconds. */
+  busy?: boolean;
+  archived_at?: number | null;
   last_message?: string;
   last_at?: number;
 }
@@ -479,6 +487,11 @@ export interface Settings {
   refs_budget: number;             // Characters of referenced files allowed in one prompt
   integration_budget: number;      // Characters of task output allowed into the consolidation prompt
   transcribe_cmd: string;          // Speech-to-text command; empty = whichever known transcriber is installed
+  advisor_cmd: string;             // Command-line model to consult read-only; empty = claude/codex if installed
+  advisor_timeout: number;         // How long one such consultation may take, in seconds
+  process_autojoin: boolean;       // Keep the (hidden) process engineer in every group
+  process_autolog: boolean;        // Record the defects the app can measure by itself, silently
+  process_review: boolean;         // Ask a model outside the group for the cause and the fix
   // Chat channels (whatsapp_*, telegram_*, wecom_*, feishu_*, dingtalk_*, slack_*) are NOT
   // listed here on purpose: the backend's channel catalogue declares every field with its
   // label, bounds and value, so /api/channels is the single source and adding a platform
@@ -1194,7 +1207,7 @@ export const api = {
   groups: () => get<Group[]>("/api/groups"),
   createGroup: (name: string, member_ids: string[], host_agent_id: string | null, extra?: { ext?: Partial<GroupExt>; prompt?: string; workspace?: string }) =>
     post<Group>("/api/groups", { name, member_ids, host_agent_id, ...extra }),
-  patchGroup: (id: string, b: { name?: string; host_agent_id?: string | null; prompt?: string; ext?: Partial<GroupExt>; workspace?: string }) =>
+  patchGroup: (id: string, b: { name?: string; host_agent_id?: string | null; prompt?: string; ext?: Partial<GroupExt>; workspace?: string; status?: "active" | "done"; archived?: boolean }) =>
     patch<Group>(`/api/groups/${id}`, b),
   delGroup: (id: string) => del(`/api/groups/${id}`),
   addMember: (gid: string, agent_id: string) => post<Group>(`/api/groups/${gid}/members`, { agent_id }),
@@ -1304,7 +1317,10 @@ export const api = {
   vision: () => get<VisionStatus>("/api/vision"),
   /** What this machine can do with files: which document kinds are read locally, whether
    *  ffmpeg is there for video frames, and who can look at pictures. */
-  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number }>("/api/capabilities"),
+  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string } }>("/api/capabilities"),
+  /** The process engineer: where it is and what it has written. It is invisible in every group, so
+   *  this panel is the only place it can be seen at all. */
+  process: () => get<{ name: string; hidden: boolean; autojoin: boolean; autolog: boolean; review: boolean; groups: number; in_groups: number; not_in: string[]; entries: Record<string, number>; ledgers: number; recent: { group: string; gid: string; id: string; title: string; status: string; severity: string; stage: string; found: string; by: string; seen: number; sentence: string; cause: string; verify: string }[] }>("/api/process"),
   /** A clip a member generated, out of that group's own workspace. Same header problem, so the
    *  bytes come through the API and are turned into an object URL (`MessageVideo`). */
   videoBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/video/${encodeURIComponent(name)}`),

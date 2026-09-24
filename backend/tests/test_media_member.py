@@ -555,3 +555,65 @@ async def test_the_note_says_which_of_the_two_kinds_of_nothing_it_was(studio, ar
     _c, saved, _ends = await speak(orch, group, f"@{member['name']} 做一段完全无关的东西的画面")
 
     assert "none of the 1 documents in the knowledge base matched" in saved["content"], saved["content"]
+
+
+# ------------------------------------------------- a generator works from what summoned it
+def test_a_member_summoned_by_another_member_works_from_that_members_line(store, make_router):
+    """The expensive half of the prompt problem.
+
+    A generating member that another member @-mentions has no instruction of its own, and the fallback
+    used to be the user's whole last message. So a picture service was handed
+    「上面是我的发音，其他是需要内容进行配音的…是 clone 这个声音」as a drawing prompt — twice — and
+    returned nothing, because the last thing the user said had nothing to do with a picture. The
+    sentence that summoned the member is the instruction; the user's own words stay the fallback for
+    when *the user* is the one asking.
+    """
+    st = store
+    orch, g = setup(st, make_router, FakeLLM(default="好"))
+    members = st.list_agents()
+    teller, target = members[0], members[1]
+
+    st.add_message(g["id"], "user", "user", "我", "上面是我的发音，是 clone 这个声音。")
+    st.add_message(g["id"], "agent", teller["id"], teller["name"],
+                   f"@{target['name']} 出 4 张写实脑血管造影图，9:16。")
+
+    line = orch._summoning_line(st.get_group(g["id"]), members, target)
+    assert "脑血管造影" in line and "clone" not in line
+
+    # A user message at the end stops the walk: the user's own words are already the caller's
+    # fallback, and rewriting them here would only lose them.
+    st.add_message(g["id"], "user", "user", "我", "再画一张")
+    assert orch._summoning_line(st.get_group(g["id"]), members, target) == ""
+
+
+# ------------------------------------------------- what the members panel says about it
+def test_a_generating_member_is_not_warned_about_a_chat_model(tmp_path):
+    """Its `model_id` is a video model, and the chat roster deliberately has none of those.
+
+    So the "is your pinned model usable right now" check — which walks the *dialogue* chain — found
+    nothing, reported "Model not found", and every generating member in the video group wore a
+    permanent ⚠ claiming it had fallen back to another model. It never runs on a chat model at all.
+
+    The second half of this test is the load-bearing half: the exemption has to be about `origin`, not
+    about "no warning ever", or it would quietly switch off the real warning too.
+    """
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好的"))
+    c = TestClient(app, base_url="http://127.0.0.1")
+    st = app.state.store
+    prov = st.add_provider_from_preset("doubao-seedance", api_key="sk-ark-123456")
+    model = st.list_provider_models(prov["id"])[0]
+    member = st.ensure_model_agent(model["id"])
+    g = c.get("/api/groups").json()[0]
+
+    c.post(f"/api/groups/{g['id']}/members/from-model", json={"model_id": model["id"]})
+    row = next(m for m in c.get(f"/api/groups/{g['id']}/capabilities").json()["members"]
+               if m["origin"] == "media")
+    assert row["agent_id"] == member["id"]
+    assert row["manual_model"], "a generating member is pinned to its own model"
+    assert row["model_problem"] == ""
+
+    chat = next(m for m in st.list_models() if m["provider_id"] == "deepseek")
+    c.post(f"/api/groups/{g['id']}/members/from-model", json={"model_id": chat["id"]})
+    other = next(m for m in c.get(f"/api/groups/{g['id']}/capabilities").json()["members"]
+                 if m["origin"] == "model")
+    assert other["model_problem"], "a chat member whose key is missing is still reported"

@@ -146,10 +146,53 @@ async def test_invalid_plan_falls_back_with_notice(store, make_router):
     orch, g = setup(store, make_router, fake)
     c = Collector()
     await orch.handle_user_message(g["id"], "写通知", c)
+    # The round now includes one hidden repair call before the notice is posted, so it has to be
+    # awaited before the transcript is read — the same `drain()` every other test in this file uses.
+    await orch.drain()
     assert [m["sender_name"] for m in c.ends()] == ["Aide"]
     notes = [m["content"] for m in store.list_messages(g["id"]) if m["sender_type"] == "system"]
     assert any("was not valid" in n and "路人甲" in n for n in notes)
     assert not [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"]
+
+
+async def test_a_broken_plan_json_is_repaired_once_and_then_runs(store, make_router):
+    """The commonest way a task dies before it starts, and the retry that saves the round.
+
+    Live evidence on this machine: a group asked for a `报告.docx`, the host wrote "按分工交给文案落盘"
+    and one wrong character in its plan JSON threw the whole plan away — nobody was assigned, no file
+    was produced, and the only trace was "the host's plan was malformed". The retry is deliberately
+    invisible: no extra bubble, no second board.
+    """
+    broken = '{"goal": "g", "tasks": [{"id": "t1", "owner": "Copywriter", "title": "初稿"'   # never closed
+
+    def script(messages):
+        name, u = role(messages), last_user(messages)
+        if "rejected" in u or "被拒" in u:                       # the narrow repair instruction
+            return "<plan>" + PLAN + "</plan>"
+        if name == "Aide" and has(u, PLAN_MODE):
+            return "思路:先写后审。\n<plan>" + broken + "</plan>"
+        if name == "Aide" and has(u, INTEGRATE):
+            return "最终通知:各位同事…(来自:文案)"
+        if name == "Copywriter" and has(u, TASK_HEAD):
+            return "【分工】我负责初稿;发挥写作;用无;承接无\n初稿正文ABC"
+        if name == "Proofreader" and has(u, TASK_HEAD):
+            return "【分工】我负责审校;发挥中文;用无;承接文案\n审校意见XYZ"
+        return "好的"
+
+    fake = FakeLLM(default=script)
+    orch, g = setup(store, make_router, fake)
+    c = Collector()
+    await orch.handle_user_message(g["id"], "帮我出一份发布会通知", c)
+    await orch.drain()
+
+    notes = [m["content"] for m in store.list_messages(g["id"]) if m["sender_type"] == "system"]
+    assert not any("malformed" in n or "格式不对" in n for n in notes), notes
+    board = [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"]
+    assert len(board) == 1 and [t["status"] for t in board[0]["meta"]["tasks"]] == ["done", "done"]
+    # The host spoke once (its reasoning), the repair cost a call but produced no second bubble, and
+    # the delivered text is the one the plan asked for.
+    assert [m["sender_name"] for m in c.ends()] == ["Aide", "Copywriter", "Proofreader", "Aide"]
+    assert any("rejected" in (last_user(m) or "") for _, m in fake.calls)
 
 
 async def test_plan_modes_off_explicit_mention_and_on(store, make_router):
@@ -187,9 +230,8 @@ async def test_failed_task_does_not_block_others_and_is_reported(store, make_rou
     c = Collector()
     await orch.handle_user_message(g["id"], "写通知", c)
     tasks = next(m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan")["meta"]
-    assert [t["status"] for t in tasks["tasks"]] == ["failed", "done"] and tasks["status"] == "done"
-    review_prompt = next(last_user(m) for _, m in fake.calls if role(m) == "Proofreader")
-    assert "produced nothing" in review_prompt                              # the downstream worker is told the upstream one failed
+    assert [t["status"] for t in tasks["tasks"]] == ["failed", "skipped"] and tasks["status"] == "failed"
+    assert not any(role(m) == "Proofreader" for _, m in fake.calls)
     integ = next(last_user(m) for _, m in fake.calls if has(last_user(m), INTEGRATE))
     assert "did not finish" in integ
 
@@ -513,4 +555,3 @@ def test_the_consolidation_budget_is_a_setting_and_each_task_keeps_a_share(store
     assert tiny.count("第") >= 4
 
     assert store.get_settings()["integration_budget"] == 14000  # the old constant, as the default
-

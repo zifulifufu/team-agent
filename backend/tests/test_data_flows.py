@@ -40,6 +40,10 @@ def make_v031_db(path):
         dst.execute(f"DROP TABLE IF EXISTS {t}")
     for table, col in [("agents", "origin"), ("agents", "tags"), ("groups", "ext"), ("groups", "prompt"),
                        ("groups", "workspace"),
+                       # a group is a project now: before these columns existed every group was an
+                       # active project that had never been filed away, so the upgrade has to arrive
+                       # at that reading rather than at NULL
+                       ("groups", "status"), ("groups", "archived"), ("groups", "archived_at"),
                        ("mcp_servers", "transport"), ("mcp_servers", "headers"), ("mcp_servers", "description"),
                        ("models", "strengths")]:
         dst.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
@@ -63,6 +67,8 @@ def test_opening_an_old_database_upgrades_it_in_place(tmp_path):
     # A group from before the column: it reads as "the app manages a folder for me", which is
     # exactly what it did then, so nothing has to be migrated or flagged.
     assert st.list_groups()[0]["workspace"] == ""
+    assert st.list_groups()[0]["status"] == "active", "an old group is an active project"
+    assert st.list_groups()[0]["archived"] is False, "…that has never been filed away"
     assert [m["content"] for m in st.list_memories()] == ["升级前的记忆"]
     assert any(x["content"] == "升级前的消息" for x in st.list_messages(st.list_groups()[0]["id"]))
     assert st.list_mcp()[0]["headers"] == {} and st.list_mcp()[0]["name"] == "旧 MCP"

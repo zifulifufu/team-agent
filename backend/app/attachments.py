@@ -33,7 +33,7 @@ from . import i18n, library
 # module (this one imports the library, which imports the store, which imports `media`, which
 # imports `coderun`). Re-exported so the many callers that already say
 # `attachments.tool("ffmpeg")` keep working, and so there is still exactly one list.
-from .bindirs import TOOL_DIRS, tool
+from .bindirs import TOOL_DIRS, search_path, tool
 
 IMAGE, VIDEO, AUDIO, DOCUMENT, OTHER = "image", "video", "audio", "document", "other"
 VISUAL = (IMAGE, VIDEO)
@@ -100,6 +100,11 @@ _TRANSCRIBERS: dict[str, list[str]] = {
     "whisper": ["{audio}", "--output_format", "txt", "--output_dir", "{out}", "--verbose", "False"],
 }
 TRANSCRIBE_TIMEOUT = 600              # a long file is slow; it is done once and remembered
+# Where a transcriber's model weights are fetched from when the official host is unreachable.
+# Measured, not guessed: on this machine the system proxy answers 502 for huggingface.co, which
+# turns an installed, working transcriber into "it heard nothing" — and the two need opposite
+# actions from the user. Only used as a retry, and never when `HF_ENDPOINT` is already set.
+HF_MIRROR = "https://hf-mirror.com"
 
 
 def transcriber(settings: dict | None = None) -> tuple[str, list[str]] | None:
@@ -167,30 +172,75 @@ def transcribe(path: Path, settings: dict | None = None) -> str | None:
 
     `None` also covers "it tried and it failed": a transcription that did not happen has to leave
     the caller saying *not transcribed*, never *transcribed as nothing* — the difference matters,
-    because the first tells a member to go and read the file itself.
+    because the first tells a member to go and read the file itself. Callers that have to explain
+    themselves to a reader want `transcribe_with_reason` instead, which hands back the reason.
+    """
+    return transcribe_with_reason(path, settings)[0]
+
+
+def transcribe_with_reason(path: Path, settings: dict | None = None) -> tuple[str | None, str]:
+    """`(what it says or None, why not)` — and the reason is a sentence for a person.
+
+    Two things this fixes, both found by running it on a real recording rather than by reading it.
+    A transcriber that is *installed but cannot run* used to be indistinguishable from one that heard
+    nothing, and the two need opposite actions from the user. And the commonest way for it to fail on
+    a machine that has one is not the audio at all: it is the model weights. `mlx-whisper` and
+    `whisper` fetch those from huggingface.co on first use, and a system proxy in the way answers
+    **502** — measured here, where a Clash proxy turned a working transcriber into "no text".
+
+    So the official endpoint is tried first, and a mirror is tried once if that fails, because a
+    desktop app launched from Finder has no shell environment to inherit `HF_ENDPOINT` from. A user
+    who *has* set `HF_ENDPOINT` is left alone: their choice wins over this fallback.
+
+    And the child gets `bindirs.search_path()`, which is the third thing to go wrong here: a
+    transcriber needs **ffmpeg** to decode the audio, the app is commonly launched from Finder, and
+    Finder's PATH has no `/usr/local/bin` — so an installed transcriber reported
+    `FileNotFoundError: 'ffmpeg'` and read as "this machine cannot listen". That directory list
+    exists in `bindirs` precisely so this cannot happen, and this was the consumer nobody had added
+    to it.
     """
     found = transcriber(settings)
     if not found:
-        return None
+        return None, "no transcriber is installed"
     exe, args = found
+    # The same base environment for both attempts, so the retry cannot lose the PATH fix.
+    base = {**os.environ, "PATH": search_path(os.environ.get("PATH"))}
     out = Path(tempfile.mkdtemp(prefix="team-agent-speech-"))
     try:
-        # The audio file goes exactly where the arguments say it goes. Appending it blindly (as this
-        # first did) put it *between* a command and its own flags, which works for the two built-ins
-        # and silently breaks every hand-written command — the one case this escape hatch exists for.
-        words = [a.replace("{audio}", str(path)).replace("{out}", str(out)) for a in args]
-        cmd = [exe, *words, str(path)] if "{audio}" not in " ".join(args) else [exe, *words]
-        try:
-            p = subprocess.run(cmd, cwd=str(out), capture_output=True, text=True,
-                               timeout=TRANSCRIBE_TIMEOUT)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        if p.returncode != 0:
-            return None
+        def once(extra: dict | None) -> tuple[int, str]:
+            # The audio file goes exactly where the arguments say it goes. Appending it blindly (as
+            # this first did) put it *between* a command and its own flags, which works for the two
+            # built-ins and silently breaks every hand-written command — the one case this escape
+            # hatch exists for.
+            words = [a.replace("{audio}", str(path)).replace("{out}", str(out)) for a in args]
+            cmd = [exe, *words, str(path)] if "{audio}" not in " ".join(args) else [exe, *words]
+            try:
+                p = subprocess.run(cmd, cwd=str(out), capture_output=True, text=True,
+                                   timeout=TRANSCRIBE_TIMEOUT, env=base if extra is None else extra)
+            except (OSError, subprocess.SubprocessError) as e:
+                return 1, f"{type(e).__name__}: {e}"
+            tail = (p.stderr or p.stdout or "").strip().splitlines()
+            return p.returncode, " / ".join(tail[-2:])[:300]
+
+        code, detail = once(None)
         written = sorted(out.glob("*.txt"))
+        # "Exited 0 with nothing written" has to count as a failure, and that is not defensive
+        # programming — it is what this actually does. With the model fetch blocked, `mlx_whisper`
+        # logs `Skipping <file> due to ProxyError: 502 Bad Gateway` and **exits 0**, so a transcriber
+        # that heard nothing is indistinguishable from one that heard silence unless the *output* is
+        # what is checked.
+        if (code != 0 or not written) and "whisper" in Path(exe).name.lower() \
+                and not os.environ.get("HF_ENDPOINT"):
+            for stale in written:            # anything the first attempt left must not be mistaken
+                stale.unlink(missing_ok=True)  # for what the second one produced
+            code, detail = once({**base, "HF_ENDPOINT": HF_MIRROR})
+            written = sorted(out.glob("*.txt"))
+        if code != 0:
+            return None, detail or f"the transcriber exited with {code}"
         if not written:
-            return None
-        return written[0].read_text(encoding="utf-8", errors="replace").strip() or None
+            return None, "the transcriber ran but wrote no text" + (f" ({detail})" if detail else "")
+        text = written[0].read_text(encoding="utf-8", errors="replace").strip()
+        return (text or None), ("" if text else "the transcriber wrote an empty file")
     finally:
         shutil.rmtree(out, ignore_errors=True)
 

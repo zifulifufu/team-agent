@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from . import coderun, i18n, imagegen, modelopts, presets, strengths as strength_lib, updater, video
+from . import advisor
 from . import attachments as attachments_lib
 from . import vision
 from .approvals import Approvals, risk_label, risk_of
@@ -33,11 +34,12 @@ from .gallery import MCP_TEMPLATES, mcp_display_name as display_mcp_name
 from .memory import MemoryService
 from .obsidian import ObsidianError, ObsidianSync
 from .orchestrator import Orchestrator
-from .presets import AGENT_PRESETS, DEFAULT_SYSTEM_PROMPT
+from .presets import DEFAULT_SYSTEM_PROMPT
 from .prompting import VARIABLES, PromptBuilder, estimate_tokens, render_vars
 from .router import ModelRouter, has_credentials
 from .store import Store, new_id
-from .templates import create_group_from_template, ensure_agent_from_key
+from .templates import (create_group_from_template, ensure_agent_from_key,
+                        process_status as process_panel)
 from .toolhub import ToolHub, builtin_specs
 from .tools import (
     ToolRegistry,
@@ -431,7 +433,14 @@ def build_router(c: Ctx) -> APIRouter:
         for e in c.prompts.roster_entries(members):
             m, model = e["agent"], e["model"]
             problem = ""
-            if m["model_id"] and not (model and model["id"] == m["model_id"]):
+            # A generating member's `model_id` is its own image/video model, which is deliberately kept
+            # out of the dialogue roster. Measured consequence of not exempting it: all five generating
+            # members in the video group wore a permanent "the pinned model is unavailable right now,
+            # falling back to another" warning, because `build_chain` looked its video model up in the
+            # chat list and reported "Model not found". They never run on a chat model at all, so there
+            # is nothing to warn about — and a warning that is always on is one nobody reads.
+            if (m["model_id"] and m.get("origin") != "media"
+                    and not (model and model["id"] == m["model_id"])):
                 _, skipped = c.router.build_chain(m["model_id"], m.get("tags"))
                 problem = next((s.detail for s in skipped if s.model_id == m["model_id"]), "") or i18n.pick_now("temporarily unavailable", "暂时不可用")
             rows.append({
@@ -527,8 +536,10 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/agent-presets")
     async def agent_presets() -> list[dict]:
-        have = {a["name"] for a in store.list_agents()}
-        rows = [{**p, "exists": any(n in have for n in builtin_names(p))} for p in AGENT_PRESETS]
+        # `include_hidden=True` on purpose: the process engineer exists, it is simply invisible — and
+        # a lookup that could not see it would report every preset as "not added yet".
+        have = {a["name"] for a in store.list_agents(include_hidden=True)}
+        rows = [{**p, "exists": any(n in have for n in builtin_names(p))} for p in presets.offered_presets()]
         return i18n.localize(rows)
 
     @r.post("/api/groups/{gid}/members/from-preset")
@@ -1177,8 +1188,23 @@ def build_router(c: Ctx) -> APIRouter:
             # work *here* goes with it.
             "transcriber_install": ("" if attachments_lib.transcriber(store.get_settings())
                                     else attachments_lib.suggested_transcriber_install()),
+            # A second opinion from outside the group needs a command-line model on this machine. The
+            # settings row shows which one would run and, when there is none, the command that would
+            # install one — the same shape as the transcriber row, for the same reason: "nothing
+            # found" on its own is a dead end for somebody who has never installed one.
+            "advisor": advisor.info(store.get_settings(), folder=store.data_dir),
             "upload_max_mb": int(store.get_settings()["upload_max_mb"]),
         }
+
+    @r.get("/api/process")
+    async def process_status() -> dict:
+        """The process engineer, as one panel: what it is, where it is, and what it has written.
+
+        It is deliberately invisible everywhere else — no member row, no `@`-candidate, not one
+        message in any group — so this is the single place a person can see that it exists, check
+        that it is in every group, and read what it has recorded without opening each workspace.
+        """
+        return process_panel(store)
 
     # ============================================================ attachments (any file)
     # Attachments were images only. They are now any file the user drops in: a screenshot, a PDF,

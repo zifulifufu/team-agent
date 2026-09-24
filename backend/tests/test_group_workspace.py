@@ -12,6 +12,7 @@ rather than an error.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -232,3 +233,135 @@ def test_a_template_still_gets_the_managed_folder(store, make_router):
     g = templates.create_group_from_template(store, templates.TEMPLATES[0]["id"])
     assert g and g["workspace"] == ""
     assert store.workspace_dir(g["id"]).is_dir()
+
+
+# ------------------------------------------------- a group is a project, with its own state
+def test_a_project_can_be_marked_done_and_filed_away(tmp_path):
+    """Two hand-set fields, and the round trip that matters: archived projects keep existing.
+
+    Archiving must not be a delete. Everything the project holds — its workspace, its knowledge
+    base, its history — has to still be there, because "filed away" and "gone" are different
+    promises and only one of them is recoverable.
+    """
+    c, app = client(tmp_path)
+    st = app.state.store
+    g = c.get("/api/groups").json()[0]
+    assert g["status"] == "active" and g["archived"] is False, "a new project starts active"
+
+    r = c.patch(f"/api/groups/{g['id']}", json={"status": "done"})
+    assert r.status_code == 200 and r.json()["status"] == "done"
+
+    r = c.patch(f"/api/groups/{g['id']}", json={"archived": True})
+    assert r.status_code == 200 and r.json()["archived"] is True
+    assert r.json()["archived_at"], "archiving stamps a time"
+    assert st.get_group(g["id"])["member_ids"] == g["member_ids"], "the members are still there"
+    assert st.get_group(g["id"])["ext"]["skills"] == g["ext"]["skills"]
+
+    # And it comes back: unarchiving clears the stamp rather than leaving a stale one.
+    r = c.patch(f"/api/groups/{g['id']}", json={"archived": False})
+    assert r.json()["archived"] is False and r.json()["archived_at"] in (None, "")
+    assert c.patch(f"/api/groups/{g['id']}", json={"status": "active"}).json()["status"] == "active"
+
+
+def test_a_status_that_is_not_one_of_the_two_is_refused(tmp_path):
+    """The store writes what it is given, so the boundary is where the two values are enforced."""
+    c, _ = client(tmp_path)
+    g = c.get("/api/groups").json()[0]
+    r = c.patch(f"/api/groups/{g['id']}", json={"status": "finished"})
+    assert r.status_code == 400 and "done" in r.json()["detail"]
+
+
+def test_a_project_that_is_working_cannot_be_filed_away(tmp_path):
+    """The rule WorkBuddy states as "任务进行中，无法归档", and it has to be said out loud.
+
+    Archiving hides a project. Doing that while its members are still writing into it is how work
+    gets lost, so the answer is a refusal that explains itself — not a silent no-op that looks like
+    the button is broken. The model is made slow on purpose, so the group really is busy while the
+    request is made. (`with TestClient(...)` matters: without the context manager the app's lifespan
+    never starts and a posted message quietly does nothing.)
+    """
+    import threading
+    import time
+
+    from tests.conftest import chunk
+
+    started = threading.Event()
+
+    # Wrapped the way `FakeLLM` is: the router awaits `completion_fn(**kw)` and *then* iterates the
+    # result, so an `async def` with a `yield` (an async generator) is not callable-as-a-coroutine and
+    # every model call fails as "no model available".
+    async def slow(**kw):
+        started.set()
+
+        async def gen():
+            await asyncio.sleep(1.0)
+            yield chunk("好的")
+
+        return gen()
+
+    app = create_app(tmp_path / "data", completion_fn=slow)
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        c.patch("/api/providers/deepseek", json={"api_key": "sk-abcdef123456"})
+        g = c.get("/api/groups").json()[0]
+        assert len(g["member_ids"]) > 0, "the seeded group has members to answer"
+
+        # Idle: filing it away is allowed, and undone again for the rest of the test.
+        assert c.get(f"/api/groups/{g['id']}/status").json() == {"busy": False}
+        assert c.patch(f"/api/groups/{g['id']}", json={"archived": True}).status_code == 200
+        assert c.patch(f"/api/groups/{g['id']}", json={"archived": False}).status_code == 200
+
+        assert c.post(f"/api/groups/{g['id']}/messages", json={"text": "开始干活"}).json()["ok"]
+        assert started.wait(5), "the turn never started"
+        assert c.get(f"/api/groups/{g['id']}/status").json()["busy"] is True
+
+        r = c.patch(f"/api/groups/{g['id']}", json={"archived": True})
+        assert r.status_code == 409
+        assert "归档" in r.json()["detail"] or "archiving" in r.json()["detail"]
+        # …and the refusal did not half-apply.
+        assert c.get("/api/groups").json()[0]["archived"] is False
+
+        for _ in range(80):                      # let the turn finish
+            if not c.get(f"/api/groups/{g['id']}/status").json()["busy"]:
+                break
+            time.sleep(0.1)
+        assert c.patch(f"/api/groups/{g['id']}", json={"archived": True}).status_code == 200
+
+
+def test_the_project_list_says_which_project_is_working_right_now(tmp_path):
+    """The sidebar's "Running now" tab has nothing to read unless the list carries a live flag.
+
+    `busy` is a fact about the process — tasks in flight — and the database knows nothing about it, so
+    it rides along with `/api/groups` instead of being stored: a stored flag would be a stale copy of
+    something that changes within seconds, and the panel polls this one request. The other half of the
+    test matters just as much: an idle project must *not* be flagged, or the tab would list everything
+    and mean nothing.
+    """
+    import threading
+
+    from tests.conftest import chunk
+
+    started = threading.Event()
+
+    async def slow(**kw):
+        started.set()
+
+        async def gen():
+            await asyncio.sleep(1.0)
+            yield chunk("好的")
+
+        return gen()
+
+    app = create_app(tmp_path / "data", completion_fn=slow)
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        c.patch("/api/providers/deepseek", json={"api_key": "sk-abcdef123456"})
+        rows = c.get("/api/groups").json()
+        target = rows[0]
+        assert len(target["member_ids"]) > 0, "the seeded group has members to answer"
+        assert all(r["busy"] is False for r in rows), "nothing is running at rest"
+
+        assert c.post(f"/api/groups/{target['id']}/messages", json={"text": "开始干活"}).json()["ok"]
+        assert started.wait(5), "the turn never started"
+
+        during = {r["id"]: r["busy"] for r in c.get("/api/groups").json()}
+        assert during[target["id"]] is True, "the working project is flagged"
+        assert [i for i, b in during.items() if b] == [target["id"]], "and only that one is"
