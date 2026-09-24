@@ -25,7 +25,7 @@ from . import attachments as attachments_lib
 from . import vision
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
-from .library import Library, LibraryError
+from .library import Library, LibraryError, watch_workspace
 from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug, validate_cfg
 from .presets import builtin_names, localize_prompt, localize_system_prompt
 from .templates import group_view, member_view, skill_list_view, template_rows
@@ -462,7 +462,61 @@ def build_router(c: Ctx) -> APIRouter:
             "ext": group["ext"],
             # Exactly the documents its members can reach through the knowledge bases in scope
             "docs": len(c.library.scope_ids(store.get_group(gid)["ext"]["library"] if store.get_group(gid) else {}, gid)),
+            # Pictures of this group nobody has looked at, so the panel can offer to (see
+            # `describe_pictures`: it costs a vision call each, which is why it is a button).
+            "pictures_pending": sum(
+                1 for row in store.list_attachments(gid)
+                if (row.get("kind") or "") == attachments_lib.IMAGE
+                and not str(row.get("vision_text") or "").strip()
+                and not str(row.get("text") or "").strip()
+                and attachments_lib.path_for_row(store, row) is not None),
         }
+
+    @r.post("/api/groups/{gid}/library/describe")
+    async def describe_pictures(gid: str, limit: int = 12) -> dict:
+        """Look at the pictures of this group that nobody has looked at, so they become material.
+
+        On demand rather than on a timer, because each one costs a vision call and *whether* a
+        picture may be sent off this machine is already the user's decision (`vision_cloud`). What
+        comes back is cached on the attachment, so pressing it again does not pay again, and the
+        group's own knowledge base picks the descriptions up — this runs that sync itself, so the
+        material is searchable before the next turn rather than after it.
+
+        Bounded per press (`limit`, at most 50): a batch that runs for minutes with no way to see
+        where it is has no business being one request. `pending` says how many are left.
+        """
+        group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        pending = [row for row in store.list_attachments(gid)
+                   if (row.get("kind") or "") == attachments_lib.IMAGE
+                   and not str(row.get("vision_text") or "").strip()
+                   and not str(row.get("text") or "").strip()
+                   and attachments_lib.path_for_row(store, row) is not None]
+        batch = pending[: max(0, min(int(limit or 12), 50))]
+        budget = int(store.get_settings()["vision_max_mb"]) * 1024 * 1024
+        done = 0
+        for row in batch:
+            path = attachments_lib.path_for_row(store, row)
+            if path is None:
+                continue
+            try:
+                data = await asyncio.to_thread(path.read_bytes)
+                mime, data = await asyncio.to_thread(
+                    attachments_lib.shrink_image, data, str(row.get("mime") or "image/jpeg"), budget)
+                text = await vision.describe(store, c.router, [(mime, data)],
+                                             attachments_lib.describe_prompt(row["name"], attachments_lib.IMAGE))
+            except Exception:  # noqa: BLE001 — one unreadable picture must not stop the batch
+                continue
+            if text:
+                store.set_attachment_vision(str(row["id"]), text)
+                done += 1
+        if done:
+            c.library.sync_group_material(gid, store.workspace_dir(gid),
+                                          with_files=watch_workspace(group))
+        left = len(pending) - done
+        return {"described": done, "pending": left, "documents": c.library.own_kb_size(gid),
+                # Why nothing happened, in the words of whoever knows (the vision settings page
+                # already says exactly this, and it is the actionable half).
+                "reason": "" if done else vision.reason_missing(store, c.router)}
 
     @r.post("/api/groups/{gid}/apply-prompt")
     async def apply_prompt(gid: str, body: ApplyPromptIn) -> dict:

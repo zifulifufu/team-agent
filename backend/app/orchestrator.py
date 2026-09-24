@@ -31,7 +31,7 @@ from . import attachments as attachments_lib
 from . import coderun, imagegen, media, video
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
-from .library import Library
+from .library import Library, watch_workspace
 from .mcp_client import McpManager
 from .memory import MemoryService
 from .presets import twin_name
@@ -723,22 +723,16 @@ class Orchestrator:
     def _sync_group_material(self, group: dict, workspace: Any) -> None:
         """Keep this group's own knowledge base level with what the group has (see `Library`).
 
-        Two things decide how far it goes, and both are the user's: a workspace the *user* picked is
-        left alone unless the group's knowledge-base settings turn watching on (it may be a code
-        repository, and importing one is nobody's idea of a good time), while a workspace this app
-        manages is watched by default. The switch lives beside the knowledge-base scope on purpose —
-        "which knowledge bases does this group search" and "where does its own material come from"
-        are the same question asked twice.
+        The scope switch decides whether there is a knowledge base to keep at all; how far the
+        workspace half goes is the user's own call, decided in one place (`library.watch_workspace`).
+        The switch sits beside the knowledge-base scope on purpose: "which knowledge bases does this
+        group search" and "where does its own material come from" are the same question twice.
         """
-        ext = (group.get("ext") or {}).get("library") or {}
-        if ext.get("mode") == "off":
+        if ((group.get("ext") or {}).get("library") or {}).get("mode") == "off":
             return
-        watch = ext.get("watch_workspace")
-        if watch is None:
-            watch = not str(group.get("workspace") or "").strip()   # empty = this app manages it
         try:
             out = self.library.sync_group_material(gid=group["id"], workspace=Path(workspace),
-                                                   with_files=bool(watch))
+                                                   with_files=watch_workspace(group))
         except Exception as e:  # noqa: BLE001 — housekeeping must never cost the turn itself
             self._notify("library.sync", group["id"], group, {"ok": False, "error": type(e).__name__})
             return

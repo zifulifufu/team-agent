@@ -287,6 +287,14 @@ base"** decides whether the workspace feeds the group's own base. On by default 
 app manages; off for one you picked, because a directory you chose may be a project rather than
 material (it is one switch away, on the same panel).
 
+One kind of material cannot index itself: a document is read when it arrives, but a **picture has to
+be looked at**, and a picture nobody has looked at is not material yet. Doing that on a timer would
+spend money without being asked, so the panel shows the count and offers a button — *"N pictures have
+never been looked at → Describe them"* — describing a bounded batch per press (12 by default, at most
+50), caching each description, and putting them into the group's own knowledge base as they arrive.
+It says how many are left, and it says why nothing happened when no model can look (the same "which
+model looks at pictures" answer the settings page gives).
+
 And when a search still comes back empty, the member is told **what this group can search**: the
 document titles it can reach, plus the note that the knowledge base may be in another language than
 the conversation. That is the difference between a dead end and a next step — BM25 matches words,

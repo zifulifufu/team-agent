@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Info, TriangleAlert } from "lucide-react";
+import { Info, Loader2, TriangleAlert } from "lucide-react";
 import { api, type Capabilities, type Collection, type Group, type GroupExt, type KnowledgeBase, type LibraryMode, type McpServer, type McpTemplate, type PlanMode, type PluginInfo, type Skill } from "../../api";
 import { useData } from "../../data";
 import { Switch } from "../../ui";
@@ -139,6 +139,32 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
   // project, not material). Showing the resolved value rather than "unset" is what makes the switch
   // honest — and writing it down makes it the user's choice from then on.
   const watching = lib.watch_workspace ?? !group.workspace;
+  const [describing, setDescribing] = useState(false);
+  const [describeMsg, setDescribeMsg] = useState("");
+  const [describeErr, setDescribeErr] = useState(false);
+
+  /** Describe the pictures nobody has looked at, then report where that got to. */
+  const describePictures = async () => {
+    setDescribing(true);
+    setDescribeErr(false);
+    try {
+      const r = await api.describePictures(group.id);
+      if (r.described && r.pending) {
+        setDescribeMsg(t("Described {done}, {left} still to go — press again when you like.", { done: r.described, left: r.pending }));
+      } else if (r.described) {
+        setDescribeMsg(t("Described {done}. They are in this group's own knowledge base now, and a search will find them.", { done: r.described }));
+      } else {
+        setDescribeErr(true);
+        setDescribeMsg(r.reason);
+      }
+      refreshCaps();
+    } catch (e) {
+      setDescribeErr(true);
+      setDescribeMsg((e as Error).message);
+    } finally {
+      setDescribing(false);
+    }
+  };
   const toggleKb = (id: string, on: boolean) =>
     setLib("selected", { kb_ids: on ? [...lib.kb_ids.filter((x) => x !== id), id] : lib.kb_ids.filter((x) => x !== id) });
   const toggleCol = (id: string, on: boolean) =>
@@ -299,6 +325,24 @@ export default function ExtTab({ group, caps, capsErr, refreshCaps, active, onSe
               <div className="gp-note">{t("Before each turn, what has already been read out of this group's attachments (a document's text, a picture's description, a recording's transcript) and the documents in its workspace are indexed into this group's own knowledge base, so the next search finds them. On by default for a folder this app manages; for a folder you picked, turning it on is your call.")}</div>
             </div>
             <Switch checked={watching} onChange={(v) => setLib(lib.mode, { watch_workspace: v })} label={t("Keep this group's own material in its knowledge base")} />
+          </div>
+        )}
+
+        {/* Pictures with no description are the one kind of material that cannot index itself: a
+            document is read when it arrives, a picture has to be looked at. Doing that on a timer
+            would spend money without being asked, so it is a button — with the count, so pressing it
+            is an informed decision. */}
+        {lib.mode !== "off" && (caps?.pictures_pending ?? 0) > 0 && (
+          <div className="gp-switch-row">
+            <div>
+              <div className="gp-sw-title">{t("{n} pictures have never been looked at", { n: caps?.pictures_pending ?? 0 })}</div>
+              <div className="gp-note">{t("They are in this group's workspace, but nothing has ever read them, so a search cannot find them. Describing one costs a vision call (the model under Settings → General → Which model looks at pictures); the description is cached and goes into this group's own knowledge base.")}</div>
+              {describeMsg && <div className={describeErr ? "gp-note warn" : "gp-note"}>{describeMsg}</div>}
+            </div>
+            <button className="btn small" disabled={!!describing}
+                    onClick={() => void describePictures()}>
+              {describing ? <Loader2 size={12} className="spin" /> : null} {t("Describe them")}
+            </button>
           </div>
         )}
 

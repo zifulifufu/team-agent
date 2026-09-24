@@ -223,6 +223,22 @@ allowed, at most 3 redirects, 5MB maximum."""
         raise LibraryError(i18n.pick_now(f"Could not open this link: {type(e).__name__}", f"打不开这个链接:{type(e).__name__}")) from None
 
 
+def watch_workspace(group: dict) -> bool:
+    """Whether the *documents in this group's workspace* feed its own knowledge base.
+
+    (The text already read out of its attachments goes in either way — that is the group's own
+    material by definition, and it costs nothing to index. This switch is about the folder.)
+
+    The user's own switch wins. With none set, the default follows where the workspace *is*: one
+    this app manages is watched, one the user picked is not — a directory they chose may be a
+    project rather than material, and importing a checkout into a knowledge base is nobody's idea of
+    a good time.
+    """
+    ext = (group.get("ext") or {}).get("library") or {}
+    watch = ext.get("watch_workspace")
+    return bool(watch) if isinstance(watch, bool) else not str(group.get("workspace") or "").strip()
+
+
 class Library:
     def __init__(self, store: Store):
         self.store = store
@@ -446,6 +462,11 @@ skipped, files whose size changed are replaced with the new version."""
             return kb
         group = self.store.get_group(gid) if (create and gid) else None
         return self.store.add_kb(group["name"], "This group's own documents", gid) if group else None
+
+    def own_kb_size(self, gid: str) -> int:
+        """How many documents this group's own knowledge base holds (0 if it has none yet)."""
+        kb = self.workspace_kb(gid, create=False)
+        return len(self.store.list_docs(kb["id"])) if kb else 0
 
     def shared_kb(self, create: bool = True) -> dict | None:
         """The knowledge base new material goes into when no group is involved."""

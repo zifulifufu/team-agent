@@ -322,3 +322,60 @@ def test_groups_that_existed_before_get_their_knowledge_base_on_the_next_start(s
     assert store.ensure_group_kbs() == 1
     assert [k["name"] for k in store.list_kbs(g["id"]) if k["group_id"] == g["id"]] == ["旧群"]
     assert store.ensure_group_kbs() == 0           # nothing left to do on the next start
+
+
+def test_the_switch_decides_whether_the_workspace_half_is_watched(store):
+    """The default follows where the workspace is — a folder this app manages is watched, one the
+    user picked is not — and an explicit choice wins over both."""
+    from app.library import watch_workspace
+
+    picked = store.create_group("自选目录", None, [], workspace=str(store.data_dir))
+    managed = store.create_group("程序管理", None, [])
+    assert watch_workspace(store.get_group(picked["id"])) is False
+    assert watch_workspace(store.get_group(managed["id"])) is True
+
+    store.update_group(picked["id"], {"ext": {"library": {"mode": "all", "kb_ids": [],
+                                                         "collection_ids": [], "watch_workspace": True}}})
+    store.update_group(managed["id"], {"ext": {"library": {"mode": "all", "kb_ids": [],
+                                                          "collection_ids": [], "watch_workspace": False}}})
+    assert watch_workspace(store.get_group(picked["id"])) is True
+    assert watch_workspace(store.get_group(managed["id"])) is False
+
+
+def test_the_button_looks_at_the_pictures_nobody_has_looked_at(tmp_path):
+    """The on-demand half of "a group's own material": pictures with no description yet cost a
+    vision call each, so it happens when the user presses for it — and what comes back is cached,
+    indexed, and paid for once."""
+    from app import attachments as attachments_lib, coderun
+
+    client, app = make(tmp_path)
+    store = app.state.store
+    g = client.get("/api/groups").json()[0]
+    workspace = coderun.workspace_dir(store.data_dir, store.get_settings(), g["id"])
+    ids = []
+    for i in range(3):
+        aid = store.new_id()
+        data = b"\x89PNG\r\n\x1a\n" + bytes(64 + i)
+        rel = attachments_lib.save(workspace, aid, f"图{i}.png", ".png", data)
+        store.add_attachment(g["id"], aid, f"图{i}.png", "image/png", len(data), kind="image", rel_path=rel)
+        ids.append(aid)
+    # Nobody can look yet: the panel's count is there, and pressing says why nothing happened.
+    assert client.get(f"/api/groups/{g['id']}/capabilities").json()["pictures_pending"] == 3
+    off = client.post(f"/api/groups/{g['id']}/library/describe", params={"limit": 2}).json()
+    assert off["described"] == 0 and off["pending"] == 3 and off["reason"]
+
+    # Turn cloud vision on with a model that carries `multimodal`, and the batch describes one
+    # picture per call, caching it on the row and indexing it into this group's own knowledge base.
+    store.update_settings({"vision_cloud": True})
+    store.update_provider("deepseek", {"api_key": "sk-test-1234567890"})
+    store.update_model("deepseek/deepseek-flash", {"strengths": ["multimodal"]})
+    first = client.post(f"/api/groups/{g['id']}/library/describe", params={"limit": 2}).json()
+    assert (first["described"], first["pending"]) == (2, 1), first
+    assert first["documents"] == 2
+    described = [a for a in ids if store.get_attachment(a)["vision_text"]]
+    assert len(described) == 2
+    # Pressing again finishes the rest, and re-pressing costs nothing.
+    again = client.post(f"/api/groups/{g['id']}/library/describe").json()
+    assert (again["described"], again["pending"]) == (1, 0), again
+    assert all(store.get_attachment(a)["vision_text"] for a in ids)
+    assert client.post(f"/api/groups/{g['id']}/library/describe").json()["described"] == 0

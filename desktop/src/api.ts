@@ -943,6 +943,9 @@ export interface Capabilities {
   video: { enabled: boolean; provider: { id: string; name: string; base_url: string } | null; problem: string };
   ext: GroupExt;
   docs: number;
+  /** Pictures of this group nobody has looked at yet: each one costs a vision call to describe, so
+   *  the panel offers it as a button rather than doing it on a timer. */
+  pictures_pending: number;
 }
 export interface GroupTemplate {
   id: string;
@@ -1210,6 +1213,9 @@ export const api = {
   addMemberFromModel: (gid: string, model_id: string) => post<Group>(`/api/groups/${gid}/members/from-model`, { model_id }),
   removeMember: (gid: string, aid: string) => del<Group>(`/api/groups/${gid}/members/${aid}`),
   capabilities: (gid: string) => get<Capabilities>(`/api/groups/${gid}/capabilities`),
+  /** Look at the pictures of a group nobody has looked at yet (`limit` at most 50 per press). */
+  describePictures: (gid: string, limit = 12) => post<{ described: number; pending: number; documents: number; reason: string }>(
+    `/api/groups/${gid}/library/describe?limit=${limit}`, {}),
   applyPrompt: (gid: string, prompt_id: string, mode: "replace" | "append" = "replace") =>
     post<Group>(`/api/groups/${gid}/apply-prompt`, { prompt_id, mode }),
   systemPromptPreview: (gid: string, agent_id?: string) =>
