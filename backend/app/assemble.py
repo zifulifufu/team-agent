@@ -33,16 +33,18 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from . import i18n
-from .bindirs import tool as _tool
+# `ffmpeg` as a local alias: the delegations below are read as `_ff.path`, which keeps it obvious that
+# these are the shared plumbing and not something this file decided.
+from . import ffmpeg as _ff
+from . import animate
 # The typography (font, wrapping, shadow) belongs to `figure`, which owns everything drawn by
 # hand — a second font list here would drift from that one.
-from .figure import font as _font, shadow as _shadow, wrap as _wrap
+from .figure import FigureError, font as _font, shadow as _shadow, wrap as _wrap
 from .coderun import inside, kill_group
 
 SUBDIR = "video"            # where the finished film goes, beside the generated clips
@@ -74,55 +76,13 @@ class AssembleError(Exception):
 
 
 # --------------------------------------------------------------------- the tools themselves
-def ffmpeg_path() -> str:
-    return _tool("ffmpeg") or ""
-
-
-def ffprobe_path() -> str:
-    """`ffprobe`, next to whichever `ffmpeg` was found.
-
-    A user who has one almost always has the other, and a Homebrew install puts them side by side —
-    so looking next to `ffmpeg` first is more reliable than the PATH, and it is what makes a
-    hand-built ffmpeg (a folder dropped somewhere) work as well.
-    """
-    found = _tool("ffprobe")
-    if found:
-        return found
-    ff = ffmpeg_path()
-    if ff:
-        beside = Path(ff).with_name("ffprobe")
-        if beside.is_file():
-            return str(beside)
-    return ""
-
-
-def available() -> tuple[str, str]:
-    """(why it can be used, why it cannot). Exactly one of the two is non-empty."""
-    ff = ffmpeg_path()
-    if not ff:
-        return "", i18n.pick_now(
-            "Assembling a video needs ffmpeg on this machine, and there is none. Install it "
-            "(`brew install ffmpeg`) and the tool appears by itself — nothing else is needed: the "
-            "narration comes from the system's own speech, and the subtitles are drawn here.",
-            "把片段拼成一条成片需要本机有 ffmpeg,现在没有。装一个(`brew install ffmpeg`),这个工具就会"
-            "自己出现——不需要别的东西:旁白用系统自带的语音,字幕在这里画。")
-    if not ffprobe_path():
-        return "", i18n.pick_now(
-            "ffmpeg is here but ffprobe is not, and without it the length of nothing can be "
-            "measured. They are installed together: `brew install ffmpeg`.",
-            "有 ffmpeg 但没有 ffprobe,没有它什么都量不出时长。两者是一起装的:`brew install ffmpeg`。")
-    return ff, ""
-
-
-def _run(cmd: list[str], timeout: float) -> tuple[int, str]:
-    """Run a short command (ffprobe, say) and return (code, combined output)."""
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return -1, f"timeout after {timeout:g}s"
-    except OSError as e:
-        return -1, str(e)
-    return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
+# The plumbing lives in its own leaf module because the animation engine needs it too, and it cannot
+# import this file (this one imports it). The names stay here so every existing caller and test keeps
+# working unchanged.
+ffmpeg_path = _ff.path
+ffprobe_path = _ff.probe_path
+available = _ff.available
+_run = _ff.run
 
 
 def duration_of(path: Path) -> float:
@@ -417,10 +377,20 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
         text = str(raw.get("text") or "").strip() or say
         title = str(raw.get("title") or "").strip()
         clip = str(raw.get("clip") or raw.get("source") or "").strip()
-        if not clip and not title:
+        # `anim` is how a shot gets **real motion** without a clip: the drawing is made here, frame by
+        # frame, to whatever length the shot turns out to be. A film of stills is a slide show, and a
+        # shot that only has to explain a mechanism should use this rather than a picture.
+        anim: dict | None = None
+        if raw.get("anim"):
+            try:
+                anim = animate.spec_of(raw["anim"])
+            except FigureError as e:
+                raise AssembleError(i18n.pick_now(f"Shot {i}: {e}", f"第 {i} 个镜头:{e}")) from None
+        if not clip and not title and not anim:
             raise AssembleError(i18n.pick_now(
-                f"Shot {i} has neither a clip nor a title — it would be a blank frame.",
-                f"第 {i} 个镜头既没有素材也没有标题,会是一帧空白。"))
+                f"Shot {i} has no picture at all — no clip, no title, no animation. It would be a "
+                "blank frame.",
+                f"第 {i} 个镜头没有任何画面——没有素材、没有标题、也没有动画,会是一帧空白。"))
         entry: dict[str, Any] = {"no": i, "say": say, "text": text, "title": title,
                                  # Where this shot's picture comes from, and under what terms. Not
                                  # decoration: a film that cannot answer it is one nobody may publish,
@@ -430,6 +400,8 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
                                  "audio": str(raw.get("audio") or ("voice" if say else "clip")),
                                  "motion": raw.get("motion", bool(raw.get("title"))),
                                  "source": "", "kind": "card", "own": 0.0}
+        if anim is not None:
+            entry["anim"], entry["kind"] = anim, "anim"
         want_fit = str(raw.get("fit") or fit or DEFAULT_FIT).strip().lower()
         if want_fit not in FITS:
             raise AssembleError(i18n.pick_now(
@@ -470,6 +442,10 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
                 f"{MAX_SHOT:g} seconds.",
                 f"第 {i} 个镜头要 {entry['seconds']:g} 秒;单个镜头在 {MIN_SHOT:g} 到 {MAX_SHOT:g} 秒之间。"))
         entry["seconds"] = round(entry["seconds"], 2)
+        if entry["kind"] == "anim":
+            # An animation is drawn to whatever length the shot ended up needing, so it is never
+            # "shorter than its slot" and never needs a held last frame.
+            entry["own"] = entry["seconds"]
         out.append(entry)
 
     # A target total is a real requirement (the platform, the slot, the brief), so make it, when
@@ -478,7 +454,10 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
         natural = sum(e["seconds"] for e in out)
         gap = round(total - natural, 2)
         if gap > 0.5:
-            holders = [e for e in out if e["kind"] in ("card", "image")]
+            # Places the slack can go without lying about anything: an animation is drawn to length,
+            # and a card or a still is simply held longer. A clip cannot be stretched without slowing
+            # it down, which would be visible, so a film of clips reports the gap instead.
+            holders = [e for e in out if e["kind"] in ("anim", "card", "image")]
             if holders:
                 extra = gap / len(holders)
                 for e in holders:
@@ -536,17 +515,7 @@ async def _ffmpeg(cmd: list[str], timeout: float) -> tuple[int, str]:
     return proc.returncode, (out or b"").decode("utf-8", "replace")
 
 
-def _encoder() -> list[str]:
-    """VideoToolbox when this build has it, libx264 otherwise — decided by asking, not by hoping.
-
-    The hardware encoder is several times faster and matters here because a three-minute vertical
-    film is 4300 frames; a build without it still works, just slower.
-    """
-    ff = ffmpeg_path()
-    code, out = _run([ff, "-hide_banner", "-encoders"], 20)
-    if code == 0 and "h264_videotoolbox" in out:
-        return ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-allow_sw", "1"]
-    return ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+_encoder = _ff.encoder
 
 
 def _fit_chain(fit: str, w: int, h: int) -> str:
@@ -590,6 +559,11 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
 
     Normalising here (same size, same frame rate, always an audio track) is what makes the concat
     at the end a stream copy instead of a second full encode.
+
+    The narration is recorded **first**, before the picture is prepared, because it is what can change
+    how long the shot is — and a picture prepared before that decision is a picture sized for the
+    length the shot turned out not to need. (A still used to be looped for `seconds + 1` and then
+    lengthened by the voice, which quietly ran the picture out before the sound did.)
     """
     w, h = size
     notes: list[str] = []
@@ -597,12 +571,50 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
     shot = plan_dir / f"s{idx:03d}.mp4"
     cmd = [ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y"]
 
+    # ---- the narration
+    audio_in: Path | None = None
+    speaking = bool(entry["say"]) and entry["audio"] in ("voice", "mix")
+    if speaking:
+        audio_in = plan_dir / f"s{idx:03d}-voice.aiff"
+        entry["voice"] = pick_voice(entry["say"], voice)
+        entry["voice_seconds"] = await speak(entry["say"], audio_in, entry["voice"],
+                                             min(120.0, timeout))
+        if entry["voice_seconds"] > entry["seconds"] + 0.15:
+            # A line of narration chopped off mid-sentence is the most obvious way an assembled
+            # film looks broken, so the narration always wins over the length that was asked for —
+            # including over an explicit `seconds`. It is said out loud rather than done quietly,
+            # because the total the group planned has just changed.
+            was = entry["seconds"]
+            entry["seconds"] = round(entry["voice_seconds"] + 0.35, 2)
+            notes.append(i18n.pick_now(
+                f"Shot {idx} was lengthened from {was:g}s to {entry['seconds']:g}s: its narration "
+                f"needs {entry['voice_seconds']:.1f}s, and cutting it off mid-sentence is worse "
+                "than running long.",
+                f"第 {idx} 个镜头从 {was:g} 秒延长到 {entry['seconds']:g} 秒:这段旁白要 "
+                f"{entry['voice_seconds']:.1f} 秒,把话截断比超时长更糟。"))
+            if entry["kind"] == "anim":
+                entry["own"] = entry["seconds"]
+
     # ---- the picture, fitted into the frame. Written as whole graph fragments (each ending in
     # `[vbase]`) rather than one filter chain, because two of the three ways to fit need more than
     # one chain and the blur needs to fork the input.
     pre: list[str] = []
     post: list[str] = []
-    if entry["kind"] == "card":
+    if entry["kind"] == "anim":
+        # Drawn here, at the length the shot now has: frames of the same drawing, at the same size and
+        # frame rate as everything else, so the concat stays a copy. The poster frame is kept beside
+        # it, which is how a reviewer sees what the drawing says before anyone watches the film.
+        clip = plan_dir / f"s{idx:03d}-anim.mp4"
+        still = plan_dir / f"s{idx:03d}-anim.png"
+        drawn = await animate.render(
+            clip, entry["anim"], size=size, fps=fps, seconds=entry["seconds"],
+            heading=entry["title"], credit=entry["credit"], still=still, timeout=timeout)
+        entry["source"] = str(clip)
+        entry["anim_still"] = str(still)
+        entry["animated"] = drawn["kind"]
+        cmd += ["-i", str(clip)]
+        pre.append("[0:v]null[vbase]")      # drawn at the frame size and rate already
+    elif entry["kind"] == "card":
         png = plan_dir / f"s{idx:03d}-card.png"
         await asyncio.to_thread(card_png, entry["title"], entry["subtitle"], size, png)
         cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{entry['seconds']:g}", "-i", str(png)]
@@ -624,29 +636,6 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
         # fitting rather than before, so it pushes the whole composition and not just the inset.
         post.append(f"zoompan=z='min(1+0.00035*on,1.12)':x='iw/2-(iw/zoom/2)'"
                     f":y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={fps}")
-
-    # ---- the narration is recorded first: its real length can change how long this shot is, and
-    # everything below (the silence pad, the audio graph) is sized from that decision.
-    audio_in: Path | None = None
-    speaking = bool(entry["say"]) and entry["audio"] in ("voice", "mix")
-    if speaking:
-        audio_in = plan_dir / f"s{idx:03d}-voice.aiff"
-        entry["voice"] = pick_voice(entry["say"], voice)
-        entry["voice_seconds"] = await speak(entry["say"], audio_in, entry["voice"],
-                                             min(120.0, timeout))
-        if entry["voice_seconds"] > entry["seconds"] + 0.15:
-            # A line of narration chopped off mid-sentence is the most obvious way an assembled
-            # film looks broken, so the narration always wins over the length that was asked for —
-            # including over an explicit `seconds`. It is said out loud rather than done quietly,
-            # because the total the group planned has just changed.
-            was = entry["seconds"]
-            entry["seconds"] = round(entry["voice_seconds"] + 0.35, 2)
-            notes.append(i18n.pick_now(
-                f"Shot {idx} was lengthened from {was:g}s to {entry['seconds']:g}s: its narration "
-                f"needs {entry['voice_seconds']:.1f}s, and cutting it off mid-sentence is worse "
-                "than running long.",
-                f"第 {idx} 个镜头从 {was:g} 秒延长到 {entry['seconds']:g} 秒:这段旁白要 "
-                f"{entry['voice_seconds']:.1f} 秒,把话截断比超时长更糟。"))
 
     # ---- the remaining inputs, counted as they are added so the graph can name them by index
     n_in = 1
@@ -719,6 +708,21 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
 
     plan = make_plan(shots, workspace=workspace, total=total, voice=voice, still=still, fit=fit)
 
+    # A film whose every picture is a still is a slide show, and the usual reason for it is that
+    # nobody thought about the motion — each shot was asked for one picture at a time. Saying so is
+    # the whole point of having the animations: the group can then re-cut two or three shots instead
+    # of shipping a deck with a soundtrack.
+    notes: list[str] = []
+    moving = [e for e in plan if e["kind"] in ("anim", "video")]
+    if not moving:
+        notes.append(i18n.pick_now(
+            "Every shot of this film is a still picture, so it plays as a slide show. The shots that "
+            "explain a mechanism — flow, a bulge growing, a coil filling — read far better as "
+            "animation: give such a shot an \"anim\" instead of a picture, or use a real recording as "
+            "its clip.",
+            "这条片子的每一镜都是静帧,所以它播出来像幻灯片。**解释机制**的镜头(血流、鼓出、弹簧圈填塞)"
+            "用动画会好得多:把这种镜头的画面换成 \"anim\",或者用一段真实录像当 clip。"))
+
     stem = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", (name or f"film-{time.strftime('%Y%m%d-%H%M%S')}"))
     stem = stem.strip("-")[:40] or f"film-{time.strftime('%Y%m%d-%H%M%S')}"
     out_dir = workspace / SUBDIR
@@ -734,7 +738,6 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
         raise AssembleError(i18n.pick_now("The output folder resolves outside the workspace.",
                                           "输出目录解析后在工作目录之外。"))
 
-    notes: list[str] = []
     started = time.time()
     try:
         parts: list[Path] = []
@@ -763,6 +766,7 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
     return {"name": final.name, "path": str(final), "bytes": size_bytes,
             "seconds": total_seconds, "size": label, "fps": fps, "fit": plan[0]["fit"] if plan else "",
             "shots": len(plan), "narrated": sum(1 for e in plan if e["say"]),
+            "animated": sum(1 for e in plan if e["kind"] == "anim"),
             "subtitled": sum(1 for e in plan if e["text"]), "burned": burn,
             "srt": str(out_dir / f"{stem}.srt"), "sheet": str(out_dir / f"{stem}.md"),
             "plan": plan, "notes": notes, "took": round(time.time() - started, 1)}
@@ -819,15 +823,24 @@ def _shot_sheet(plan: list[dict], size: tuple[int, int], fps: int, final: Path,
         "| # | 画面 | 秒 | 旁白 | 字幕 | 画面来源 |"))
     lines.append("|---|---|---|---|---|---|")
     for e in plan:
-        src = Path(e["source"]).name if e["source"] else i18n.pick_now("(title card)", "(标题卡)")
+        if e["kind"] == "anim":
+            # The clip in `source` is the file this app drew a moment ago; naming it would tell the
+            # reader nothing, so the sheet says what the shot *is* instead.
+            src = i18n.pick_now(f"animated: {e.get('animated') or e['anim']['kind']}",
+                                f"程序动画:{e.get('animated') or e['anim']['kind']}")
+        elif e["source"]:
+            src = Path(e["source"]).name
+        else:
+            src = i18n.pick_now("(title card)", "(标题卡)")
         say = (e["say"][:38] + "…") if len(e["say"]) > 39 else e["say"]
         text = (e["text"][:38] + "…") if len(e["text"]) > 39 else e["text"]
         credit = str(e.get("credit") or "")
         if credit:
             credit = (credit[:38] + "…") if len(credit) > 39 else credit
+        elif e["kind"] in ("card", "anim"):
+            credit = i18n.pick_now("drawn here", "本程序绘制")
         else:
-            credit = (i18n.pick_now("**(none recorded)**", "**(未记录)**") if e["kind"] != "card"
-                      else i18n.pick_now("drawn here (title card)", "本程序绘制(标题卡)"))
+            credit = i18n.pick_now("**(none recorded)**", "**(未记录)**")
         lines.append(f"| {e['no']} | {src} | {e['seconds']:g} | {say} | {text} | {credit} |")
     if notes:
         lines += ["", i18n.pick_now("## Adjustments", "## 调整")] + [f"- {n}" for n in notes]

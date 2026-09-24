@@ -109,7 +109,9 @@ def test_a_film_longer_than_asked_says_so_instead_of_cutting(tmp_path):
 @pytest.mark.parametrize("shots, want", [
     ([], "needs a shot list"),
     ("not a list", "needs a shot list"),
-    ([{"seconds": 3}], "neither a clip nor a title"),
+    ([{"seconds": 3}], "no picture at all"),
+    ([{"anim": "heart_surgery"}], "is not a drawing this app can make"),
+    ([{"anim": {"kind": "coil_fill", "camera": "zoom"}}], "Camera"),
     ([{"title": "x", "seconds": 0.2}], "between"),
     ([{"title": "x", "seconds": "long"}], "not a number"),
     ([{"clip": "/etc/hosts"}], "absolute"),

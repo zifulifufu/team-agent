@@ -90,7 +90,7 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
-| Tools | Text-protocol calls (max 3 per reply), eleven built-ins, Python plugins, MCP over stdio / SSE / HTTP |
+| Tools | Text-protocol calls (max 3 per reply), twelve built-ins, Python plugins, MCP over stdio / SSE / HTTP |
 | Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references; **the pictures a note came with**, reachable by document |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
@@ -346,9 +346,9 @@ in its wall". None of them is an aneurysm.
 
 So the work order is: **look for the real thing first** (`list_figures` prints the pictures that came
 with a document — a knowledge base imported from notes or an atlas usually has hundreds, already
-correct and already captioned), **make the still frame next, and have it looked at**, and only then
-let anything move. A still can be read and rejected; a rendered clip cannot. Skipping that gate is
-how a wrong picture survives to a finished film.
+correct and already captioned), **decide how each shot moves**, **make the frame that will be looked
+at**, and only then render. A still can be read and rejected; a rendered clip cannot. Skipping that
+gate is how a wrong picture survives to a finished film.
 
 Two tools carry it:
 
@@ -362,6 +362,41 @@ Two tools carry it:
   naming a part (`at_part: "sac"`) rather than by guessing a fraction — the drawing knows where its own
   parts are and hands those positions back, because a mark placed from a guess points somewhere else.
   A schematic also says on the frame that it is a drawing.
+
+#### Every shot has to move — a film of stills is a slide show
+
+What makes an assembled film feel like a slide show is not the length of the clips; it is that nothing
+*inside* the frame moves. Blood does not flow, the bulge is already there in the first frame, the coil
+arrives fully wound — and none of it shows the mechanism the narration is describing. So every shot is
+given a way to move, and the choice is made in this order:
+
+1. **Real motion** — a recording of the procedure, or a run of angiographic frames. For anatomy, a
+   lesion, an instrument or a step, this is the only honest source of motion there is.
+2. **Computed motion** — `make_animation`, or a shot's `anim`. The app draws every frame itself, so
+   the anatomy is the drawing the stills use and nothing is invented:
+
+   | animation | what it shows |
+   |---|---|
+   | `blood_flow` | blood travelling along the vessel, past the sac |
+   | `aneurysm_grow` | a weak spot bulging out into the sac, with a dashed outline of where the wall was |
+   | `coil_fill` | the coil being wound in, loops filling the sac, the feeding wire visible from the catheter tip |
+   | `catheter_advance` | the microcatheter travelling the lumen and turning into the sac |
+   | `contrast_fill` | contrast running up the vessel and opacifying the finding |
+
+   It costs nothing and it is **deterministic** — the same shot gives the same frames, so "make the
+   coil slower" is a number to turn rather than a re-roll. And a still is simply **the last frame of
+   the same drawing**: `make_figure` and `make_animation` are one vocabulary, not two, so the frame a
+   reviewer approved is a frame of the film that follows.
+3. **A still that has been looked at** — a title card, a chart, a real picture with marks on it. Held
+   with nothing but a slow push, and only when the shot genuinely has no mechanism to show.
+4. **Generated motion** — image-to-video **from a real first frame**, once that frame has been looked
+   at. Text-to-video stays limited to C-grade graphics, for the reason above.
+
+`assemble_video` takes either a file (`clip`) or an animation (`anim`) for a shot, and an animated shot
+is **drawn at the length its narration needs** — the motion spreads over the time the line really takes
+instead of being stretched to fit. It also counts what moved: the answer says how many shots were drawn
+here, how many were real footage, and how many were held still — and if **every** shot was a still, it
+says the film is a slide show rather than leaving you to find out after rendering.
 
 `assemble_video` then asks each shot for its `credit` — where that picture came from and under what
 terms — writes it into the shot sheet, and names the shots that have none. A film that cannot answer
@@ -901,6 +936,12 @@ from other projects.
   transition library, and the subtitles are cut one shot at a time rather than aligned
   sentence-by-sentence. They are drawn with Pillow, so the missing libass in this `ffmpeg` does not
   matter — and for the same reason there is no `.ass`-style typesetting.
+- **The drawn animations are five named mechanisms, not a motion-design tool.** They move the shapes
+  this app knows how to draw (a vessel, a sac, a catheter, a coil, flow), with one camera move at
+  most; there is no free-form path animation, no rigging, no transitions, and nothing here can make a
+  *real recording* move differently. A film that needs animated charts or kinetic type belongs in
+  Remotion or HyperFrames through `run_code`. What the five are for is the opposite case: showing a
+  mechanism correctly, cheaply, and with the same anatomy the stills use.
 
 ## Roadmap
 

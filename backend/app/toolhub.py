@@ -11,7 +11,7 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 
 from __future__ import annotations
 
-from . import assemble, coderun, figure, i18n, imagegen, media, video
+from . import animate, assemble, coderun, figure, i18n, imagegen, media, video
 
 import asyncio
 import json
@@ -217,6 +217,11 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "shot that shows a picture also carries `credit` — where that picture came "
                        "from and under what terms — because a film that cannot answer that cannot be "
                        "published, and shots without it are listed in the answer. "
+                       "**A shot can move by itself: give it \"anim\" instead of a picture** and "
+                       "this app draws the motion frame by frame — see `make_animation` for the "
+                       "list. Use it for every shot that explains a mechanism, and a real "
+                       "recording for anatomy: a film whose every picture is a still plays as a "
+                       "slide show, and the answer says so when that happens. "
                        "Pictures can be shots too (they get a slow push and hold as long as they "
                        "are told). A shot's length follows the narration when you do not give one, "
                        "because a line cut off mid-sentence is worse than running long. The result "
@@ -227,7 +232,10 @@ BUILTIN_SPECS: dict[str, dict] = {
                           "几段片段」到「别人能看的片子」之间的那一步,全程在本机完成、不花钱——不生成任何"
                           "东西。按顺序给一份分镜表,每条形如 {\"clip\": \"video/x.mp4\", \"seconds\": 6, "
                           "\"say\": \"要录的旁白\", \"text\": \"屏幕上的字\"};没有素材的卡片写 "
-                          "{\"title\": \"...\", \"subtitle\": \"...\"}。图片也能当镜头(会缓慢推近,并按住"
+                          "{\"title\": \"...\", \"subtitle\": \"...\"}。**镜头可以自己动:把画面换成 `anim`**"
+                          "(本程序逐帧画出来,可用清单见 `make_animation`);凡是解释机制的镜头都用它,解剖用真实录像 —— "
+                          "每一镜都是静帧的片子播出来就是幻灯片,装配结果会明确告诉你这一点。"
+                          "图片也能当镜头(会缓慢推近,并按住"
                           "你给的时长)。不写时长时,镜头长度跟着旁白走 —— 话被截断比超时长更糟。产物是一个"
                           "烧好字幕的 .mp4,旁边还有 .srt 和一份分镜表,便于改一行重新装配。"
                           "你看不到也听不到结果:只说你装配了什么,不要描述画面。",
@@ -240,10 +248,12 @@ BUILTIN_SPECS: dict[str, dict] = {
             "shots": {"type": "array", "items": {"type": "object"}, "description":
                       "The shots, in order. Each: {clip: a path inside the workspace, seconds: how long, "
                       "say: narration to record, text: words on screen, audio: voice|clip|mix|silent, "
-                      "motion: true|false for a still} — or {title, subtitle} for a card with no footage",
+                      "motion: true|false for a still, anim: an animation spec} — or {title, subtitle} "
+                      "for a card with no footage. `anim` is either a name or {kind, camera, "
+                      "labels, coil_turns, show}",
                       "description_zh":
                       "按顺序的镜头。每条形如 {clip: 工作目录内的路径, seconds: 时长, say: 要录的旁白, "
-                      "text: 屏幕字幕, audio: voice|clip|mix|silent, motion: 静帧是否缓慢推近} —— "
+                      "text: 屏幕字幕, audio: voice|clip|mix|silent, motion: 静帧是否缓慢推近, anim: 让镜头自己动的动画} —— "
                       "没有素材的卡片写 {title, subtitle}"},
             "size": {"type": "string", "enum": list(assemble.SIZES),
                      "description": f"Picture size, one of: {', '.join(assemble.SIZES)}. 1080x1920 is the "
@@ -281,6 +291,58 @@ BUILTIN_SPECS: dict[str, dict] = {
                      "description_zh": "成片的名字;留空则用时间戳"}},
             "required": ["shots"]},
     },
+    "make_animation": {
+        "description": "Draw a real animation of a mechanism and save it as a clip: blood flowing "
+                       "along the vessel, a weak spot bulging out into the sac, a coil being wound "
+                       "into it, the microcatheter being navigated there, contrast opacifying the "
+                       "finding. Every frame is computed and drawn on this machine, so the anatomy is "
+                       "exactly the drawing the stills use and nothing is invented; the clip lands in "
+                       "the workspace as an .mp4 ready to be a shot's `clip` in `assemble_video`, with "
+                       "a poster frame beside it to look at first. Reach for this for every shot that "
+                       "explains *how* something works — a film of still pictures plays as a slide "
+                       "show. The drawings:\n" + animate.describe(),
+        "description_zh": "把一个机制画成**真正的动画**并存成片段:血流沿血管流动、薄弱处鼓出成瘤、弹簧圈一圈圈填进去、"
+                          "微导管被导航过去、造影剂让病变显影。每一帧都是本机算出来画出来的,所以解剖与静帧用的是同一张图、"
+                          "不会凭空编造;产物是工作目录里的 .mp4,可直接当 `assemble_video` 里某镜的 `clip`,"
+                          "旁边还有一张关键帧可以先看。凡是解释**机制**的镜头都用它 —— 一串静帧播出来就是幻灯片。"
+                          "可选画面:\n" + animate.describe("zh"),
+        # It draws frames here and runs `ffmpeg` to encode them, so it asks like the other runners.
+        "risk": "exec",
+        "timeout_key": "assemble_timeout",
+        "parameters": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": list(animate.ANIMATIONS),
+                     "description": "Which animation to draw",
+                     "description_zh": "画哪一种动画"},
+            "seconds": {"type": "number",
+                        "description": "How long the clip is; 5 by default. The motion is spread over "
+                                       "exactly this long",
+                        "description_zh": "片段多长,默认 5 秒。动作会正好铺满这个时长"},
+            "size": {"type": "string", "enum": list(assemble.SIZES),
+                     "description": f"Picture size, one of: {', '.join(assemble.SIZES)}. Keep it the same "
+                                    "as the film's so the shot needs no rescaling",
+                     "description_zh": f"画幅,可选:{', '.join(assemble.SIZES)}。请与成片一致,镜头就不用缩放"},
+            "heading": {"type": "string", "description": "The line across the top: what we are looking at",
+                        "description_zh": "顶部那一行:我们在看什么"},
+            "credit": {"type": "string",
+                       "description": "Where this drawing comes from — a drawing made here is not a real "
+                                      "image, and the film has to say so",
+                       "description_zh": "这张图的来源 —— 本程序画的不是真实影像,成片必须说明这一点"},
+            "params": {"type": "object", "description":
+                       "Shape and labels: {sac_at_x, sac_r, coil_turns, particles, show: [sac, catheter, "
+                       "coil, flow], camera: none|push|pull, labels: [{text, at_part, from, to}]}. "
+                       "`at_part` takes an anchor name (sac, coil, catheter_tip, vessel, flow_in, "
+                       "flow_out) so a label points at the right thing instead of at a guessed "
+                       "position; `from`/`to` are times in 0..1, so a label can appear when its part does",
+                       "description_zh":
+                       "形状与标注:{sac_at_x, sac_r, coil_turns, particles, show: [sac, catheter, coil, "
+                       "flow], camera: none|push|pull, labels: [{text, at_part, from, to}]}。"
+                       "`at_part` 用锚点名(sac/coil/catheter_tip/vessel/flow_in/flow_out),标注才会指到对的东西上;"
+                       "`from`/`to` 是 0..1 的时间,标注就能在它说的部件出现时才出现"},
+            "name": {"type": "string",
+                     "description": "What to call the clip; left out, it is named after the animation",
+                     "description_zh": "片段的名字;留空则用动画名"}},
+            "required": ["kind"]},
+    },
     "list_figures": {
         "description": "List the real pictures and recordings that came with one of this group's "
                        "documents. A knowledge base usually came from notes, atlases or case "
@@ -315,6 +377,10 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "subject has to be shown as it actually is. Marks are given as fractions of the "
                        "frame (0..1 from the top-left), never pixels. The file lands in this group's "
                        "workspace as a still, ready to be a shot in `assemble_video`, and it carries "
+                       "**A still is the last frame of the same drawing** — these drawings can move "
+                       "(`make_animation`: blood flowing, a bulge growing, a coil filling in). If the "
+                       "shot has to explain how something works, ask for the animation rather than the "
+                       "still: a film of stills plays as a slide show. "
                        "its own credit line — a picture in a film that cannot say where it came from is "
                        "one nobody may publish. You cannot see the result: say what you made, never "
                        "describe how it looks.",
@@ -324,7 +390,10 @@ BUILTIN_SPECS: dict[str, dict] = {
                           "血管、管壁上的囊、微导管、弹簧圈、血流箭头 —— 干净、可重复、而且诚实,因为它不声称"
                           "任何没画进去的东西。**给大众讲操作过程时,示意图通常比照片更好用**;需要「就是长这样」"
                           "时才用真实图片。标注的位置用画面比例(0..1,从左上角算),不要给像素。产物落在本群"
-                          "工作目录里,是一张静帧,可直接作为 `assemble_video` 的镜头,而且自带来源行 —— "
+                          "工作目录里,是一张静帧,可直接作为 `assemble_video` 的镜头,而且自带来源行。"
+                          "**静帧就是同一张画的最后一帧** —— 这些画是可以动的(`make_animation`:血流、鼓出、"
+                          "弹簧圈填塞)。如果这一镜是解释机制怎么运作的,要的就是动画而不是静帧:"
+                          "一串静帧播出来就是幻灯片。 "
                           "片子里一张说不清来路的图,是谁都不能发布的。你看不到结果:只说你做了什么,不要描述画面。",
         # It writes a file in the workspace and executes nothing, so it is a write rather than an exec.
         "risk": "write",
@@ -551,6 +620,9 @@ class ToolHub:
         ok, why = assemble.available()
         if ok:
             add("assemble_video", specs["assemble_video"], source="builtin")
+            # Same condition, same reason: drawing a real animation needs nothing but ffmpeg, and a
+            # group that can only make stills will make a slide show.
+            add("make_animation", specs["make_animation"], source="builtin")
         else:
             ctx.problems.append(why)
         if cfg["video_enabled"]:
@@ -685,6 +757,8 @@ When it is not supplied, calls needing confirmation are always denied."""
             return await self._generate_image(ctx, args)
         if name == "assemble_video":
             return await self._assemble_video(ctx, args)
+        if name == "make_animation":
+            return await self._make_animation(ctx, args)
         if name == "make_figure":
             return await self._make_figure(ctx, args)
         text, ok = await self._builtin(ctx, name, args)
@@ -1083,6 +1157,74 @@ When it is not supplied, calls needing confirmation are always denied."""
         return "\n".join(lines), True, [{"kind": "image", "name": out.name,
                                          "bytes": out.stat().st_size}]
 
+    # ----------------------------------------------------------- animation
+    async def _make_animation(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
+        """Draw one real animation into the workspace: a clip, plus a poster frame.
+
+        Offered to every member for the same reason `assemble_video` is — it needs nothing but ffmpeg,
+        and a group that can only produce stills makes a slide show with narration over it. The poster
+        frame is not a convenience: a reviewer can look at one frame and ask for a change, and the
+        cheapest moment to change a drawing is before the other hundred frames exist.
+        """
+        ok, why = assemble.available()
+        if not ok:
+            return why, False, []
+        cfg = self.store.get_settings()
+        workspace = self.store.workspace_dir(ctx.group["id"])
+        try:
+            spec = animate.spec_of({"kind": args.get("kind"), **(args.get("params") or {})})
+            seconds = max(2.0, min(float(args.get("seconds") or 5.0), animate.MAX_SECONDS))
+            w, h, label = assemble.parse_size(str(args.get("size") or ""))
+            clip = figure.workspace_output(workspace, "anim", str(args.get("name") or spec["kind"]),
+                                           ".mp4")
+            out = await animate.render(
+                clip, spec, size=(w, h), seconds=seconds,
+                heading=str(args.get("heading") or ""), credit=str(args.get("credit") or ""),
+                still=clip.with_suffix(".png"),
+                # Read from the setting rather than through `timeout_budget`: the budget belongs to the
+                # call site, and this is the deadline ffmpeg itself is held to.
+                timeout=float(cfg.get("assemble_timeout") or 1800),
+            )
+        except figure.FigureError as e:
+            return str(e), False, []
+        except Exception as e:  # noqa: BLE001 — a failed run must come back as a sentence
+            return i18n.pick_now(f"Drawing the animation failed: {type(e).__name__}: {e}",
+                                 f"画动画失败:{type(e).__name__}: {e}"), False, []
+
+        size_bytes = Path(out["path"]).stat().st_size
+        lines = [i18n.pick_now(
+            f"Drew a {out['seconds']:g}s {label} animation — {out['kind']}, {out['frames']} frames "
+            f"drawn here: {out['name']} ({media.size_label(size_bytes)}).",
+            f"画了一段 {out['seconds']:g} 秒的 {label} 动画 —— {out['kind']},{out['frames']} 帧都是本机画的:"
+            f"{out['name']}({media.size_label(size_bytes)})。")]
+        lines.append(i18n.pick_now(
+            f"Saved in this group's workspace: {out['path']}",
+            f"已保存在本群工作目录:{out['path']}"))
+        lines.append(i18n.pick_now(
+            f"The frame kept for review is {Path(out['still']).name} beside it — that is what to look "
+            "at, or to hand to somebody who can see, before this goes into a film.",
+            f"旁边那张 {Path(out['still']).name} 是留给审阅的关键帧 —— 进成片之前,该看的是它,"
+            "或者把它交给看得见的人。"))
+        lines.append(i18n.pick_now(
+            "Give this to `assemble_video` as that shot's `clip` (with `seconds`), or ask for the same "
+            "shot as an `anim` there and the film draws it at the length the narration needs. You "
+            "cannot watch the clip, so do not describe how it looks — say what it shows and how long "
+            "it is.",
+            "把它当作那一镜的 `clip` 交给 `assemble_video`(配好 `seconds`),或者干脆在 `assemble_video` 里"
+            "直接给那一镜写 `anim`,成片会按旁白需要的长度自己画。你看不到这段动画,所以不要描述画面 —— "
+            "只说它画的是什么、有多长。"))
+        anchors = {k: v for k, v in figure.schematic_geometry((w, h),
+                                                              (args.get("params") or {})).items()
+                   if not k.startswith("_")}
+        named = ", ".join(f"{k}={v[0]:.2f},{v[1]:.2f}" for k, v in anchors.items())
+        lines.append(i18n.pick_now(
+            f"Where its parts are, as fractions of the frame: {named}. Use these as `at` in `labels` "
+            "instead of estimating a position — a label placed from a guess points somewhere else.",
+            f"各部件在画面里的比例位置:{named}。`labels` 里的 `at` 请用它们,不要自己估 —— "
+            "估出来的标注指的一定是别的地方。"))
+        return "\n".join(lines), True, [{"kind": "video", "name": out["name"],
+                                          "bytes": size_bytes, "seconds": out["seconds"]}]
+
     # ----------------------------------------------------------- assembly
     async def _assemble_video(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
         """Join the group's shots into one film, with narration and subtitles.
@@ -1131,6 +1273,15 @@ When it is not supplied, calls needing confirmation are always denied."""
             f"把 {out['shots']} 个镜头装配成一条 {out['size']} 的成片,共 {out['seconds']:g} 秒"
             f"({minutes}),{out['fps']}fps:{out['name']}({media.size_label(out['bytes'])},"
             f"用了 {out['took']:g} 秒)。")]
+        # Said out loud because it is the difference between a film and a slide show, and because a
+        # group that has just been told "every shot is a still" needs to know which lever to pull.
+        drawn = out["animated"]
+        real = sum(1 for e in out["plan"] if e["kind"] == "video")
+        lines.append(i18n.pick_now(
+            f"Shots that move: {drawn} drawn here, {real} from real footage"
+            + (f", {out['shots'] - drawn - real} held still." if out["shots"] > drawn + real else "."),
+            f"会动的镜头:{drawn} 个是本程序画的,{real} 个来自真实录像"
+            + (f",{out['shots'] - drawn - real} 个是静帧撑住的。" if out["shots"] > drawn + real else "。")))
         lines.append(i18n.pick_now(
             f"Narration: {out['narrated']} shot(s). Words on screen: {out['subtitled']} shot(s), "
             + ("burned into the picture." if out["burned"] else "kept in the .srt only."),

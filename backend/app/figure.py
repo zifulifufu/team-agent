@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -65,9 +66,15 @@ class FigureError(Exception):
 
 
 # --------------------------------------------------------------------- typography
+@lru_cache(maxsize=64)
 def font(size: int):
     """The first font this machine really has, at `size`. Falls back to Pillow's own bitmap font so a
-    machine with none of the candidates still produces a frame rather than an exception."""
+    machine with none of the candidates still produces a frame rather than an exception.
+
+    Cached because `ImageFont.truetype` re-reads and re-parses the file every time — a few
+    milliseconds each, which nobody notices until an animation asks for it 480 times (four sizes per
+    frame) and the whole encode turns out to be waiting on font parsing.
+    """
     from PIL import ImageFont
     for path in FONTS:
         try:
@@ -77,8 +84,16 @@ def font(size: int):
     return ImageFont.load_default()
 
 
+# Characters that may not *start* a line. Chinese punctuation carries no width of its own to speak
+# of, so a wrap that ignores this leaves a full stop alone on the last line — which a reviewer spotted
+# in a rendered film. Pulling it back onto the previous line costs a few pixels of overflow and buys
+# text that looks typeset rather than wrapped.
+NO_START = "。，、;;::!!??）》」』】”’…—·%℃"
+
+
 def wrap(text: str, f, limit: int, draw) -> list[str]:
-    """Break a line to fit `limit` pixels, character by character.
+    """Break a line to fit `limit` pixels, character by character, without starting a line on
+    punctuation.
 
     Characters rather than words because Chinese has no spaces: a word-based wrap puts a whole
     sentence on one line and it runs off the frame.
@@ -87,8 +102,10 @@ def wrap(text: str, f, limit: int, draw) -> list[str]:
     for para in str(text or "").split("\n"):
         cur = ""
         for ch in para:
-            if draw.textlength(cur + ch, font=f) <= limit:
+            if cur and draw.textlength(cur + ch, font=f) <= limit:
                 cur += ch
+            elif not cur and ch in NO_START and lines:
+                lines[-1] += ch
             else:
                 if cur:
                     lines.append(cur)
@@ -120,7 +137,7 @@ def _band_heights(size: tuple[int, int], *, head: bool, foot: str) -> tuple[int,
 def compose(body_path: Path | None, out: Path, size: tuple[int, int], *,
             heading: str = "", caption: str = "", credit: str = "", draw=None,
             body_fit: str = "full", ruler: bool = False, marks: list | None = None) -> Path:
-    """Put a picture, or a drawing, on a titled canvas with a caption and a credit line.
+    """Put a picture, or a drawing, on a titled canvas with a caption and a credit line, and save it.
 
     Everything about the layout exists for one reason: a picture dropped into a film with no heading
     and no source is a picture nobody can check. The heading says what we are looking at, the caption
@@ -128,6 +145,22 @@ def compose(body_path: Path | None, out: Path, size: tuple[int, int], *,
     to the question every published film eventually gets asked.
 
     `draw` is called with `(image, draw)` for a schematic; supplying it means `body_path` is unused.
+    """
+    plate(size, body_path, heading=heading, caption=caption, credit=credit, draw=draw,
+          body_fit=body_fit, ruler=ruler, marks=marks).save(out)
+    return out
+
+
+def plate(size: tuple[int, int], body_path: Path | None = None, *,
+          heading: str = "", caption: str = "", credit: str = "", draw=None,
+          body_fit: str = "full", ruler: bool = False, marks: list | None = None):
+    """The same titled canvas, returned as an image instead of written to a file.
+
+    It exists for the animations: every frame of one is this canvas with a different body drawn into
+    it, so the heading, the caption and the credit must be produced by exactly the code that produces
+    them for a still — otherwise a film's frames and the still a reviewer approved would be two
+    slightly different layouts, and the difference would show up as the caption jumping when the shot
+    changes from a drawing to an animation.
     """
     from PIL import Image, ImageDraw
     w, h = size
@@ -137,9 +170,9 @@ def compose(body_path: Path | None, out: Path, size: tuple[int, int], *,
 
     avail_h = h - head_h - foot_h
     if draw is not None:
-        plate = Image.new("RGB", size, DRAWING_BG)
-        draw(plate, ImageDraw.Draw(plate))
-        canvas.paste(plate, (0, 0))
+        body = Image.new("RGB", size, DRAWING_BG)
+        draw(body, ImageDraw.Draw(body))
+        canvas.paste(body, (0, 0))
         d = ImageDraw.Draw(canvas)
     elif body_path is not None:
         img = Image.open(body_path).convert("RGB")
@@ -181,8 +214,7 @@ def compose(body_path: Path | None, out: Path, size: tuple[int, int], *,
     # magnified inset, which is drawn from the canvas it sits on.
     if marks:
         apply_marks(canvas, marks, size)
-    canvas.save(out)
-    return out
+    return canvas
 
 
 def _with_ruler(img):
@@ -311,7 +343,7 @@ def _tag(d, text: str, at: tuple[int, int], f, size: tuple[int, int],
     thing they named.
     """
     w, h = size
-    pad, gap = 12, 34
+    pad, gap = max(12, int(h * 0.007)), max(34, int(h * 0.028))
     lines = wrap(text, f, int(w * 0.42), d)[:2]
     tw = int(max(d.textlength(ln, font=f) for ln in lines)) + pad * 2
     th = int(f.size * 1.5) * len(lines) + pad
@@ -426,14 +458,72 @@ def flow(plate, a: tuple[float, float], b: tuple[float, float], width: int, colo
     _head(d, a, b, int(width * 5.5), color)
 
 
-SCHEMATICS = ("aneurysm", "aneurysm_coiling", "blood_flow")
-# What each template shows unless `show` says otherwise. Kept beside the templates rather than inside
-# them, so "what does this drawing contain" is answerable without reading the drawing code.
-SCHEMATIC_PARTS: dict[str, tuple[str, ...]] = {
-    "aneurysm": ("sac",),
-    "aneurysm_coiling": ("sac", "catheter", "coil"),
-    "blood_flow": ("sac", "flow"),
+# The vocabulary. Each name is something that can be **drawn at a time** — and a still is simply that
+# drawing at its last moment, which is why there is one list and not two (see `schematic`).
+ANIMATIONS: tuple[str, ...] = (
+    "blood_flow", "aneurysm_grow", "coil_fill", "catheter_advance", "contrast_fill",
+)
+SCHEMATICS = ANIMATIONS
+# Names that meant a still before these could move. Kept working rather than renamed away: a skill,
+# a saved storyboard or a group's habit naming one of them should not break.
+SCHEMATIC_ALIASES: dict[str, str] = {
+    "aneurysm": "aneurysm_grow",
+    "aneurysm_coiling": "coil_fill",
 }
+# Which parts each drawing contains before `show` adds any.
+ANIMATION_PARTS: dict[str, tuple[str, ...]] = {
+    "blood_flow": ("sac", "flow"),
+    "aneurysm_grow": ("sac",),
+    "coil_fill": ("sac", "catheter", "coil"),
+    "catheter_advance": ("sac", "catheter", "flow"),
+    "contrast_fill": ("sac",),
+}
+SCHEMATIC_PARTS: dict[str, tuple[str, ...]] = {
+    **ANIMATION_PARTS,
+    **{old: ANIMATION_PARTS[new] for old, new in SCHEMATIC_ALIASES.items()},
+}
+PARTS = ("sac", "catheter", "coil", "flow")
+CAMERAS = ("none", "push", "pull")
+# The camera each drawing uses unless told otherwise: a push where attention should narrow, nothing
+# where the motion itself is the point.
+ANIMATION_CAMERA: dict[str, str] = {
+    "blood_flow": "none",
+    "aneurysm_grow": "push",
+    "coil_fill": "push",
+    "catheter_advance": "push",
+    "contrast_fill": "none",
+}
+STILL_AT = 0.62                 # the frame kept for review: past half way, everything visible
+CONTRAST = (236, 240, 248)      # what a vessel looks like when it is full of water-soluble contrast
+GHOST = (150, 158, 172)         # the dashed line saying where a wall used to be
+# Where each object travelling in the blood sits, and how big it is. Fixed rather than random: the
+# same input has to give the same frames, or a note like "move the third one" means nothing.
+_JITTER = (0.0, 0.37, 0.71, 0.19, 0.53, 0.88, 0.09, 0.62, 0.44, 0.28, 0.80, 0.05, 0.66, 0.33, 0.95, 0.14)
+
+
+def canonical(kind: str) -> str:
+    """The animation name behind a name. Raises with the whole vocabulary if there is none."""
+    k = str(kind or "").strip().lower()
+    k = SCHEMATIC_ALIASES.get(k, k)
+    if k not in ANIMATIONS:
+        raise FigureError(i18n.pick_now(
+            f"\"{kind or '(none)'}\" is not a drawing this app can make. Available: "
+            f"{', '.join(ANIMATIONS)}"
+            + (f" (or their older names: {', '.join(SCHEMATIC_ALIASES)})." if SCHEMATIC_ALIASES else "."),
+            f"「{kind or '(没给)'}」不是本程序会画的东西。可用:{', '.join(ANIMATIONS)}"
+            + (f"(旧名字 {', '.join(SCHEMATIC_ALIASES)} 也仍然可用)。" if SCHEMATIC_ALIASES else "。")))
+    return k
+
+
+def check_camera(name: str) -> str:
+    """The camera move, validated in one place — the tool layer checks a storyboard before anything
+    is drawn, and the drawer checks again because it can also be called directly."""
+    cam = str(name or "none").strip().lower()
+    if cam not in CAMERAS:
+        raise FigureError(i18n.pick_now(
+            f"Camera \"{cam}\" is not one of: {', '.join(CAMERAS)}.",
+            f"镜头运动「{cam}」不在可用之列:{', '.join(CAMERAS)}。"))
+    return cam
 
 
 def schematic_geometry(size: tuple[int, int], params: dict | None = None) -> dict:
@@ -470,63 +560,281 @@ def schematic_geometry(size: tuple[int, int], params: dict | None = None) -> dic
     }
 
 
-def schematic(kind: str, size: tuple[int, int], params: dict | None = None):
-    """A function that draws `kind` into a plate, for `compose(..., draw=...)`.
+# ------------------------------------------------------- drawing something at a time
+# Everything below is a function of `t` in 0..1 rather than a fixed picture, because a still and a
+# moving frame have to be the same drawing: a film whose frames were one shape and whose stills were
+# another is a film nobody can review. `schematic` is these, sampled at t = 1.
+def _ease(t: float) -> float:
+    """Smoothstep — the reason a computed motion does not look mechanical."""
+    t = max(0.0, min(1.0, t))
+    return t * t * (3 - 2 * t)
 
-    The vocabulary is small on purpose. Every shape here is something a viewer can check against the
-    caption in one glance, and every shape is drawn from the same parameters every time — which is the
-    property a generated picture cannot offer, and the reason a film built this way can be reviewed
-    and re-cut without the pictures changing under it.
+
+def sample(pts: list[tuple[float, float]], u: float) -> tuple[float, float]:
+    """The point `u` of the way along a polyline (0..1). This is how anything travels here."""
+    u = max(0.0, min(1.0, u))
+    x = u * (len(pts) - 1)
+    i = min(int(x), len(pts) - 2)
+    f = x - i
+    (x0, y0), (x1, y1) = pts[i], pts[i + 1]
+    return (x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
+
+
+def _sub(pts: list[tuple[float, float]], u0: float, u1: float) -> list[tuple[float, float]]:
+    """The stretch of a polyline between two fractions — the part already travelled."""
+    if u1 <= u0:
+        return [pts[0], pts[0]]
+    n = len(pts) - 1
+    lo, hi = int(u0 * n), min(n, int(u1 * n) + 1)
+    return [sample(pts, u0), *pts[lo + 1:hi], sample(pts, u1)]
+
+
+def blend(a: tuple[int, int, int], b: tuple[int, int, int], k: float) -> tuple[int, int, int]:
+    k = max(0.0, min(1.0, k))
+    return (int(round(a[0] + (b[0] - a[0]) * k)),
+            int(round(a[1] + (b[1] - a[1]) * k)),
+            int(round(a[2] + (b[2] - a[2]) * k)))
+
+
+def _dot(d, p: tuple[float, float], r: float, color) -> None:
+    d.ellipse([p[0] - r, p[1] - r, p[0] + r, p[1] + r], fill=color)
+
+
+def _dashed_ellipse(d, center: tuple[float, float], rx: float, ry: float, color, width: int,
+                    dashes: int = 18) -> None:
+    """A dashed outline: a claim about where something *was*, which a solid line would not make."""
+    step = 360.0 / dashes
+    for i in range(0, dashes, 2):
+        a0 = i * step
+        d.arc([center[0] - rx, center[1] - ry, center[0] + rx, center[1] + ry],
+              start=a0, end=a0 + step, fill=color, width=width)
+
+
+def _camera(kind: str, t: float, focus: tuple[float, float]):
+    """A slow push or pull about one point — always *in addition to* something moving by itself. A
+    camera move over a still frame is the slide show this is here to replace."""
+    if kind == "push":
+        k = 1.0 + 0.10 * _ease(t)
+    elif kind == "pull":
+        k = 1.10 - 0.10 * _ease(t)
+    else:
+        return lambda p: p
+    return lambda p: (focus[0] + (p[0] - focus[0]) * k, focus[1] + (p[1] - focus[1]) * k)
+
+
+def _sac_at(g: dict, scale: float) -> tuple[tuple[float, float], float]:
+    """The sac at a fraction of its full size, with its neck staying on the vessel wall.
+
+    Recomputing the centre from the radius is what makes growth read as ballooning *out of* the wall
+    rather than as a circle getting bigger somewhere near it.
+    """
+    rr = g["_rr"] * scale
+    return (g["_sac"][0], g["_mid"] - g["_vw"] * 0.5 - rr * 0.45), rr
+
+
+def _coil_loops(d, center: tuple[float, float], r: float, turns: float,
+                progress: float) -> tuple[float, float] | None:
+    """The coil at `progress` 0..1; returns the leading end so the feeding wire can find it.
+
+    Loops rather than a spiral (a spiral of decreasing radius reads as a bullseye — a reviewer said
+    so), and the loop going in is an *arc*: that is what makes the fill look like it is happening
+    rather than like the last frame was faded in.
+    """
+    n = max(3, int(round(turns)))
+    width = max(3, int(r / 10))
+    lead: tuple[float, float] | None = None
+    for i in range(n):
+        k = i / max(1, n - 1)
+        rr = r * (0.95 - 0.52 * k)
+        ox = center[0] + (r * 0.14 if i % 2 else -r * 0.06)
+        oy = center[1] + (r * 0.34 * k - r * 0.14)
+        box = [ox - rr, oy - rr * 0.78, ox + rr, oy + rr * 0.78]
+        if progress >= (i + 1) / n:
+            d.ellipse(box, outline=COIL, width=width)
+            lead = (ox + rr, oy)
+        elif progress > i / n:
+            a1 = -180 + 360 * ((progress - i / n) * n)
+            d.arc(box, start=-180, end=a1, fill=COIL, width=width)
+            ang = math.radians(a1)
+            return (ox + rr * math.cos(ang), oy + rr * 0.78 * math.sin(ang))
+        else:
+            return lead
+    return lead
+
+
+def _sac_opaque(plate, center: tuple[float, float], rr: float, k: float) -> None:
+    """The sac as it opacifies: the same ellipse, with its interior going from dark to contrast."""
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(plate)
+    x, y = center
+    d.ellipse([x - rr, y - rr, x + rr, y + rr * 0.95], fill=SAC,
+              outline=VESSEL_DARK, width=max(3, int(rr / 9)))
+    inner = (max(0, x - rr * 0.72), max(0, y - rr * 0.74))
+    d.ellipse([inner[0], inner[1], inner[0] + rr * 1.44, inner[1] + rr * 1.3],
+              fill=blend((146, 46, 48), CONTRAST, k))
+
+
+def drawer(kind: str, size: tuple[int, int], params: dict | None = None,
+           labels: list[dict] | None = None):
+    """`t` in, a `draw(plate, draw)` out — for `plate(..., draw=...)` or for a whole animation.
+
+    The geometry is worked out once here rather than inside the per-frame closure: at 24fps a
+    twenty-second shot asks for this 480 times, and recomputing the vessel path each time would give
+    the same answer for a whole second of encoding.
+
+    A returned function is cheap to call repeatedly but shares `labels`, which is why the label list
+    is copied at the call site (`animate.render`) rather than mutated here.
+    """
+    kind = canonical(kind)
+    p = dict(params or {})
+    labs = [x for x in (labels if labels is not None else p.get("labels") or []) if isinstance(x, dict)]
+    g = schematic_geometry(size, p)
+    parts = set(ANIMATION_PARTS[kind]) | {str(x).strip().lower() for x in (p.get("show") or [])}
+    turns = max(2.0, min(float(p.get("coil_turns") or 3.2), 6.0))
+    particles = max(2, min(int(p.get("particles") or 9), 16))
+    camera = check_camera(p.get("camera") or ANIMATION_CAMERA[kind])
+    w, h, mid, vw = g["_w"], g["_h"], g["_mid"], g["_vw"]
+    path, neck, tip = g["_path"], g["_neck"], g["_tip"]
+
+    def at(t: float):
+        t = max(0.0, min(1.0, float(t)))
+        cam = _camera(camera, t, g["_sac"])
+        e = _ease(t)
+
+        def draw(plate, d):
+            scale = 1.0
+            if kind == "aneurysm_grow":
+                # A blister that becomes the sac, with a settle at the end so it lands rather than
+                # simply stopping.
+                scale = 0.34 + 0.66 * e
+                if t > 0.55:
+                    scale *= 1.0 + 0.03 * math.sin(2 * math.pi * 3.0 * t)
+            elif kind == "blood_flow":
+                scale = 1.0 + 0.025 * math.sin(2 * math.pi * 1.6 * t)    # a pulse travelling through
+
+            # ---- the drawing order is the anatomy's, not the code's
+            if "sac" in parts:
+                center, rr = _sac_at(g, scale)
+                if kind == "aneurysm_grow" and scale < 0.985:
+                    _dashed_ellipse(d, cam(center), g["_rr"], g["_rr"] * 0.95, GHOST,
+                                    max(2, int(vw / 9)))
+                if kind == "contrast_fill":
+                    _sac_opaque(plate, cam(center), rr, _ease(max(0.0, min(1.0, (t - 0.45) / 0.35))))
+                else:
+                    sac(plate, cam(center), rr, rr * 0.95)
+            tube(plate, [cam(q) for q in path], vw)
+
+            if kind == "contrast_fill":
+                # A bolus running up the lumen: the bright column behind the leading dot. A finding
+                # being made, not a decoration.
+                u = _ease(min(1.0, t / 0.75))
+                if u > 0:
+                    tube(plate, [cam(q) for q in _sub(path, max(0.0, u - 0.30), u)],
+                         max(6, int(vw * 0.62)), CONTRAST)
+                    _dot(d, cam(sample(path, u)), vw * 0.42, CONTRAST)
+
+            if "coil" in parts:
+                center, rr = _sac_at(g, 1.0)
+                lead = _coil_loops(d, cam(center), rr * 0.92, turns, _ease(min(1.0, t / 0.85)))
+                if lead is not None and t < 0.97:
+                    # The wire between the catheter tip and the leading loop: the coil is being
+                    # pushed in, not appearing.
+                    d.line([cam(tip), lead], fill=COIL, width=max(2, int(vw / 8)))
+
+            if "catheter" in parts:
+                body = path[:neck + 1]
+                ctrl = (body[-1][0] + (tip[0] - body[-1][0]) * 0.35, body[-1][1] + vw * 0.6)
+                wide = max(5, int(vw * 0.34))
+                if kind == "catheter_advance":
+                    q = _ease(min(1.0, t / 0.9))
+                    if q < 0.72:
+                        seg = _sub(body, 0.0, q / 0.72)
+                        catheter(plate, [cam(x) for x in seg], wide)
+                        _dot(d, cam(seg[-1]), vw * 0.30, (226, 240, 255))
+                    else:
+                        lead_c = _bezier(body[-1], ctrl, tip, 26)
+                        k = (q - 0.72) / 0.28
+                        catheter(plate, [cam(x) for x in body + lead_c[:max(2, int(len(lead_c) * k))]],
+                                 wide)
+                else:
+                    # **Inside the lumen, then up through the neck, tip left in the sac.** The first
+                    # version sent the catheter in from outside the vessel and through its wall, which
+                    # is not how the device works, and stopped its tip at the neck — a reviewer caught
+                    # both on sight, which is the whole argument for looking at a frame first.
+                    lead_c = _bezier(body[-1], ctrl, tip, 26)
+                    catheter(plate, [cam(x) for x in body + lead_c], wide)
+
+            if "flow" in parts:
+                # Three things travel together, and all three are needed: a band of lighter blood
+                # (what makes the motion visible at all on a phone), a bright streak behind the
+                # leading edge, and the dot itself. The first version drew only the dots and a
+                # reviewer's frame-difference check came back at 0.3% of the picture — which is
+                # motion nobody would see. The two arrows stay put: they say which way is downstream
+                # in a single frame, which a moving dot cannot.
+                speed = 1.5 if kind == "blood_flow" else 0.7
+                for i in range(particles):
+                    # Evenly spaced dots are the trap here: at these speeds the pattern comes back to
+                    # almost exactly where it started within a fraction of a second, so the stream
+                    # looks like it barely moves. Fixed but irregular offsets and sizes (the same ones
+                    # every run, so the film is still reproducible) make it read as blood.
+                    u = (_JITTER[i % len(_JITTER)] + t * speed) % 1.0
+                    tail = (0.05 if kind == "blood_flow" else 0.035) * (0.7 + 0.6 * _JITTER[(i * 5) % len(_JITTER)])
+                    wide = vw * (0.20 + 0.12 * _JITTER[(i * 3) % len(_JITTER)])
+                    band = [cam(q) for q in _sub(path, max(0.0, u - tail * 1.9), u)]
+                    d.line(band, fill=blend(VESSEL, FLOW, 0.45), width=max(4, int(vw * 0.46)),
+                           joint="curve")
+                    d.line([cam(sample(path, max(0.0, u - tail))), cam(sample(path, u))],
+                           fill=FLOW, width=max(3, int(vw * 0.24)))
+                    _dot(d, cam(sample(path, u)), wide, FLOW)
+                flow(plate, cam((w * 0.06, mid + vw * 0.52)), cam((w * 0.30, mid + vw * 0.36)),
+                     max(4, vw // 5))
+                flow(plate, cam((w * 0.72, mid + vw * 0.42)), cam((w * 0.94, mid + vw * 0.52)),
+                     max(4, vw // 5))
+
+            # Labels are *not* scaled with the camera — they have to stay readable — and since each
+            # one points at a part, it can appear when that part does (`from`) and leave when it is
+            # done (`to`). That is how a drawing gets narrated without the narration racing it.
+            f = font(int(h * 0.0165))
+            # The sac is a keep-out area for every label. A plate may not touch it: a label that sits
+            # on the aneurysm hides the thing it is naming, and one that touches the neck hides where
+            # the coil is going in. (A reviewer caught exactly that once the coil shot was rendered at
+            # full size — at 270 pixels wide the collision was invisible.) Seeded here because this is
+            # the only layer that knows where the anatomy is; `_tag` knows about plates.
+            sc, scr = _sac_at(g, scale)
+            taken: list = [(int(sc[0] - scr * 1.08), int(sc[1] - scr * 1.08),
+                            int(sc[0] + scr * 1.08), int(sc[1] + scr * 1.08))]
+            for lab in labs:
+                if not (float(lab.get("from") or 0.0) <= t <= float(lab.get("to") or 1.0)):
+                    continue
+                anchor = str(lab.get("at_part") or "").strip()
+                point = None
+                if anchor == "sac":
+                    sp = _sac_at(g, scale)[0]
+                    point = (sp[0] / w, sp[1] / h)
+                elif anchor in g and not anchor.startswith("_"):
+                    point = g[anchor]
+                if point is None:
+                    point = lab.get("at") or [0.5, 0.5]
+                _tag(d, str(lab.get("text") or ""), _px(point, size, "label"), f, size, taken)
+
+        return draw
+
+    return at
+
+
+def schematic(kind: str, size: tuple[int, int], params: dict | None = None):
+    """The same drawing, at its end — which is what a still is.
+
+    One vocabulary instead of two: "the coil is in place" and "the coil being wound in" are the same
+    picture at two times, so asking which one the caller wanted told us nothing. `aneurysm` and
+    `aneurysm_coiling` still work as older names for the same two drawings.
 
     Draw order is the anatomy's, not the code's: the bulge first, the vessel over its base so the two
     read as one continuous wall, then whatever instrument is inside.
     """
-    kind = (kind or "").strip().lower()
-    if kind not in SCHEMATICS:
-        raise FigureError(i18n.pick_now(
-            f"\"{kind}\" is not a schematic this app can draw. Available: {', '.join(SCHEMATICS)}.",
-            f"「{kind}」不是本程序会画的示意图。可用:{', '.join(SCHEMATICS)}。"))
     p = dict(params or {})
-    parts = set(SCHEMATIC_PARTS[kind])
-    parts |= {str(x).strip().lower() for x in (p.get("show") or [])}
-    turns = max(1.0, min(float(p.get("coil_turns") or 3.2), 6.0))
-    labels = [x for x in (p.get("labels") or []) if isinstance(x, dict)]
-    g = schematic_geometry(size, p)
-    w, h, mid, vw, rr = g["_w"], g["_h"], g["_mid"], g["_vw"], g["_rr"]
-    sac_x, sac_y = g["_sac"]
-
-    def draw(plate, d):
-        if "sac" in parts:
-            sac(plate, (sac_x, sac_y), rr, rr * 0.95)
-        tube(plate, g["_path"], vw)
-        if "coil" in parts:
-            coil(plate, (sac_x, sac_y), rr * 0.92, turns)
-        if "catheter" in parts:
-            # **Inside the lumen, then up through the neck, tip left inside the coil.** The first
-            # version of this drawing sent the catheter in from outside the vessel and through its
-            # wall, which is not how the device works at all, and stopped its tip at the neck — a
-            # reviewer caught both on sight, which is the entire argument for looking at a still
-            # before rendering it. Drawing it last also makes the tip sit *in* the coil, which is
-            # what shows that the coil is being fed in rather than floating there.
-            body = g["_path"][:g["_neck"] + 1]
-            tip = g["_tip"]
-            lead = _bezier(body[-1],
-                           (body[-1][0] + (tip[0] - body[-1][0]) * 0.35, body[-1][1] + vw * 0.6),
-                           tip, 26)
-            catheter(plate, body + lead, max(5, int(vw * 0.34)))
-        if "flow" in parts:
-            flow(plate, (w * 0.06, mid + vw * 0.52), (w * 0.30, mid + vw * 0.36), max(4, vw // 5))
-            flow(plate, (w * 0.72, mid + vw * 0.42), (w * 0.94, mid + vw * 0.52), max(4, vw // 5))
-        f = font(int(h * 0.0165))
-        taken: list = []
-        for lab in labels:
-            anchor = str(lab.get("at_part") or "").strip()
-            point = g.get(anchor) if anchor in g and not anchor.startswith("_") else None
-            if point is None:
-                point = lab.get("at") or [0.5, 0.5]
-            _tag(d, str(lab.get("text") or ""), _px(point, size, "label"), f, size, taken)
-
-    return draw
+    p["camera"] = "none"        # a still is never pushed in: the frame is the frame
+    return drawer(kind, size, p)(1.0)
 
 
 def drawing_note() -> str:
