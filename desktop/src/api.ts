@@ -163,7 +163,9 @@ export interface ExternalCfg {
   timeout: number;
   handoff: boolean;
   cli_path: string;                // command-line engines
-  base_url: string;                // chat gateways: the OpenAI-compatible endpoint
+  base_url: string;                // the OpenAI-compatible endpoint: a chat gateway talks to it, a
+                                   // command-line engine is pointed at it (so it can run a model the
+                                   // user already has without the engine's own account sign-in)
   api_key: string;                 // either kind: never sent back to the UI (it shows "***")
   has_key?: boolean;               // whether a key is stored — the UI never sees the key itself
 }
@@ -192,6 +194,10 @@ export interface ExternalOverview {
   external_calls_enabled: boolean;
   engines: { id: string; name: string; avatar: string; role: string; found: boolean; path: string; via: string; hint: string;
              kind: "cli" | "http"; base_url: string; docs: string; key_hint: string;
+             // single = this machine has one of these engines, so only one such member can exist;
+             // signin = its command line can be signed in by hand at all (false = the interactive
+             // bundle is not shipped, so the only way to make it run is to point it at a model)
+             single: boolean; signin: boolean;
              provider: ExternalProvider | null }[];
   levels: { id: ExternalLevel; label: string; desc: string }[];
   defaults: ExternalCfg;

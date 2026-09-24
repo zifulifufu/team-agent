@@ -1171,7 +1171,6 @@ const ZH: Record<string, string> = {
   "It is set to {level} right now: it can only touch things inside its own empty folder. To let it work on your project, pick a specific project folder (not the root, and not your whole home directory).": "当前是「{level}」:它只能动专属空文件夹里的东西,想让它处理你的项目,请选一个具体的项目文件夹(不能是根目录或整个用户主目录)。",
   "Let WorkBuddy take part in the discussion as a group member. This app calls the": "让 WorkBuddy 作为群成员参与讨论。接法:本程序调用 WorkBuddy 应用里",
   "Member name (mention it as @name in a group; no spaces)": "成员名字(群里用 @名字 点名,不能含空格)",
-  "Model (empty = the engine default)": "模型(留空 = 引擎默认)",
   "Note: every WorkBuddy turn is a separate process with no memory across turns (the context comes from the group chat), and a reply usually takes tens of seconds. Its reply is treated purely as chat text — never executed as a plan or a tool call. Nothing in the WorkBuddy app itself is changed, including its own all-access setting.": "说明:WorkBuddy 每次发言是一个独立进程,没有跨轮记忆(上下文靠群聊记录),回复通常要等几十秒;它的回复只当聊天文字,不会被当作分工计划或工具调用来执行。不会改动 WorkBuddy 应用本身的任何设置(包括它自己的「允许完全访问」)。",
   "Outbound calls are blocked right now: WorkBuddy needs a cloud model, so it will not run in this mode. Allow it under Settings → Routing first.": "「禁止外呼」正开着:WorkBuddy 要连接云端模型,这个模式下它不会运行。先在设置 → 路由里放开。",
   "Permission level": "权限级别",
@@ -1657,12 +1656,21 @@ const ZH: Record<string, string> = {
   "It has no tools on this machine — it cannot read files, run commands or browse — so it takes part in the discussion, not in the work on your disk.": "它在这台机器上没有工具——读不了文件、不能执行命令、不能上网——所以它参与的是讨论,不是你磁盘上的活。",
   "API address (empty = the default for this engine)": "API 地址(留空 = 用这个引擎的默认地址)",
   "A key is stored already — leave this empty to keep it": "已经存过密钥了——留空就保持不变",
-  // 外部智能体:命令行引擎自己的登录(它和 WorkBuddy 窗口的登录是两回事)
-  "WorkBuddy API key (optional)": "WorkBuddy API key(可留空)",
-  "The command line signs in separately from the WorkBuddy window, which is why the connection test can say it is not signed in. Either this key or signing it in once with /login in a terminal is enough — a key filled in here is kept in the keychain and handed over on every run, so it does not depend on how this app was started.": "命令行引擎的登录和 WorkBuddy 窗口是分开的,所以测试连接会说「没登录」。填这里的密钥,或者在终端里给它登录一次(/login),有一个就够——填在这里的密钥存在钥匙串里,每次运行都会交给引擎,与本程序怎么启动无关。",
+  // 外部智能体:命令行引擎自己的模型(它没有登录界面,所以靠「地址 + 密钥 + 模型名」跑起来)
   "Where to get a key:": "密钥从哪来:",
   "Open the documentation": "打开文档",
   "Model to call (required: a gateway has to be told which model to run)": "要调用的模型(必填:网关需要知道运行哪个模型)",
+  // 外部智能体:命令行引擎怎么才能跑起来(它没有登录界面,只能给它一个自己的模型)
+  "Model address (optional — an OpenAI-compatible endpoint this member should run on)": "模型地址(可留空——让这个成员跑在哪个 OpenAI 兼容接口上)",
+  "Model key (optional)": "模型密钥(可留空)",
+  "Model name (optional — empty = the engine's own default model)": "模型名(可留空——留空就用引擎自己的默认模型)",
+  "The model name is passed to the service as written, so use the name that service documents.": "模型名会原样传给那个服务,所以请照它的文档写。",
+  "It is kept in the keychain and handed to the engine on every run, so it does not depend on how this app was started.": "它存在钥匙串里,每次运行都会交给引擎,与本程序怎么启动无关。",
+  "Fill this in with a key and a model name and the engine runs that model instead of the one tied to its own account — useful when signing it in by hand is inconvenient.": "把这里和密钥、模型名一起填上,引擎就跑这个模型,而不是它账号里的那个——不方便手动登录时很有用。",
+  "This build of WorkBuddy's command line has no sign-in screen (no /login to type in a terminal, and no codebuddy command on your PATH), so it cannot use the models tied to the WorkBuddy account. Fill in these three fields — address, key, model — and it runs that model instead, with the tools it brings.": "这个版本的 WorkBuddy 命令行没有登录界面(终端里没有 /login 可输入,PATH 里也没有 codebuddy 命令),所以用不了 WorkBuddy 账号里的模型。把这三个字段填上——地址、密钥、模型名——它就跑那个模型,并照常带上自己的工具。",
+  "Already added — this engine is one command line on this machine, so there is only one member to make of it. Change that member's settings instead.": "已经加过了——这个引擎就是这台机器上的一个命令行,只能有一个成员。请改那个成员的设置。",
+  "This one runs the engine with nothing set up, so on this build it reports the sign-in problem. To test a member that is already set up, use \"Test the connection\" inside its own settings (Settings → External agents → that member).": "这里测的是「什么都没配」的引擎,所以在这个版本上它会报登录问题。要测已经配好的成员,请在那个成员自己的设置里点「测试连接」(设置 → 外部智能体 → 那个成员)。",
+  "Model:": "模型:",
   // 外部智能体:引擎绑定到服务商(地址/密钥/模型都取自服务商,不再各存一份)
   "Model provider: {name}": "模型服务商:{name}",
   "{address}{key} — the address, the key and the models all come from that provider, so they are set once, there.": "{address}{key}——地址、密钥和模型都来自这个服务商,只在那里设置一次。",

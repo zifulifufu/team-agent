@@ -149,6 +149,10 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
                             "role": shown["role"], "kind": external.kind_of(eid),
                             "base_url": shown.get("base_url", ""), "docs": shown.get("docs", ""),
                             "key_hint": shown.get("key_hint", ""),
+                            # True = this machine has one of these, so there is one member to add
+                            # (`external.SINGLE_ENGINES`): the add-member list greys it out once one
+                            # exists instead of offering a copy that would be refused anyway.
+                            "single": eid in external.SINGLE_ENGINES,
                             # Non-null = the engine talks through a provider, and this is that
                             # provider: its address, its models, whether it has a key. The dialog
                             # asks for none of those itself, and the add-member list leaves the
@@ -182,11 +186,27 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
                                     models=provider_model_names(store, body.engine))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
+        # Engines that exist once on this machine can only be added once (`external.SINGLE_ENGINES`).
+        # The refusal names the member that is in the way, because what to do about it is to change
+        # that one — not to add a second copy of the same engine.
+        def refuse_a_second_one() -> None:
+            if body.engine not in external.SINGLE_ENGINES:
+                return
+            same = [a for a in store.list_agents() if str(a.get("engine") or "") == body.engine]
+            if not same:
+                return
+            eng_name = i18n.localize(eng)["name"]
+            raise HTTPException(409, i18n.pick_now(
+                f"This machine has one {eng_name} engine, so there is only one {eng_name} member to add — and “{same[0]['name']}” is already here. Change that member's settings instead of adding a second one.",
+                f"这台机器上只有一个 {eng_name} 引擎,所以 {eng_name} 成员也只能有一个——现在已经有「{same[0]['name']}」了。请改那个成员的设置,不要再加一个。"))
         # An engine's display name may contain a space ("Cherry Studio") while a member name may
         # not, so the default is squeezed into a legal one. An explicit name is still checked.
         name = (body.name or re.sub(r"\s+", "", str(eng["name"]))).strip()
         if not name or len(name) > 30 or NAME_BAD.search(name):
             raise HTTPException(400, i18n.pick_now("A name cannot contain spaces or @, and is at most 30 characters long", "名字不能包含空格或 @,最长 30 字"))
+        # Called after the name checks on purpose: a malformed request is still answered as a
+        # malformed one, and this rule only decides between two well-formed ones.
+        refuse_a_second_one()
         if any(a["name"] == name for a in store.list_agents()):
             if body.name:
                 raise HTTPException(409, i18n.pick_now("A member with this name already exists", "已有同名成员"))

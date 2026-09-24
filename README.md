@@ -341,6 +341,11 @@ a model reached through the routing layer. *Settings → External agents* holds 
 (off by default), the permission level (read-only / may edit files / full), an optional working
 directory, and the hand-off rule.
 
+WorkBuddy is one command line on this machine, so there is one such member to make: once one exists
+the add-member list greys that engine out, and a second one is refused with a message naming the
+member that is in the way. A chat gateway is not limited that way — two members may point at two
+different gateways, or at two models of one.
+
 **Two shapes, and the difference is on purpose.** By default the engine is run inside the isolation
 this app sets up for it, and that isolation is *why* its answers are not always what you get from
 running the application by hand:
@@ -357,22 +362,30 @@ is to keep the engine on a short leash. Either way its reply is chat text only �
 as `<plan>` or `<tool_call>` — and the subprocess gets an allow-listed environment with neither this
 app's token nor any provider's key.
 
-**Signing the engine in is a separate thing.** The WorkBuddy window being signed in does not sign the
-command line in, and that is the first failure most people meet: *the connection test* answers with
-the engine's own `Authentication required. Please use /login command to sign in to your account`.
-Either route fixes it, and the hint you get names both, with the exact command line this app would
-run (the engine ships inside the app bundle, so `codebuddy` is usually not on your `PATH`):
+**The engine needs a model, and signing the engine in is not something this app can do for it.** The
+WorkBuddy window being signed in does not sign the command line in, and that is the first failure
+most people meet: *the connection test* answers with the engine's own `Authentication required.
+Please use /login command to sign in to your account`. There are exactly two things that fix it, and
+which one applies is measured rather than assumed:
 
-* run that command line once in a terminal and type `/login` — the sign-in is kept in your home
-  folder, so it keeps working however this app was launched; or
-* paste a WorkBuddy API key into the member's own settings. It is kept in the keychain like every
-  other key this app stores, and handed to the engine as `CODEBUDDY_API_KEY` on every run, so it does
-  not depend on how this app was launched at all. A key filled in on the member wins over one this
-  app inherited from its environment.
+* **Point the member at a model of your own** (always available). Fill in an OpenAI-compatible
+  address, that service's key, and a model name in the member's settings — the same three fields a
+  chat gateway uses. The address and the key go over as `CODEBUDDY_BASE_URL` and `CODEBUDDY_API_KEY`,
+  and the model name as `--model`, after which the engine calls that service directly and needs no
+  account at all. It still brings its own tools. Measured on the bundled engine: the address is what
+  routes the call (a wrong one fails with "cannot resolve the server address"), and a key on its own
+  still goes to the account's endpoint and comes back "API key verification service unavailable" —
+  so all three travel together. `CODEBUDDY_BASE_URL` and `CODEBUDDY_API_KEY` are also the pair to
+  export system-wide (`launchctl setenv …`, then reopen this app) if you would rather not store a key
+  here; a variable merely *exported* in a shell never reaches an app opened from Finder.
+* **Sign it in by hand** (only when that is possible). `/login` is a command of the *interactive*
+  bundle, so this applies only when that bundle ships next to the engine. The connection test says
+  which case you are in, and in this one it quotes the exact command line to run — the engine lives
+  inside the app bundle, so `codebuddy` is usually not on your `PATH`.
 
-The same environment route still exists system-wide (`launchctl setenv CODEBUDDY_API_KEY …`, then
-reopen this app) — note that a variable merely *exported* in a shell never reaches an app opened from
-Finder. Nothing here ever reads the engine's own account or session files.
+What is *not* possible, on either route, is running the models tied to the WorkBuddy account
+(`glm-5.1`, `kimi-k2.5`, …): running those is precisely what the account's sign-in is for.
+Nothing here ever reads the engine's own account or session files.
 
 ## Chat channels
 

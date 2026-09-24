@@ -20,6 +20,10 @@
 .ext-engine { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); cursor: pointer; }
 .ext-engine:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
 .ext-engine.on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, var(--card)); }
+/* An engine that can only exist once and is already taken: shown, not offered — the reason is in
+   the body text, so it must stay readable while the card stops looking selectable. */
+.ext-engine.off { opacity: 0.6; cursor: not-allowed; }
+.ext-engine.off:hover { border-color: var(--border); }
 .ext-engine input[type="radio"] { width: auto; height: auto; flex: none; margin-top: 3px; padding: 0; box-shadow: none; }
 .ext-engine-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ext-engine-body b { font-weight: 600; }

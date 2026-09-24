@@ -76,11 +76,13 @@ ENGINES: dict[str, dict] = {
         "role": "External agent · WorkBuddy",
         "role_zh": "外部智能体 · WorkBuddy",
         "tags": ["tool-use", "coding"],
-        # The engine signs in separately from the WorkBuddy window, so a member may be given a key of
-        # its own. The hint says what the key is *for* rather than pointing at a page we would be
-        # guessing at — the sign-in route in `explain_failure` needs no key at all.
-        "key_hint": "a WorkBuddy API key — with one the command line signs in by itself and needs no terminal login",
-        "key_hint_zh": "WorkBuddy 的 API key——填了它,命令行引擎自己就能登录,不必再去终端登录一次",
+        # This build's command line has no sign-in screen at all (see `has_signin_screen`), so the
+        # route that works is to point it at a model service of the user's own: an OpenAI-compatible
+        # address, that service's key, and the model name (`build_env` hands the first two over and
+        # `--model` names the third). The hint says where to get the key, not where to look up a
+        # "WorkBuddy API key", because there is nothing in the app that hands one out.
+        "key_hint": "the key of the model service you want this member to run on (DeepSeek, Moonshot, …), filled in together with the address and the model name — WorkBuddy's own account models need the app's sign-in, which cannot be shared with a member",
+        "key_hint_zh": "这个成员要跑的模型服务的密钥(DeepSeek、Moonshot 等),和地址、模型名一起填——WorkBuddy 账号自带的那几个模型需要应用自己登录,没法共享给成员",
         "prompt": (
             "You are WorkBuddy (a desktop agent), taking part as a member of the group. You come "
             "with your own tools for reading files and searching, so you suit the parts that need "
@@ -210,6 +212,13 @@ def provider_bound(engine: str) -> bool:
     return bool(bound_provider(engine))
 
 
+# Engines there can only be one of. WorkBuddy is a single command line on this machine: a second
+# member is the same engine with the same reach, and the two drift apart — this app's own list ended
+# up holding "WorkBuddy" and "WorkBuddy2" in the same group. A chat gateway is deliberately *not*
+# here: two members may legitimately point at two different gateways, or at two models of one.
+SINGLE_ENGINES = frozenset({"workbuddy"})
+
+
 def level_view(key: str) -> dict:
     """One permission level, labelled in the request language."""
     return i18n.localize(LEVELS[key])
@@ -312,11 +321,26 @@ takes one as its sign-in, a chat gateway as its bearer token."""
     return v
 
 
+def _endpoint(value: Any) -> str:
+    """Validate an OpenAI-compatible address the user typed, with the trailing slash taken off.
+
+    Both kinds of engine take one: a chat gateway talks to it directly, and a command-line engine
+    is *pointed at it* (see `build_env`) so that it runs a model the user already has instead of
+    needing the account its own application signs in with."""
+    v = str(value or "").strip().rstrip("/")
+    if v and not re.match(r"^https?://[^\s/]+", v):
+        raise ValueError(i18n.pick_now("The address must start with http:// or https:// — for example http://127.0.0.1:23333/v1", "地址需要以 http:// 或 https:// 开头——例如 http://127.0.0.1:23333/v1"))
+    if len(v) > 200:
+        raise ValueError(i18n.pick_now("That address is too long", "这个地址太长了"))
+    return v
+
+
 def clean_cfg(raw: Any, base: dict | None = None, engine: str = "workbuddy",
               *, models: list[str] | None = None) -> dict:
     """Merge the config submitted by the user into base and validate it. Raises ValueError (with
 a Chinese message). Unknown fields are ignored outright. `engine` decides which fields are
-actually used — a chat gateway has no command line, and a command-line engine has no endpoint.
+actually used — a chat gateway has no command line, and a command-line engine has no permission
+level of its own to set.
 
 `models` is the list of model names the bound provider offers, and only matters for an engine
 bound to a provider (see `bound_provider`): there the model must be one of them, and the address
@@ -370,10 +394,17 @@ and the key are not accepted at all because the provider already holds them."""
                     raise ValueError(i18n.pick_now("The command-line file name should start with codebuddy or cbc, so a different program is not picked by mistake", "命令行文件名应以 codebuddy 或 cbc 开头(避免误选成别的程序)"))
                 v = str(p.resolve())
             out["cli_path"] = v
-        # A command-line engine has no endpoint, but it can still be given a key — that is how a
-        # member is signed in without anyone touching a terminal, and it is the only route that does
-        # not depend on how this program was started. Same field, same keychain storage as a
-        # gateway's (`build_env` hands it over as CODEBUDDY_API_KEY).
+        # A command-line engine has no endpoint of its own, but it can be *given* one: with an
+        # OpenAI-compatible address, a key and a model name it runs that model directly, with no
+        # account and no sign-in at all (`build_env` hands the first two over as CODEBUDDY_BASE_URL
+        # and CODEBUDDY_API_KEY, and `--model` names the third). On a build whose command line ships
+        # no sign-in screen this is the only route that works, so it is a first-class field here
+        # rather than something the user has to discover.
+        if "base_url" in raw:
+            out["base_url"] = _endpoint(raw["base_url"])
+        # A key is what goes with that address. It is handed to the engine on every run, which is
+        # also why it is the route that does not depend on how this program was started (an app
+        # opened from Finder never sees a shell's exported variables).
         if "api_key" in raw:
             out["api_key"] = _key_value(raw["api_key"])
     else:
@@ -401,12 +432,7 @@ and the key are not accepted at all because the provider already holds them."""
                     f"这个模型不在该服务商的模型列表里:{chosen}。请从列表里选一个,或先在「服务商」里加上它"))
         else:
             if "base_url" in raw:
-                v = str(raw["base_url"] or "").strip().rstrip("/")
-                if v and not re.match(r"^https?://[^\s/]+", v):
-                    raise ValueError(i18n.pick_now("The address must start with http:// or https:// — for example http://127.0.0.1:23333/v1", "地址需要以 http:// 或 https:// 开头——例如 http://127.0.0.1:23333/v1"))
-                if len(v) > 200:
-                    raise ValueError(i18n.pick_now("That address is too long", "这个地址太长了"))
-                out["base_url"] = v
+                out["base_url"] = _endpoint(raw["base_url"])
             if "api_key" in raw:
                 out["api_key"] = _key_value(raw["api_key"])
     if out["level"] in ("edit", "full"):
@@ -479,6 +505,26 @@ def find_launcher(cli_path: str = "") -> Launcher | None:
     return None
 
 
+def has_signin_screen(lc: Launcher | None) -> bool:
+    """Whether this command line can be signed in by hand at all.
+
+    `/login` is a slash command of the *interactive* bundle. The application ships the headless and
+    lite bundles it runs itself (`dist/codebuddy.js` and `dist/codebuddy.mjs` are the interactive
+    ones), and a build that leaves those out has no sign-in route: not in a terminal, and not
+    through any subcommand (`codebuddy` has no `login`). Telling the user to "run it in a terminal
+    and type /login" is then advice that fails at the first keystroke, which is how someone ends up
+    stuck on "Authentication required" with nothing left to try. So the answer is measured here
+    rather than assumed, and `explain_failure` picks its wording accordingly.
+    """
+    if not lc:
+        return False
+    dist = Path(lc.path).parent.parent / "dist"
+    try:
+        return any((dist / name).is_file() for name in ("codebuddy.js", "codebuddy.mjs"))
+    except OSError:
+        return False
+
+
 def build_env(cfg: dict, launcher: Launcher | None = None) -> dict[str, str]:
     """Allow-list for the subprocess environment: only the few entries needed to run, the proxy
 settings, and the CODEBUDDY_* variables the user set themselves (desktop control excluded)."""
@@ -496,6 +542,14 @@ settings, and the CODEBUDDY_* variables the user set themselves (desktop control
     own = str(cfg.get("api_key") or "").strip()
     if own:
         env["CODEBUDDY_API_KEY"] = own
+    # With an address beside it the engine stops asking the account for a model and calls this one
+    # instead — measured on the bundled engine: the address decides where the call goes (a wrong one
+    # fails with "cannot resolve the server address"), while a key on its own still goes to the
+    # account's own endpoint and comes back "API key verification service unavailable". So the two
+    # are only useful together, and the model name is what `--model` carries.
+    base = str(cfg.get("base_url") or "").strip()
+    if base:
+        env["CODEBUDDY_BASE_URL"] = base
     env["CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"] = "1"   # a single run, leaving no background task behind
     env["TERM"] = "dumb"
     return env
@@ -807,39 +861,61 @@ def explain_http(status: int, detail: str, engine: str) -> str:
     return f"{msg} · {tail}" if tail else msg
 
 
-def explain_failure(rc: int | None, stderr: str, error: str, login_cmd: str = "") -> str:
+def explain_failure(rc: int | None, stderr: str, error: str, login_cmd: str = "",
+                    signin: bool = True) -> str:
     """Turn a failed command-line run into something the user can act on.
 
 `login_cmd` is the exact command line this program would run (node plus the engine's path); it is
 quoted in the sign-in hint because the engine ships inside the app bundle and is usually *not* on the
-user's PATH — "run codebuddy in a terminal" is advice that fails at the first keystroke."""
+user's PATH — "run codebuddy in a terminal" is advice that fails at the first keystroke.
+
+`signin` says whether that command line has an interactive screen to type `/login` into at all
+(`has_signin_screen`). When it does not, the only advice worth giving is the route that needs no
+account: pointing the member at a model of the user's own."""
     detail = scrub_secrets(re.sub(r"\s+", " ", (error or stderr or "").strip()))[-300:]
     msg = i18n.pick_now(f"The command-line engine did not return properly (exit code {rc})", f"命令行引擎没有正常返回(退出码 {rc})") if rc else i18n.pick_now("The command-line engine reported an error", "命令行引擎报告了错误")
     if detail:
         msg += f":{detail}"
     if AUTH_HINT.search(detail):
         # The engine signs in by itself, and the WorkBuddy window being signed in does not sign it in.
-        # So the hint leads with the two routes that really work here, and every one of them is
-        # something the user can carry out as written: the sign-in is kept next to the user's home
-        # folder (independent of how this app was started), and a key given to the member is handed
-        # to the engine on every run.
-        run_it = (i18n.pick_now(f"In a terminal, run `{login_cmd}` and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
-                                f"在终端里运行 `{login_cmd}`,然后输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。")
-                  if login_cmd else
-                  i18n.pick_now("In a terminal, run the engine's command line once and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
-                                "在终端里运行一次这个引擎的命令行并输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。"))
-        routes = [x for x in (run_it, i18n.pick_now(
-            "Or paste a WorkBuddy API key into this member's settings: it is kept in the keychain and handed to the engine on every run, so there is nothing else to set up.",
-            "或者在这个成员的设置里填一个 WorkBuddy 的 API key:它存在钥匙串里,每次运行都会交给引擎,不需要再配置别的。")) if x]
-        msg += i18n.pick_now(
-            " It looks like the command line is not signed in — the WorkBuddy window being signed in"
-            " does not sign it in. Either of these is enough: " + " ".join(routes)
-            + " (A key exported in a shell never reaches an app opened from Finder; if you prefer that"
-              " route, set it with `launchctl setenv CODEBUDDY_API_KEY …` and reopen this app.)",
-            "。看起来是这套命令行没有登录——WorkBuddy 窗口登录了,并不代表它也登录了。下面两条路任选一条即可:"
-            + "".join(routes)
-            + "(在终端里 export 的变量到不了从访达启动的 app;若你想用环境变量,请用 "
-              "`launchctl setenv CODEBUDDY_API_KEY …` 然后重开本程序。)")
+        # So the hint leads with the routes that really work on *this* machine, and every one of them
+        # is something the user can carry out as written.
+        if not signin:
+            # Nothing to type /login into: this build ships only the bundles the app runs itself, and
+            # there is no `codebuddy` command to run by hand either. Saying "go and sign in" here is
+            # what leaves someone stuck, so the hint is the route that needs no account at all.
+            msg += i18n.pick_now(
+                " This build of the command line has no sign-in screen at all — there is no `/login` to"
+                " type in a terminal (the interactive bundle is not shipped), and no `codebuddy` command"
+                " on your PATH — so the WorkBuddy window's own sign-in cannot be shared with it. The"
+                " route that works is to point this member at a model of your own: fill in the"
+                " OpenAI-compatible address, the key and the model name in its settings (the same three"
+                " fields a chat gateway uses). It then calls that service directly, with the tools it"
+                " brings. WorkBuddy's own account models (glm-5.1, kimi-k2.5, …) stay out of reach —"
+                " running those is exactly what the account's sign-in is for.",
+                " 这份命令行没有可登录的界面——终端里没有 /login 可以输入(交互式产物没有随这个版本发布),"
+                "PATH 里也没有 codebuddy 命令——所以 WorkBuddy 窗口自己的登录没法共享给它。"
+                "能用的办法是给这个成员指定一个你自己的模型:在它的设置里填上「模型地址(OpenAI 兼容)+ 密钥 + 模型名」"
+                "(和对话网关填的是同样三个字段)。填好后引擎会直接调用那个服务,并照常带上它自己的工具。"
+                "WorkBuddy 账号自带的模型(glm-5.1、kimi-k2.5 等)用不了——那正是账号登录要做的事。")
+        else:
+            run_it = (i18n.pick_now(f"In a terminal, run `{login_cmd}` and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
+                                    f"在终端里运行 `{login_cmd}`,然后输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。")
+                      if login_cmd else
+                      i18n.pick_now("In a terminal, run the engine's command line once and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
+                                    "在终端里运行一次这个引擎的命令行并输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。"))
+            routes = [run_it, i18n.pick_now(
+                "Or point this member at a model of your own: an OpenAI-compatible address, that service's key and a model name make it run with no sign-in at all.",
+                "或者给这个成员指定一个你自己的模型:填上 OpenAI 兼容地址、该服务的密钥和模型名,它不需要登录就能跑。")]
+            msg += i18n.pick_now(
+                " It looks like the command line is not signed in — the WorkBuddy window being signed in"
+                " does not sign it in. Either of these is enough: " + " ".join(routes)
+                + " (A key exported in a shell never reaches an app opened from Finder; if you prefer that"
+                  " route, set it with `launchctl setenv CODEBUDDY_API_KEY …` and reopen this app.)",
+                "。看起来是这套命令行没有登录——WorkBuddy 窗口登录了,并不代表它也登录了。下面两条路任选一条即可:"
+                + "".join(routes)
+                + "(在终端里 export 的变量到不了从访达启动的 app;若你想用环境变量,请用 "
+                  "`launchctl setenv CODEBUDDY_API_KEY …` 然后重开本程序。)")
     return msg
 
 
@@ -961,10 +1037,14 @@ class ExternalRunner:
         if kind_of(engine) == "http":
             # Nothing to look up on this machine: the member is reached over the network, and
             # whether that endpoint is awake is what `probe` answers.
-            return {"found": True, "path": "", "via": "http", "hint": ""}
+            return {"found": True, "path": "", "via": "http", "hint": "", "signin": False}
         lc = find_launcher(cli_path)
         return {
             "found": bool(lc), "path": lc.path if lc else "", "via": lc.via if lc else "",
+            # Whether this command line can be signed in by hand at all. The dialog says different
+            # things depending on it, so the interface never tells the user to do something this
+            # build cannot do (`has_signin_screen`).
+            "signin": has_signin_screen(lc),
             "hint": "" if lc else (
                 i18n.pick_now((
             "WorkBuddy's bundled command-line engine was not found. Check that WorkBuddy is installed (/Applications/WorkBuddy.app),"
@@ -1123,10 +1203,13 @@ class ExternalRunner:
         )
         out = parser.outcome()
         if parser.error or (rc not in (0, None) and not out.text):
-            # The sign-in hint quotes this exact command line: the engine ships inside the app
-            # bundle, so a bare `codebuddy` is not something the user can run (`login_cmd`).
+            # The hint quotes this exact command line, and says whether it can be signed in by hand at
+            # all: the engine ships inside the app bundle, so a bare `codebuddy` is not something the
+            # user can run (`login_cmd`), and some builds leave out the interactive bundle `/login`
+            # lives in (`signin`).
             raise ExternalError(explain_failure(rc, stderr, parser.error,
-                                                login_cmd=" ".join(shlex.quote(a) for a in lc.argv)))
+                                                login_cmd=" ".join(shlex.quote(a) for a in lc.argv),
+                                                signin=has_signin_screen(lc)))
         if not out.text:
             raise ExternalError(i18n.pick_now("The engine returned nothing", "引擎没有返回任何内容") + (f":{stderr.strip()[-200:]}" if stderr.strip() else ""))
         return out

@@ -80,6 +80,12 @@ export default function ExternalPage(_: PageProps) {
           </button>
         </div>
         {!on && <div className="muted small">{t("Turn the master switch on first; detecting really does start the command line once.")}</div>}
+        {/* This switch runs the engine with nothing configured, so on a build whose command line has
+            no sign-in screen it can only report the sign-in problem. Saying so here keeps it from
+            looking like the feature is broken when the member itself is fine. */}
+        {on && eng && eng.kind === "cli" && !eng.signin && (
+          <div className="muted small">{t("This one runs the engine with nothing set up, so on this build it reports the sign-in problem. To test a member that is already set up, use \"Test the connection\" inside its own settings (Settings → External agents → that member).")}</div>
+        )}
         {probe?.live && (probe.live.ok
           ? <div className="ext-box ok" role="status"><CheckCircle2 size={15} /><div>{t("Connected: the engine answered \"{reply}\", in {seconds}s{model}.", { reply: probe.live.reply ?? "", seconds: probe.live.seconds, model: probe.live.model ? t(", model {m}", { m: probe.live.model }) : "" })}</div></div>
           : <div className="ext-box warn" role="alert"><AlertTriangle size={15} /><div>{t("The test did not pass:")} {probe.live.error}</div></div>)}
@@ -108,7 +114,13 @@ export default function ExternalPage(_: PageProps) {
                   ) : gateway ? (
                     <>{t("Model")}: {a.engine_cfg?.model || t("Not set")} · {t("Address")}: {a.engine_cfg?.base_url || t("Not set")}</>
                   ) : (
-                    <>{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")} · {t("Configuration:")} {a.engine_cfg?.native ? t("the application's own") : t("isolated")}</>
+                    // A command-line member can also be pointed at a model of its own (the three
+                    // fields a gateway uses): that is what makes it run on a build whose command
+                    // line has no sign-in screen, so it is worth showing beside its permissions.
+                    <>
+                      <>{t("Permissions:")} {levelLabel(a.engine_cfg?.level ?? "read")}{a.engine_cfg?.web ? t(" · web access") : ""} · {t("Working directory:")} {a.engine_cfg?.cwd || t("a dedicated empty folder")} · {t("Configuration:")} {a.engine_cfg?.native ? t("the application's own") : t("isolated")}</>
+                      {a.engine_cfg?.model ? <><br />{t("Model:")} {a.engine_cfg.model}{a.engine_cfg?.base_url ? <> · {t("Address")}: {a.engine_cfg.base_url}</> : null}</> : null}
+                    </>
                   )}</div>
                   {bound?.problem && <div className="sr-desc ext-warn"><AlertTriangle size={12} aria-hidden /> {bound.problem}</div>}
                 </div>

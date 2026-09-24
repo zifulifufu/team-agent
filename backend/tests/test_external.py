@@ -282,7 +282,7 @@ def test_explain_failure_adds_login_hint():
     assert cmd in msg
     assert "/login" in msg
     # The second route needs no terminal at all, which is what a GUI-launched app wants.
-    assert "API key" in msg
+    assert "a model of your own" in msg
     # And the one non-obvious fact from before survives: a shell export reaches nothing here.
     assert "launchctl setenv" in msg
     # With no command line to quote the route is still named, and the hint does not promise a
@@ -291,6 +291,37 @@ def test_explain_failure_adds_login_hint():
     assert "/login" in bare and "In a terminal, run the engine's command line" in bare
     assert "not signed in" not in external.explain_failure(2, "segfault", "")
     assert "exit code 2" in external.explain_failure(2, "segfault", "")
+
+
+def test_a_build_without_a_signin_screen_is_not_told_to_sign_in():
+    """Measured on this machine: the bundled engine ships only the headless and lite bundles, so
+    `dist/codebuddy.js` — the one `/login` lives in — is absent, and there is no `codebuddy` on PATH
+    either. Sending someone to a terminal after that is what leaves them stuck on "Authentication
+    required", so the hint has to be the route that needs no account."""
+    msg = external.explain_failure(1, "Authentication required. Please use /login command to sign in to your account",
+                                   "", login_cmd="/x/node /x/cli/bin/codebuddy", signin=False)
+    assert "/login in a terminal" not in msg and "launchctl setenv" not in msg
+    assert "no sign-in screen" in msg
+    # The way out is named in full: the address, the key and the model name, which is exactly what
+    # the member's own settings now ask for.
+    assert "OpenAI-compatible address" in msg and "the model name" in msg
+    # And the honest limit is stated rather than hidden: the account's own models stay out of reach.
+    assert "account models" in msg
+
+
+def test_has_signin_screen_reads_the_bundles_that_are_really_there(tmp_path):
+    """The advice depends on files, not on an assumption: an interactive bundle next to the engine
+    means "go and type /login", and its absence means "point it at a model instead"."""
+    dist = tmp_path / "cli" / "dist"
+    dist.mkdir(parents=True)
+    launcher = external.Launcher(["node", str(tmp_path / "cli" / "bin" / "codebuddy")],
+                                 str(tmp_path / "cli" / "bin" / "codebuddy"), "bundled")
+    assert external.has_signin_screen(launcher) is False
+    (dist / "codebuddy-lite-wb.mjs").write_text("// headless only")
+    assert external.has_signin_screen(launcher) is False
+    (dist / "codebuddy.mjs").write_text("// the interactive one")
+    assert external.has_signin_screen(launcher) is True
+    assert external.has_signin_screen(None) is False
 
 
 # -------------------------------------------------- running it (against the fake CLI)
@@ -447,7 +478,10 @@ def test_external_failure_shows_system_notice_and_no_bubble(store, make_router, 
     asyncio.run(orch.handle_user_message(g["id"], "@WorkBuddy 你好", col))
     assert not col.ends() and any(e["type"] == "message_discard" for e in col.events)
     notes = [e["message"]["content"] for e in col.events if e["type"] == "message" and e["message"]["sender_type"] == "system"]
-    assert any("WorkBuddy" in t and "could not reply" in t and "not signed in" in t for t in notes)
+    # The notice has to carry the way out, not just the failure. The fake engine has no interactive
+    # bundle beside it, so this is the "no sign-in screen at all" wording — the route that works.
+    assert any("WorkBuddy" in t and "could not reply" in t and "no sign-in screen" in t for t in notes)
+    assert any("OpenAI-compatible address" in t for t in notes)
 
 
 def test_tampered_settings_are_rejected_at_run_time(store, make_router, fake_env):
@@ -508,22 +542,53 @@ def test_api_create_patch_and_group_rules(client, tmp_path):
     assert a["engine"] == "workbuddy" and a["name"] == "WorkBuddy" and a["model_id"] is None
     assert a["engine_cfg"]["level"] == "edit" and set(a["tags"]) == {"tool-use", "coding"}
     assert a["id"] in client.get("/api/groups").json()[0]["member_ids"]
-    b = client.post("/api/external/agents", json={}).json()          # avoids the name clash on its own
-    assert b["name"] == "WorkBuddy2" and b["engine_cfg"]["level"] == "read"
+    # WorkBuddy is one command line on this machine, so a second member is refused rather than
+    # auto-named "WorkBuddy2" — that is how this app's own list ended up with two of them doing the
+    # same job in the same group. The refusal says which member is in the way.
+    again = client.post("/api/external/agents", json={})
+    assert again.status_code == 409
+    assert "WorkBuddy" in again.json()["detail"] and ("已经有" in again.json()["detail"] or "already here" in again.json()["detail"])
+    # A different engine is still allowed: this is a rule about one engine, not about members.
+    other = client.post("/api/external/agents", json={"engine": "cherry", "cfg": {"base_url": "http://127.0.0.1:23333/v1", "model": "gpt-5"}})
+    assert other.status_code == 200 and other.json()["engine"] == "cherry"
+    assert client.delete(f"/api/agents/{other.json()['id']}").status_code == 200
     assert client.post("/api/external/agents", json={"name": "WorkBuddy"}).status_code == 409
     assert client.post("/api/external/agents", json={"name": "a b"}).status_code == 400
     assert client.post("/api/external/agents", json={"engine": "nope"}).status_code == 400
     assert client.post("/api/external/agents", json={"cfg": {"level": "full"}}).status_code == 400
     ok = client.patch(f"/api/external/agents/{a['id']}", json={"cfg": {"level": "full", "risk_ack": True, "cwd": str(tmp_path)}})
     assert ok.status_code == 200 and ok.json()["engine_cfg"]["level"] == "full"
-    assert client.patch(f"/api/external/agents/{b['id']}", json={"cfg": {"timeout": 1}}).status_code == 400
+    assert client.patch(f"/api/external/agents/{a['id']}", json={"cfg": {"timeout": 1}}).status_code == 400
     assert client.patch("/api/external/agents/nope", json={"cfg": {}}).status_code == 404
     # an external agent can be neither host nor pinned to a model
     assert client.patch(f"/api/groups/{g['id']}", json={"host_agent_id": a["id"]}).status_code == 400
     assert client.post("/api/groups", json={"name": "x", "member_ids": [a["id"]], "host_agent_id": a["id"]}).status_code == 400
     assert client.patch(f"/api/agents/{a['id']}", json={"model_id": "deepseek/deepseek-flash"}).status_code == 400
     ov = client.get("/api/external").json()
-    assert {m["name"] for m in ov["members"]} == {"WorkBuddy", "WorkBuddy2"} and ov["members"][0]["workspace"] is not None
+    assert {m["name"] for m in ov["members"]} == {"WorkBuddy"} and ov["members"][0]["workspace"] is not None
+    # The interface reads this to grey the engine out rather than offer a copy that would be refused.
+    assert [e["single"] for e in ov["engines"] if e["id"] == "workbuddy"] == [True]
+    assert all(not e["single"] for e in ov["engines"] if e["id"] != "workbuddy")
+
+
+def test_a_command_line_member_can_be_pointed_at_a_model_of_its_own():
+    """The engine has no sign-in screen in this build (see `has_signin_screen`), so the settings that
+    make it run are an address, a key and a model name: the two are handed over as CODEBUDDY_BASE_URL
+    and CODEBUDDY_API_KEY, and `--model` names the third. Measured on the bundled engine: the address
+    is what decides where the call goes, so all three have to travel together."""
+    cfg = clean_cfg({"base_url": "https://api.deepseek.com/v1/", "api_key": "sk-x", "model": "deepseek-chat"})
+    assert cfg["base_url"] == "https://api.deepseek.com/v1"      # the trailing slash is taken off
+    assert cfg["api_key"] == "sk-x" and cfg["model"] == "deepseek-chat"
+    env = build_env(cfg)
+    assert env["CODEBUDDY_BASE_URL"] == "https://api.deepseek.com/v1"
+    assert env["CODEBUDDY_API_KEY"] == "sk-x"
+    assert ["--model", "deepseek-chat"] == [a for a in build_args(cfg) if a in ("--model", "deepseek-chat")]
+    # No address = nothing handed over, so a member that was never pointed at a model keeps behaving
+    # exactly as before (it uses whatever the engine is configured with).
+    assert "CODEBUDDY_BASE_URL" not in build_env(clean_cfg({}))
+    # And a half-filled address is refused instead of failing on the first turn.
+    with pytest.raises(ValueError):
+        clean_cfg({"base_url": "api.deepseek.com"})
 
 
 def test_api_test_endpoint_and_offline_rule(client):

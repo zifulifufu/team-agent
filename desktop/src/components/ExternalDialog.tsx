@@ -51,10 +51,25 @@ export default function ExternalDialog(props: Props) {
   // ordinary members from "Models I added", so offering it here would be the second way in that
   // this change removes. Members already using it stay listed and editable in Settings.
   const pickable = ov?.engines.filter((e) => !e.provider) ?? [];
+  // WorkBuddy is one command line on this machine, so there is one member to add (`single`). Once
+  // one exists the engine is greyed out rather than offered and then refused by the backend.
+  const taken = (id: string) => {
+    const e = ov?.engines.find((x) => x.id === id);
+    return !!e?.single && !!ov?.members.some((m) => m.engine === id);
+  };
   const set = (p: Partial<ExternalCfg>) => setCfg((c) => (c ? { ...c, ...p } : c));
   const wasFull = edit?.engine_cfg?.level === "full";
   const needAck = !!cfg && cfg.level === "full" && !wasFull;
   const blocked = !ov?.enabled;
+
+  // Adding a member starts on the first engine that is not already spoken for, so the dialog does
+  // not open on a choice that would be refused the moment it is submitted.
+  useEffect(() => {
+    if (!ov || props.mode !== "create" || !taken(engine)) return;
+    const next = ov.engines.find((e) => !e.provider && !taken(e.id));
+    if (next) setEngine(next.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ov]);
 
   const enableSwitch = () => run(async () => {
     setErr("");
@@ -92,6 +107,11 @@ export default function ExternalDialog(props: Props) {
                api_key: c.api_key.trim() || (c.has_key ? "***" : "") };
     }
     return { level: c.level, risk_ack: needAck ? ack : c.risk_ack, web: c.level === "full" ? false : c.web, cwd: c.cwd.trim(), handoff: c.handoff, model: c.model.trim(), timeout: c.timeout, cli_path: c.cli_path.trim(), native: c.native, max_turns: c.max_turns,
+             // A command line can be pointed at a model of the user's own: the address and the key
+             // go over as CODEBUDDY_BASE_URL and CODEBUDDY_API_KEY, and the model above as --model.
+             // That trio is what makes it runnable on a build whose command line has no sign-in
+             // screen at all, so the same two fields a gateway uses are saved here too.
+             base_url: c.base_url.trim(),
              // Same field as a gateway's key, and the same "***" rule: it is handed to the engine as
              // CODEBUDDY_API_KEY, which is a sign-in route that does not need a terminal at all.
              api_key: c.api_key.trim() || (c.has_key ? "***" : "") };
@@ -136,11 +156,13 @@ export default function ExternalDialog(props: Props) {
             <span>{t("Which one should join?")}</span>
             <div className="ext-engines" role="radiogroup" aria-label={t("Which one should join?")}>
               {pickable.map((e) => (
-                <label key={e.id} className={"ext-engine" + (engine === e.id ? " on" : "")}>
-                  <input type="radio" name="ext-engine" checked={engine === e.id} onChange={() => setEngine(e.id)} />
+                <label key={e.id} className={"ext-engine" + (engine === e.id ? " on" : "") + (taken(e.id) ? " off" : "")}>
+                  <input type="radio" name="ext-engine" checked={engine === e.id} disabled={taken(e.id)} onChange={() => setEngine(e.id)} />
                   <span className="ext-engine-body">
                     <b>{e.avatar} {e.name}</b>
-                    <small>{e.kind === "http" ? t("A chat gateway you already run, over its OpenAI-compatible endpoint. It joins the discussion only — no files, no commands.") : t("A command-line engine that brings its own tools (files, retrieval). It can act on this machine, so its permissions are yours to set.")}</small>
+                    <small>{taken(e.id)
+                      ? t("Already added — this engine is one command line on this machine, so there is only one member to make of it. Change that member's settings instead.")
+                      : e.kind === "http" ? t("A chat gateway you already run, over its OpenAI-compatible endpoint. It joins the discussion only — no files, no commands.") : t("A command-line engine that brings its own tools (files, retrieval). It can act on this machine, so its permissions are yours to set.")}</small>
                   </span>
                 </label>
               ))}
@@ -324,19 +346,37 @@ export default function ExternalDialog(props: Props) {
                 </label>
 
                 <label className="field">
-                  <span>{t("WorkBuddy API key (optional)")}</span>
+                  <span>{t("Model address (optional — an OpenAI-compatible endpoint this member should run on)")}</span>
+                  <input value={cfg.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://api.deepseek.com/v1" spellCheck={false} />
+                  <span className="muted small">{eng?.signin
+                    ? t("Fill this in with a key and a model name and the engine runs that model instead of the one tied to its own account — useful when signing it in by hand is inconvenient.")
+                    : t("This build of WorkBuddy's command line has no sign-in screen (no /login to type in a terminal, and no codebuddy command on your PATH), so it cannot use the models tied to the WorkBuddy account. Fill in these three fields — address, key, model — and it runs that model instead, with the tools it brings.")}</span>
+                </label>
+
+                <label className="field">
+                  <span>{t("Model key (optional)")}</span>
                   <input type="password" value={cfg.api_key} onChange={(e) => set({ api_key: e.target.value })} spellCheck={false}
                          placeholder={cfg.has_key ? t("A key is stored already — leave this empty to keep it") : ""} />
-                  {eng?.key_hint && <span className="muted small">{eng.key_hint}</span>}
+                  {eng?.key_hint && (
+                    <span className="muted small">
+                      {t("Where to get a key:")} {eng.key_hint}
+                      {eng.docs ? <> · <a href={eng.docs} target="_blank" rel="noreferrer">{t("Open the documentation")} <ExternalLink size={11} aria-hidden /></a></> : null}
+                    </span>
+                  )}
                   <span className="muted small">
-                    {t("The command line signs in separately from the WorkBuddy window, which is why the connection test can say it is not signed in. Either this key or signing it in once with /login in a terminal is enough — a key filled in here is kept in the keychain and handed over on every run, so it does not depend on how this app was started.")}
+                    {t("It is kept in the keychain and handed to the engine on every run, so it does not depend on how this app was started.")}
                   </span>
+                </label>
+
+                <label className="field">
+                  <span>{t("Model name (optional — empty = the engine's own default model)")}</span>
+                  <input value={cfg.model} onChange={(e) => set({ model: e.target.value })} placeholder="deepseek-chat / gpt-5 / …" spellCheck={false} />
+                  <span className="muted small">{t("The model name is passed to the service as written, so use the name that service documents.")}</span>
                 </label>
 
                 <details className="ext-adv">
                   <summary>{t("Advanced")}</summary>
                   <div className="form-row">
-                    <label className="field grow"><span>{t("Model (empty = the engine default)")}</span><input value={cfg.model} onChange={(e) => set({ model: e.target.value })} /></label>
                     <label className="field" style={{ width: 130 }}><span>{t("Timeout per turn (seconds)")}</span><input type="number" min={30} max={3600} value={cfg.timeout} onChange={(e) => set({ timeout: Number(e.target.value) || 600 })} /></label>
                     <label className="field" style={{ width: 130 }}><span>{t("Max turns per reply")}</span><input type="number" min={1} max={100} value={cfg.max_turns} disabled={cfg.native} onChange={(e) => set({ max_turns: Number(e.target.value) || 20 })} /></label>
                   </div>
