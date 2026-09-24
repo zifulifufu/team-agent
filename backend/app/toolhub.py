@@ -11,7 +11,7 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 
 from __future__ import annotations
 
-from . import assemble, coderun, i18n, imagegen, media, video
+from . import assemble, coderun, figure, i18n, imagegen, media, video
 
 import asyncio
 import json
@@ -213,7 +213,10 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "local and free — nothing is generated and nothing is billed. Give a shot "
                        "list in order; each entry is {\"clip\": \"video/x.mp4\", \"seconds\": 6, "
                        "\"say\": \"narration to record\", \"text\": \"words on screen\"}, or "
-                       "{\"title\": \"...\", \"subtitle\": \"...\"} for a card with no footage. "
+                       "{\"title\": \"...\", \"subtitle\": \"...\"} for a card with no footage. Every "
+                       "shot that shows a picture also carries `credit` — where that picture came "
+                       "from and under what terms — because a film that cannot answer that cannot be "
+                       "published, and shots without it are listed in the answer. "
                        "Pictures can be shots too (they get a slow push and hold as long as they "
                        "are told). A shot's length follows the narration when you do not give one, "
                        "because a line cut off mid-sentence is worse than running long. The result "
@@ -277,6 +280,97 @@ BUILTIN_SPECS: dict[str, dict] = {
             "name": {"type": "string", "description": "What to call the film; left out, it is stamped with the time",
                      "description_zh": "成片的名字;留空则用时间戳"}},
             "required": ["shots"]},
+    },
+    "list_figures": {
+        "description": "List the real pictures and recordings that came with one of this group's "
+                       "documents. A knowledge base usually came from notes, atlases or case "
+                       "collections that embed their own figures — angiograms, anatomical plates, "
+                       "intra-operative photographs, procedure recordings — and those are already "
+                       "correct, already captioned and already reviewed by somebody who knows the "
+                       "subject. **Look here before you generate anything for a shot that shows "
+                       "anatomy, a lesion, an instrument or a step of a procedure**: a real picture "
+                       "beats anything a model can invent, and a model asked for a realistic artery "
+                       "has no anatomy to draw from — only the metaphor in your prompt. The names it "
+                       "prints are what `make_figure` takes.",
+        "description_zh": "列出本群某篇文档**自己带的**真实图片与影像。知识库通常来自笔记、图谱或病例库,"
+                          "而它们本身就嵌着自己的配图 —— 造影、解剖图版、术中照片、手术录像 —— 这些图本来是对的、"
+                          "本来就有图注、而且被懂行的人审过。**凡是画面里要出现解剖结构、病变、器械或操作步骤的镜头,"
+                          "先查这里,再考虑生成**:真实图片胜过模型能造出的任何东西,而被要求画「写实的动脉」的模型"
+                          "并没有解剖可依,它只有你提示词里那个比喻。它打印出来的名字就是 `make_figure` 要收的。",
+        "risk": "read",
+        "parameters": {"type": "object", "properties": {
+            "doc": {"type": "string", "description": "Document title (or id) — the same title library_search prints",
+                    "description_zh": "文档标题(或 id)—— 和 library_search 打印出来的标题一样"}},
+            "required": ["doc"]},
+    },
+    "make_figure": {
+        "description": "Make ONE teaching picture for a film, out of exactly one of three sources. "
+                       "(a) A real picture — from this group's workspace (`image`) or from a document's "
+                       "own figures (`doc` + `figure`) — put on a titled canvas with a caption and a "
+                       "credit line, optionally with arrows, circles, labels and a magnified inset. "
+                       "(b) A schematic this app draws (`schematic`): a vessel, a bulge on its wall, a "
+                       "catheter, a coil, an arrow for flow — clean, repeatable, and honest, because it "
+                       "claims nothing it was not drawn with. For explaining a procedure to a general "
+                       "audience the schematic is usually the better choice; use real pictures when the "
+                       "subject has to be shown as it actually is. Marks are given as fractions of the "
+                       "frame (0..1 from the top-left), never pixels. The file lands in this group's "
+                       "workspace as a still, ready to be a shot in `assemble_video`, and it carries "
+                       "its own credit line — a picture in a film that cannot say where it came from is "
+                       "one nobody may publish. You cannot see the result: say what you made, never "
+                       "describe how it looks.",
+        "description_zh": "为成片做**一张**教学图,来源三选一:(a) 真实图片 —— 本群工作目录里的(`image`),"
+                          "或某篇文档自己带的配图(`doc` + `figure`)—— 放到带标题、图注和来源行的画布上,"
+                          "可以加箭头、圈注、结构名和放大 inset;(b) 本程序自绘的**示意图**(`schematic`):"
+                          "血管、管壁上的囊、微导管、弹簧圈、血流箭头 —— 干净、可重复、而且诚实,因为它不声称"
+                          "任何没画进去的东西。**给大众讲操作过程时,示意图通常比照片更好用**;需要「就是长这样」"
+                          "时才用真实图片。标注的位置用画面比例(0..1,从左上角算),不要给像素。产物落在本群"
+                          "工作目录里,是一张静帧,可直接作为 `assemble_video` 的镜头,而且自带来源行 —— "
+                          "片子里一张说不清来路的图,是谁都不能发布的。你看不到结果:只说你做了什么,不要描述画面。",
+        # It writes a file in the workspace and executes nothing, so it is a write rather than an exec.
+        "risk": "write",
+        "parameters": {"type": "object", "properties": {
+            "image": {"type": "string",
+                      "description": "A real picture inside this group's workspace (relative path), e.g. uploads/x.jpg",
+                      "description_zh": "本群工作目录内的真实图片(相对路径),例如 uploads/x.jpg"},
+            "doc": {"type": "string",
+                    "description": "A document title to take the picture from — with `figure`, and after list_figures",
+                    "description_zh": "从中取图的文档标题 —— 与 `figure` 一起用,先跑 list_figures"},
+            "figure": {"type": "string",
+                       "description": "Which of that document's figures: its name, part of its name, or its number (\"2\")",
+                       "description_zh": "该文档的哪一张图:名字、名字的一部分,或序号(「2」)"},
+            "schematic": {"type": "string", "enum": list(figure.SCHEMATICS),
+                          "description": f"Draw one of this app's schematics instead of using a picture: {', '.join(figure.SCHEMATICS)}",
+                          "description_zh": f"改用自绘示意图:{', '.join(figure.SCHEMATICS)}"},
+            "params": {"type": "object",
+                       "description": "Schematic parameters: {show: [sac, catheter, coil, flow], sac_at_x, sac_r, "
+                                      "coil_turns, labels: [{text, at: [x, y]}]}",
+                       "description_zh": "示意图参数:{show: [sac, catheter, coil, flow], sac_at_x, sac_r, "
+                                         "coil_turns, labels: [{text, at: [x, y]}]}"},
+            "heading": {"type": "string", "description": "The band at the top: what we are looking at",
+                        "description_zh": "顶部标题带:我们在看什么"},
+            "caption": {"type": "string", "description": "One or two lines under the picture: what to notice",
+                        "description_zh": "画面下一两行图注:该注意什么"},
+            "credit": {"type": "string",
+                       "description": "Where the picture came from and under what terms — e.g. \"Source: <url> · "
+                                      "internal reference only\". Left out for a document's own figure, the "
+                                      "document's recorded source is used; a schematic says it is a drawing",
+                       "description_zh": "图片来自哪里、以什么条件使用 —— 如「来源:<url> · 仅内部对照」。"
+                                         "取文档配图时留空会用该文档记录的来源;示意图则自动标注「示意图」"},
+            "marks": {"type": "array", "items": {"type": "object"},
+                      "description": "Marks on the picture: {kind: arrow|circle|label|inset, at: [x, y], from: [x, y] "
+                                     "for an arrow, text, radius, zoom, corner}",
+                      "description_zh": "图上的标注:{kind: arrow|circle|label|inset, at: [x, y], "
+                                        "箭头再加 from: [x, y], 以及 text、radius、zoom、corner}"},
+            "size": {"type": "string", "enum": list(assemble.SIZES),
+                     "description": "Frame size; 1080x1920 by default",
+                     "description_zh": "画幅;默认 1080x1920"},
+            "fit": {"type": "string", "enum": ["full", "cover"],
+                    "description": "full (default) keeps the whole picture — right for an angiogram, where the "
+                                   "cropped part is often the part somebody points at; cover fills the frame",
+                    "description_zh": "full(默认)保留完整画面 —— 造影图应该这样,被裁掉的那块往往正是要指的地方;"
+                                     "cover 则填满画面"},
+            "name": {"type": "string", "description": "What to call the file", "description_zh": "文件名"}},
+            "required": []},
     },
     "generate_image": {
         "description": "Draw one image from a text description through the image service this "
@@ -437,6 +531,15 @@ class ToolHub:
         if self.library.scope_ids(ext["library"], group["id"]):
             add("library_search", specs["library_search"], source="builtin")
             add("library_read", specs["library_read"], source="builtin")
+            # The pictures that came with those documents. Offered on the same condition as the
+            # search, because it is the same knowledge base: being able to read a document and not
+            # being able to reach its figures is exactly the gap that made groups generate fake
+            # anatomy while a real angiogram sat one lookup away.
+            add("list_figures", specs["list_figures"], source="builtin")
+        # Drawing a frame needs neither a library nor a provider — a schematic is drawn here and a
+        # workspace picture is already on disk — so it is offered whenever Pillow can be imported,
+        # which is always. Gating it on anything else would send a group back to generating anatomy.
+        add("make_figure", specs["make_figure"], source="builtin")
         if cfg["memory_enabled"] and ext["memory"]:
             add("memory_search", specs["memory_search"], source="builtin")
             add("memory_save", specs["memory_save"], source="builtin")
@@ -582,6 +685,8 @@ When it is not supplied, calls needing confirmation are always denied."""
             return await self._generate_image(ctx, args)
         if name == "assemble_video":
             return await self._assemble_video(ctx, args)
+        if name == "make_figure":
+            return await self._make_figure(ctx, args)
         text, ok = await self._builtin(ctx, name, args)
         return text, ok, []
 
@@ -843,6 +948,141 @@ When it is not supplied, calls needing confirmation are always denied."""
         ]
         return "\n".join(lines), True, [{"kind": "image", "name": path.name, "bytes": got["size"]}]
 
+    # ----------------------------------------------------------- teaching pictures
+    async def _make_figure(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
+        """Draw one teaching picture — from a real picture, a document's own figure, or a schematic.
+
+        The whole point is the third possibility. A group making an explainer for a general audience
+        does not need a photograph of an artery; it needs a drawing that reads at a glance, and a
+        drawing done here is the one kind of picture that cannot be wrong in a way nobody can check:
+        every shape in it was put there by somebody, from parameters that can be read back.
+        """
+        workspace = self.store.workspace_dir(ctx.group["id"])
+        w, h, label = assemble.parse_size(str(args.get("size") or ""))
+        chosen = [k for k in ("image", "doc", "schematic") if str(args.get(k) or "").strip()]
+        if len(chosen) != 1:
+            return i18n.pick_now(
+                "Give exactly one source for the picture: `image` (a file in the workspace), `doc` + "
+                "`figure` (a picture that came with a document), or `schematic` (draw one here). "
+                f"You gave: {', '.join(chosen) or 'none'}.",
+                "这幅图只能给一个来源:`image`(工作目录里的文件)、`doc` + `figure`(某篇文档自己带的图)、"
+                f"或 `schematic`(在这里画一张)。你给的是:{', '.join(chosen) or '没给'}。"), False, []
+
+        anchors = figure.schematic_geometry((w, h), args.get("params") or {}) \
+            if "schematic" in chosen else {}
+
+        marks = args.get("marks") or []
+        if not isinstance(marks, list):
+            return i18n.pick_now("`marks` has to be a list.", "`marks` 要写成列表。"), False, []
+        credit = str(args.get("credit") or "").strip()
+        source_path: Path | None = None
+        draw = None
+        try:
+            if "schematic" in chosen:
+                draw = figure.schematic(str(args["schematic"]).strip().lower(), (w, h),
+                                        args.get("params") or {})
+                stem = str(args.get("name") or f"schematic-{args['schematic']}")
+                credit = credit or i18n.pick_now("Schematic drawn by this app.",
+                                                 "本程序自绘示意图。")
+            elif "doc" in chosen:
+                doc = self.library.find_by_title(str(args["doc"]))
+                if not doc:
+                    return i18n.pick_now(
+                        f"The library has no document called \"{args['doc']}\". Search the library first, "
+                        "or list a document's figures by its exact title.",
+                        f"资料库里没有《{args['doc']}》。请先检索,或用准确的标题查一篇文档的配图。"), False, []
+                figs, meta = self.library.figures(doc)
+                if not figs:
+                    return i18n.pick_now(
+                        f"\"{doc['title']}\" came with no pictures of its own — only words. So there is "
+                        "nothing to show from it: pick another document, use a workspace picture, or "
+                        "draw a schematic.",
+                        f"《{doc['title']}》没有自带配图,只有文字。所以它这里没有可放的东西:换一篇文档、"
+                        "用工作目录里的图,或者自绘一张示意图。"), False, []
+                want = str(args.get("figure") or "").strip()
+                fig = self.library.find_figure(doc, want) if want else (figs[0] if len(figs) == 1 else None)
+                if fig is None:
+                    names = "、".join(f"{i}) {f['name']}" for i, f in enumerate(figs[:12], 1))
+                    more = i18n.pick_now(f" …and {len(figs) - 12} more", f"…等共 {len(figs)} 张") \
+                        if len(figs) > 12 else ""
+                    return i18n.pick_now(
+                        f"Which figure of \"{doc['title']}\"? Say a name or a number: {names}{more}",
+                        f"要《{doc['title']}》的哪一张?给名字或序号:{names}{more}"), False, []
+                if fig["kind"] == "clip":
+                    return i18n.pick_now(
+                        f"\"{fig['name']}\" is a recording, not a still, so it cannot be made into one "
+                        "picture. It is a real procedure recording — put it into `assemble_video` as a "
+                        f"shot's `clip` instead (the file is {fig['path']}).",
+                        f"「{fig['name']}」是录像而不是静图,做不成一张图。它是一段真实手术录像 —— 应该把它作为"
+                        f"镜头的 `clip` 交给 `assemble_video`(文件在 {fig['path']})。"), False, []
+                source_path = Path(fig["path"])
+                stem = str(args.get("name") or source_path.stem)
+                if not credit:
+                    src = str(meta.get("source") or "").strip()
+                    credit = i18n.pick_now(
+                        f"From: {doc['title']}" + (f" · {src}" if src else "")
+                        + " · terms not recorded — check before publishing",
+                        f"取自《{doc['title']}》" + (f" · {src}" if src else "")
+                        + " · 未记录使用条件,对外发布前需确认")
+            else:
+                rel = str(args["image"])
+                source_path = assemble._local(workspace, rel, i18n.pick_now(
+                    "No picture given.", "没有给图片。"))
+                stem = str(args.get("name") or source_path.stem)
+                if not credit:
+                    credit = i18n.pick_now(f"From this group's workspace: {rel}",
+                                           f"取自本群工作目录:{rel}")
+        except (figure.FigureError, assemble.AssembleError) as e:
+            return str(e), False, []
+        except OSError as e:
+            return i18n.pick_now(f"Could not read the picture: {e}", f"读不到这张图:{e}"), False, []
+
+        try:
+            out = figure.workspace_output(workspace, "figures", stem)
+            await asyncio.to_thread(
+                figure.compose, source_path, out, (w, h),
+                heading=str(args.get("heading") or ""), caption=str(args.get("caption") or ""),
+                credit=credit, draw=draw, body_fit=str(args.get("fit") or "full"), marks=marks)
+        except figure.FigureError as e:
+            return str(e), False, []
+        except Exception as e:  # noqa: BLE001 — a frame that failed must read as a sentence
+            return i18n.pick_now(f"Drawing the frame failed: {type(e).__name__}: {e}",
+                                 f"绘制失败:{type(e).__name__}: {e}"), False, []
+
+        what = (i18n.pick_now(f"a schematic ({args['schematic']})", f"一张示意图({args['schematic']})")
+                if "schematic" in chosen else
+                i18n.pick_now(f"a real picture ({source_path.name})", f"一张真实图片({source_path.name})")
+                if source_path else i18n.pick_now("a picture", "一张图片"))
+        lines = [i18n.pick_now(
+            f"Made one {label} teaching picture from {what}: {out.name} ({media.size_label(out.stat().st_size)}).",
+            f"用{what}做了一张 {label} 的教学图:{out.name}({media.size_label(out.stat().st_size)})。")]
+        lines.append(i18n.pick_now(f"Saved in this group's workspace: {out}",
+                                   f"已保存在本群工作目录:{out}"))
+        if marks:
+            lines.append(i18n.pick_now(
+                f"With {len(marks)} mark(s) on it. Check each one lands on what you meant — a mark "
+                "pointing at the wrong structure is worse than no mark.",
+                f"图上有 {len(marks)} 处标注。请逐处确认它指的就是你想指的地方 —— 指错的标注比不标更糟。"))
+        lines.append(i18n.pick_now(
+            "This is a still: give it to `assemble_video` as a shot's `clip` (with `seconds`), and put "
+            "the same credit line in that shot so the film can say where the picture came from. You "
+            "cannot see the result, so do not describe it.",
+            "这是一张静帧:把它当作镜头的 `clip` 交给 `assemble_video`(配 `seconds`),并把同样的来源行写进"
+            "那一镜,成片才说得清画面从哪来。你看不到结果,不要描述它。"))
+        if anchors:
+            named = ", ".join(f"{k}={v[0]:.2f},{v[1]:.2f}" for k, v in anchors.items()
+                              if not k.startswith("_"))
+            lines.append(i18n.pick_now(
+                f"Where its parts are, as fractions of the frame: {named}. Use these — with "
+                "`{\"kind\": \"label\", \"at_part\": \"sac\"}` in a schematic's `params.labels`, or as "
+                "`at` in `marks` — instead of estimating a position yourself. A mark placed from a "
+                "guess is one that points somewhere else.",
+                f"图上各部件的画面比例位置:{named}。请用它们 —— 示意图的 `params.labels` 里写 "
+                "`{\"kind\": \"label\", \"at_part\": \"sac\"}`,或 `marks` 里当 `at` 用 —— "
+                "不要自己估位置。估出来的标注指的一定是别的地方。"))
+        return "\n".join(lines), True, [{"kind": "image", "name": out.name,
+                                         "bytes": out.stat().st_size}]
+
     # ----------------------------------------------------------- assembly
     async def _assemble_video(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
         """Join the group's shots into one film, with narration and subtitles.
@@ -908,6 +1148,16 @@ When it is not supplied, calls needing confirmation are always denied."""
         for n in out["notes"]:
             lines.append(f"· {n}")
         plan = out["plan"]
+        # A picture in a film that cannot say where it came from is one nobody may publish, and the
+        # question arrives after the work is done. So it is named now, not discovered later.
+        uncredited = [str(e["no"]) for e in plan if e["kind"] != "card" and not e.get("credit")]
+        if uncredited:
+            lines.append(i18n.pick_now(
+                f"({len(uncredited)} shot(s) have no recorded source for their picture: "
+                f"{', '.join(uncredited)}. Give those shots a `credit` — where the picture came from "
+                "and under what terms — or the film cannot be published. The sheet lists them.)",
+                f"({len(uncredited)} 个镜头没记录画面来源:{', '.join(uncredited)}。请给这些镜头补 `credit`"
+                "(画面从哪来、以什么条件使用),否则这条片子不能发布。分镜表里已列出。)"))
         stretched = plan[0].get("stretched") if plan else None
         if stretched:
             lines.append(i18n.pick_now(
@@ -999,6 +1249,55 @@ When it is not supplied, calls needing confirmation are always denied."""
             r = await asyncio.to_thread(self.library.read, doc["id"], max(0, int(args.get("start") or 0)), 3000)
             tail = i18n.pick_now(f"\n(read up to character {r['end']} of {r['total']}; pass start={r['end']} to carry on)", f"\n(已读到第 {r['end']} 字,共 {r['total']} 字;继续读请用 start={r['end']})") if r["end"] < r["total"] else ""
             return i18n.pick_now(f"{doc['title']}\n{r['text']}{tail}", f"《{doc['title']}》\n{r['text']}{tail}"), True
+        if name == "list_figures":
+            doc = self.library.find_by_title(str(args.get("doc") or ""))
+            if not doc or not doc["enabled"]:
+                return i18n.pick_now(f"The library has no document called {args.get('doc')}.",
+                                     f"资料库里没有《{args.get('doc')}》。") + " " + self._library_index(group), False
+            allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
+            if allowed is not None and doc["id"] not in allowed:
+                return i18n.pick_now("This document is not enabled for this group.",
+                                     "本群没有启用这份文档。"), False
+            figs, meta = await asyncio.to_thread(self.library.figures, doc)
+            origin = str(meta.get("source") or "").strip()
+            head = i18n.pick_now(
+                f"\"{doc['title']}\" came with {len(figs)} picture(s)/recording(s)"
+                + (f", from {origin}" if origin else "") + ".",
+                f"《{doc['title']}》自带 {len(figs)} 张图/段影像" + (f",来源 {origin}" if origin else "") + "。")
+            if not figs:
+                # The honest answer is also the useful one: it says what to do instead, and it names
+                # the documents that *would* have something — a dead end that names an exit.
+                have = []
+                for d in self.library.scope_docs(group["ext"]["library"], group["id"])[:40]:
+                    f2, _m = await asyncio.to_thread(self.library.figures, d)
+                    if f2:
+                        have.append(f"{d['title']}({len(f2)})")
+                tail = i18n.pick_now(
+                    " So there is nothing real to show from it — draw a schematic (`make_figure` with "
+                    "`schematic`), or use a picture from the workspace.",
+                    " 所以它这里没有可放的真实画面 —— 请自绘示意图(`make_figure` 给 `schematic`),"
+                    "或用工作目录里的图片。")
+                if have:
+                    tail += i18n.pick_now(
+                        " Documents that do have pictures: " + "、".join(have),
+                        " 确实带图的文档:" + "、".join(have))
+                return head + tail, True
+            lines = []
+            for i, f in enumerate(figs, 1):
+                kind = i18n.pick_now("recording", "录像") if f["kind"] == "clip" \
+                    else i18n.pick_now("picture", "图片")
+                lines.append(f"{i}) {f['name']} — {kind}, {media.size_label(f['bytes'])}")
+            body = "\n".join(lines)
+            how = i18n.pick_now(
+                "To use one: `make_figure` with this document's title as `doc` and the name or the "
+                "number as `figure`. A recording is not a still — give it to `assemble_video` as a "
+                "shot's `clip` instead. Whichever you use, the film should carry the credit line: "
+                + (f"the recorded source is {origin}" if origin
+                   else "this document records no source, so confirm the terms before publishing"),
+                "要用某一张:`make_figure` 里把本文档标题填 `doc`,把名字或序号填 `figure`。"
+                "录像不是静图 —— 应该作为镜头的 `clip` 交给 `assemble_video`。无论用哪个,成片都要带来源行:"
+                + (f"记录下来的来源是 {origin}" if origin else "这篇文档没有记录来源,对外发布前须确认条件"))
+            return f"{head}\n{body}\n\n{how}", True
         if name == "memory_search":
             mems = self.memory.recall(group["id"], agent["id"], str(args["query"]), 8)
             return (self.memory.block(mems) or i18n.pick_now("No relevant memories.", "没有相关记忆。")), True

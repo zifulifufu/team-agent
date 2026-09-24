@@ -90,8 +90,8 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
-| Tools | Text-protocol calls (max 3 per reply), nine built-ins, Python plugins, MCP over stdio / SSE / HTTP |
-| Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references |
+| Tools | Text-protocol calls (max 3 per reply), eleven built-ins, Python plugins, MCP over stdio / SSE / HTTP |
+| Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references; **the pictures a note came with**, reachable by document |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
 | Template gallery | 81 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
@@ -318,6 +318,59 @@ would only get each of them half right.
 | **ChatCut** | a **hosted** HTTP MCP with a Bearer header | Template gallery → MCP → *ChatCut (edit video by describing it)* | You obtain the token yourself with their sign-in flow; it is short-lived (about an hour), so **a 401 later usually means refreshing it, not a wrong key** |
 | **DaVinci Resolve** | stdio MCP (`uvx --python 3.11 --with 'mcp<2' davinci-resolve-mcp`) | Template gallery → MCP → *DaVinci Resolve (cut on a real timeline)* | Needs **Resolve Studio** (the free version exposes no scripting API), external scripting set to Local, and **Resolve open before you press test**. The `--python 3.11` and `mcp<2` pins are not optional: without either one the server dies at import |
 | **Jianying / CapCut** | no installable MCP exists — the code route: `uv run --with pyJianYingDraft` | built-in skill *Jianying (CapCut) drafts* | It writes Jianying's own draft files, so the **draft folder has to be asked for** — write it anywhere else and the user opens Jianying and sees nothing |
+
+### Where a picture may come from
+
+A generated clip is 4-30 seconds, while the explainer a group is actually making runs for minutes.
+The step between the two is not generation, so it is not a provider, and it is not something to leave
+to each member's own `ffmpeg` command line either — twelve of those agree about nothing. It is a
+**built-in tool every member already has**: `assemble_video`. It needs nothing on this machine except
+`ffmpeg` — no key, no account, no per-group setup, nothing billed however many times it runs — and it
+joins the shots, records the narration, and puts the words on screen.
+
+**But which pictures go into it is a separate decision, and the one that decides whether the film is
+worth anything.** A picture falls into one of three grades, and the grade decides where it may come from:
+
+| Grade | What it is | Where it may come from |
+|---|---|---|
+| **A — real imagery** | an angiogram, an anatomical plate, an intra-operative photograph, a recording of the procedure | the real thing, and nothing else. This is the only legitimate source for anatomy, a lesion, an instrument, or a step of a procedure |
+| **B — real imagery with marks** | the same picture with an arrow, a circle, a magnified inset, a structure named, or a before/after wipe | the real picture, marked here (`make_figure`) |
+| **C — explanatory graphics** | flow arrows, title cards, charts, flat shapes, a schematic of a vessel and a bulge | drawn here (`make_figure` with `schematic`), or generated — *because they make no claim about how anything looks* |
+
+Asking a text-to-video model for a realistic artery is asking it to guess: it has no anatomy, only
+the metaphor in the prompt, so "a weak spot bulging on a wall" comes back as whatever shape it felt
+like. That is how a medical film ends up embarrassing, and it is not something assembly can repair —
+assembly joins what it is given. **Measured on this very pipeline**: four clips were generated from
+text alone, with no reference picture at all, from prompts about "a translucent blue pipe with a bulge
+in its wall". None of them is an aneurysm.
+
+So the work order is: **look for the real thing first** (`list_figures` prints the pictures that came
+with a document — a knowledge base imported from notes or an atlas usually has hundreds, already
+correct and already captioned), **make the still frame next, and have it looked at**, and only then
+let anything move. A still can be read and rejected; a rendered clip cannot. Skipping that gate is
+how a wrong picture survives to a finished film.
+
+Two tools carry it:
+
+* **`list_figures`** — the real pictures and recordings one of this group's documents came with. A
+  note is read for its `![[...]]` embeds, each resolved against the note's own folder and refused
+  unless it lands on a real file there, and the note's recorded `source` comes back with them. When a
+  document has none, the answer says so *and* names the documents that do.
+* **`make_figure`** — one teaching picture from exactly one of: a picture in the workspace, a
+  document's own figure, or a schematic drawn here. Arrows, circles, structure labels and magnified
+  insets go on top; every frame gets a heading, a caption, and a **credit line**. Marks are placed by
+  naming a part (`at_part: "sac"`) rather than by guessing a fraction — the drawing knows where its own
+  parts are and hands those positions back, because a mark placed from a guess points somewhere else.
+  A schematic also says on the frame that it is a drawing.
+
+`assemble_video` then asks each shot for its `credit` — where that picture came from and under what
+terms — writes it into the shot sheet, and names the shots that have none. A film that cannot answer
+that question is one nobody may publish, and the question always arrives after the work is done.
+
+> **On the material itself.** An atlas or somebody's case collection is fine to check your own work
+> against, and fine to learn from. Putting it into a published film is a permission question, not a
+> technical one: the notes record a source URL and no licence, so the credit line is where that gets
+> settled — by you, deliberately, rather than by accident.
 
 ### Assembling the shots into one film
 

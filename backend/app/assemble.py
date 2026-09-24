@@ -40,6 +40,9 @@ from typing import Any
 
 from . import i18n
 from .bindirs import tool as _tool
+# The typography (font, wrapping, shadow) belongs to `figure`, which owns everything drawn by
+# hand — a second font list here would drift from that one.
+from .figure import font as _font, shadow as _shadow, wrap as _wrap
 from .coderun import inside, kill_group
 
 SUBDIR = "video"            # where the finished film goes, beside the generated clips
@@ -58,14 +61,6 @@ MAX_SHOT = 600.0
 # 9:16 and 1:1 first: this is for the vertical short-video platforms the group is usually making
 # for, and a landscape film is the exception rather than the default.
 SIZES = ("1080x1920", "720x1280", "1080x1080", "1920x1080", "1280x720")
-# Tried in order; the first that Pillow can open wins. PingFang is not on this machine and
-# Hiragino Sans GB is, which is exactly why the list is walked rather than assumed.
-FONTS = ("/System/Library/Fonts/PingFang.ttc",
-         "/System/Library/Fonts/Hiragino Sans GB.ttc",
-         "/System/Library/Fonts/STHeiti Medium.ttc",
-         "/System/Library/Fonts/Supplemental/Songti.ttc",
-         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-         "/System/Library/Fonts/Helvetica.ttc")
 # Real Chinese voices first: the `Eddy (Chinese …)` family are the novelty voices, and a group
 # that asked for a medical explainer does not want one of those reading it out.
 VOICE_ZH = ("Tingting", "Meijia", "Sinji")
@@ -283,40 +278,10 @@ def narration_seconds(text: str, voice: str = "") -> float:
 
 
 # --------------------------------------------------------------------- words on screen
-def _font(size: int):
-    from PIL import ImageFont
-    for path in FONTS:
-        try:
-            return ImageFont.truetype(path, size)
-        except (OSError, ValueError):
-            continue
-    return ImageFont.load_default()
 
 
-def _wrap(text: str, font, limit: int, draw) -> list[str]:
-    """Break a line to fit `limit` pixels. Character-by-character, because Chinese has no spaces
-    and a word-based wrap would put a whole sentence on one line."""
-    lines: list[str] = []
-    for para in (text or "").split("\n"):
-        cur = ""
-        for ch in para:
-            if draw.textlength(cur + ch, font=font) <= limit:
-                cur += ch
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = ch
-        lines.append(cur)
-    return [ln for ln in lines if ln.strip()] or [""]
 
 
-def _shadow(draw, xy, text, font, fill, anchor="mm"):
-    """Text with a soft drop shadow. A plain white line over a bright operating-theatre shot is
-    unreadable, and this is the one line the group will see the most."""
-    x, y = xy
-    for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1)):
-        draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 180), anchor=anchor)
-    draw.text(xy, text, font=font, fill=fill, anchor=anchor)
 
 
 def subtitle_png(text: str, size: tuple[int, int], out: Path, *, font_scale: float = 0.045,
@@ -457,6 +422,10 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
                 f"Shot {i} has neither a clip nor a title — it would be a blank frame.",
                 f"第 {i} 个镜头既没有素材也没有标题,会是一帧空白。"))
         entry: dict[str, Any] = {"no": i, "say": say, "text": text, "title": title,
+                                 # Where this shot's picture comes from, and under what terms. Not
+                                 # decoration: a film that cannot answer it is one nobody may publish,
+                                 # and the question always arrives after the work is done.
+                                 "credit": str(raw.get("credit") or raw.get("source") or "").strip(),
                                  "subtitle": str(raw.get("subtitle") or "").strip(),
                                  "audio": str(raw.get("audio") or ("voice" if say else "clip")),
                                  "motion": raw.get("motion", bool(raw.get("title"))),
@@ -846,13 +815,20 @@ def _shot_sheet(plan: list[dict], size: tuple[int, int], fps: int, final: Path,
         f"{len(plan)} 个镜头 · {total:g} 秒 · {w}×{h} · {fps}fps · {final.name}"))
     lines.append("")
     lines.append(i18n.pick_now(
-        "| # | source | seconds | narration | on-screen |", "| # | 素材 | 秒 | 旁白 | 字幕 |"))
-    lines.append("|---|---|---|---|---|")
+        "| # | picture | seconds | narration | on-screen | where it came from |",
+        "| # | 画面 | 秒 | 旁白 | 字幕 | 画面来源 |"))
+    lines.append("|---|---|---|---|---|---|")
     for e in plan:
         src = Path(e["source"]).name if e["source"] else i18n.pick_now("(title card)", "(标题卡)")
         say = (e["say"][:38] + "…") if len(e["say"]) > 39 else e["say"]
         text = (e["text"][:38] + "…") if len(e["text"]) > 39 else e["text"]
-        lines.append(f"| {e['no']} | {src} | {e['seconds']:g} | {say} | {text} |")
+        credit = str(e.get("credit") or "")
+        if credit:
+            credit = (credit[:38] + "…") if len(credit) > 39 else credit
+        else:
+            credit = (i18n.pick_now("**(none recorded)**", "**(未记录)**") if e["kind"] != "card"
+                      else i18n.pick_now("drawn here (title card)", "本程序绘制(标题卡)"))
+        lines.append(f"| {e['no']} | {src} | {e['seconds']:g} | {say} | {text} | {credit} |")
     if notes:
         lines += ["", i18n.pick_now("## Adjustments", "## 调整")] + [f"- {n}" for n in notes]
     return "\n".join(lines) + "\n"

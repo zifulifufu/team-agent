@@ -18,7 +18,7 @@ import re
 import threading
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -198,6 +198,90 @@ XLSX_MAX_ROWS = 500
 DIR_EXT = TEXT_EXT | {".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx"}
 MAX_DIR_FILES = 300
 MAX_URL_BYTES = 5 * 1024 * 1024
+
+# --------------------------------------------------------------- the pictures a note came with
+# A note that came from an atlas, an article or somebody's case collection usually embeds its own
+# figures, and those figures are the most valuable thing in it: they are already correct, already
+# captioned, and already reviewed by somebody who knows the subject. The library used to index the
+# words and throw that away, which is why a group could search 300 documents and still have nothing
+# to put on screen.
+FIGURE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+CLIP_EXT = {".mp4", ".mov", ".m4v", ".webm", ".avi"}
+# `![[name|240]]` is Obsidian's embed; `![](path)` is the ordinary markdown one. Both appear in the
+# wild, and a link can carry a width hint and an anchor after `|` or `#`.
+EMBED_RE = re.compile(r"!\[\[([^\[\]]+?)\]\]|!\[[^\]]*\]\(([^)\s]+)\)")
+MAX_FIGURES = 120
+MAX_NOTE_BYTES = 400_000
+
+
+def _clean_link(raw: str) -> str:
+    link = str(raw or "").strip().strip("<>").strip('"').strip("'")
+    link = link.split("|", 1)[0].split("#", 1)[0].strip()
+    return unquote(link)
+
+
+def _frontmatter(text: str) -> dict:
+    """The `key: value` pairs at the top of a note, which is where the provenance lives."""
+    out: dict[str, str] = {}
+    if not text.startswith("---"):
+        return out
+    end = text.find("\n---", 3)
+    for line in text[3:end if end > 0 else 0].splitlines():
+        if ":" in line and not line.lstrip().startswith("#"):
+            k, _, v = line.partition(":")
+            out[k.strip().lower()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def note_figures(filename: str, *, want_clips: bool = True) -> tuple[list[dict], dict]:
+    """(the media a note embeds, its front matter) — read from the note's own file on disk.
+
+    Resolved rather than trusted: every link is refused unless it lands on a real file inside the
+    note's own tree. A note is data from somewhere else, and the one thing this must never do is turn
+    a line in it into a path this app will happily read from anywhere on the machine.
+
+    `OBSIDIAN` links come in two shapes and both are here: a path relative to the vault root
+    (`Atlas/shots/x.jpg`), and a bare file name (`some-case.mp4`) that sits next to the note. The
+    vault root is found by walking up from the note, which is also the containment boundary.
+    """
+    src = Path(str(filename or ""))
+    if src.suffix.lower() not in (TEXT_EXT | {".markdown"}) or not src.is_file():
+        return [], {}
+    try:
+        raw = src.read_bytes()[:MAX_NOTE_BYTES].decode("utf-8", errors="replace")
+    except OSError:
+        return [], {}
+    base = src.parent
+    roots = [base] + [base.parents[i] for i in range(min(3, len(base.parents)))]
+    allowed = FIGURE_EXT | (CLIP_EXT if want_clips else set())
+    found: list[dict] = []
+    seen: set[str] = set()
+    for m in EMBED_RE.finditer(raw):
+        link = _clean_link(m.group(1) or m.group(2) or "")
+        if not link or link.startswith(("http://", "https://", "/", "~")) or ".." in link:
+            continue
+        tries = [r / link for r in roots]
+        if "/" not in link:
+            tries = [base / link] + tries
+        for cand in tries:
+            try:
+                if not cand.is_file() or cand.suffix.lower() not in allowed:
+                    continue
+                real = cand.resolve()
+            except OSError:
+                continue
+            if not any(real == r.resolve() or r.resolve() in real.parents for r in roots):
+                continue
+            if str(real) in seen:
+                break
+            seen.add(str(real))
+            found.append({"name": cand.name, "path": str(real), "rel": link,
+                          "kind": "clip" if cand.suffix.lower() in CLIP_EXT else "figure",
+                          "bytes": cand.stat().st_size})
+            break
+        if len(found) >= MAX_FIGURES:
+            break
+    return found, _frontmatter(raw)
 
 
 def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str, bytes]:
@@ -392,6 +476,45 @@ skipped, files whose size changed are replaced with the new version."""
         docs = self.store.list_docs()
         return next((d for d in docs if d["id"] == key or d["title"].lower() == key), None) or \
             next((d for d in docs if key and key in d["title"].lower()), None)
+
+    # ------------------------------------------------------- the pictures a document came with
+    def figures(self, doc_or_id: str | dict) -> tuple[list[dict], dict]:
+        """(the pictures and clips this document embeds, its provenance).
+
+        The bridge that was missing: a group can search a library, read a document's words, and — with
+        this — also reach the figures that came with it. Everything a caller needs to use one is here:
+        the name to refer to it by, the file it really is, and the `source` the note recorded, which
+        is what a credit line is built from.
+
+        Read from disk each time rather than indexed: a note is a few kilobytes of text, the answer is
+        never stale, and it needs no schema change — the note's own file has been the source of truth
+        since it was imported.
+        """
+        doc = self.store.get_doc(doc_or_id) if isinstance(doc_or_id, str) else doc_or_id
+        if not doc:
+            return [], {}
+        return note_figures(str(doc.get("filename") or ""))
+
+    def find_figure(self, doc: dict, want: str) -> dict | None:
+        """One figure of a document by name, by number, or by part of its name.
+
+        A model cannot quote a 60-character Obsidian path reliably, and it should not have to: the
+        listing gives it names, and "the 3rd one" is as good a way to say it as any.
+        """
+        figs, _ = self.figures(doc)
+        key = str(want or "").strip().lower()
+        if not key:
+            return None
+        if key.isdigit():
+            i = int(key) - 1
+            return figs[i] if 0 <= i < len(figs) else None
+        for f in figs:
+            if f["name"].lower() == key or f["rel"].lower() == key:
+                return f
+        for f in figs:
+            if key in f["name"].lower():
+                return f
+        return None
 
     # ------------------------------------------------------- knowledge bases and scope
     def own_kbs(self, gid: str) -> list[dict]:
