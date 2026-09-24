@@ -80,9 +80,13 @@ ENGINES: dict[str, dict] = {
         # route that works is to point it at a model service of the user's own: an OpenAI-compatible
         # address, that service's key, and the model name (`build_env` hands the first two over and
         # `--model` names the third). The hint says where to get the key, not where to look up a
-        # "WorkBuddy API key", because there is nothing in the app that hands one out.
-        "key_hint": "the key of the model service you want this member to run on (DeepSeek, Moonshot, …), filled in together with the address and the model name — WorkBuddy's own account models need the app's sign-in, which cannot be shared with a member",
-        "key_hint_zh": "这个成员要跑的模型服务的密钥(DeepSeek、Moonshot 等),和地址、模型名一起填——WorkBuddy 账号自带的那几个模型需要应用自己登录,没法共享给成员",
+        # "WorkBuddy API key", because there is nothing in the app that hands one out — and it says
+        # the key is not optional, because it is not: measured on the bundled engine, an address with
+        # no key beside it still ends in "Authentication required" (the engine only switches to the
+        # given address once a key is there), so a local service with no key of its own needs some
+        # placeholder in that field.
+        "key_hint": "the key of the model service you want this member to run on (DeepSeek, Moonshot, …), filled in together with the address and the model name — the engine only switches to that address once a key is present, so a local service with no key needs any placeholder here; WorkBuddy's own account models need the app's sign-in, which cannot be shared with a member",
+        "key_hint_zh": "这个成员要跑的模型服务的密钥(DeepSeek、Moonshot 等),和地址、模型名一起填——引擎要有密钥才会改用你给的地址,所以不带密钥的本地服务也要随便填一个占位;WorkBuddy 账号自带的那几个模型需要应用自己登录,没法共享给成员",
         "prompt": (
             "You are WorkBuddy (a desktop agent), taking part as a member of the group. You come "
             "with your own tools for reading files and searching, so you suit the parts that need "

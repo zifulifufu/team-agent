@@ -574,8 +574,16 @@ def test_api_create_patch_and_group_rules(client, tmp_path):
 def test_a_command_line_member_can_be_pointed_at_a_model_of_its_own():
     """The engine has no sign-in screen in this build (see `has_signin_screen`), so the settings that
     make it run are an address, a key and a model name: the two are handed over as CODEBUDDY_BASE_URL
-    and CODEBUDDY_API_KEY, and `--model` names the third. Measured on the bundled engine: the address
-    is what decides where the call goes, so all three have to travel together."""
+    and CODEBUDDY_API_KEY, and `--model` names the third.
+
+    Measured on the bundled engine, and this is why all three are one route rather than three
+    options: the address is what decides where the call goes (a wrong one fails with "cannot resolve
+    the server address"), a key on its own still goes to the account's endpoint ("API key
+    verification service unavailable"), and an address with no key beside it still ends in
+    "Authentication required" — the engine only switches address once a key is present. A loopback
+    address is worse still: the engine's HTTP call follows the proxy variables of its environment
+    and ignores NO_PROXY, so a local service is better reached by name than by 127.0.0.1.
+    """
     cfg = clean_cfg({"base_url": "https://api.deepseek.com/v1/", "api_key": "sk-x", "model": "deepseek-chat"})
     assert cfg["base_url"] == "https://api.deepseek.com/v1"      # the trailing slash is taken off
     assert cfg["api_key"] == "sk-x" and cfg["model"] == "deepseek-chat"

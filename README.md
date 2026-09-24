@@ -373,9 +373,12 @@ which one applies is measured rather than assumed:
   chat gateway uses. The address and the key go over as `CODEBUDDY_BASE_URL` and `CODEBUDDY_API_KEY`,
   and the model name as `--model`, after which the engine calls that service directly and needs no
   account at all. It still brings its own tools. Measured on the bundled engine: the address is what
-  routes the call (a wrong one fails with "cannot resolve the server address"), and a key on its own
-  still goes to the account's endpoint and comes back "API key verification service unavailable" —
-  so all three travel together. `CODEBUDDY_BASE_URL` and `CODEBUDDY_API_KEY` are also the pair to
+  routes the call (a wrong one fails with "cannot resolve the server address"), a key on its own
+  still goes to the account's endpoint and comes back "API key verification service unavailable",
+  and an address with no key beside it still ends in "Authentication required" — so all three travel
+  together, and a local service with no key of its own needs a placeholder in that field. A loopback
+  address is a poor choice either way: the engine's HTTP call follows its environment's proxy
+  variables and ignores `NO_PROXY`. `CODEBUDDY_BASE_URL` and `CODEBUDDY_API_KEY` are also the pair to
   export system-wide (`launchctl setenv …`, then reopen this app) if you would rather not store a key
   here; a variable merely *exported* in a shell never reaches an app opened from Finder.
 * **Sign it in by hand** (only when that is possible). `/login` is a command of the *interactive*

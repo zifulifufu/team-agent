@@ -320,7 +320,10 @@ WorkBuddy 就是这台机器上的一个命令行,所以这样的成员**只能�
   ——和对话网关填的是同样三个字段。地址与密钥分别以 `CODEBUDDY_BASE_URL`、`CODEBUDDY_API_KEY` 交给引擎,
   模型名以 `--model` 传给引擎,之后它直接调用那个服务,完全不需要账号。它的工具照常带着。
   在自带引擎上实测:决定调用去哪的是**地址**(填错会报「无法解析服务器地址」),而**只有密钥**时它仍然去
-  账号自己的端点、回「API key verification service unavailable」——所以三个要一起给。
+  账号自己的端点、回「API key verification service unavailable」;-> **三个要一起给**;而且**只有地址、没有密钥**
+  同样会回到「Authentication required」(密钥在,它才肯改用你给的地址),所以本来不带密钥的本地服务也要填一个占位。
+  本机回环地址另外还有一层坑:这个引擎的 HTTP 请求会跟着环境里的代理变量走、**不认 `NO_PROXY`**,所以本地服务
+  尽量别用 `127.0.0.1` 直连。
   不想把密钥存在这里时,也可以在系统层面 `launchctl setenv CODEBUDDY_BASE_URL … ` /
   `CODEBUDDY_API_KEY … ` 后重开本程序;注意只在 shell 里 `export` 的变量到不了从访达启动的 app。
 * **手动给它登录一次**(只在可行时)。`/login` 是**交互式**产物的命令,所以这条只在那个产物随引擎一起发布时
