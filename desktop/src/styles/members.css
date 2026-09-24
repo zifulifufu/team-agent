@@ -1,12 +1,19 @@
 /* 侧边栏「成员」区、添加成员面板、成员卡片 */
-.nav-split { display: flex; align-items: center; gap: 2px; position: relative; }
-.nav-split .nav-item { flex: 1; min-width: 0; }
-.nav-item .count { margin-left: 2px; color: var(--text-3); font-weight: 400; font-size: 12px; }
+/* 侧栏右侧的成员栏:本群成员单独一栏,侧栏本身只做导航 */
+.mrail { width: 272px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg-side); border-right: 1px solid var(--border); }
+.mrail-head { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); flex: none; }
+.mrail-head > svg { color: var(--text-2); flex: none; }
+.mrail-titles { display: flex; flex-direction: column; min-width: 0; }
+.mrail-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrail-sub { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
+.mrail-empty { color: var(--text-3); font-size: 12.5px; line-height: 1.7; padding: 8px 6px; }
+.mrail-foot { flex: none; padding: 8px 10px; border-top: 1px solid var(--border); display: flex; }
+.mrail-foot .btn { width: 100%; justify-content: center; }
+
 .madd-wrap { position: relative; display: inline-flex; }
-.nav-split .madd-wrap { position: static; }
 .madd-pop { position: absolute; top: calc(100% + 6px); z-index: 60; width: 320px; max-width: calc(100vw - 24px); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
 .madd-pop.left { left: 0; }
-.nav-split .madd-pop.left { left: 4px; }
 .madd-pop.right { right: 0; }
 .madd-title { padding: 10px 14px 6px; font-weight: 600; font-size: 13px; }
 .madd-scroll { max-height: min(70vh, 560px); overflow-y: auto; padding: 0 12px 12px; }
@@ -24,9 +31,9 @@
 .madd-sub.wrap { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
 .madd-here { align-self: center; white-space: nowrap; }
 
-.mdock { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 14px; padding-left: 8px; border-left: 1px solid var(--border); max-height: 40vh; overflow-y: auto; }
+/* 成员卡列表:只出现在侧栏右侧那一栏里,所以是正文样式,不缩进、不自己滚 */
+.mdock { display: flex; flex-direction: column; gap: 1px; }
 .mdock-err { font-size: 12px; padding: 4px 6px; overflow-wrap: anywhere; }
-.side-nav > .side-empty { padding: 4px 10px 8px 22px; }
 .mc { border-radius: 8px; }
 .mc.open { background: var(--hover); }
 .mc-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border-radius: 8px; text-align: left; }

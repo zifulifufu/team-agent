@@ -6,6 +6,7 @@ import { prefs } from "./theme";
 import { APP_VERSION } from "./lib";
 import { Toaster } from "./ui";
 import Sidebar, { type View } from "./components/Sidebar";
+import MemberRail from "./components/members/MemberRail";
 import HomePage from "./pages/HomePage";
 import ChatView from "./pages/ChatView";
 import AgentsPage from "./pages/AgentsPage";
@@ -40,10 +41,28 @@ export default function App() {
   const [view, setView] = useState<View>({ kind: "home" });
   const [settings, setSettings] = useState<SettingsTab | null>(null);
   const [collapsed, setCollapsed] = useState(() => prefs.read("ta.sidebar") === "0");
+  // The member column beside the sidebar. It remembers its own choice, and it starts showing
+  // because this is where a group's members have always been visible — moving it out of the
+  // sidebar was about *where* it is, not about hiding it.
+  const [rail, setRail] = useState(() => prefs.read("ta.memberrail") !== "0");
+  // Which group the column lists. Kept here rather than inside the sidebar so the count printed on
+  // the sidebar's "Members" entry and the column it opens cannot be about two different groups —
+  // that mismatch is what this change is fixing.
+  const [lastGid, setLastGid] = useState<string | null>(null);
+  useEffect(() => { if (view.kind === "chat") setLastGid(view.gid); }, [view]);
+  const railGroup = groups.find((g) => g.id === (view.kind === "chat" ? view.gid : lastGid)) ?? null;
+  // One number, printed in two places (the sidebar entry and the column's own subtitle). It used to
+  // be two — the sidebar printed this group's count while the entry behind it opened the app-wide
+  // list — and the two disagreeing in plain sight is what made the sidebar read as broken.
+  const railCount = railGroup ? railGroup.member_ids.length : 0;
 
   const setSide = (c: boolean) => {
     setCollapsed(c);
     prefs.write("ta.sidebar", c ? "0" : "1");
+  };
+  const setMemberRail = (on: boolean) => {
+    setRail(on);
+    prefs.write("ta.memberrail", on ? "1" : "0");
   };
 
   // Go back to the home view when the open group is deleted
@@ -74,7 +93,26 @@ export default function App() {
 
   return (
     <div className="shell">
-      {!collapsed && <Sidebar view={view} onView={setView} onSettings={goTab} onCollapse={() => setSide(true)} version={APP_VERSION} />}
+      {!collapsed && (
+        <Sidebar
+          view={view}
+          onView={setView}
+          onSettings={goTab}
+          onCollapse={() => setSide(true)}
+          version={APP_VERSION}
+          rail={rail}
+          onRail={() => setMemberRail(!rail)}
+          memberCount={railGroup ? railCount : null}
+        />
+      )}
+      {!collapsed && rail && (
+        <MemberRail
+          group={railGroup}
+          count={railCount}
+          onOpenAll={() => setView({ kind: "agents" })}
+          onClose={() => setMemberRail(false)}
+        />
+      )}
       <main className="main" key={epoch}>
         {collapsed && (
           <button className="icon-btn expand-btn" title={t("Expand the sidebar")} aria-label={t("Expand the sidebar")} onClick={() => setSide(false)}>

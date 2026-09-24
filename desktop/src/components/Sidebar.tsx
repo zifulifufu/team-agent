@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Anchor, ChevronDown, ChevronRight, Download, Info, MessageSquarePlus, PanelLeftClose, Palette, Plug, Puzzle, Search, Settings, Sparkles, TerminalSquare, Trash2, Users, Webhook, WifiOff, X } from "lucide-react";
 import { api, relTime } from "../api";
 import { useData } from "../data";
 import { Switch, useConfirm, useOutside } from "../ui";
 import { useI18n } from "../i18n";
 import type { SettingsTab } from "../settings/SettingsModal";
-import AddMemberButton from "./members/AddMemberButton";
-import MemberDock from "./members/MemberDock";
 import "../styles/members.css";
 
 export type View =
@@ -46,9 +44,15 @@ interface Props {
   onSettings: (tab: SettingsTab) => void;
   onCollapse: () => void;
   version: string;
+  /** Whether the member column is showing beside the sidebar */
+  rail: boolean;
+  /** Show or hide that column */
+  onRail: () => void;
+  /** How many members the group that column would list has, or null when no group has been opened */
+  memberCount: number | null;
 }
 
-export default function Sidebar({ view, onView, onSettings, onCollapse, version }: Props) {
+export default function Sidebar({ view, onView, onSettings, onCollapse, version, rail, onRail, memberCount }: Props) {
   const { groups, settings, online, reload, reloadGroups, updateCount } = useData();
   const confirm = useConfirm();
   const { t } = useI18n();
@@ -56,8 +60,6 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
   const [searching, setSearching] = useState(false);
   const [q, setQ] = useState("");
   const [menu, setMenu] = useState(false);
-  const [memOpen, setMemOpen] = useState(true);
-  const [lastGid, setLastGid] = useState<string | null>(null);
   const menuRef = useOutside<HTMLDivElement>(menu, () => setMenu(false));
 
   const list = useMemo(() => {
@@ -68,9 +70,6 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
   }, [groups, q]);
 
   const activeGid = view.kind === "chat" ? view.gid : null;
-  // Members are listed under Members; after leaving the chat view the most recently opened group stays shown
-  useEffect(() => { if (view.kind === "chat") setLastGid(view.gid); }, [view]);
-  const dockGroup = groups.find((g) => g.id === (activeGid ?? lastGid)) ?? null;
   const offline = settings ? !settings.external_calls_enabled : false;
 
   const remove = async (id: string, name: string) => {
@@ -106,16 +105,21 @@ export default function Sidebar({ view, onView, onSettings, onCollapse, version 
         <button className={"nav-item" + (view.kind === "home" ? " on" : "")} onClick={() => onView({ kind: "home" })}>
           <MessageSquarePlus size={16} /> {t("New group chat")}
         </button>
-        <div className="nav-split">
-          <button className={"nav-item" + (view.kind === "agents" ? " on" : "")} onClick={() => onView({ kind: "agents" })}>
-            <Users size={16} /> {t("Members")}{dockGroup && <span className="count">({dockGroup.member_ids.length})</span>}
-          </button>
-          {dockGroup && <AddMemberButton group={dockGroup} />}
-          <button className="icon-btn tiny" title={t(memOpen ? "Collapse members" : "Expand members")} aria-label={t(memOpen ? "Collapse members" : "Expand members")} aria-expanded={memOpen} onClick={() => setMemOpen((o) => !o)}>
-            {memOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          </button>
-        </div>
-        {memOpen && (dockGroup ? <MemberDock group={dockGroup} /> : <div className="side-empty">{t("Open a group chat and its members show up here — you can add more at any time")}</div>)}
+        {/* One entry, one meaning: it opens the member column beside the sidebar, which lists
+            *this* group's members — the same set this count is taken from. It used to open the
+            app-wide Members page while printing this group's count, so the number and the list
+            behind it were about two different things. Every member of the app is one link away,
+            in that column's footer. */}
+        <button
+          className={"nav-item" + (rail ? " on" : "")}
+          aria-expanded={rail}
+          title={memberCount === null
+            ? t("Open a group chat first: this shows the members of the group you are in")
+            : t("Show this group's members in the column beside the sidebar")}
+          onClick={onRail}
+        >
+          <Users size={16} /> {t("Members")}{memberCount !== null && <span className="count">({memberCount})</span>}
+        </button>
       </nav>
       <div className="nav-cap">{t("Tools")}</div>
       <nav className="side-nav" aria-label={t("Tools")}>

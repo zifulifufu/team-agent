@@ -172,7 +172,7 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
                   </button>
                 ))}
                 {pickable.length === 0 && (
-                  <span className="ng-hint">{t("No members yet — make one under Members in the sidebar first.")}</span>
+                  <span className="ng-hint">{t("No members yet — open the member column beside the sidebar and create one there.")}</span>
                 )}
                 {pickable.length > 0 && picked.length === 0 && (
                   <>
