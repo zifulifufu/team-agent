@@ -241,8 +241,12 @@ def test_a_builtin_skill_seeded_twice_is_merged_on_startup(tmp_path):
     tools.ensure_example_skills(data / "skills", lambda k: k in seen or (seen.add(k) or False))
 
     # Seed the legacy spelling a second time, in the notation that caused it (marker keyed by name).
+    # Skills added *after* that seeder was fixed are left out on purpose: the old code never wrote a
+    # second copy of them, so manufacturing one here would be testing a state that cannot exist. Add
+    # a new built-in skill to this list.
     doubled = {k: e for k, e in tools.EXAMPLE_SKILLS.items()
-               if e.get("name_zh") and k not in ("remotion-video", "hyperframes-video", "capcut-draft")}
+               if e.get("name_zh") and k not in ("remotion-video", "hyperframes-video",
+                                                 "capcut-draft", "long-form-video")}
     for e in doubled.values():
         folder = data / "skills" / tools.safe_skill_name(e["name_zh"])
         folder.mkdir(parents=True, exist_ok=True)

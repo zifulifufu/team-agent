@@ -295,6 +295,65 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "6. 如果用户问的是「能不能连剪映的 MCP」而不是生成草稿,就直说:现有的那几个都没有打包发布,"
                    "得自己把仓库 clone 下来;而这条代码路线除了 uv 不需要装别的东西。",
     },
+    "long-form-video": {
+        "name": "Long-form video: from shots to a finished film",
+        "name_zh": "长视频:从镜头到成片", "scope": "member",
+        "description": "The order of work for a film that is longer than one generation",
+        "description_zh": "成片比一次生成更长时,该按什么顺序干活",
+        "body":
+            "A generated clip is 4-30 seconds; a film is minutes. That gap is not filled by asking for "
+            "a longer clip — it is filled by planning shots. Work in this order.\n"
+            "1. Write the shot sheet first, as a file in the group workspace (`分镜.md`), and let the "
+            "others read it: shot no. | what is on screen | narration | seconds | camera | sound. A "
+            "sheet a person can edit beats a plan only the chat remembers, because the film gets "
+            "assembled from it twice — once to see whether the timing works, once when it does.\n"
+            "2. Keep the narration lines short — one idea, about 15-25 characters each. The narration "
+            "decides how long its shot is, and a long line makes a long shot with nothing happening "
+            "in it.\n"
+            "3. Generate the footage shot by shot with `generate_video`, one call per shot, at the "
+            "same aspect ratio every time. Say which shot each result is for when you report it: the "
+            "filenames are timestamps and nobody can tell them apart afterwards. Prefer a still "
+            "picture or a title card over a generated clip when the shot only has to hold a fact — "
+            "it costs nothing, and the words are spelled the way the group agreed.\n"
+            "4. Assemble with `assemble_video`: pass the shots in order, each `{clip, seconds, say, "
+            "text}`, or `{title, subtitle}` for a card. It joins them, records the narration with the "
+            "machine's own voice, draws the subtitles, and writes a .mp4 plus a .srt and a shot sheet. "
+            "Give `total_seconds` when there is a length requirement. Everything about it is local "
+            "and free, so run it early and often — a rough cut at 480x854 tells you whether the "
+            "timing works before you spend a minute rendering it properly.\n"
+            "5. Report the length, the file, and what the tool said it could not do (a target it "
+            "could not reach, a line it had to leave out). Do not describe how it looks: nobody here "
+            "can watch it.\n"
+            "6. Reach for the heavier tools only when the film needs something assembly cannot do — "
+            "animated charts, kinetic type, a design that has to move: that is Remotion or HyperFrames "
+            "through `run_code`, and it needs Node installed. When the cut is right and a person has "
+            "to do the real dubbing, the colour and the fine edit, hand it over as a Jianying draft "
+            "instead of trying to finish it here.\n"
+            "7. Never let a group member promise a finished, broadcast-ready film: the narration is "
+            "synthesised, the footage is generated, and the honest description of that is part of the "
+            "deliverable.",
+        "body_zh":
+            "一次生成的片段是 4-30 秒,而成片是按分钟算的。这个差距不是靠「要一段更长的」补上的,"
+            "而是靠分镜补上的。按这个顺序干活:\n"
+            "1. 先分镜,落成一个文件放在本群工作目录里(`分镜.md`),让其他人也读得到:"
+            "镜号 | 画面 | 旁白 | 时长 | 镜头 | 音效。一份人能改的分镜表,胜过只存在于聊天记录里的方案 —— "
+            "因为成片要照着它装配两次:一次看时长对不对,一次在时长定下来以后。\n"
+            "2. 旁白一句一个意思,每句 15-25 字。镜头长度是跟着旁白走的,一句太长就会得到一个什么都没发生的长镜头。\n"
+            "3. 用 `generate_video` 逐镜生成,一镜一次调用,每次都用同一个画幅。汇报时说清楚哪段对应哪个镜号:"
+            "文件名是时间戳,过后谁也认不出哪个是哪个。**只需要「停留说明一件事」的镜头,宁可用静帧或标题卡** —— "
+            "不花钱,而且字是按群里商定的写法写的。\n"
+            "4. 用 `assemble_video` 装配:按顺序给镜头,每条形如 `{clip, seconds, say, text}`,"
+            "没有素材的卡片写 `{title, subtitle}`。它负责拼接、用本机语音录旁白、画字幕,"
+            "产出 .mp4 外加 .srt 和一份分镜表。有时长要求就填 `total_seconds`。这一切都在本机、不花钱,"
+            "所以尽早多跑几次 —— 先用 480x854 出一版粗剪,就能在看时长对不对之后再花时间正式渲染。\n"
+            "5. 汇报时说清楚多长、文件在哪,以及工具说明了哪些做不到(没够到的目标时长、被舍弃的一句话)。"
+            "不要描述画面:这里没人看得到。\n"
+            "6. 只有当成片需要装配做不到的东西时,才动更重的工具 —— 会动的图表、动态字体、必须运动的设计:"
+            "那是 `run_code` 里的 Remotion 或 HyperFrames,需要装 Node。画面定稿、必须由人来做真正的配音、"
+            "调色和精剪时,就交出去:生成一份剪映草稿给用户,而不是在这里硬做到最后。\n"
+            "7. 绝不要让任何成员承诺「可直接播出的成片」:旁白是合成的、画面是生成的,"
+            "把这件事如实说清楚,本身就是交付物的一部分。",
+    },
 }
 
 
@@ -724,6 +783,7 @@ BUILTIN_SKILL_CATEGORY: dict[str, str] = {
     "remotion-video": "video",
     "hyperframes-video": "video",
     "capcut-draft": "video",
+    "long-form-video": "video",
     "brainstorming": "facilitation",
     "review-meeting": "facilitation",
     "debate": "facilitation",

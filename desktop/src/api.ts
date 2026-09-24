@@ -461,6 +461,7 @@ export interface Settings {
   video_max_seconds: number;       // Longest clip a member may ask for (H3 accepts 4-15, MetaChat 1-15)
   video_timeout: number;           // How long one generation may take before giving up, in seconds
   video_max_mb: number;
+  assemble_timeout: number;        // How long joining the shots into one film may take, in seconds
   image_enabled: boolean;            // Let members draw images through an OpenAI-compatible service
   image_provider_id: string;         // Which image provider; empty = the first enabled one
   image_model: string;               // The model name to ask that service for

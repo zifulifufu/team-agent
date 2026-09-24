@@ -11,7 +11,7 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 
 from __future__ import annotations
 
-from . import coderun, i18n, imagegen, media, video
+from . import assemble, coderun, i18n, imagegen, media, video
 
 import asyncio
 import json
@@ -206,6 +206,78 @@ BUILTIN_SPECS: dict[str, dict] = {
                      "description_zh": "填 0 表示随机;仅自建 H3 与火山方舟支持"}},
             "required": ["prompt"]},
     },
+    "assemble_video": {
+        "description": "Turn the shots this group already has into ONE film: the pieces are joined, "
+                       "the narration is recorded, and the words are put on screen. This is the "
+                       "step between \"a few clips\" and \"a video somebody can watch\", and it is "
+                       "local and free — nothing is generated and nothing is billed. Give a shot "
+                       "list in order; each entry is {\"clip\": \"video/x.mp4\", \"seconds\": 6, "
+                       "\"say\": \"narration to record\", \"text\": \"words on screen\"}, or "
+                       "{\"title\": \"...\", \"subtitle\": \"...\"} for a card with no footage. "
+                       "Pictures can be shots too (they get a slow push and hold as long as they "
+                       "are told). A shot's length follows the narration when you do not give one, "
+                       "because a line cut off mid-sentence is worse than running long. The result "
+                       "is one .mp4 with burned-in subtitles, plus a .srt and a shot sheet beside "
+                       "it so the group can edit a line and assemble again. You cannot watch or "
+                       "hear the result — report what you assembled, never how it looks.",
+        "description_zh": "把本群已有的镜头拼成**一条**成片:片段接起来、旁白配上、字上屏。它就是「有"
+                          "几段片段」到「别人能看的片子」之间的那一步,全程在本机完成、不花钱——不生成任何"
+                          "东西。按顺序给一份分镜表,每条形如 {\"clip\": \"video/x.mp4\", \"seconds\": 6, "
+                          "\"say\": \"要录的旁白\", \"text\": \"屏幕上的字\"};没有素材的卡片写 "
+                          "{\"title\": \"...\", \"subtitle\": \"...\"}。图片也能当镜头(会缓慢推近,并按住"
+                          "你给的时长)。不写时长时,镜头长度跟着旁白走 —— 话被截断比超时长更糟。产物是一个"
+                          "烧好字幕的 .mp4,旁边还有 .srt 和一份分镜表,便于改一行重新装配。"
+                          "你看不到也听不到结果:只说你装配了什么,不要描述画面。",
+        # It runs `ffmpeg` and `say` on this machine, so it asks like the other runners do.
+        "risk": "exec",
+        # Its own budget: a three-minute film is thousands of frames, and `tool_timeout` is sized for
+        # a call that answers quickly.
+        "timeout_key": "assemble_timeout",
+        "parameters": {"type": "object", "properties": {
+            "shots": {"type": "array", "items": {"type": "object"}, "description":
+                      "The shots, in order. Each: {clip: a path inside the workspace, seconds: how long, "
+                      "say: narration to record, text: words on screen, audio: voice|clip|mix|silent, "
+                      "motion: true|false for a still} — or {title, subtitle} for a card with no footage",
+                      "description_zh":
+                      "按顺序的镜头。每条形如 {clip: 工作目录内的路径, seconds: 时长, say: 要录的旁白, "
+                      "text: 屏幕字幕, audio: voice|clip|mix|silent, motion: 静帧是否缓慢推近} —— "
+                      "没有素材的卡片写 {title, subtitle}"},
+            "size": {"type": "string", "enum": list(assemble.SIZES),
+                     "description": f"Picture size, one of: {', '.join(assemble.SIZES)}. 1080x1920 is the "
+                                    "default (vertical); footage of any shape is fitted into it",
+                     "description_zh": f"画幅,可选:{', '.join(assemble.SIZES)}。默认 1080x1920(竖屏);"
+                                       "任何形状的素材都会被装进去"},
+            "total_seconds": {"type": "integer",
+                              "description": "The length the film has to be, if there is one. When it is "
+                                             "short of the target, still shots are held longer and the "
+                                             "result says by how much; when there is no still to hold, "
+                                             "the shortfall is reported instead of faked",
+                              "description_zh": "成片必须达到的总时长(如果有要求)。差得比目标短时,"
+                                               "会按比例延长静帧镜头并说明延长了多少;没有静帧可延长时,"
+                                               "如实报告差多少,不会假装凑够"},
+            "fps": {"type": "integer", "description": "Frames per second; 24 by default",
+                    "description_zh": "帧率,默认 24"},
+            "fit": {"type": "string", "enum": list(assemble.FITS),
+                    "description": "How footage of another shape goes into the frame. blur (default) keeps "
+                                   "all of the picture and fills the rest with a blurred copy of it; "
+                                   "cover fills the frame by cropping the sides away; contain leaves black "
+                                   "bars. Use cover only when the subject is in the middle",
+                    "description_zh": "素材形状不匹配时怎么装进画幅。blur(默认)保留完整画面,空出来的部分用"
+                                      "它自己的模糊副本来填;cover 靠裁掉两侧铺满;contain 留黑边。"
+                                      "只有当主体在正中间时才用 cover"},
+            "voice": {"type": "string",
+                      "description": "The voice to narrate with. Left out, one is chosen by the language "
+                                     "on screen (Tingting for Chinese). The result names the voice used",
+                      "description_zh": "配旁白用的语音。留空则按屏幕上的语言挑一个(中文用 Tingting)。"
+                                        "结果里会写明用的是哪个"},
+            "subtitles": {"type": "string", "enum": ["burn", "off"],
+                          "description": "burn (default) puts the words into the picture; off leaves them "
+                                         "in the .srt only",
+                          "description_zh": "burn(默认)把字烧进画面;off 只留 .srt 文件"},
+            "name": {"type": "string", "description": "What to call the film; left out, it is stamped with the time",
+                     "description_zh": "成片的名字;留空则用时间戳"}},
+            "required": ["shots"]},
+    },
     "generate_image": {
         "description": "Draw one image from a text description through the image service this "
                        "machine is configured with. Describe the image itself — subject, "
@@ -350,8 +422,14 @@ class ToolHub:
         specs = builtin_specs()          # descriptions in the request language
 
         def add(name: str, spec: dict, **extra: Any) -> None:
-            ctx.tools[name] = {"name": name, "description": spec["description"], "parameters": spec["parameters"],
-                               "risk": spec.get("risk"), **extra}
+            # `timeout_key` has to travel with the spec, because `timeout_budget` reads it off the
+            # per-call dict and not off the catalogue: without this line a tool that declares its own
+            # budget got the generic `tool_timeout` instead, and a video render was killed at 60s
+            # while it was halfway through work the GPU had already done. The media-member branch
+            # below copies it by hand, which is how the asymmetry went unnoticed.
+            ctx.tools[name] = {"name": name, "description": spec["description"],
+                               "parameters": spec["parameters"], "risk": spec.get("risk"),
+                               "timeout_key": spec.get("timeout_key"), **extra}
 
         add("current_time", specs["current_time"], source="builtin")
         # "The library is not empty for this group" now means "at least one knowledge base is in
@@ -364,6 +442,14 @@ class ToolHub:
             add("memory_save", specs["memory_save"], source="builtin")
         if cfg["code_enabled"]:
             add("run_code", specs["run_code"], source="builtin")
+        # Assembling is offered on the same condition as every other tool: only when it can work.
+        # It needs nothing but ffmpeg, which is why it is not behind a switch — a group that can
+        # generate clips but cannot join them is the state this tool exists to end.
+        ok, why = assemble.available()
+        if ok:
+            add("assemble_video", specs["assemble_video"], source="builtin")
+        else:
+            ctx.problems.append(why)
         if cfg["video_enabled"]:
             # Offered only when there is somewhere to generate. A member handed the tool without a
             # reachable server would keep retrying and report a failure that looks like its own
@@ -494,6 +580,8 @@ When it is not supplied, calls needing confirmation are always denied."""
             return await self._generate_video(ctx, args)
         if name == "generate_image":
             return await self._generate_image(ctx, args)
+        if name == "assemble_video":
+            return await self._assemble_video(ctx, args)
         text, ok = await self._builtin(ctx, name, args)
         return text, ok, []
 
@@ -754,6 +842,107 @@ When it is not supplied, calls needing confirmation are always denied."""
             ),
         ]
         return "\n".join(lines), True, [{"kind": "image", "name": path.name, "bytes": got["size"]}]
+
+    # ----------------------------------------------------------- assembly
+    async def _assemble_video(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
+        """Join the group's shots into one film, with narration and subtitles.
+
+        The reason this is a tool and not advice: it is the only step of making a video that does
+        not need a model. Left to members, every one of them writes its own ffmpeg command line, and
+        they disagree about frame rate, aspect ratio and how the audio is joined — so the pieces
+        cannot be put together afterwards, which is the state this replaces.
+
+        It is generous about *when* it runs and strict about *what* it reports: the film is made
+        whatever the shot list looks like, and what could not be done (a target length with nothing
+        to stretch, a narration longer than its slot) is written into the answer and into the shot
+        sheet rather than smoothed over.
+        """
+        ok, why = assemble.available()
+        if not ok:
+            return why, False, []
+        cfg = self.store.get_settings()
+        workspace = self.store.workspace_dir(ctx.group["id"])
+        try:
+            out = await assemble.render(
+                workspace, args.get("shots"),
+                size=str(args.get("size") or ""),
+                total=float(args.get("total_seconds") or 0),
+                fps=int(args.get("fps") or assemble.DEFAULT_FPS),
+                voice=str(args.get("voice") or ""),
+                burn=str(args.get("subtitles") or "burn") != "off",
+                fit=str(args.get("fit") or assemble.DEFAULT_FIT),
+                name=str(args.get("name") or ""),
+                # Read straight from the setting rather than through `timeout_budget`: the budget
+                # belongs to the call site (`_dispatch` has already enforced it), and this is the
+                # deadline ffmpeg itself is held to.
+                timeout=float(cfg.get("assemble_timeout") or 1800),
+            )
+        except assemble.AssembleError as e:
+            return str(e), False, []
+        except Exception as e:  # noqa: BLE001 — a broken run must come back as a sentence, not a stack
+            return i18n.pick_now(f"Assembling failed: {type(e).__name__}: {e}",
+                                 f"装配失败:{type(e).__name__}: {e}"), False, []
+
+        minutes = f"{int(out['seconds']) // 60}:" + f"{int(out['seconds']) % 60:02d}"
+        lines = [i18n.pick_now(
+            f"Assembled {out['shots']} shots into one {out['size']} film, {out['seconds']:g}s "
+            f"({minutes}) at {out['fps']}fps: {out['name']} ({media.size_label(out['bytes'])}, "
+            f"took {out['took']:g}s).",
+            f"把 {out['shots']} 个镜头装配成一条 {out['size']} 的成片,共 {out['seconds']:g} 秒"
+            f"({minutes}),{out['fps']}fps:{out['name']}({media.size_label(out['bytes'])},"
+            f"用了 {out['took']:g} 秒)。")]
+        lines.append(i18n.pick_now(
+            f"Narration: {out['narrated']} shot(s). Words on screen: {out['subtitled']} shot(s), "
+            + ("burned into the picture." if out["burned"] else "kept in the .srt only."),
+            f"配音:{out['narrated']} 个镜头。字幕:{out['subtitled']} 个镜头,"
+            + ("已烧进画面。" if out["burned"] else "只在 .srt 里。")))
+        lines.append(i18n.pick_now(
+            f"Saved in this group's workspace: {out['path']}", f"已保存在本群工作目录:{out['path']}"))
+        # The three files are named because they are the handles for the next round: the sheet is
+        # what the group edits, and the .srt is what a platform or an editor wants.
+        lines.append(i18n.pick_now(
+            f"Beside it: {Path(out['sheet']).name} (the shot list, edit this and assemble again) and "
+            f"{Path(out['srt']).name} (the subtitles as a file).",
+            f"旁边还有:{Path(out['sheet']).name}(分镜表,改它再装配一次)和 {Path(out['srt']).name}"
+            "(字幕文件)。"))
+        for n in out["notes"]:
+            lines.append(f"· {n}")
+        plan = out["plan"]
+        stretched = plan[0].get("stretched") if plan else None
+        if stretched:
+            lines.append(i18n.pick_now(
+                f"(To reach the length asked for, every card and still was held {stretched:g}s longer.)",
+                f"(为了对上你要求的总时长,每张卡片和静帧都多停留了 {stretched:g} 秒。)"))
+        short = plan[0].get("short") if plan else None
+        if short:
+            lines.append(i18n.pick_now(
+                f"(This is {short:g}s short of the length asked for, and there was no still picture to "
+                "hold longer — add shots rather than stretching a clip, which would change its speed.)",
+                f"(比要求的总时长还差 {short:g} 秒,而没有静帧可以延长 —— 请增加镜头,不要拉长已有的片段,"
+                "那会改变它的速度。)"))
+        over = plan[0].get("over") if plan else None
+        if over:
+            lines.append(i18n.pick_now(
+                f"(This runs {over:g}s longer than the length asked for. Nothing was cut to fit: say "
+                "which shots to drop.)",
+                f"(比要求的总时长长了 {over:g} 秒。没有为了凑时长删掉任何内容:请说明要减去哪几个镜头。)"))
+        if plan:
+            chosen = next((e.get("voice") for e in plan if e.get("voice")), "")
+            if chosen:
+                lines.append(i18n.pick_now(
+                    f"(The narration was read by this machine's own \"{chosen}\" voice, so treat it as "
+                    "a draft read-through: replace the audio with a recorded voice track once the cut "
+                    "is right. Everything else here is final.)",
+                    f"(旁白用本机语音「{chosen}」合成,当作一版小样试听:画面定稿后把音轨换成真人录音。"
+                    "其余部分就是成品。)"))
+        lines.append(i18n.pick_now(
+            "You cannot watch or hear it, so do not describe what happens in it — say it is ready, "
+            "how long it is, and where the files are.",
+            "你看不到也听不到它,不要描述里面发生了什么 —— 只说已经做好、多长、文件在哪。"))
+        return "\n".join(lines), True, [
+            {"kind": "video", "name": out["name"], "bytes": out["bytes"], "seconds": out["seconds"]},
+            {"kind": "file", "name": Path(out["srt"]).name, "bytes": 0, "seconds": 0},
+        ]
 
     MEDIA_INDEX_TITLES = 24      # names listed when a search came back empty
 

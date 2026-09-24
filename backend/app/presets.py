@@ -408,6 +408,11 @@ DEFAULT_SETTINGS: dict = {
     "video_max_seconds": 15,   # longest clip a member may ask for (H3 accepts 4-15, MetaChat 1-15; the floor is the provider's own)
     "video_timeout": 900,      # how long one generation may take before giving up, in seconds
     "video_max_mb": 512,       # cap on the downloaded file, checked before it is saved
+    # ---- assembling the shots into one film (see assemble.py). Not a generation: ffmpeg joins
+    # what is already there, `say` records the narration, Pillow draws the subtitles. It is a
+    # deadline rather than a cost knob — a three-minute 1080x1920 film is ~4300 frames, and the
+    # tool's own budget is sized for a call that answers quickly.
+    "assemble_timeout": 1800,
     # ---- image generation through an OpenAI-compatible /images/generations endpoint. Unlike
     # video this needs no local GPU: a key and a model name are the whole setup. Two kinds of
     # provider can do it — a dedicated "Image generation (OpenAI-compatible)" one, or a chat

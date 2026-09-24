@@ -1627,6 +1627,9 @@ const ZH: Record<string, string> = {
   "The longest clip a member may ask for. This is the group's ceiling, not any one model's: a self-hosted H3 accepts 4-15 seconds, MetaChat's API 1-15, and Ark's Seedance 2.5 4-30. A longer request is shortened to what the provider takes rather than refused, and the member is told it was.": "成员可以要求的最长时长。这是本群的上限,不是某个模型的上限:自建 H3 支持 4-15 秒,MetaChat 的接口 1-15 秒,方舟的 Seedance 2.5 是 4-30 秒。要求超过服务商能做的时长时会被缩短而不是拒绝,并会如实告知成员。",
   "Render timeout": "生成时限",
   "How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.": "一次生成最多等多久,超时就放弃。渲染是按分钟计的,所以这一项和工具调用超时是分开的。",
+  // 装配成片:本机 ffmpeg + 系统语音 + 本机画字幕,不花钱但要按分钟算
+  "Assembly timeout": "装配时限",
+  "How long joining the shots into one film may take, in seconds. Assembling is local and free — ffmpeg joins the clips, this machine's speech records the narration, and the subtitles are drawn here — but a three-minute 1080x1920 film is thousands of frames, so this is measured in minutes like a render.": "把若干镜头拼成一条成片最多等多久(秒)。装配在本机完成、不花钱——ffmpeg 负责拼接、本机语音录旁白、字幕也在这里画——但三分钟的 1080x1920 成片有几千帧,所以这一项和渲染一样是按分钟计的。",
   "Output short edge": "输出短边",
   "In pixels. H3 is natively 768; anything larger needs H3-Regenerate-2K, which is not part of the open release. MetaChat's API takes a named resolution instead, so this is mapped for it: 640px or below means 480p, above means 720p.": "单位是像素。H3 原生就是 768;更大的需要 H3-Regenerate-2K,而它不在开源范围里。MetaChat 的接口收的是档位而不是像素,所以这里替它做了换算:不大于 640 像素算 480p,大于则算 720p。",
   "Largest clip to keep": "保留的最大体积",

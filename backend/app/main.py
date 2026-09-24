@@ -424,6 +424,9 @@ def create_app(
               # video: the cap is the group's, not any one model's — H3 stops at 15s and Seedance 2.5
               # runs to 30, and `video.clamp_seconds` narrows each request to its own provider.
               "video_short_edge": (128, 2048), "video_max_seconds": (1, 30), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
+              # assembling: local ffmpeg work, so the floor is a real render and the ceiling is an
+              # unusually long film rather than a service's patience
+              "assemble_timeout": (60, 7200),
               # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
               "image_timeout": (20, 900), "image_max_mb": (1, 128),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads

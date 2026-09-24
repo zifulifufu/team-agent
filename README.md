@@ -85,11 +85,12 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | --- | --- |
 | Group chat | Members, a host, `@`-hand-off, role statements, and a live task board; a group chat is created by **picking its workspace and then its members**, and both stay editable |
 | Generating members | A video or image model can join a group as a member of its own: **discuss the clip with everybody, then say "make that"** — a chat model reads the conversation into one prompt and hands it over, and the result comes back as a file. It does not chat, plan or hand off itself |
+| Making a film | A clip is seconds and a film is minutes, so the shots are **joined by a built-in tool every member has**: `assemble_video` records the narration with the machine's own voice, draws the subtitles in (this `ffmpeg` has no `drawtext`, so they are drawn with Pillow and overlaid), and writes a `.mp4` plus a `.srt` and an editable shot sheet. Local, free, and it says what it could not do |
 | Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
-| Tools | Text-protocol calls (max 3 per reply), five built-ins, Python plugins, MCP over stdio / SSE / HTTP |
+| Tools | Text-protocol calls (max 3 per reply), nine built-ins, Python plugins, MCP over stdio / SSE / HTTP |
 | Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
@@ -317,6 +318,59 @@ would only get each of them half right.
 | **ChatCut** | a **hosted** HTTP MCP with a Bearer header | Template gallery → MCP → *ChatCut (edit video by describing it)* | You obtain the token yourself with their sign-in flow; it is short-lived (about an hour), so **a 401 later usually means refreshing it, not a wrong key** |
 | **DaVinci Resolve** | stdio MCP (`uvx --python 3.11 --with 'mcp<2' davinci-resolve-mcp`) | Template gallery → MCP → *DaVinci Resolve (cut on a real timeline)* | Needs **Resolve Studio** (the free version exposes no scripting API), external scripting set to Local, and **Resolve open before you press test**. The `--python 3.11` and `mcp<2` pins are not optional: without either one the server dies at import |
 | **Jianying / CapCut** | no installable MCP exists — the code route: `uv run --with pyJianYingDraft` | built-in skill *Jianying (CapCut) drafts* | It writes Jianying's own draft files, so the **draft folder has to be asked for** — write it anywhere else and the user opens Jianying and sees nothing |
+
+### Assembling the shots into one film
+
+A generated clip is 4-30 seconds, while the explainer a group is actually making runs for minutes.
+The step between the two is not generation, so it is not a provider, and it is not something to leave
+to each member's own `ffmpeg` command line either — twelve of those agree about nothing. It is a
+**built-in tool every member already has**: `assemble_video`. It needs nothing on this machine except
+`ffmpeg` — no key, no account, no per-group setup, nothing billed however many times it runs — and it
+joins the shots, records the narration, and puts the words on screen.
+
+How it works was measured here rather than assumed, because two of the three obvious routes turn out
+to be closed on this machine:
+
+* **Subtitles cannot be burned in with a filter.** This build of `ffmpeg` has **no `drawtext`, no
+  `subtitles` and no `ass`** — it is compiled without freetype and without libass, whatever the
+  tutorials say. So every line is drawn to a transparent PNG with Pillow (wrapped, a font that has
+  the characters, a drop shadow, a plate behind it) and laid over the picture with `overlay`, which
+  this build does have. The `.srt` is written as well, from the same plan that timed the film, so
+  the sidecar and the burned-in text cannot disagree.
+* **The narration is `say`.** macOS's own speech reads Chinese (`Tingting`) and English offline, so
+  a film can be *timed* before anything is rendered, and no key or bill is involved. It is a
+  **preview voice, not a studio one**, and the tool's answer and the shot sheet both say so: a group
+  must not present a synthesised read-through as a finished dub.
+* **Footage of the wrong shape is not quietly cropped.** A 16:9 clip in a 9:16 film is normally
+  inset over a blurred copy of *itself* (`fit: "blur"`, the default). `cover` fills the frame by
+  cutting the sides off — measured on the group's own clip, that removes one of the two vessels and
+  a third of the frame's own caption — and `contain` leaves black bars. It is one word per film, or
+  per shot.
+* **A shot's length follows its narration.** A shot asked to run 5 seconds whose line really takes
+  6.7 is lengthened and told about it — a sentence cut off mid-way is the most obvious way an
+  assembled film looks broken. A `total_seconds` target is met by holding the stills and title cards
+  longer (the answer says by how much), and when there is no still to hold, the shortfall is reported
+  instead of faked. Nothing is ever dropped to hit a length, because that would delete work the group
+  agreed on.
+* **The result is three files, not one.** The `.mp4`, a `.srt`, and a shot sheet listing every shot
+  with its source, its length and its words. The sheet is the artefact the group edits before
+  assembling again — which is what makes a second cut cheap.
+
+Where the heavier tools fit, once the cut is a real cut:
+
+| What the film needs | Where it goes |
+|---|---|
+| several generated shots, narration, subtitles, a stated length | `assemble_video` — local, free, every member has it |
+| animated charts, kinetic type, a design that has to move | Remotion or HyperFrames, through `run_code` (Node 22+) |
+| real dubbing, colour, frame-accurate editing | hand it to a person: a Jianying draft, or DaVinci Resolve / ChatCut over MCP |
+
+Two things it deliberately does *not* do, both visible in the group panel: it never describes what
+the film looks like (nobody involved can watch it), and it never claims a film is finished — a
+generated picture with a synthesised voice is a rough cut, and saying so is part of the deliverable.
+A member is only offered the tool when `ffmpeg` is really there; otherwise the panel says what to
+install instead of handing someone a tool that fails. The budget it runs under is its own setting
+(**Permissions & control → Assembly timeout**), because a three-minute vertical film is thousands of
+frames.
 
 Three rules, the same ones the rest of this app follows:
 
@@ -788,6 +842,12 @@ from other projects.
   both built around that one file). A repository skill that ships a `references/` tree therefore
   arrives incomplete that way; to get the whole folder, import it from another app — that path copies
   the directory — or clone the repository and import from there.
+- **Assembling a film does three things and only three**: joins the shots, records the narration,
+  draws the subtitles. The narration is the machine's own speech and cannot be swapped for a voice
+  track you recorded (that happens in Jianying or Resolve); there is no separate music bed, no
+  transition library, and the subtitles are cut one shot at a time rather than aligned
+  sentence-by-sentence. They are drawn with Pillow, so the missing libass in this `ffmpeg` does not
+  matter — and for the same reason there is no `.ass`-style typesetting.
 
 ## Roadmap
 

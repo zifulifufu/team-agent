@@ -269,6 +269,9 @@ export default function PermissionsPage({ onTab }: PageProps) {
             <Row title={t("Render timeout")} desc={t("How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.")}>
               <NumInput v={settings.video_timeout} min={30} max={7200} unit={t("sec")} label={t("Render timeout")} onCommit={(n) => set({ video_timeout: n })} />
             </Row>
+            <Row title={t("Assembly timeout")} desc={t("How long joining the shots into one film may take, in seconds. Assembling is local and free — ffmpeg joins the clips, this machine's speech records the narration, and the subtitles are drawn here — but a three-minute 1080x1920 film is thousands of frames, so this is measured in minutes like a render.")}>
+              <NumInput v={settings.assemble_timeout} min={60} max={7200} unit={t("sec")} label={t("Assembly timeout")} onCommit={(n) => set({ assemble_timeout: n })} />
+            </Row>
             <Row title={t("Output short edge")} desc={t("In pixels. H3 is natively 768; anything larger needs H3-Regenerate-2K, which is not part of the open release. MetaChat's API takes a named resolution instead, so this is mapped for it: 640px or below means 480p, above means 720p.")}>
               <NumInput v={settings.video_short_edge} min={128} max={2048} unit="px" label={t("Output short edge")} onCommit={(n) => set({ video_short_edge: n })} />
             </Row>
