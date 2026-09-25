@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable
 
 from . import external, planner, scoring, vision
 from . import attachments as attachments_lib
-from . import coderun, imagegen, media, proclog, video
+from . import coderun, imagegen, localcmd, media, proclog, video
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
 from .library import Library, watch_workspace
@@ -1410,6 +1410,16 @@ class Orchestrator:
                 extra_meta=extra_meta, empty_fallback=empty_fallback,
             )
         if agent.get("engine"):
+            # A local tool (`engine` kind "cmd") also carries an engine, so it is separated here
+            # rather than inside `_external_turn`: it has no transcript to read and no reply to
+            # stream, and the two master switches that gate an external agent (an outbound call to
+            # a cloud model) do not describe it — what it runs is a program already on this machine.
+            engine = str(agent.get("engine") or "")
+            if localcmd.row(engine) is not None:
+                return await self._local_tool_turn(
+                    group, agent, members, emit, run, mid=mid, extra_user=extra_user,
+                    extra_meta=extra_meta, empty_fallback=empty_fallback,
+                )
             return await self._external_turn(
                 group, agent, members, emit, run, mid=mid, extra_user=extra_user, extra_meta=extra_meta,
                 exclude_plan_id=exclude_plan_id, empty_fallback=empty_fallback,
@@ -1614,6 +1624,147 @@ class Orchestrator:
             "latency_ms": (attempts[-1].get("latency_ms") if attempts else 0),
         })
         return TurnOut(content, "\n".join(raws), saved)
+
+    # ------------------------------------------------------- local tool / external agent turns
+    async def _local_tool_turn(
+        self, group: dict, agent: dict, members: list[dict], emit: Emit, run: RunState, *, mid: str,
+        extra_user: str | None, extra_meta: dict | None, empty_fallback: str,
+    ) -> TurnOut | None:
+        """A member that IS a command line on this machine (HyperFrames, Remotion, …) takes its turn.
+
+        Three things make this unlike every other member, and all three come from the same fact —
+        there is no model here, only a program:
+
+        * **it does not read the conversation.** A renderer has no use for the transcript, so the
+          prompt-building half of `_external_turn` is not merely skipped, it is wrong: handing a
+          renderer a chat log as an argument is how a stray word changes a command.
+        * **the command is ours** (`localcmd.TOOLS`), and the member's sentence reaches it as *one
+          argv element*, or not at all. Nothing the user or a model writes is re-parsed by a shell.
+        * **what it produces is the point.** The files a run leaves behind are collected and put on
+          the message in the same `meta.tools` shape a tool call uses, so the clip appears as the
+          same pill and the same player. Without this the turn would look like it worked while the
+          film sat unseen in a folder — which is the failure this whole path exists to avoid.
+        """
+        cfg = self.store.get_settings()
+        name = agent["name"]
+        gid = group["id"]
+        engine = str(agent.get("engine") or "")
+        row = localcmd.row(engine)
+        assert row is not None, "the caller only routes known local tools here"
+
+        async def fail(msg: str) -> None:
+            await emit({"type": "message_discard", "message_id": mid})
+            await self._system(gid, msg + self._repeat_failure_note(gid, agent), emit)
+            run.steps.append({"agent": name, "ok": False, "tools": []})
+            return None
+
+        if not cfg["external_agents_enabled"]:
+            return await fail(i18n.pick_now(
+                f"{name} is a local tool member, and the switch that lets outside programs run for "
+                "a group is off, so it was skipped. Turn it on under Settings → External agents.",
+                f"「{name}」是本机工具成员,而「允许外部程序为群服务」的开关是关着的,已跳过。"
+                "请到「设置 → 外部智能体」里打开。"))
+
+        ws = self.store.workspace_dir(gid)
+        # The instruction is what the triggering message said. Only some tools put it anywhere (a
+        # speech synthesizer speaks it); for the rest it is what the member reports back, and the
+        # run is the project sitting in its folder.
+        instruction = str(extra_user or run.user_text or "").strip()
+        try:
+            timeout = int((agent.get("engine_cfg") or {}).get("timeout") or localcmd.DEFAULT_TIMEOUT)
+        except (TypeError, ValueError):
+            timeout = localcmd.DEFAULT_TIMEOUT
+
+        # A tool that renders *a project* and has none is told so before the machine spends three
+        # minutes starting a browser. `probe` already knows the sentence; it is not re-written here.
+        if row.get("project"):
+            folder = Path(ws) / localcmd.folder_name(engine)
+            if not folder.is_dir() or not any(folder.iterdir()):
+                return await fail(i18n.pick_now(
+                    f"\"{name}\" renders {row['project']}, and there is nothing like that in its "
+                    f"folder yet ({folder}), so nothing was run. Put it there and ask again.",
+                    f"「{name}」渲染的是{row['project_zh']},而它那个目录里现在还没有东西"
+                    f"({folder}),所以没有执行。放进去之后再让它跑一次。"))
+
+        entry = {"name": f"local:{engine}", "status": "running",
+                 "args": {"instruction": instruction[:200]}, "files": []}
+        await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+        try:
+            got = await localcmd.run(engine, workspace=ws, instruction=instruction, timeout=timeout)
+        except localcmd.LocalToolError as e:
+            entry["status"] = "failed"
+            await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+            run.tool_failures[engine] = run.tool_failures.get(engine, 0) + 1
+            # `e` is already in the request language (`localcmd` builds it with `pick_now`), so it
+            # is only prefixed with whose turn it was.
+            return await fail(f"{name}: {e}")
+        except asyncio.CancelledError:
+            await emit({"type": "message_discard", "message_id": mid})
+            raise
+
+        files = [{"kind": localcmd.artifact_kind(f["name"]), "name": f["name"], "bytes": f["bytes"],
+                  "rel": f["rel"]} for f in got["files"]]
+        entry.update(status="ok" if got["ok"] else "failed", ms=int(got["seconds"] * 1000),
+                     preview=got["text"][-300:], files=files)
+        await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
+        if not got["ok"]:
+            run.tool_failures[engine] = run.tool_failures.get(engine, 0) + 1
+
+        content = self._local_tool_said(row, got)
+        if self.hooks:
+            reason, content = await self.hooks.gate_reply(
+                gid, {"name": name, "model": f"local:{engine}"}, content)
+            if reason:
+                return await fail(reason)
+        meta = {"tools": [entry], "local_tool": {"engine": engine, "command": " ".join(got["command"]),
+                                                "seconds": got["seconds"], "exit": got["exit"]},
+                **(extra_meta or {})}
+        try:
+            saved = self.store.add_message(
+                gid, "agent", agent["id"], name, content, model_id=f"local:{engine}", meta=meta, mid=mid,
+            )
+        except Exception as e:  # noqa: BLE001 — the UI must wrap up either way, leaving no spinning bubble
+            return await fail(i18n.pick_now(f"{name}'s result could not be saved: {e}",
+                                            f"「{name}」的产出没能保存:{e}"))
+        await emit({"type": "message_end", "message": saved})
+        run.steps.append({"agent": name, "model": f"local:{engine}", "ok": bool(got["ok"]),
+                          "tools": [engine] if got["ok"] else []})
+        self._notify("agent.reply", gid, group, {
+            "agent": name, "model": f"local:{engine}", "local": True,
+            "chars": len(content), "tools": [engine], "ok": got["ok"],
+            "seconds": got["seconds"], "files": [f["name"] for f in files],
+        })
+        return TurnOut(content, content, saved)
+
+    def _local_tool_said(self, row: dict, got: dict) -> str:
+        """What a local tool's turn says.
+
+        A program's stdout is a build log — hundreds of progress lines ending in the one line that
+        matters. So the reply is a sentence *we* write from the facts (file names, sizes, seconds),
+        with the tail of the output quoted underneath: the member's own voice is not available, and
+        letting the log stand in for it would read as if the renderer had spoken to the group.
+        """
+        lines = [ln for ln in (got["text"] or "").splitlines() if ln.strip()]
+        tail = "\n".join(lines[-8:])[:600]
+        if got["ok"] and got["files"]:
+            listing = "\n".join(
+                f"- {f['name']} · {media.size_label(f['bytes'])}" for f in got["files"][:6])
+            said = i18n.pick_now(
+                f"\"{row['name']}\" finished in {int(got['seconds'])}s and wrote:\n{listing}",
+                f"「{row['name']}」用时 {int(got['seconds'])} 秒,写出了:\n{listing}")
+        elif got["ok"]:
+            said = i18n.pick_now(
+                f"\"{row['name']}\" finished in {int(got['seconds'])}s but wrote no film or audio "
+                f"file, so there is nothing to hand back. Its output is quoted below.",
+                f"「{row['name']}」用时 {int(got['seconds'])} 秒跑完了,但没有写出片子或音频文件,"
+                "所以没有东西可以交回。它的输出引在下面。")
+        else:
+            said = i18n.pick_now(
+                f"\"{row['name']}\" failed (exit {got['exit']}) after {int(got['seconds'])}s, so "
+                f"nothing was produced. Install it with: {row['install']}",
+                f"「{row['name']}」在 {int(got['seconds'])} 秒后失败(退出码 {got['exit']}),没有产出。"
+                f"安装:{row['install_zh']}")
+        return f"{said}\n\n```\n{tail}\n```" if tail else said
 
     # ------------------------------------------------------- external agent turn
     async def _external_turn(

@@ -166,7 +166,7 @@ export default function LocalPage({ onTab }: PageProps) {
       {/* Said here rather than nowhere: this page is an Ollama download list, and someone who has
           just cloned a video model will look for it exactly here. */}
       <div className="hint">
-        {t("MiniMax H3 and other video-generation models are not on this list: they are diffusion pipelines with no chat endpoint, so nothing here could run them. Add one under Model providers (Video generation for a self-hosted H3 via SGLang or vLLM, or Drawing and video for MetaChat's media API with a key) and switch it on under Permissions & control.")}
+        {t("MiniMax H3 and other video-generation models are not on this list: they are diffusion pipelines with no chat endpoint, so nothing here could run them. Add one under Model providers (Video generation for a self-hosted H3 via SGLang or vLLM, Drawing and video for MetaChat's media API with a key, or Video generation (local ComfyUI) for a ComfyUI you run yourself) and switch it on under Permissions & control.")}
       </div>
 
       <div className="lp-bar">

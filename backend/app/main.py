@@ -33,6 +33,7 @@ from . import attachments
 from .attachments import MAX_PER_MESSAGE as MAX_ATTACHMENTS
 from . import channels
 from . import coderun
+from . import comfyui
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
 from .hooks import HookManager, ensure_example_hooks
@@ -44,6 +45,8 @@ from . import templates
 from . import i18n
 from . import images
 from . import import_sources
+from . import layouts
+from . import voices
 from . import net
 from .obsidian import ObsidianSync
 from .orchestrator import Orchestrator
@@ -280,6 +283,16 @@ def create_app(
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
     library = Library(store)
+    # The user's own ComfyUI graphs, one JSON per workflow. Read here rather than at first render
+    # so that a file which cannot be parsed is a startup fact rather than a surprise mid-job — and
+    # so the probe and the settings dropdown both already know the names.
+    comfyui.use_folder(store.data_dir / "workflows")
+    # And the look of an assembled film, one JSON per layout. Read at startup for the same reason:
+    # a file that cannot be parsed is a startup fact, not a surprise halfway through a render.
+    layouts.use_folder(store.data_dir / "layouts")
+    # Cloned voices: a folder per voice holding a reference recording and its transcript. Read at
+    # startup so a `voice:<name>` in a film's settings is checked long before the film is timed.
+    voices.use_folder(store.data_dir / "voices")
     memory = MemoryService(store, router)
     # Hooks: the user's own code at six fixed points. Written once by the example below, off
     # until switched on, and every run goes through a subprocess (see app/hooks.py).
@@ -462,6 +475,9 @@ def create_app(
               "image_timeout": (20, 900), "image_max_mb": (1, 128),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
               "score_threshold": (0, 100), "score_excerpt_chars": (100, 4000), "score_max_lessons": (0, 3),
+              # indexing a knowledge base: 64 texts per request is the local server's own ceiling,
+              # and a batch on a cold CPU model can take minutes rather than seconds
+              "embed_batch": (1, 64), "embed_timeout": (10, 3600),
               # chat channels: each numeric field declares its own bounds in channels/spec.py,
               # so a new channel's limit cannot be forgotten here (which shows up as a 400 when
               # the settings page tries to save it).
@@ -983,7 +999,11 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         except WebSocketDisconnect:
             hub.disconnect(gid, ws)
 
-    app.include_router(build_router(Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)))
+    _ctx = Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)
+    app.include_router(build_router(_ctx))
+    # Kept reachable for the same reason `store`/`router`/`orch` are above: a long-running job's
+    # state lives on it, and a test that wants to see the state of a run has nowhere else to look.
+    app.state.ctx = _ctx
     app.include_router(build_external_router(store, orch.external))
     app.include_router(build_gallery_router(store, hooks))
     app.include_router(build_hooks_router(store, hooks))

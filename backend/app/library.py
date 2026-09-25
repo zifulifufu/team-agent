@@ -9,21 +9,30 @@ supported yet.
 
 from __future__ import annotations
 
-from . import i18n
+from . import embed, i18n
 
 import io
 import json
 import os
 import re
 import threading
+import time
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Callable
 from urllib.parse import unquote, urlparse
 
 import httpx
 
 from .store import Store
-from .textindex import BM25, chunk_text, join_chunks, tokenize
+from .textindex import BM25, chunk_text, join_chunks, rrf, tokenize
+
+# numpy is optional in this environment (see embed.py): without it the keyword half of the
+# search still works, so the import is guarded rather than required.
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
 
 MAX_BYTES = 30 * 1024 * 1024
 MAX_CHARS = 3_000_000
@@ -233,6 +242,19 @@ def _frontmatter(text: str) -> dict:
     return out
 
 
+def _vault_root(start: Path) -> Path | None:
+    """The folder Obsidian treats as the vault: the nearest one up that contains `.obsidian`.
+
+    Found rather than assumed. Assuming it (`… + three parents`) is what let a note reach past the
+    vault and into the folder above it — see the note in `note_figures`. `None` means "this is not
+    inside a vault", and the caller then keeps the boundary as narrow as possible.
+    """
+    for p in [start, *start.parents]:
+        if (p / ".obsidian").is_dir():
+            return p
+    return None
+
+
 def note_figures(filename: str, *, want_clips: bool = True) -> tuple[list[dict], dict]:
     """(the media a note embeds, its front matter) — read from the note's own file on disk.
 
@@ -252,13 +274,44 @@ def note_figures(filename: str, *, want_clips: bool = True) -> tuple[list[dict],
     except OSError:
         return [], {}
     base = src.parent
-    roots = [base] + [base.parents[i] for i in range(min(3, len(base.parents)))]
+    # The search space, and — because the containment test below uses the same list — the boundary.
+    # It runs from the note's own folder up to the vault root, and never above it.
+    #
+    # ⚠️ It used to be "the note's folder plus three parents", which made the boundary depend on how
+    # deep a note happened to sit: for a note two levels down, the third parent is the folder
+    # *above* the vault, so a line in the note could embed any picture in the user's Documents
+    # folder. Nothing could exploit it while every `..` link was refused, so the two bugs hid each
+    # other — fixing one is what made the other visible.
+    #
+    # A folder of notes that is not an Obsidian vault gets the note's own folder and no more: there
+    # is no marker to say where such a collection ends, and a boundary that cannot be located is
+    # not a boundary.
+    vault = _vault_root(base)
+    roots: list[Path] = [base]
+    if vault is None:
+        pass
+    elif vault != base:
+        for p in base.parents:
+            roots.append(p)
+            if p == vault:
+                break
     allowed = FIGURE_EXT | (CLIP_EXT if want_clips else set())
     found: list[dict] = []
     seen: set[str] = set()
     for m in EMBED_RE.finditer(raw):
         link = _clean_link(m.group(1) or m.group(2) or "")
-        if not link or link.startswith(("http://", "https://", "/", "~")) or ".." in link:
+        # ⚠️ `..` is **not** refused here, and that is a fix rather than a loosening. In an
+        # Obsidian vault a note in a subfolder reaches the vault's shared attachments folder as
+        # `../attachments/x.png`, which is the normal shape — measured over one real vault, 4104 of
+        # 4106 references were written that way and every one of them was being skipped in silence,
+        # so a note's figures were reachable only when the note happened to sit at the vault root.
+        #
+        # What actually keeps a note from reading the machine is the containment test below: the
+        # resolved path has to land inside the note's own tree (`roots`), and that test does not
+        # care whether the link spelled `..` or not. Refusing the spelling as well was redundant
+        # and it broke the common case. Absolute paths and URLs are still refused up front — those
+        # are not a spelling question, they are a different kind of link.
+        if not link or link.startswith(("http://", "https://", "/", "~", "file:")):
             continue
         tries = [r / link for r in roots]
         if "/" not in link:
@@ -329,6 +382,15 @@ class Library:
         self._bm: BM25 | None = None
         self._chunks: list[dict] = []
         self._dirty = True
+        # The vector half. `_vec_mat is None` means "not built yet"; an empty matrix means "built,
+        # and there is nothing to search with" — the difference is what stops a search from
+        # rebuilding the index on every call when a library simply has no vectors.
+        self._vec_mat: "np.ndarray | None" = None
+        self._vec_pos: list[int] = []
+        self._vec_doc: list[str] = []
+        self._vec_dim = 0
+        self._vec_model = ""
+        self._vec_note = ""
         # Retrieval runs in a thread pool (see toolhub / api_ext), so rebuilding the index must
 # hold a lock:
         # otherwise two threads both see _dirty=True and each builds one, and a reader may get a
@@ -337,6 +399,9 @@ class Library:
 
     def invalidate(self) -> None:
         self._dirty = True
+        self._vec_mat = None       # the passage vectors belong to the same build as `_chunks`
+        self._vec_pos = []
+        self._vec_doc = []
 
     def _ensure(self) -> None:
         if not self._dirty and self._bm is not None:
@@ -446,22 +511,186 @@ skipped, files whose size changed are replaced with the new version."""
         self.invalidate()
 
     # ------------------------------------------------------------------- read
-    def search(self, query: str, top_k: int = 5, doc_ids: list[str] | None = None) -> list[dict]:
+    # Both retrievers are reduced to one entry per *document* before they are fused. A note averages
+    # seventeen passages in a real vault, so a head of a few dozen passages is one or two notes: a
+    # five-line answer made of five passages of the same page has answered once. Collapsing also
+    # reaches further — a page whose best passage ranks 214th overall is around the thirtieth
+    # document, which is inside any result list worth reading, while a head of twenty-four passages
+    # never sees it at all.
+    POOL = 3000       # passages examined per retriever before collapsing to documents
+    DOCS = 200        # documents nominated per retriever; RRF only reads the head of a ranking
+
+    def _ensure_vectors(self) -> bool:
+        """Build the vector index, once, from the passages that have one. False when there are none.
+
+        Built separately from the keyword index and on demand: a passage vector is 2 KB and a
+        library of 60k passages would carry 120 MB of them on every write, while the keyword index
+        is rebuilt whenever anything changes. Passages whose vector came from a *different* model
+        are left out rather than mixed in — two models' vectors are not comparable, and a library
+        that averaged them would answer confidently and wrongly.
+        """
+        if self._vec_mat is not None:
+            return self._vec_mat.shape[0] > 0
+        self._vec_mat = np.zeros((0, 0), dtype="float32")      # "asked already"; replaced below
+        self._vec_pos = []
+        self._vec_doc = []
+        self._vec_note = ""
+        if not embed.available():
+            self._vec_note = embed.reason_missing(self.store.get_settings())
+            return False
+        want = embed.model_of(self.store.get_settings())
+        rows = self.store.chunk_vectors()
+        if not rows:
+            return False
+        pos = {(c["doc_id"], c["idx"]): i for i, c in enumerate(self._chunks)}
+        cand: list[tuple[int, bytes]] = []
+        other = 0
+        for r in rows:
+            if want and (r.get("embed_model") or "") not in ("", want):
+                other += 1
+                continue
+            at = pos.get((r["doc_id"], r["idx"]))
+            if at is None or not r.get("vec"):
+                continue
+            cand.append((at, r["vec"]))
+        if not cand:
+            self._vec_note = i18n.pick_now(
+                f"{other} passage(s) carry vectors from another model; set the embedding model back, "
+                "or re-index the library.", f"有 {other} 段的向量是另一个模型生成的;请把嵌入模型改回去,或者重新索引。") if other else ""
+            return False
+        dim = len(cand[0][1]) // 2
+        mat, keep = embed.matrix([b for _at, b in cand], dim)
+        self._vec_mat = mat
+        self._vec_pos = [cand[i][0] for i in keep]
+        self._vec_doc = [self._chunks[p]["doc_id"] for p in self._vec_pos]
+        self._vec_dim = dim
+        self._vec_model = want
+        return mat.shape[0] > 0
+
+    def vector_status(self) -> dict:
+        """Everything a screen needs to say what vector search is doing, without running one."""
+        cfg = self.store.get_settings()
+        cov = self.store.vector_coverage()
+        self._ensure()
+        ok = self._ensure_vectors()
+        return {**cov, "enabled": embed.enabled(cfg), "model": embed.model_of(cfg),
+                "address": embed.base_url(cfg), "searchable": ok,
+                "in_index": int(self._vec_mat.shape[0]) if self._vec_mat is not None else 0,
+                "dim": int(getattr(self, "_vec_dim", 0)), "note": self._vec_note or "",
+                "numpy": embed.available(), "venv": bool(embed.venv_python(cfg))}
+
+    def search(self, query: str, top_k: int = 5, doc_ids: list[str] | None = None,
+               query_vec: "np.ndarray | None" = None) -> list[dict]:
+        """The most relevant *documents*, one passage each: keywords, and meaning when a vector is given.
+
+        The two rankings are merged by rank (see `textindex.rrf`), so the **order** of the result is
+        what to trust. `score` and `sim` are the two inputs to that order — a BM25 score and a
+        cosine — and neither is comparable to the other; `via` says which retrievers found the
+        document at all. Reading `score` as "how good this is" was only ever true while keywords
+        were the only thing searching.
+
+        `query_vec` is passed in rather than computed here on purpose: getting one is an HTTP call
+        to the local model, and a synchronous search that quietly blocks a caller's event loop for
+        it would be a worse bug than a search that used keywords alone.
+        """
         self._ensure()
         assert self._bm is not None
-        q = tokenize(query)
-        if not q or not self._chunks:
-            return []
         allowed = set(doc_ids) if doc_ids is not None else None
-        scored = [(i, s) for i, s in self._bm.scores(q).items()
-                  if allowed is None or self._chunks[i]["doc_id"] in allowed]
-        scored.sort(key=lambda x: -x[1])
+        kw_order: list[str] = []
+        kw_best: dict[str, tuple[int, float]] = {}
+        q = tokenize(query)
+        if q and self._chunks:
+            scored = [(i, s) for i, s in self._bm.scores(q).items()
+                      if allowed is None or self._chunks[i]["doc_id"] in allowed]
+            scored.sort(key=lambda x: (-x[1], x[0]))
+            for i, s in scored[: self.POOL]:
+                did = self._chunks[i]["doc_id"]
+                if did not in kw_best:
+                    kw_best[did] = (i, s)
+                    kw_order.append(did)
+        vec_order: list[str] = []
+        vec_best: dict[str, tuple[int, float]] = {}
+        if query_vec is not None and self._ensure_vectors():
+            # `best_per_document` filters by *passage position*, while a caller's scope is a set of
+            # document ids. Translating here — over the rows that carry a vector — is what keeps the
+            # filter exact; passing the ids straight through made every scoped search find nothing
+            # through this half, silently, which is the one outcome nobody would notice.
+            allow_pos = None
+            if allowed is not None:
+                allow_pos = {p for p in self._vec_pos if self._chunks[p]["doc_id"] in allowed}
+            for did, at, sim in embed.best_per_document(
+                    query_vec, self._vec_mat, self._vec_pos, self._vec_doc,
+                    pool=self.POOL, allow=allow_pos):
+                vec_order.append(did)
+                vec_best[did] = (at, sim)
+        if kw_order and vec_order:
+            order = [d for d, _ in rrf([kw_order[: self.DOCS], vec_order[: self.DOCS]])][:top_k]
+        elif vec_order:
+            order = vec_order[:top_k]
+        else:
+            order = kw_order[:top_k]
         out = []
-        for i, s in scored[:top_k]:
-            c = self._chunks[i]
-            out.append({"doc_id": c["doc_id"], "title": c["title"], "idx": c["idx"],
-                        "text": c["text"], "score": round(s, 3)})
+        for did in order:
+            in_kw, in_vec = did in kw_best, did in vec_best
+            at, score = kw_best.get(did, (None, 0.0))
+            sim = vec_best.get(did, (None, 0.0))[1]
+            if in_kw and in_vec:
+                # Show the passage the retriever that ranked this document higher thought was best:
+                # when the words matched it is usually the passage with the terms in it, and when the
+                # meaning matched it is the one about the topic.
+                at = vec_best[did][0] if vec_order.index(did) < kw_order.index(did) else kw_best[did][0]
+            elif in_vec:
+                at = vec_best[did][0]
+            c = self._chunks[at]
+            out.append({"doc_id": did, "title": c["title"], "idx": c["idx"],
+                        "text": c["text"], "score": round(score, 3), "sim": round(sim, 3),
+                        "via": "both" if (in_kw and in_vec) else ("vector" if in_vec else "keyword")})
         return out
+
+    async def index_vectors(self, doc_ids: list[str] | None = None, *, page: int = 128,
+                            progress: "Callable[[int, int], None] | None" = None,
+                            max_chunks: int = 0) -> dict:
+        """Give every passage that lacks a vector one, in pages, until there are none left.
+
+        Written as a loop over pages rather than one big batch because this is the step that can
+        legitimately take an hour: the caller gets progress, a crash keeps everything already
+        indexed, and re-running resumes at the first passage that still has no vector.
+
+        Nothing is written for a page the model failed on — a half-indexed passage would be a
+        passage that is silently unsearchable by meaning while looking indexed from the outside.
+        """
+        model = embed.model_of(self.store.get_settings())
+        started = time.time()
+        indexed = 0
+        docs: set[str] = set()
+        fails: list[str] = []
+        before = self.store.vector_coverage()
+        while True:
+            if max_chunks and indexed >= max_chunks:
+                break
+            take = page if not max_chunks else min(page, max_chunks - indexed)
+            rows = self.store.chunks_without_vectors(doc_ids, take)
+            if not rows:
+                break
+            try:
+                vecs = await embed.embed_texts(self.store.get_settings(), [r["text"] for r in rows])
+            except embed.EmbedError as e:
+                fails.append(str(e))
+                break
+            packed = embed.pack(vecs)
+            by_doc: dict[str, dict[int, bytes]] = {}
+            for r, blob in zip(rows, packed):
+                by_doc.setdefault(r["doc_id"], {})[int(r["idx"])] = blob
+            for did, blobs in by_doc.items():
+                self.store.set_chunk_vectors(did, blobs, model)
+                docs.add(did)
+            indexed += len(rows)
+            if progress is not None:
+                progress(indexed, before["missing"])
+        self.invalidate()          # the cached matrix (if any) is now behind the database
+        return {"indexed": indexed, "documents": len(docs), "model": model,
+                "seconds": round(time.time() - started, 1), "errors": fails,
+                "left": max(0, self.store.vector_coverage()["missing"])}
 
     def read(self, did: str, start: int = 0, limit: int = 3000) -> dict:
         doc = self.store.get_doc(did)

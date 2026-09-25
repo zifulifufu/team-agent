@@ -449,6 +449,15 @@ export interface Settings {
   memory_auto_extract: boolean;
   memory_top_k: number;
   library_top_k: number;
+  // ---- searching the library by meaning (see backend/app/embed.py)
+  embed_enabled: boolean;          // Search by meaning as well as by keyword
+  embed_base_url: string;          // OpenAI-compatible /embeddings; the bundled local model by default
+  embed_model: string;             // Which model id to ask for there
+  embed_autostart: boolean;        // Start the local model on demand — never to download weights
+  embed_batch: number;             // Texts per request while indexing
+  embed_timeout: number;           // How long one indexing batch may take, in seconds
+  embed_api_key: string;           // Write-only: only needed for somebody else's server
+  embed_api_key_set?: boolean;
   app_repo: string;                // GitHub repository of the app itself, owner/repo
   catalog_url: string;
   github_token: string;            // Write-only: always reads back empty; use github_token_set to tell whether it is set
@@ -883,7 +892,38 @@ export interface LibraryHit {
   title: string;
   idx: number;
   text: string;
+  /** The BM25 score, or 0 when only the vector half found this document. */
   score: number;
+  /** The cosine, or 0 when only the keywords found it. Neither is the ranking: the order is the
+   *  fused one, and these two are its inputs. Optional because older backends do not send them. */
+  sim?: number;
+  via?: "keyword" | "vector" | "both";
+}
+/** What vector search is doing right now, from `GET /api/library/vector`. */
+export interface VectorState {
+  enabled: boolean;
+  model: string;
+  address: string;
+  /** The model that produced the vectors present, and how many passages carry them. */
+  chunks: number;
+  with_vectors: number;
+  missing: number;
+  models: Record<string, number>;
+  /** Whether this build can hold vectors at all (needs numpy), and whether the local runtime exists. */
+  numpy: boolean;
+  venv: boolean;
+  searchable: boolean;
+  in_index: number;
+  dim: number;
+  /** Set when vectors were found but belong to another model — the reason nothing is searchable. */
+  note: string;
+  server: { up: boolean; ready: boolean; state: string; device?: string; dim?: number;
+            load_seconds?: number; error?: string; hint?: string };
+  weights: boolean;
+  start_command: string;
+  fetch_command: string;
+  job: { running?: boolean; indexed?: number; documents?: number; seconds?: number; left?: number;
+         error?: string; started_at?: number; finished_at?: number };
 }
 /** A named bag of documents. `group_id` empty = shared: any group may attach it. */
 export interface KnowledgeBase {
@@ -1339,6 +1379,12 @@ export const api = {
     get<{ doc: LibraryDoc; start: number; end: number; total: number; text: string }>(`/api/library/${id}${qs({ start })}`),
   patchDoc: (id: string, b: { title?: string; enabled?: boolean; kb_id?: string }) => patch<LibraryDoc>(`/api/library/${id}`, b),
   delDoc: (id: string) => del(`/api/library/${id}`),
+  // ---- Searching by meaning (vectors), see backend/app/embed.py
+  vectorState: () => get<VectorState>("/api/library/vector"),
+  vectorStart: () => post<{ started: boolean; ready: boolean; reason: string }>("/api/library/vector/start", {}),
+  vectorIndex: (b: { kb_id?: string; limit?: number } = {}) =>
+    post<{ started: boolean; reason?: string }>("/api/library/vector/index", { kb_id: b.kb_id ?? "", limit: b.limit ?? 0 }),
+  vectorClear: () => post<{ cleared: number }>("/api/library/vector/clear", {}),
   // ---- Memory
   memories: (f: { scope?: MemoryScope; scope_id?: string; kind?: MemoryKind; q?: string } = {}) =>
     get<{ memories: Memory[]; count: number }>(`/api/memories${qs(f)}`),

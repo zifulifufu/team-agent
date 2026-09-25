@@ -10,3 +10,5 @@ pytest-asyncio>=0.23
 openpyxl>=3.1         # reading xlsx attachments and documents (.xlsx)
 python-pptx>=1.0      # reading pptx attachments and documents (.pptx)
 pillow>=10            # shrinking a picture before it is sent to a model
+numpy>=2              # the vector half of knowledge-base search (see app/embed.py); optional at
+                      # runtime — without it the search falls back to keywords and says so

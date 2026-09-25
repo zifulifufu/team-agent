@@ -27,7 +27,10 @@ from .coderun import inside as _inside
 # `metachat_media` covers both media: its one key reaches an image API *and* a video API, so it
 # belongs in both subsets rather than being configured twice under two names. `ark_video` is
 # Volcengine's own video API (Doubao Seedance), one medium and its own job shape again.
-MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "ark_video", "openai_image")
+# `comfyui` is a graph runner on the user's own machine (`app/comfyui.py`): no key, no bill, and
+# the thing that is chosen is a workflow rather than a model name.
+MEDIA_KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "ark_video", "openai_image",
+                                "comfyui")
 
 # The two answers `purpose_of` gives for something a generator can make. A member may *be* one of
 # these (see `member_target`), which is why the pair is named here rather than spelled out at each
@@ -162,11 +165,28 @@ BUILTIN_MEDIA_MODELS: dict[str, dict[str, tuple[str, ...]]] = {
     # `dreamina-seedance-2-5-260628`; a key issued in one region does not authenticate against the
     # other, so the address and this id have to belong to the same account.
     "ark_video": {"video": ("doubao-seedance-2-5-260628",)},
+    # ⚠️ These are **workflow** names, not checkpoints: ComfyUI has no model catalogue to ask, and
+    # what the user picks there is a graph this app ships (`comfyui.WORKFLOWS`, which names the
+    # checkpoint/encoder/VAE files inside it). A test pins the two lists together, because a name
+    # here that no workflow answers to would be a settings entry that fails on submit.
+    # The second name is declared rather than installed: ComfyUI has the nodes, several GB of
+    # weights are missing. It is in the list on purpose — the dropdown entry is how the user finds
+    # out what a talking-head workflow would need, and `probe` names the files.
+    "comfyui": {"video": ("wan2.2-ti2v-5b", "infinite-talk")},
 }
 
 # For `purpose_of`: a model we ship a job for is what that job says it is. Neither "mj-v82" nor
 # "z-image-turbo" is a word the name rules below could be expected to recognise.
-_MEDIA_MODEL_USES: dict[str, str] = {mid.lower(): m["use"] for mid, m in MEDIA_MODELS.items()}
+#
+# The shipped media ids are merged in on top: `comfyui`'s names are workflows rather than provider
+# models, so they are in `BUILTIN_MEDIA_MODELS` instead of `MEDIA_MODELS` and would otherwise be
+# left to the name rules. ("wan2.2-ti2v-5b" happens to hit the `wan2` needle today; relying on
+# that would make the value of a setting depend on a substring.)
+_MEDIA_MODEL_USES: dict[str, str] = {
+    **{mid.lower(): m["use"] for mid, m in MEDIA_MODELS.items()},
+    **{mid.lower(): use for kinds in BUILTIN_MEDIA_MODELS.values()
+       for use, ids in kinds.items() for mid in ids},
+}
 
 # The generic paths, for a model name typed by hand rather than picked from the shipped list. The
 # names on the settings pages are free text (a newer model should not need a release of this app),

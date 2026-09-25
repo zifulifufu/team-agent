@@ -40,7 +40,7 @@ directly rather than through the command-line machinery below.
 
 from __future__ import annotations
 
-from . import i18n
+from . import i18n, localcmd
 
 import asyncio
 import glob
@@ -156,6 +156,14 @@ ENGINES: dict[str, dict] = {
         ),
     },
 }
+
+# The local tools — "members" that are a command line on this machine (`kind: "cmd"`) — live in
+# their own module and are merged in here. Kept apart because they are not agents that *talk*: the
+# four rows above are conversation partners, and putting a renderer in the same literal would invite
+# exactly the questions (permission level, working directory, model) that do not apply to it.
+# Everything that walks `ENGINES` — the add-member dialog, `localize_member`, `describe` — still
+# sees one list, so no new vocabulary is needed anywhere upstream.
+ENGINES.update(localcmd.tools())
 
 LEVELS: dict[str, dict] = {
     "read": {
@@ -411,6 +419,20 @@ and the key are not accepted at all because the provider already holds them."""
         # opened from Finder never sees a shell's exported variables).
         if "api_key" in raw:
             out["api_key"] = _key_value(raw["api_key"])
+    elif kind == "cmd":
+        # A local tool has no address, no key, no model and no permission level of its own: the
+        # command is the tool's own (see `localcmd.TOOLS`) and the member's sentence never becomes
+        # one. So there is nothing to validate — which is the point, because every field a gateway
+        # asks for would be a question this user cannot answer and does not need to.
+        #
+        # Two things are forced rather than accepted, because accepting them would be a promise
+        # this kind does not keep: a working directory (the command always runs inside the group's
+        # own workspace, so a path here would be silently ignored) and extra directories.
+        out["cwd"], out["add_dirs"] = "", []
+        # @-mentions in a renderer's log must not pull another member into the conversation: the
+        # log is Chromium's, not a colleague's. Only an explicit setting turns it back on.
+        if "handoff" not in raw:
+            out["handoff"] = False
     else:
         # A chat gateway: an address to talk to and a key to talk with. Neither is required at save
         # time — an empty base_url means "the engine's own default" — but a half-filled address is
@@ -1038,6 +1060,12 @@ class ExternalRunner:
         return p
 
     def describe(self, engine: str = "workbuddy", cli_path: str = "") -> dict:
+        if kind_of(engine) == localcmd.KIND:
+            # Nothing to look up the way a launcher is looked up: the tool's own `probe` answers
+            # this, and it answers it better (which runtime is missing, not just "not found").
+            info = localcmd.probe(engine)
+            return {"found": info["found"], "path": info["path"], "via": localcmd.KIND,
+                    "hint": info["hint"], "signin": False}
         if kind_of(engine) == "http":
             # Nothing to look up on this machine: the member is reached over the network, and
             # whether that endpoint is awake is what `probe` answers.
@@ -1231,6 +1259,20 @@ class ExternalRunner:
             # member; one place decides that, so a saved member and a probe cannot disagree.
             cfg, _ = self.resolve(engine, cfg)
             return await self._run_http(engine, cfg, system=system, prompt=prompt, on_delta=on_delta)
+        if kind_of(engine) == localcmd.KIND:
+            # A local tool is run by its own turn (`orchestrator._local_tool_turn`), which is the
+            # only place that knows the *group* — and a render has to land inside the group's
+            # workspace, not in the per-member directory below.
+            #
+            # This branch exists for one reason: without it, control falls through to the launcher
+            # lookup, which finds WorkBuddy's own bundled `codebuddy` and would run **the wrong
+            # program** with the group's transcript as its prompt. A loud failure is the only
+            # acceptable outcome for a caller that got here by mistake.
+            raise ExternalError(i18n.pick_now(
+                f"\"{engine}\" is a local tool, not an agent to talk to: it is driven by its own "
+                "turn in the group, which runs it inside the group's workspace.",
+                f"「{engine}」是本机工具,不是用来对话的智能体:它由群里的专属回合适配驱动,"
+                "在那个回合里于本群工作目录中执行。"))
         lc = find_launcher(cfg["cli_path"])
         if not lc:
             raise ExternalError(self.describe(engine, cfg["cli_path"])["hint"])
@@ -1304,6 +1346,12 @@ network). A chat gateway: ask its /models endpoint, and with live=True send one 
         if kind_of(engine) == "http":
             cfg, binding = self.resolve(engine, cfg)
             return await self._probe_http(engine, cfg, live=live, binding=binding)
+        if kind_of(engine) == localcmd.KIND:
+            # Its own probe, and a better one: it names the runtime or the package that is missing
+            # and the command that installs it, where the launcher lookup below could only ever say
+            # "not found" — or, worse, find WorkBuddy's bundled command line and call it found.
+            info = localcmd.probe(engine)
+            return {**info, "version": info["version"], "live": None}
         lc = find_launcher(cfg["cli_path"])
         info = self.describe(engine, cfg["cli_path"])
         if not lc:

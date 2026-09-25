@@ -11,8 +11,8 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 
 from __future__ import annotations
 
-from . import (animate, assemble, attachments, coderun, ffmpeg, figure, i18n, imagegen, media,
-                 study, video, vision)
+from . import (animate, assemble, attachments, coderun, comfyui, embed, ffmpeg, figure, i18n,
+                 imagegen, layouts, media, net, study, video, vision)
 
 import asyncio
 import json
@@ -80,14 +80,22 @@ BUILTIN_SPECS: dict[str, dict] = {
         "parameters": {"type": "object", "properties": {}},
     },
     "library_search": {
-        "description": "Search the library for passages relevant to a question (returns document "
-                       "titles and the original text). Reach for this first whenever you need to "
-                       "cite a fact, a figure or a rule. The knowledge base may be in another "
-                       "language than this conversation: if a search comes back empty, try the "
-                       "subject's name in English before concluding nothing is there.",
-        "description_zh": "在资料库里检索与问题相关的片段(返回文档标题和原文)。需要引用事实、数据、"
-                          "规定时先用它。注意资料库的语言可能和这段对话不同:一次没命中就换用主题的"
-                          "英文名再搜一次,别直接下结论说没有。",
+        "description": "Search the library for the most relevant documents (returns document "
+                       "titles and the passage that matched, one passage per document). Reach for "
+                       "this first whenever you need to cite a fact, a figure or a rule. The "
+                       "knowledge base may be in another language than this conversation, and that "
+                       "is where a search quietly fails: a query written entirely in your own "
+                       "language often does not reach a passage written in another one, however "
+                       "long or well phrased it is. Improve it by putting the subject's term in the "
+                       "library's language *into the same query* — \\\"脑血管痉挛 angioplasty\\\" "
+                       "reaches the vasospasm page where \\\"蛛网膜下腔出血 脑血管痉挛\\\" does not — "
+                       "then search again before concluding nothing is there.",
+        "description_zh": "在资料库里检索最相关的文档(返回文档标题和命中的那一段,每篇只出一条)。"
+                          "需要引用事实、图谱或规定时先用它。注意资料库的语言可能和这段对话不同,"
+                          "而这正是检索会静默失败的地方:整句都用你说的语言写,常常够不到另一种语言的"
+                          "段落 —— 写多长、写多完整都没用。有效的改法是**把主题在资料库语言里的术语"
+                          "放进同一条查询里**(如「脑血管痉挛 angioplasty」能命中血管痉挛那一页,"
+                          "而「蛛网膜下腔出血 脑血管痉挛」不能),然后再搜一次,别直接下结论说没有。",
         "risk": "read",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Keywords or a question to search for",
@@ -151,28 +159,33 @@ BUILTIN_SPECS: dict[str, dict] = {
     },
     "generate_video": {
         "description": "Generate a short video through this group's video provider, and save it "
-                       "into the group's workspace. Three kinds of provider exist and they differ. A "
-                       "self-hosted MiniMax H3 makes 4-15 second clips with sound and is prompted "
-                       "as shots and then sound (\"[Shot 1] ... overall_soundscape: ... "
-                       "non_diegetic_music: ...\"); a workspace image can be first_frame/last_frame. "
-                       "MetaChat's video API (Grok Video, Midjourney Video) makes 1-15 second clips "
-                       "and generates ONLY from a reference image, which must be an http(s) URL "
-                       "because that service downloads it itself. Volcengine's Ark (Doubao Seedance "
-                       "2.5) makes 4-30 second clips, has sound on by default, takes a workspace "
-                       "file or a URL for every kind of reference (pictures, video, audio) and is "
-                       "the only one that accepts reference_videos/reference_audios; its prompt "
-                       "refers to the references by position (\"@图片1\", \"@视频1\"). Rendering "
-                       "takes minutes. You cannot watch or hear the result: say what you asked for, "
-                       "never describe what came out.",
-        "description_zh": "用本群配置的视频服务商生成一段短视频,存进本群工作目录。有三类服务商,规矩不同:"
+                       "into the group's workspace. Which provider is configured matters, because "
+                       "their rules differ. A self-hosted MiniMax H3 makes 4-15 second clips with "
+                       "sound and is prompted as shots and then sound (\"[Shot 1] ... "
+                       "overall_soundscape: ... non_diegetic_music: ...\"); a workspace image can be "
+                       "first_frame/last_frame. MetaChat's video API (Grok Video, Midjourney Video) "
+                       "makes 1-15 second clips and generates ONLY from a reference image, which must "
+                       "be an http(s) URL because that service downloads it itself. Volcengine's Ark "
+                       "(Doubao Seedance 2.5) makes 4-30 second clips, has sound on by default, takes "
+                       "a workspace file or a URL for every kind of reference (pictures, video, audio) "
+                       "and is the only one that accepts reference_videos/reference_audios; its "
+                       "prompt refers to the references by position (\"@图片1\", \"@视频1\"). A local "
+                       "ComfyUI renders from the prompt alone — no reference material at all, no "
+                       "sound, and slower than the hosted ones — but it costs nothing per clip. "
+                       "Rendering takes minutes, on a local one often more than ten. You cannot "
+                       "watch or hear the result: say what you asked for, never describe what came "
+                       "out.",
+        "description_zh": "用本群配置的视频服务商生成一段短视频,存进本群工作目录。服务商不同,规矩也不同:"
                           "自建的 MiniMax H3 生成 4-15 秒、带声音的片段,提示词要写成「先分镜、再说声音」"
                           "(如「[Shot 1] … overall_soundscape: … non_diegetic_music: …」),可以用工作目录里的图片"
                           "当 first_frame/last_frame;MetaChat 的视频接口(Grok Video、Midjourney Video)"
                           "生成 1-15 秒的片段,而且只能「按参考图生成」,参考图必须是 http(s) 地址——它自己去下载;"
                           "火山方舟(Doubao Seedance 2.5)生成 4-30 秒的片段,默认带声音,参考素材(图、视频、音频)"
-                          "既可以是工作目录里的文件也可以是公网地址,而且是三者中唯一支持 reference_videos/"
+                          "既可以是工作目录里的文件也可以是公网地址,而且是唯一支持 reference_videos/"
                           "reference_audios 的;它的提示词用序号指代素材(「@图片1」「@视频1」)。"
-                          "渲染需要等几分钟。你看不到也听不到结果:只说你要求了什么,绝不要描述生成出来的画面。",
+                          "本地的 ComfyUI 只按提示词生成 —— 不收任何参考素材、没有声音、比云端慢,但不按次计费。"
+                          "渲染需要等几分钟,本地那种常常要十分钟以上。"
+                          "你看不到也听不到结果:只说你要求了什么,绝不要描述生成出来的画面。",
         # Every built-in carries its own `risk`: it runs something outside this app, so it asks.
         "risk": "exec",
         # Its own budget. Rendering is minutes, while `tool_timeout` is sized for a tool call that
@@ -189,11 +202,11 @@ BUILTIN_SPECS: dict[str, dict] = {
                              "description": f"One of: {', '.join(video.ASPECT_RATIOS)}; omit for the provider's own default. Which of them apply depends on the provider",
                              "description_zh": f"可选:{', '.join(video.ASPECT_RATIOS)};不填则用服务商自己的默认值。具体哪些可用取决于服务商"},
             "first_frame": {"type": "string",
-                            "description": "Reference image to start from: a path inside the workspace on a self-hosted H3 server or on Ark, an http(s) URL on MetaChat's video API (which fetches it itself, and where it is required). On Ark a keyframe pins the aspect ratio to adaptive",
-                            "description_zh": "起始参考图:自建 H3 或火山方舟可填工作目录内的路径;MetaChat 的视频接口必须是 http(s) 地址(它自己去取),而且是必填的。方舟上用了关键帧就会把画幅锁成 adaptive"},
+                            "description": "Reference image to start from: a path inside the workspace on a self-hosted H3 server or on Ark, an http(s) URL on MetaChat's video API (which fetches it itself, and where it is required). On Ark a keyframe pins the aspect ratio to adaptive. A local ComfyUI renders from the prompt alone and refuses this",
+                            "description_zh": "起始参考图:自建 H3 或火山方舟可填工作目录内的路径;MetaChat 的视频接口必须是 http(s) 地址(它自己去取),而且是必填的。方舟上用了关键帧就会把画幅锁成 adaptive。本地 ComfyUI 只按提示词生成,填了会被拒绝"},
             "last_frame": {"type": "string",
-                           "description": "Image to end on, same forms as first_frame. Self-hosted H3 and Ark only — MetaChat's API generates from a single keyframe and refuses this",
-                           "description_zh": "结束图片,写法同 first_frame。仅自建 H3 与火山方舟支持;MetaChat 的接口只按一张参考图生成,填了会被拒绝"},
+                           "description": "Image to end on, same forms as first_frame. Self-hosted H3 and Ark only — MetaChat's API generates from a single keyframe, and a local ComfyUI has no image input at all, so both refuse this",
+                           "description_zh": "结束图片,写法同 first_frame。仅自建 H3 与火山方舟支持;MetaChat 的接口只按一张参考图生成、本地 ComfyUI 根本没有图片输入口,填了都会被拒绝"},
             "reference_images": {"type": "array", "items": {"type": "string"},
                                  "description": "Extra reference pictures, for the models that take them (Ark only). Pass a workspace path or an http(s) URL; the prompt can name them by position (@图片1)",
                                  "description_zh": "额外的参考图,仅火山方舟支持。可填工作目录内的路径或 http(s) 地址;提示词里可以按序号引用(@图片1)"},
@@ -206,8 +219,9 @@ BUILTIN_SPECS: dict[str, dict] = {
             "generate_audio": {"type": "boolean",
                                "description": "Ark only, and only when you want the opposite of its default: Seedance 2.5 already makes sound, so pass false for a silent clip",
                                "description_zh": "仅火山方舟,而且只在你要「反着来」时才填:Seedance 2.5 默认就生成声音,想静音才填 false"},
-            "seed": {"type": "integer", "description": "0 for a random result; self-hosted H3 and Ark only",
-                     "description_zh": "填 0 表示随机;仅自建 H3 与火山方舟支持"}},
+            "seed": {"type": "integer",
+                     "description": "0 for a random result. Self-hosted H3, Ark and ComfyUI take it; MetaChat's API has no seed at all",
+                     "description_zh": "填 0 表示随机。自建 H3、火山方舟和 ComfyUI 支持;MetaChat 的接口没有 seed"}},
             "required": ["prompt"]},
     },
     "assemble_video": {
@@ -249,6 +263,22 @@ BUILTIN_SPECS: dict[str, dict] = {
         # a call that answers quickly.
         "timeout_key": "assemble_timeout",
         "parameters": {"type": "object", "properties": {
+            "layout": {"type": "string",
+                       "description": "Which look to assemble in. \"default\" is the plain one. "
+                                      "The shipped names are default, public-science (vertical, big "
+                                      "subtitles held low, an opening and closing card, a standing "
+                                      "credit line at the top), case-review (16:9, small captions, "
+                                      "tight shots) and lecture (16:9, plain captions); the user's "
+                                      "own layouts sit beside those in their layouts folder. It "
+                                      "decides picture size, frame rate, caption size and "
+                                      "placement, the cards, the credit line and how long a shot "
+                                      "may run — an explicit `size`/`fps`/`fit` still wins over it",
+                       "description_zh": "用哪套版式来装配。\"default\" 是原本那套朴素版式。自带的名字有 "
+                                         "default(朴素)、public-science(竖屏、字幕更大更靠下、有片头片尾卡、"
+                                         "顶部一条贯穿全片的署名/出处行)、case-review(16:9、小字幕、节奏紧)、"
+                                         "lecture(16:9、朴素字幕);用户自己的版式和他自带的放在一起。"
+                                         "它决定画幅、帧率、字幕大小与位置、片头片尾卡、署名行、以及单个镜头的时长上限 —— "
+                                         "显式给了 size/fps/fit 时以显式值为准"},
             "shots": {"type": "array", "items": {"type": "object"}, "description":
                       "The shots, in order. Each: {clip: a path inside the workspace, seconds: how long, "
                       "say: narration to record, text: words on screen, audio: voice|clip|mix|silent, "
@@ -283,16 +313,35 @@ BUILTIN_SPECS: dict[str, dict] = {
                                       "它自己的模糊副本来填;cover 靠裁掉两侧铺满;contain 留黑边。"
                                       "只有当主体在正中间时才用 cover"},
             "voice": {"type": "string",
-                      "description": "The voice to narrate with. Left out, one is chosen by the language "
-                                     "on screen (Tingting for Chinese). The result names the voice used",
-                      "description_zh": "配旁白用的语音。留空则按屏幕上的语言挑一个(中文用 Tingting)。"
-                                        "结果里会写明用的是哪个"},
+                      "description": "The voice to narrate with. A plain name is a macOS system "
+                                     "voice; `voice:<name>` is one of the user's own cloned voices "
+                                     "(see the voices folder), which is a local model and takes "
+                                     "longer on its first line. Left out, a system voice is chosen "
+                                     "by the language on screen. The result names the voice used",
+                      "description_zh": "配旁白用的语音。普通名字是 macOS 系统嗓音;`voice:<名字>` 是"
+                                        "用户自己克隆的音色(见 voices 目录下的那些),它是个本地模型,"
+                                        "第一句会慢一些。留空则按屏幕上的语言挑一个系统嗓音。结果里会写明用的哪个"},
             "subtitles": {"type": "string", "enum": ["burn", "off"],
                           "description": "burn (default) puts the words into the picture; off leaves them "
                                          "in the .srt only",
                           "description_zh": "burn(默认)把字烧进画面;off 只留 .srt 文件"},
             "name": {"type": "string", "description": "What to call the film; left out, it is stamped with the time",
-                     "description_zh": "成片的名字;留空则用时间戳"}},
+                     "description_zh": "成片的名字;留空则用时间戳"},
+            "title": {"type": "string",
+                      "description": "Title of the film. Given one, the layout draws a title card in "
+                                     "front of the shots; left out, the film opens on the first shot",
+                      "description_zh": "成片标题。填了就在成片最前面加一张标题卡;留空则直接从第一个镜头开始"},
+            "closing": {"type": "string",
+                        "description": "Text for a closing card after the last shot — a summary line, "
+                                       "a call to action, or a disclaimer. Left out, the film ends on "
+                                       "the last shot",
+                        "description_zh": "片尾卡上的字 —— 一句总结、一句引导、或一句免责声明。留空则以最后一个镜头结束"},
+            "credit": {"type": "string",
+                       "description": "A standing line printed on **every** frame: whose pictures these "
+                                      "are, which unit made it, where it may be used. It is on every "
+                                      "frame rather than on a card because a re-cut drops cards first",
+                       "description_zh": "印在**每一帧**上的一句话:画面来自谁、哪个单位做的、可用于何处。"
+                                         "它印在每一帧而不是一张卡上,因为重新剪辑时最先丢的就是卡"}},
             "required": ["shots"]},
     },
     "make_animation": {
@@ -1239,6 +1288,73 @@ When it is not supplied, calls needing confirmation are always denied."""
                 audio=args.get("generate_audio") if isinstance(args.get("generate_audio"), bool) else None,
                 **assets,
             )
+        elif prov["kind"] == video.COMFY_KIND:
+            wf = str(model or comfyui.DEFAULT_WORKFLOW).strip() or comfyui.DEFAULT_WORKFLOW
+            uses = comfyui.wants(comfyui.workflow_of(wf))
+            # What this graph can take is read **off the graph**, not assumed from the provider.
+            # `{{image}}` in it means a `LoadImage` is waiting for a file; its absence means there is
+            # genuinely nowhere to put one, and a member who asked for a keyframe and quietly did not
+            # get one would draw the wrong conclusion about why its clip does not resemble the still
+            # it started from.
+            material = [("image", want_first, "a first frame", "首帧"),
+                        ("last_image", want_last, "a last frame", "末帧")]
+            if ref_audios:
+                material.append(("audio", ref_audios[0], "a voice sample", "一段音色样本"))
+            unusable = [(label, label_zh) for slot, value, label, label_zh in material
+                        if value and slot not in uses]
+            if unusable:
+                takes = [slot for slot in ("image", "last_image", "audio") if slot in uses]
+                needed = [slot for slot, value, _label, _zh in material if value and slot not in uses]
+                return i18n.pick_now(
+                    f"The \"{wf}\" workflow has nowhere to put "
+                    f"{', '.join(label for label, _zh in unusable)}, so nothing was generated. It "
+                    f"{'takes ' + ', '.join('{{%s}}' % s for s in takes) if takes else 'renders from the prompt alone'}"
+                    f" — a workflow of your own that accepts it is a JSON file with "
+                    f"{', '.join('{{%s}}' % s for s in needed)} in its graph.",
+                    f"「{wf}」工作流没有放 {', '.join(zh for _label, zh in unusable)} 的位置,所以没有生成。"
+                    f"它{'接受 ' + '、'.join('{{%s}}' % s for s in takes) if takes else '只按提示词生成'} —— "
+                    f"要收它就得是你自己写的工作流文件,并在图里放上 "
+                    f"{'、'.join('{{%s}}' % s for s in needed)}。",
+                ), False, []
+            given: dict[str, str] = {}
+            wanted_files = [(slot, value, label, label_zh)
+                            for slot, value, label, label_zh in material if value and slot in uses]
+            if wanted_files:
+                # A local file is *handed over* rather than referenced: the graph's `LoadImage` reads
+                # a file on the instance's own disk, so the bytes have to be there before the job is
+                # queued. One client for all of them, closed before the render starts its own.
+                async with net.client(prov.get("base_url") or "",
+                                      timeout=comfyui.UPLOAD_TIMEOUT) as c:
+                    for slot, value, label, label_zh in wanted_files:
+                        try:
+                            uri = video.frame_uri(value, workspace)
+                        except video.VideoError as e:
+                            return str(e), False, []
+                        if not uri.startswith("file://"):
+                            return i18n.pick_now(
+                                f"ComfyUI runs on this machine and reads its own disk, so {label} has "
+                                f"to be a file in this group's workspace rather than a link — \"{value}\" "
+                                "cannot be read from here. Put the file in the workspace and name it by "
+                                "its path, or use a provider that fetches links itself (Volcengine Ark).",
+                                f"ComfyUI 跑在这台机器上、读的是自己的磁盘,所以{label_zh}必须是本群工作目录里的"
+                                f"文件而不是一个链接 —— 「{value}」在这里读不到。请把文件放进工作目录再按路径引用,"
+                                "或者改用会自己去取链接的服务商(火山方舟)。",
+                            ), False, []
+                        blob = Path(uri[len("file://"):])
+                        try:
+                            data = await asyncio.to_thread(blob.read_bytes)
+                        except OSError as e:
+                            return i18n.pick_now(
+                                f"Could not read \"{value}\": {e}", f"读不到「{value}」:{e}"), False, []
+                        try:
+                            given[slot] = await comfyui.upload(prov, data, blob.name, client=c)
+                        except comfyui.VideoError as e:
+                            return str(e), False, []
+            payload = comfyui.payload_for(
+                wf, prompt=prompt, ratio=ratio, seconds=seconds,
+                short_edge=int(cfg["video_short_edge"]), seed=int(args.get("seed") or 0),
+                **given,
+            )
         else:
             try:
                 first = video.frame_uri(want_first, workspace)
@@ -1249,6 +1365,11 @@ When it is not supplied, calls needing confirmation are always denied."""
                 prompt, short_edge=int(cfg["video_short_edge"]), aspect_ratio=ratio, duration_seconds=seconds,
                 seed=int(args.get("seed") or 0), first_frame=first, last_frame=last,
             )
+        # Which workflow actually ran, and whether it is the one that was asked for. Only a
+        # ComfyUI payload carries these; every other kind is a service that takes a prompt, so
+        # there is nothing to report and `.get` gives "".
+        wf_name = str(payload.get("workflow") or "")
+        wf_note = str(payload.get("note") or "")
         try:
             r = await video.generate(
                 prov, payload, workspace=workspace,
@@ -1271,17 +1392,26 @@ When it is not supplied, calls needing confirmation are always denied."""
         # honoured, and nobody could tell until the film would not fit. The file is the fact.
         measured = await asyncio.to_thread(self._measure_clip, Path(r["path"]), ratio, seconds)
         real_ratio = measured.pop("ratio", "") if measured else ""
+        # For a ComfyUI provider the workflow *is* the model, and now that a group can have several
+        # of them, "which one ran" is part of the result rather than trivia — the whole point of the
+        # registry is that the user picks one and can check that they got it.
+        via = str(prov["name"])
+        if wf_name and prov.get("kind") == comfyui.KIND:
+            via = f"{via} / {wf_name}"
         lines = [
             i18n.pick_now(
                 f"Rendered a {measured.get('seconds', seconds):g}s {real_ratio or ratio} clip{sound} "
-                f"using {prov['name']}: {r['name']} ({size}, took {r['seconds']:.0f}s).",
-                f"用 {prov['name']} 生成了一段 {measured.get('seconds', seconds):g} 秒、"
+                f"using {via}: {r['name']} ({size}, took {r['seconds']:.0f}s).",
+                f"用 {via} 生成了一段 {measured.get('seconds', seconds):g} 秒、"
                 f"{real_ratio or ratio} 的视频{sound}:{r['name']}({size},用了 {r['seconds']:.0f} 秒)。",
             ),
             i18n.pick_now(f"Saved in this group's workspace: {r['path']}", f"已保存在本群工作目录:{r['path']}"),
         ]
-        if measured.get("mismatch"):
-            lines.insert(0, measured["mismatch"])
+        # The workflow note goes above the measurement: "the one you asked for does not exist" is a
+        # bigger thing to know than "the clip came out a different shape than requested".
+        for warn in (measured.get("mismatch"), wf_note):
+            if warn:
+                lines.insert(0, warn)
         try:
             points = int(r.get("points") or 0)
         except (TypeError, ValueError):
@@ -2312,16 +2442,36 @@ When it is not supplied, calls needing confirmation are always denied."""
             return why, False, []
         cfg = self.store.get_settings()
         workspace = self.store.workspace_dir(ctx.group["id"])
+        # The layout decides the look; an explicitly given argument still wins over it, because a
+        # caller who named both meant both. Only `args` can tell the two apart — by the time this
+        # reaches `render` every field has a value and the distinction is gone.
+        try:
+            style = layouts.style(str(args.get("layout") or ""))
+        except ValueError as e:
+            return str(e), False, []
+        # The layout owns **where the words go**; these three own **what they say**. A layout may
+        # carry a house line of its own (the unit's name, a standing disclaimer) and an argument
+        # overrides it — but a layout is never allowed to invent a title, because the title of a
+        # film is the one thing the caller always knows and the layout never does.
+        style = dict(style)
+        style["opening"] = {"title": str(args.get("title") or "") or style["opening"]["title"],
+                            "subtitle": style["opening"]["subtitle"]}
+        style["closing"] = {"title": str(args.get("closing") or "") or style["closing"]["title"],
+                            "subtitle": style["closing"]["subtitle"]}
+        style["credit"] = {**style["credit"],
+                           "text": str(args.get("credit") or "") or style["credit"]["text"]}
         try:
             out = await assemble.render(
                 workspace, args.get("shots"),
-                size=str(args.get("size") or ""),
+                size=str(args.get("size") or "") or str(style["size"] or ""),
                 total=float(args.get("total_seconds") or 0),
-                fps=int(args.get("fps") or assemble.DEFAULT_FPS),
+                fps=int(args.get("fps") or style["fps"] or assemble.DEFAULT_FPS),
                 voice=str(args.get("voice") or ""),
                 burn=str(args.get("subtitles") or "burn") != "off",
-                fit=str(args.get("fit") or assemble.DEFAULT_FIT),
+                fit=str(args.get("fit") or "") or str(style["fit"] or assemble.DEFAULT_FIT),
+                still=float(style["pace"]["still"] or assemble.STILL_SECONDS),
                 name=str(args.get("name") or ""),
+                style=style,
                 # Read straight from the setting rather than through `timeout_budget`: the budget
                 # belongs to the call site (`_dispatch` has already enforced it), and this is the
                 # deadline ffmpeg itself is held to.
@@ -2435,10 +2585,12 @@ When it is not supplied, calls needing confirmation are always denied."""
         return i18n.pick_now(
             f"The {len(docs)} document(s) this group can search are: {names}{more}."
             " The knowledge base may be in another language than this conversation — if the words you"
-            " used found nothing, search again with the subject's English name, or read one of these"
-            " by title with library_read.",
+            " used found nothing, put the subject's English term into the query and search again"
+            " (mixing it into one query works better than translating the whole sentence:"
+            " \\\"脑血管痉挛 angioplasty\\\"), or read one of these by title with library_read.",
             f"这个群能搜的 {len(docs)} 份文档是:{names}{more}。"
-            "知识库的语言可能和这段对话不同 —— 如果刚才那组词什么都没命中,换用主题的英文名再搜一次,"
+            "知识库的语言可能和这段对话不同 —— 如果刚才那组词什么都没命中,把主题的**英文术语混进"
+            "同一条查询**再搜一次(整句翻译不如混着写:「脑血管痉挛 angioplasty」),"
             "或者直接用 library_read 按标题打开上面某一份。")
 
     async def _builtin(self, ctx: ToolContext, name: str, args: dict) -> tuple[str, bool]:
@@ -2447,16 +2599,22 @@ When it is not supplied, calls needing confirmation are always denied."""
             return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %A (%z)"), True
         if name == "library_search":
             k = max(1, min(int(args.get("top_k") or self.store.get_settings()["library_top_k"]), 10))
-            # BM25 scoring is pure CPU work, and the first search over a large library also rebuilds the
-# index; run it in a thread pool so it cannot block the event loop (which would slow down
-# everyone's streaming output)
+            # The query vector is fetched here, on the async path, and handed to the synchronous
+            # search: getting one is an HTTP call to the local model, and doing it inside `search`
+            # would block a thread pool worker and — worse — block silently. When there is none
+            # (the model is not running, or this build has no numpy) the search still runs on
+            # keywords and the reader is told, because a mixture that quietly became keywords-only
+            # reads exactly like a library that had nothing to say.
+            qvec, note = await embed.query_vector(self.store.get_settings(), str(args["query"]))
             hits = await asyncio.to_thread(
-                self.library.search, str(args["query"]), k, self.library.scope_ids(group["ext"]["library"], group["id"])
+                self.library.search, str(args["query"]), k,
+                self.library.scope_ids(group["ext"]["library"], group["id"]), qvec
             )
+            note = f"\n\n{note}" if note else ""
             if not hits:
                 return i18n.pick_now("Nothing relevant was found in the library.", "资料库里没有找到相关内容。") \
-                    + " " + self._library_index(group), True
-            return "\n\n".join(i18n.pick_now(f"[{h['title']} · passage {h['idx'] + 1}]\n{h['text'][:900]}", f"[《{h['title']}》第 {h['idx'] + 1} 段]\n{h['text'][:900]}") for h in hits), True
+                    + " " + self._library_index(group) + note, True
+            return "\n\n".join(i18n.pick_now(f"[{h['title']} · passage {h['idx'] + 1}]\n{h['text'][:900]}", f"[《{h['title']}》第 {h['idx'] + 1} 段]\n{h['text'][:900]}") for h in hits) + note, True
         if name == "library_read":
             doc = self.library.find_by_title(str(args["doc"]))
             if not doc or not doc["enabled"]:

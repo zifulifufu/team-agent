@@ -19,6 +19,12 @@ against another shape's list would be rejected locally for a value the server ac
         GET  {base}/contents/generations/tasks/{id} -> {"status": ...}     poll
         GET  the `content.video_url` it reports      -> the mp4 bytes      download
 
+    ComfyUI on your own machine (kind `comfyui`) — a *graph runner*, not a video service, so the
+    work lives in `app/comfyui.py`; this file only routes to it:
+        POST {base}/prompt                   -> {"prompt_id": ...}    submit a workflow graph
+        GET  {base}/history/{id}             -> {"status": ..., "outputs": ...}    poll
+        GET  {base}/view?filename=…&type=output -> the saved file      download
+
 Its drawing endpoints (`image/generate`, `midjourney/imagine`) are reached through
 `app/imagegen.py` — one key, two APIs, and a job is a job in both.
 
@@ -75,7 +81,7 @@ from pathlib import Path
 
 import httpx
 
-from . import i18n, media, net
+from . import comfyui, i18n, media, net
 from .coderun import inside as _inside     # one implementation of "is this still inside the workspace"
 
 # Every provider kind that is a generator rather than a chat model, re-exported from `media`:
@@ -84,11 +90,12 @@ MEDIA_KINDS: tuple[str, ...] = media.MEDIA_KINDS
 # ...while this module only drives its own kinds. The two lists were the same thing until a
 # second generator existed; picking a provider by the union would let the video tool select an
 # image provider, which surfaces as a broken server rather than a wrong lookup.
-KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "ark_video")
+KINDS: tuple[str, ...] = ("minimax_video", "metachat_media", "ark_video", comfyui.KIND)
 
 H3_KIND = "minimax_video"
 META_KIND = "metachat_media"
 ARK_KIND = "ark_video"
+COMFY_KIND = comfyui.KIND
 
 # What each shape accepts. Kept per kind rather than as one shared list: the three parameters
 # disagree, and a single union would let the tool send MetaChat a pixel count it does not take,
@@ -114,6 +121,18 @@ SHAPES: dict[str, dict] = {
         "default_ratio": "16:9",        # Ark's own default; `adaptive` is forced by a keyframe
         "model": True,
         "audio": True,       # `generate_audio` defaults to true, which is why `sound` reads from here
+    },
+    "comfyui": {
+        # The model itself has no duration limit; this is how long a render is worth waiting for
+        # on a local GPU, and it is our number rather than a documented one. Five seconds at
+        # 832x480 measured 8 minutes on an M-series Mac while this was written, and `length` must
+        # be `4n+1` frames, so the range is in whole seconds and the rest is `comfyui.frames_for`'s
+        # arithmetic. `Permissions & control → longest clip` caps it further.
+        "seconds": (1, 10),
+        "ratios": ("16:9", "4:3", "1:1", "3:4", "9:16"),
+        "default_ratio": "16:9",
+        "model": True,       # the model names the *workflow*, so every call carries it
+        "audio": False,      # this graph has no audio branch at all
     },
 }
 
@@ -223,13 +242,16 @@ def pick_provider(store, cfg: dict, prefer: str = "") -> tuple[dict | None, str]
     usable = [p for p in rows if p["enabled"] and (p["base_url"] or "").strip()]
     if not usable:
         return None, i18n.pick_now(
-            "Video generation is on, but no video provider has been added yet. Either add "
-            "\"Doubao Seedance (Volcengine Ark)\" and paste your key — its model is the one "
-            "Seedance 2.5, no GPU involved — or add \"MetaChat video (open media API)\", or add "
-            "\"MiniMax H3 (self-hosted video)\" and point it at your SGLang / vLLM server.",
-            "视频生成已开启,但还没有添加视频服务商。要么添加「Doubao Seedance(火山方舟)」并填上密钥"
-            "(模型就是 Seedance 2.5,不需要显卡),要么添加「MetaChat 视频(开放媒体接口)」,"
-            "要么添加「MiniMax H3(自建视频生成)」并填上你的 SGLang / vLLM 服务地址。",
+            "Video generation is on, but no video provider has been added yet. For a clip that "
+            "costs nothing per render, add \"ComfyUI (local video)\" and point it at a ComfyUI you "
+            "run yourself; otherwise add \"Doubao Seedance (Volcengine Ark)\" and paste your key "
+            "(its model is the one Seedance 2.5, no GPU involved), or add \"MetaChat video (open "
+            "media API)\", or add \"MiniMax H3 (self-hosted video)\" and point it at your "
+            "SGLang / vLLM server.",
+            "视频生成已开启,但还没有添加视频服务商。想要不按次计费,就添加「ComfyUI(本地视频生成)」"
+            "并指向你自己跑起来的 ComfyUI;否则可以添加「Doubao Seedance(火山方舟)」并填上密钥"
+            "(模型就是 Seedance 2.5,不需要显卡),或添加「MetaChat 视频(开放媒体接口)」,"
+            "或添加「MiniMax H3(自建视频生成)」并填上你的 SGLang / vLLM 服务地址。",
         )
     return usable[0], ""
 
@@ -382,6 +404,13 @@ PROMPT_NOTES: dict[str, tuple[str, str]] = {
         "Seedance 2.5 读的是对镜头的描述,而且默认生成声音,所以既要写看到的,也要写听到的。"
         "如果要用到随附的素材,按位置指代它们(@图片1、@视频1、@音频1)。",
     ),
+    "comfyui": (
+        "A local open-source model reads this, and it is weaker at language than the hosted ones: "
+        "describe one continuous shot in plain sentences — what moves, in which direction, how the "
+        "camera behaves — and avoid shot lists, on-screen text and dialogue. It renders no sound.",
+        "读这段话的是本地开源模型,语言能力比云端那几家弱:用一个连贯镜头、平实的句子描述 —— "
+        "什么东西在动、往哪个方向、镜头怎么走 —— 不要写分镜列表、屏幕文字和对白。它不生成声音。",
+    ),
 }
 
 
@@ -523,11 +552,17 @@ def link_of(kind: str, detail: dict, field: str) -> str:
     """Where the finished clip lives, in whichever reply shape this provider uses.
 
     MetaChat and H3 report it at the top of the job's own object (`video_url`); Ark nests it one
-    level down, inside `content`. One lookup here beats a branch at each of the three call sites.
+    level down, inside `content`. One lookup here beats a branch at each of the call sites.
+
+    ComfyUI is the odd one: it reports no URL at all, only a *file* it saved, so what comes back
+    is a path on the instance (`view?filename=…`) that `download` joins with its address. Returned
+    as a path rather than a URL on purpose — nothing the instance sends is followed as one.
     """
     if kind == ARK_KIND:
         inner = detail.get("content")
         return str((inner or {}).get("video_url") or "") if isinstance(inner, dict) else ""
+    if kind == COMFY_KIND:
+        return comfyui.link_of(detail)
     return str(detail.get(field) or "")
 
 
@@ -637,6 +672,10 @@ async def submit(prov: dict, payload: dict, *, client: httpx.AsyncClient | None 
         return await _meta_submit(prov, payload, client=client, job=job)
     if prov.get("kind") == ARK_KIND:
         return await _ark_submit(prov, payload, client=client)
+    if prov.get("kind") == COMFY_KIND:
+        # `payload` already carries the graph: building it is `comfyui.payload_for`'s job, done
+        # where the caller's settings are known.
+        return await comfyui.submit(prov, payload, client=client)
     url = media.api_url(prov["base_url"], "v1/videos")
     async with _client(client, SUBMIT_TIMEOUT, url) as c:
         try:
@@ -673,6 +712,8 @@ async def status_of(prov: dict, vid: str, *, client: httpx.AsyncClient | None = 
         return await _meta_status(prov, vid, client=client, job=job)
     if prov.get("kind") == ARK_KIND:
         return await _ark_status(prov, vid, client=client)
+    if prov.get("kind") == COMFY_KIND:
+        return await comfyui.status_of(prov, vid, client=client)
     url = media.api_url(prov["base_url"], f"v1/videos/{vid}")
     async with _client(client, STATUS_TIMEOUT, url) as c:
         try:
@@ -702,7 +743,22 @@ async def download(prov: dict, vid: str, *, max_bytes: int, client: httpx.AsyncC
     shapes, and guessing any other endpoint would be inventing one. The checks afterwards are the
     same for all three, which is the part worth not writing twice.
     """
-    if prov.get("kind") in (META_KIND, ARK_KIND):
+    if prov.get("kind") == COMFY_KIND:
+        if not url:
+            raise VideoError(i18n.pick_now(
+                "ComfyUI reported the render as finished but saved no video file, so nothing was "
+                "produced. Its workflow's save node is what writes the clip — check that "
+                "`SaveVideo` is connected to the decoded images.",
+                "ComfyUI 说渲染完成了,但没有保存任何视频文件,所以没有产出。"
+                "工作流里的保存节点才会写出文件 —— 请检查 `SaveVideo` 是否接在解码后的画面上。",
+            ))
+        # The key *is* sent here, unlike the two branches below: this url is a path on the
+        # instance we already configured, so there is no third party to leak it to, and a ComfyUI
+        # behind an authenticating reverse proxy needs it.
+        headers = media.auth_headers(prov.get("api_key", ""))
+        target = media.api_url(prov["base_url"], url)
+        timeout = DOWNLOAD_TIMEOUT
+    elif prov.get("kind") in (META_KIND, ARK_KIND):
         if not url:
             name = prov.get("name") or prov.get("kind") or "the service"
             raise VideoError(i18n.pick_now(
@@ -929,6 +985,10 @@ async def _probe(prov: dict, c: httpx.AsyncClient) -> tuple[bool, str]:
         return await _probe_meta(prov, c)
     if prov.get("kind") == ARK_KIND:
         return await _probe_ark(prov, c)
+    if prov.get("kind") == COMFY_KIND:
+        # A different question from the others': ComfyUI is reachable far more often than it is
+        # *able to run the workflow*, and "it answered" would hide the missing checkpoint.
+        return await comfyui.probe(prov, client=c)
     key = prov.get("api_key", "")
     try:
         r = await c.get(media.api_url(base, "health"), headers=media.auth_headers(key))

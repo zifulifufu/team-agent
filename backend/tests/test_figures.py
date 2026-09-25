@@ -28,6 +28,47 @@ def note(tmp_path, body: str, name: str = "note.md") -> pathlib.Path:
     return vault / name
 
 
+def test_a_note_in_a_subfolder_reaches_the_shared_attachments_folder(tmp_path):
+    """The shape a real Obsidian vault actually uses, and the one this used to drop on the floor.
+
+    A note that sits in a subfolder refers to the vault's shared attachments folder as
+    `../attachments/x.png` — measured over one real vault, 4104 of 4106 references were written
+    that way. Every one of them used to be skipped because the link contained `..`, so a note's
+    pictures were reachable only when the note happened to sit at the vault root: an entire
+    library's figures were invisible, and nothing anywhere said so.
+    """
+    vault = tmp_path / "Vault"
+    (vault / ".obsidian").mkdir(parents=True)          # the marker that says where the vault ends
+    (vault / "attachments").mkdir()
+    (vault / "attachments" / "x.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+    deep = vault / "Anatomy and Variants"
+    deep.mkdir()
+    src = deep / "Anterior Cerebral Artery.md"
+    src.write_text("![a caption](../attachments/x.png)\n", encoding="utf-8")
+
+    figs, _ = note_figures(str(src))
+    assert [f["name"] for f in figs] == ["x.png"]
+    assert pathlib.Path(figs[0]["path"]).is_file()
+
+
+def test_a_link_that_escapes_the_vault_is_still_refused(tmp_path):
+    """The guard that matters, and the one that is *not* the spelling: `..` is allowed only as far
+    as the containment test lets it. A note must not be able to turn a line in itself into a read
+    of anywhere on the machine — which is why the file below sits outside the vault, next to it,
+    where a naive `..` resolution would happily find it."""
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+    vault = tmp_path / "Vault"
+    (vault / ".obsidian").mkdir(parents=True)
+    deep = vault / "sub"
+    deep.mkdir()
+    src = deep / "note.md"
+    src.write_text("![](../../secret.png)\n![](/etc/hosts)\n", encoding="utf-8")
+
+    figs, _ = note_figures(str(src))
+    assert figs == [], "a path resolving outside the vault was handed over"
+
+
 # ------------------------------------------------------------------ a document's own figures
 def test_a_note_hands_over_the_pictures_it_came_with(tmp_path):
     """The bridge the whole flow depends on: a document is not only its words."""

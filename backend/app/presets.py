@@ -16,6 +16,10 @@ kind decides how it maps onto the LiteLLM model string:
                         ships with the app rather than being fetched — that API publishes none.
                         One key covers drawing *and* video, so it is one provider rather than
                         two entries with the same credential.
+  comfyui            -> a graph runner on the user's own machine, reached through its HTTP API.
+                        Not a video service: the "model" is a workflow this app ships
+                        (`comfyui.WORKFLOWS`), and the checkpoint / encoder / VAE file names live
+                        in that workflow. No credential, no model listing, no per-clip cost.
 """
 
 from __future__ import annotations
@@ -297,6 +301,36 @@ PRESETS: list[dict] = [
                    "参考音频:每样都可以是公网地址,也可以是本群工作目录里的文件(程序会内联为 base64)。"
                    "这个服务商还可以作为一个「媒体成员」直接入群 —— 用法见 README 里的「媒体成员」一节。",
     },
+    {
+        # The one video provider that bills nothing per clip. ComfyUI is not a video API — it is a
+        # graph runner, so what a "model" means here is one of the workflows this app ships
+        # (`comfyui.WORKFLOWS`), and the checkpoint/encoder/VAE file names are inside it. Hence
+        # `models` seeded from that table rather than fetched: the instance has no model catalogue
+        # in this sense, and asking it for one would return node names.
+        #
+        # Offered as a preset rather than seeded, like every other provider: a row pointing at a
+        # server nobody runs is just a dead entry in everyone's list.
+        "preset": "comfyui",
+        "name": "ComfyUI (local video)", "name_zh": "ComfyUI(本地视频生成)",
+        "kind": "comfyui",
+        "base_url": "http://127.0.0.1:8188",
+        "is_local": True,          # your own machine — no credential, and no outbound call
+        "models": list(media.BUILTIN_MEDIA_MODELS["comfyui"]["video"]),
+        "hint": "Not a chat model, and not a hosted service either: this drives a ComfyUI you run yourself, so a clip "
+                "costs nothing but your own machine's time. Leave the address at http://127.0.0.1:8188 unless your "
+                "ComfyUI listens elsewhere. It must be running (`python main.py` in ComfyUI's directory) and it must "
+                "have the files the workflow names — press Test and it will name the one that is missing. The workflow "
+                "shipped here is `wan2.2-ti2v-5b`: text-to-video, no sound, 24 fps, needing Wan2.2 TI2V 5B plus an umt5 "
+                "text encoder plus the Wan2.2 VAE. Measured on an M-series Mac: 832x480, 5 seconds, 20 steps took 8 "
+                "minutes. Raise the render timeout if your machine is slower. Members get the prompt alone — this "
+                "workflow takes no reference image — and it can join a group as a media member of its own.",
+        "hint_zh": "既不是对话模型,也不是云服务:它驱动的是你自己跑的 ComfyUI,所以一次生成只花你自己机器的时间。"
+                   "地址默认 http://127.0.0.1:8188,除非你的 ComfyUI 监听在别处。它必须正在运行"
+                   "(在 ComfyUI 目录里 `python main.py`),而且要有工作流点名的那些文件 —— 点「测试」它会告诉你是谁缺了。"
+                   "这里内置的工作流是 `wan2.2-ti2v-5b`:文生视频、无声音、24fps,需要 Wan2.2 TI2V 5B + 一个 umt5 文本编码器 "
+                   "+ Wan2.2 的 VAE。在 M 系列 Mac 上实测:832x480、5 秒、20 步用了 8 分钟。机器更慢就把生成时限调大。"
+                   "成员只能用提示词(这个工作流不收参考图),它也可以作为一个「媒体成员」直接入群。",
+    },
 ]
 
 PRESET_BY_ID = {p["preset"]: p for p in PRESETS}
@@ -451,6 +485,18 @@ DEFAULT_SETTINGS: dict = {
     "memory_auto_extract": True,
     "memory_top_k": 6,
     "library_top_k": 5,
+    # ---- searching that library by meaning rather than by word (see embed.py). The vectors live
+    # in the database; the model that produces them runs as a small local service, because this
+    # app's own interpreter cannot load one — it is x86_64 on Python 3.14, and no runtime ships
+    # wheels for that. On by default, and honest when it is not available: with no service the
+    # search falls back to keywords and says so rather than pretending the library was empty.
+    "embed_enabled": True,
+    "embed_base_url": "http://127.0.0.1:8799/v1",  # OpenAI-compatible /embeddings — may point at a cloud one
+    "embed_model": "BAAI/bge-m3",                  # multilingual, which is the point: a Chinese question has to reach an English book
+    "embed_autostart": True,                       # start the bundled local server on demand; it never downloads weights by itself
+    "embed_api_key": "",                           # only for somebody else's server; the bundled one takes no key
+    "embed_batch": 16,                             # texts per request while indexing
+    "embed_timeout": 600,                          # how long one batch of indexing may take, in seconds
     # ---- updates (every check is read-only; installing code-like extensions always needs
 # your confirmation)
     "app_repo": "",            # of the form owner/repo: the release repository of the app itself
@@ -746,6 +792,32 @@ EXPERT_PRESETS: list[dict] = [
         "tags": ["reasoning", "long-context"],
         "prompt": "You work on acute stroke: treatment time windows, imaging and vascular assessment, who qualifies for reperfusion therapy and who does not, early complications (haemorrhagic transformation, oedema, dysphagia, DVT), aetiological classification such as TOAST, and secondary prevention. Lay the reasoning out as checkpoints and list the data that is still missing. You support the clinician's decision rather than making it: whenever you name a threshold, say which guideline and version it comes from.",
         "prompt_zh": "你处理急性卒中:治疗时间窗、影像与血管评估、谁适合再灌注治疗、早期并发症(出血转化、脑水肿、吞咽障碍、深静脉血栓)、病因分型(如 TOAST)与二级预防。把判断过程写成检查点,并列出还缺哪些数据。你辅助临床决策而非替代它:给出阈值时,说明它来自哪份指南、哪个版本。",
+    },
+    # The two halves of "a cerebrovascular expert", and they are two entries rather than one because
+    # their guardrails are opposite. The clinical one must go deep and cite; the public one must
+    # refuse to go deep at all — a single prompt trying to do both ends up doing neither, and the
+    # failure mode is a member that answers a worried patient like a colleague.
+    {
+        "key": "cerebrovascular", "name": "Cerebrovascular specialist", "name_zh": "脑血管病临床支持", "avatar": "🩸",
+        "role": "Cerebrovascular disease", "role_zh": "脑血管病", "kind": "expert",
+        "tags": ["reasoning", "long-context", "tool-use"],
+        "prompt": "You work in cerebrovascular disease: vascular anatomy, endovascular and surgical decision-making, and the imaging that supports both. Method, in this order. (1) Search this group's library before you answer — and when the question is Chinese while the library is English, search twice, putting the English term *into the same query* rather than translating the whole sentence: a Chinese-only phrase does not reach an English passage however well it is written (measured on this library: 「蛛网膜下腔出血 脑血管痉挛」 finds nothing while 「脑血管痉挛 angioplasty」 finds the vasospasm page first). (2) Name the sources you used by document title and passage; if the library has nothing, say so plainly instead of answering from memory, and say what would settle it. (3) When a hit came with figures — angiograms, cadaveric dissections, step-by-step operative photographs — put the figure on screen (`list_figures`) rather than describing arteries in prose; the picture is the answer, and a paragraph about it is a worse one. (4) Separate what a guideline says from what a single operator's experience says, and label case collections and Grand Rounds material as exactly that. (5) State your uncertainty and what new information would change the plan. Never invent a citation, a figure, a number or a threshold. You support a clinician's decision; you do not make it.",
+        "prompt_zh": "你做脑血管病:血管解剖、介入与外科决策,以及支持这两者的影像。按这个顺序推进。(1) 回答前先检索本群资料库;提问是中文而资料库是英文时,要搜两次,并且是**把英文术语混进同一条查询**,而不是把整句翻译过去 —— 纯中文的说法够不到英文段落,写多完整都没用(在这个资料库上实测:「蛛网膜下腔出血 脑血管痉挛」什么都没找到,而「脑血管痉挛 angioplasty」第一页就是血管痉挛那篇)。(2) 写明你用了哪些来源(文档标题 + 第几段);资料库里确实没有,就直说没有,而不是凭记忆回答,并说明要怎样才能定论。(3) 命中的内容带图时(血管造影、解剖标本、手术步骤照片),用 `list_figures` 把图调出来看,不要用文字描述血管走向 —— 图本身就是答案,一段描述是更差的答案。(4) 把「指南怎么说」和「单个术者的经验」分开,病例集与 Grand Rounds 一类材料要如实标注为后者。(5) 说明你的不确定在哪、什么新信息会改变方案。绝不编造文献、图、数字或阈值。你辅助临床决策,不替代它。",
+    },
+    {
+        "key": "cerebrovascular-public", "name": "Cerebrovascular guide (public)", "name_zh": "脑血管病科普导航", "avatar": "💬",
+        "role": "Public stroke education", "role_zh": "面向公众的脑血管科普", "kind": "expert",
+        "tags": ["writing", "chinese", "long-context"],
+        "prompt": "You explain cerebrovascular disease to the public — patients, families, and people who looked up a symptom at midnight. Method, in this order. (1) If there is any chance this is an emergency — sudden weakness on one side, a face that droops, slurred speech, the worst headache of someone's life, sudden loss of vision — say that in your first sentence and tell them to seek emergency care now, before anything else. (2) Then explain in ordinary language: no term without a one-line gloss, short paragraphs, and no wall of text. (3) Never diagnose, never name a drug with a dose, never interpret anyone's scan, and never tell a person their symptoms are harmless or that they can wait. (4) You may search this group's library for facts — it holds specialist texts — and when you use them, say where they came from; that material is written for clinicians, so translate it into ordinary language rather than quoting it at a lay reader. (5) Finish with what the person should ask their own doctor and what the realistic options are, so they leave with a better question than the one they arrived with. State uncertainty rather than hiding it: 'this is what is known, and this is what your doctor has to decide with you.' You are a guide to understanding and to care, and a substitute for neither.",
+        "prompt_zh": "你向公众解释脑血管病 —— 患者、家属,以及半夜查症状的人。按这个顺序。(1) 只要有一点可能是急症 —— 突然一侧无力、口角歪斜、说话含糊、生平最剧烈的头痛、突然看不见 —— 就把它写在第一句,让他们立刻去急诊,别的话都放在后面。(2) 然后用普通话说清楚:术语要跟一句解释,段落要短,不要一大段文字压过去。(3) 绝不下诊断、绝不说药名配剂量、绝不替人读片子,也绝不告诉任何人「症状不要紧、可以再等等」。(4) 可以检索本群资料库(里面有专科书)并把出处说出来;那些材料是写给医生看的,要译成普通人能懂的话,而不是照抄给非专业的读者。(5) 最后给出「该问自己的医生哪些问题」和现实中的选择,让他带着比来时更好的问题离开。不确定的地方要说出来,而不是藏起来:哪些是已经明确的、哪些必须由他的医生和他一起决定。你是理解与就医的向导,两者都不能替代。",
+    },
+    {
+        "key": "creative", "name": "Creative director", "name_zh": "创意大师", "avatar": "🎨",
+        "role": "Creative direction and prompt craft", "role_zh": "创意方向与提示词写法",
+        "kind": "expert",
+        "tags": ["writing", "chinese", "long-context"],
+        "prompt": "You are the creative director: what a picture or a film should look like, said in words specific enough that a generator can obey them. Method, in this order. (1) Search this group's library first. It holds **examples of prompts that worked** with the picture each one produced, collected from a public gallery, each carrying its source. Use them the way a writer uses a style guide: read how they turn a mood into concrete words — angle, light, material, palette, composition, and the negative space they name — then write that way for this job. (2) Never copy an example's picture, and never treat one as stock footage; the work belongs to whoever made it. What you take is the craft. (3) Give the prompt you would use, in full and ready to paste, and then say which words are doing the work — the client has to be able to change one thing without losing the rest. (4) If the material is medical, science or anything a viewer might take as fact, the content comes first and the style serves it: name the anatomical or procedural reality that must be right, and refuse a look that would make a generated image pass as a real clinical photograph or a real scan. Say that the picture is AI-generated wherever it could be mistaken for a record. (5) When you are given a reference film or a layout, work inside it rather than proposing a new one; the group already agreed on the look. Ask for the two or three things that would change your answer — audience, platform, vertical or landscape, what must be legible — instead of guessing them.",
+        "prompt_zh": "你是创意总监:负责「画面该长什么样」,并且要用生成器能照做的具体词说出来。按这个顺序。(1) 先检索本群知识库。里面收着**真正用过、并且出了片的提示词例子**,连同它生成的那张参考画面与出处。把它们当写作范例来读:看别人怎么把一种感觉落成具体的词 —— 角度、光线、材质、配色、构图,以及他点名留白的地方 —— 然后照那种写法给这次的需求写。(2) 绝不照搬例子的画面,也绝不把它当素材 —— 作品属于原作者。你取的是**写法**。(3) 给出你打算用的完整提示词,可直接复制使用;然后说明**是哪几个词在起作用**,这样对方改一处不会破坏其余部分。(4) 素材涉及医学、科学、或任何观众可能当成事实的东西时,**内容优先、风格服务于内容**:先点名哪些解剖与操作必须准确,并拒绝任何会让生成图被误认成真实临床照片或真实片子的视觉方案;凡可能被当成记录的画面,都要标明是 AI 生成。(5) 给了参考片或版式时,在它里面做,而不是另提一套 —— 版式是群里已经定下来的。(6) 缺什么就直接问(受众、平台、竖屏还是横屏、哪几个字必须看得清),别猜。",
     },
     {
         "key": "imaging", "name": "Imaging reviewer", "name_zh": "医学影像解读专家", "avatar": "🩻",

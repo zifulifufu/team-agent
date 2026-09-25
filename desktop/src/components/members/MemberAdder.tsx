@@ -136,7 +136,7 @@ export default function MemberAdder({ group }: { group: Group }) {
       <div className="madd-sec">{t("Generating members")} {genCount > 0 && <span className="count-badge-lite">{genCount}</span>}</div>
       <div className="madd-note">{t("These do not chat: address one and the sentence you wrote is handed to it as the prompt, and what comes back is the file. It runs on the provider it came from, and it cannot plan or delegate.")}</div>
       {genCount === 0 ? (
-        <div className="madd-none">{t("No generating model is enabled yet. Add one under Settings → Providers — a video or image model, from a gateway or from Ark/Seedance.")}</div>
+        <div className="madd-none">{t("No generating model is enabled yet. Add one under Settings → Providers — a video or image model, from a gateway, from Ark/Seedance, or from a local ComfyUI.")}</div>
       ) : (
         generating.map(({ p, models }) => (
           <div key={p.id} className="madd-group">

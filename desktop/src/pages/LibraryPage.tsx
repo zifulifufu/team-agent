@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import { useData } from "../data";
 import {
   ChevronLeft, ChevronRight, CircleAlert, CircleCheck, FileCode, FileJson, FileSpreadsheet, FileText, FileType,
-  FolderInput, Layers, Link2, LoaderCircle, Pencil, Search, StickyNote, Trash2, Upload, X,
+  FolderInput, Layers, Link2, LoaderCircle, Pencil, Search, Sparkles, StickyNote, Trash2, Upload, X,
 } from "lucide-react";
-import { api, relTime, type Collection, type KnowledgeBase, type LibraryDoc, type LibraryHit } from "../api";
+import { api, relTime, type Collection, type KnowledgeBase, type LibraryDoc, type LibraryHit, type VectorState } from "../api";
 import { CollectionSection, KbSection } from "../components/KnowledgeBases";
 import { Modal, Switch, useConfirm } from "../ui";
 import "../styles/know.css";
@@ -330,6 +330,8 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
           </div>
         </div>
 
+        {!groupId && <MeaningCard />}
+
         <div className="kn-shelf">
           <button className="kn-shelf-head" aria-expanded={shelfOpen} onClick={() => setShelfOpen((v) => !v)}>
             <Layers size={15} />
@@ -513,6 +515,191 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
     </div>
   );
 }
+
+// --------------------------------------------- searching by meaning (vectors)
+/**
+ * The switch, the model, what is indexed — and the two commands that fix whatever is missing.
+ *
+ * It lives on the library overview rather than buried in Settings because "can these documents be
+ * found by meaning, or only by the words inside them" is a property of the pile the page is showing.
+ * Every state it can be in says what to do about it, and the commands are printed in full: "the
+ * model is not installed" without the line that installs it is a dead end, which is exactly what
+ * this project does not do elsewhere.
+ */
+function MeaningCard() {
+  const { t } = useI18n();
+  const [st, setSt] = useState<VectorState | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [setup, setSetup] = useState(false);
+  const [model, setModel] = useState("");
+  const [addr, setAddr] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const s = await api.vectorState();
+      setSt(s);
+      setErr("");
+      setModel((m) => m || s.model);
+      setAddr((a) => a || s.address);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  // Polled only while something is actually moving: a model loading, or a run indexing. A page that
+  // polls an idle backend every three seconds forever is a page that keeps a laptop awake.
+  useEffect(() => {
+    if (!st) return;
+    const moving = Boolean(st.job?.running) || (st.server.up && !st.server.ready);
+    if (!moving) return;
+    const id = window.setInterval(() => { void load(); }, 3000);
+    return () => window.clearInterval(id);
+  }, [st, load]);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!st && !err) return null;
+  const ready = Boolean(st?.server.up && st?.server.ready);
+  const total = st?.chunks ?? 0;
+  const have = st?.with_vectors ?? 0;
+  return (
+    <div className="kn-shelf kn-vec">
+      <div className="kn-shelf-head">
+        <Sparkles size={15} />
+        <b>{t("Searching by meaning")}</b>
+        <span className="muted small">
+          {!st?.enabled ? t("off")
+            : st?.searchable ? t("{n} of {m} passages indexed", { n: have, m: total })
+              : t("nothing indexed yet")}
+        </span>
+        <span className="grow" />
+        <button className="link" onClick={() => setSetup((v) => !v)}>{setup ? t("Done") : t("Set up")}</button>
+      </div>
+      <div className="kn-col-item">
+        {err && <p className="kn-vec-line err"><CircleAlert size={14} /> {err}</p>}
+
+        {st && !st.numpy && (
+          <p className="kn-vec-line">
+            {t("Vector search needs numpy in this app's own environment.")} <code>pip install numpy</code>
+          </p>
+        )}
+        {st && st.numpy && !st.venv && (
+          <p className="kn-vec-line">
+            {t("The embedding model runs in its own environment, which is not there yet.")}
+            {" "}<code>uv venv --python 3.12 .venv-embed &amp;&amp; uv pip install --python .venv-embed/bin/python sentence-transformers</code>
+          </p>
+        )}
+        {st && st.venv && !st.weights && (
+          <p className="kn-vec-line">
+            {t("The weights of {model} are not on this machine yet, and nothing downloads them by itself. Fetch them with:", { model: st.model })}
+            {" "}<code>{st.fetch_command}</code>
+          </p>
+        )}
+        {st && st.venv && st.weights && !ready && (
+          <p className="kn-vec-line">
+            <span className="muted">{st.server.up && st.server.state === "loading"
+              ? t("The model is loading…") : t("The model is not running.")}</span>
+            {!st.server.up && (
+              <>
+                {" "}
+                <button className="btn small" disabled={busy} onClick={() => void act(api.vectorStart)}>{t("Start it")}</button>
+                {" "}<code>{st.start_command}</code>
+              </>
+            )}
+          </p>
+        )}
+        {st && ready && (
+          <p className="kn-vec-line">
+            <CircleCheck size={14} /> {t("Model ready on {device}, {dim} dimensions.", { device: st.server.device ?? "-", dim: st.server.dim ?? 0 })}
+            {st.server.load_seconds ? <span className="muted"> {t("loaded in {s}s", { s: st.server.load_seconds })}</span> : null}
+          </p>
+        )}
+
+        {st && (
+          <p className="kn-vec-line">
+            <span className="muted">
+              {t("{n} of {m} passages have vectors ({missing} left)", { n: have, m: total, missing: st.missing })}
+              {st.models && Object.keys(st.models).length ? ` · ${Object.keys(st.models).join(", ")}` : ""}
+            </span>
+          </p>
+        )}
+        {st?.note && <p className="kn-vec-line err"><CircleAlert size={14} /> {st.note}</p>}
+
+        {st?.job?.running && (
+          <p className="kn-vec-line">
+            <LoaderCircle size={14} className="kn-spin" />
+            {" "}{t("Indexing… {n} passages done", { n: st.job.indexed ?? 0 })}
+          </p>
+        )}
+        {!st?.job?.running && st?.job?.error && (
+          <p className="kn-vec-line err"><CircleAlert size={14} /> {st.job.error}</p>
+        )}
+        {!st?.job?.running && !!st?.job?.finished_at && !st.job.error && (
+          <p className="kn-vec-line">
+            <CircleCheck size={14} /> {t("Last run: {n} passages in {s}s", { n: st.job.indexed ?? 0, s: st.job.seconds ?? 0 })}
+          </p>
+        )}
+
+        <div className="kn-vec-actions">
+          {st && st.enabled && st.missing > 0 && st.venv && st.weights && (
+            <>
+              <button className="btn small" disabled={busy || Boolean(st.job?.running)}
+                      onClick={() => void act(() => api.vectorIndex({ limit: 1000 }))}>
+                {have > 0 ? t("Continue indexing") : t("Index a first 1000 passages")}
+              </button>
+              <button className="btn small" disabled={busy || Boolean(st.job?.running)}
+                      onClick={() => void act(() => api.vectorIndex({}))}>
+                {t("Index everything")}
+              </button>
+            </>
+          )}
+          {st && have > 0 && (
+            <button className="btn small" disabled={busy || Boolean(st.job?.running)}
+                    onClick={() => void act(api.vectorClear)}>
+              {t("Drop the vectors")}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {setup && st && (
+        <div className="kn-col-edit">
+          <label className="kn-vec-field">
+            <span>{t("Use meaning as well as keywords")}</span>
+            <Switch checked={st.enabled} onChange={(v) => void act(() => api.putSettings({ embed_enabled: v }))} />
+          </label>
+          <label className="kn-vec-field">
+            <span>{t("Model")}</span>
+            <input className="kn-rename" value={model} spellCheck={false}
+                   onChange={(e) => setModel(e.target.value)}
+                   onBlur={() => void act(() => api.putSettings({ embed_model: model.trim() }))} />
+          </label>
+          <label className="kn-vec-field">
+            <span>{t("Address")}</span>
+            <input className="kn-rename" value={addr} spellCheck={false}
+                   onChange={(e) => setAddr(e.target.value)}
+                   onBlur={() => void act(() => api.putSettings({ embed_base_url: addr.trim() }))} />
+          </label>
+          <p className="muted small">
+            {t("Any OpenAI-compatible /embeddings endpoint works here, on this machine or not. Whatever you point it at, the vectors it produces are recorded with the documents, and vectors from another model are left out rather than mixed in.")}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // --------------------------------------------------------------- new note
 function NoteModal({ scope, onClose, onSaved }: { scope: LibScope; onClose: () => void; onSaved: () => void }) {

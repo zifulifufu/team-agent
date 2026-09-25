@@ -112,3 +112,23 @@ class BM25:
                 denom = tf + self.k1 * (1 - self.b + self.b * self.lens[i] / (self.avg or 1))
                 out[i] += idf * tf * (self.k1 + 1) / denom
         return out
+
+
+def rrf(rankings: list[list[int]], k: int = 60) -> list[tuple[int, float]]:
+    """Merge several best-first id lists into one, by Reciprocal Rank Fusion.
+
+    Why ranks and not scores: a BM25 score is an unbounded number that means nothing outside its own
+    corpus, and a cosine similarity lives in [-1, 1]. Adding them, or weighting one against the
+    other, invents a conversion nobody can justify. Ranks are comparable, so only ranks are used —
+    `sum(1 / (k + rank))` over the lists a passage appears in, with `k` damping the top.
+
+    A passage found by *both* retrievers therefore beats one that either found alone, which is the
+    whole point: an exact term and a paraphrase should reinforce each other rather than compete.
+
+    Ties are broken by id, so the same query over the same index ranks the same way every time.
+    """
+    scores: dict[int, float] = defaultdict(float)
+    for ranking in rankings:
+        for i, item in enumerate(ranking):
+            scores[item] += 1.0 / (k + i + 1)
+    return sorted(scores.items(), key=lambda x: (-x[1], x[0]))

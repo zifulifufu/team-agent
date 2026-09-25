@@ -8,7 +8,7 @@ a unified list of model IDs.
 
 from __future__ import annotations
 
-from . import i18n, media
+from . import comfyui, i18n, media
 
 import os
 from typing import Any
@@ -115,9 +115,18 @@ async def fetch_models(provider: dict, timeout: float = 15.0,
         # what makes "refresh" do the useful thing here — put those models in the list, marked for
         # what they are — instead of reporting a 404 the user has no way to act on. The table and
         # this function are the same fact told twice; `media.BUILTIN_MEDIA_MODELS` owns it.
-        return _merge([{"id": mid, "mode": use}
-                       for use, ids in media.BUILTIN_MEDIA_MODELS[kind].items()
-                       for mid in ids])
+        rows = [{"id": mid, "mode": use}
+                for use, ids in media.BUILTIN_MEDIA_MODELS[kind].items()
+                for mid in ids]
+        if kind == comfyui.KIND:
+            # A ComfyUI "model" is a workflow, and half of them are the user's own files rather
+            # than anything we ship. Both belong in the list for the same reason: a workflow the
+            # user added but this dropdown never offers is a workflow they cannot select, and the
+            # tool would then fall back to the default without anybody having asked for that.
+            known = {row["id"] for row in rows}
+            rows += [{"id": name, "mode": "video"}
+                     for name in comfyui.names() if name not in known]
+        return _merge(rows)
 
     if kind == "ollama":
         url = (base or OLLAMA_BASE) + "/api/tags"

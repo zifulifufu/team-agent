@@ -571,6 +571,7 @@ async function main() {
   await sleep(400);
   expect(!(await searchPal()).open, "点搜索框外面能关掉");
   await openSearch();
+
   await esc();
   await sleep(300);
   expect(!(await searchPal()).open, "Esc 也能关掉");
@@ -889,6 +890,7 @@ async function main() {
     "「发现」仍列出待处理提醒:" + JSON.stringify(sp.sections));
   if (SHOT) await shotTo(shotPath(".discover"));
 
+
   // Both pages are rows inside one bordered panel, so the failure mode that matters on screen is a
   // row wider than that panel (a long value, or a select next to a switch), which "the section is
   // there" never catches. Checked as geometry: nothing spills out, nothing scrolls sideways.
@@ -1027,6 +1029,56 @@ async function main() {
     await send("Emulation.clearDeviceMetricsOverride", {}, sessionId);
     await sleep(200);
   }
+
+  // 按意思检索:这张卡片长在「资料库」页上,因为它要说的是「这一堆文档能不能按意思搜到」。
+  // 断言落在几何上 —— 「有没有这个元素」抓不到「它跑到屏幕外面去了」或「它把卡片撑出一条横向
+  // 滚动条」,而这两种都真的发生过(浮层曾在 733px 窗口里长到 1305px)。状态行的内容也逐字取:
+  // 一条「模型没装」却不说怎么装的状态行,比没有状态行更糟。
+  console.log("— 资料库:按意思检索");
+  await clickByText(".settings .nav-item", "/Library|\\u8d44\\u6599\\u5e93/");
+  // 这一页要先把几千篇文档拉回来才渲染正文,所以等它,而不是睡一个固定秒数 ——
+  // 「固定 sleep + 一次查询」在多大数据集上一定会偶发失败,而偶发失败会被当成代码问题。
+  const vecProbe = () => val(`(function () {
+    var card = document.querySelector('.kn-vec');
+    if (!card) return null;
+    var head = card.querySelector('.kn-shelf-head');
+    var lines = [].slice.call(card.querySelectorAll('.kn-vec-line'));
+    var hr = head ? head.getBoundingClientRect() : null;
+    var r = card.getBoundingClientRect();
+    return { title: (head && head.textContent) || '',
+             headTop: hr ? Math.round(hr.top) : -1, headBottom: hr ? Math.round(hr.bottom) : -1,
+             lines: lines.length,
+             texts: lines.map(function (l) { return l.textContent.replace(/\\s+/g, ' ').trim(); }),
+             height: Math.round(r.height),
+             overflow: card.scrollWidth - card.clientWidth,
+             wide: card.scrollWidth > Math.round(r.width) + 1,
+             vw: window.innerWidth, vh: window.innerHeight };
+  })()`);
+  let vec = null;
+  for (let i = 0; i < 25 && !vec; i++) {
+    await sleep(400);
+    vec = await vecProbe();
+  }
+  if (!vec) {
+    // 失败的现场要能读出「页面长什么样」,否则「缺一个元素」只能靠猜。
+    const here = await val(`(function () {
+      var c = document.querySelector('.settings-content');
+      return { title: ((c && c.querySelector('.sp-title')) || {}).textContent || '',
+               shelves: document.querySelectorAll('.kn-shelf').length,
+               head: !!document.querySelector('.kn-head'),
+               text: ((c && c.innerText) || '').replace(/\\s+/g, ' ').slice(0, 220) };
+    })()`);
+    expect(false, "资料库设置页上有那张「按意思检索」的卡片;现场:" + JSON.stringify(here));
+  }
+  expect(/按意思检索|Searching by meaning/.test(vec.title), "卡片标题对:" + vec.title);
+  expect(vec.headTop >= 0 && vec.headBottom <= vec.vh + 1,
+    "卡片标题在视口里:顶部 " + vec.headTop + ", 底部 " + vec.headBottom + " / " + vec.vh);
+  expect(vec.height <= vec.vh * 0.65, "卡片没有高过半屏(" + vec.height + " / " + vec.vh + ")");
+  expect(vec.overflow <= 1, "卡片内容没有被撑出一条横向滚动条(" + vec.overflow + "px)");
+  expect(!vec.wide, "最长的命令行在卡片宽度内换行,而不是把卡片撑宽");
+  expect(vec.lines >= 2, "至少两行状态(服务 + 覆盖率):" + vec.lines);
+  expect(vec.texts.some((x) => /\u6bb5|passages/.test(x)), "有一行在说索引覆盖率:" + JSON.stringify(vec.texts));
+  if (SHOT) await shotTo(shotPath(".vector"));
 
   await esc();
   await sleep(300);

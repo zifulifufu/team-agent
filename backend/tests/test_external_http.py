@@ -54,7 +54,14 @@ def test_the_engine_list_has_a_command_line_and_two_gateways():
 def test_the_overview_offers_each_engine_with_its_kind_and_address(tmp_path):
     cl, _ = _client(tmp_path)
     engines = {e["id"]: e for e in cl.get("/api/external").json()["engines"]}
-    assert set(engines) == {"workbuddy", "cherry", "metachat"}
+    # The three that reach a model elsewhere, plus the local command-line engines: those are members
+    # too (a tool that runs on this machine and hands back a file), and they are listed here rather
+    # than hidden so that "why can I not pick it" has an answer with a command in it.
+    assert {"workbuddy", "cherry", "metachat"} <= set(engines)
+    assert {e["kind"] for e in engines.values()} == {"cli", "http", "cmd"}
+    for e in engines.values():
+        if e["kind"] == "cmd":
+            assert e["name"] and e["role"], "a command engine without a name or a role is unpickable"
     assert engines["workbuddy"]["kind"] == "cli"
     assert engines["cherry"]["kind"] == "http"
     assert engines["cherry"]["base_url"].endswith(":23333/v1")

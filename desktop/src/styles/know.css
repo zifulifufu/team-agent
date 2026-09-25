@@ -202,3 +202,13 @@ textarea.kn-mono[rows="9"] { resize: vertical; overflow: auto; min-height: 0; }
 .kn-col-pick { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; max-height: 220px; overflow: auto; }
 .kn-add-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .kn-add-row .kn-rename { flex: 1; min-width: 0; }
+
+/* Searching by meaning: one line per fact, and the commands printed in full when something is
+   missing. `.kn-vec-line` wraps rather than clips — the fetch command for the weights is long. */
+.kn-vec-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 4px 0; font-size: 12.5px; }
+.kn-vec-line.err { color: var(--warn, #b45309); }
+.kn-vec-line code { word-break: break-all; }
+.kn-vec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.kn-vec-actions:empty { display: none; }
+.kn-vec-field { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
+.kn-vec-field > span:first-child { min-width: 170px; color: var(--text-2); }

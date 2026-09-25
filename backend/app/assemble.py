@@ -42,9 +42,14 @@ from . import i18n
 # these are the shared plumbing and not something this file decided.
 from . import ffmpeg as _ff
 from . import animate
+from . import layouts
+# ⚠️ Aliased: this module already has a `voices()` of its own (the macOS system voice
+# list), and a plain `import voices` would be shadowed by it — which surfaces as
+# "'function' object has no attribute 'is_clone'" at the first narrated shot.
+from . import voices as _voices
 # The typography (font, wrapping, shadow) belongs to `figure`, which owns everything drawn by
 # hand — a second font list here would drift from that one.
-from .figure import FigureError, font as _font, shadow as _shadow, wrap as _wrap
+from .figure import FigureError, font as _font, rgb as _rgb, shadow as _shadow, wrap as _wrap
 from .coderun import inside, kill_group
 
 SUBDIR = "video"            # where the finished film goes, beside the generated clips
@@ -58,6 +63,9 @@ FITS = ("blur", "cover", "contain")
 # loses nothing and reads as deliberate rather than broken.
 DEFAULT_FIT = "blur"
 STILL_SECONDS = 4.0         # how long a picture holds when nobody said
+# A layout's own opening/closing card holds a little longer than a picture by default: it is the
+# only frame in the film with nothing else to look at.
+DEFAULT_CARD_SECONDS = 3.0
 MIN_SHOT = 1.0
 MAX_SHOT = 600.0
 # 9:16 and 1:1 first: this is for the vertical short-video platforms the group is usually making
@@ -180,9 +188,19 @@ def pick_voice(text: str, want: str = "") -> str:
 
     An explicit name wins even if it is not in the list — the user may know a voice this listing
     does not show, and refusing it would be this program overruling them about their own machine.
+
+    That licence is for *system* voices, which have no directory to check against. A name written
+    `voice:<name>` means one of the user's cloned voices, and there a name that does not exist has
+    to fail — the alternative is handing `voice:clinic` to `say`, which accepts the shape and then
+    reports "voice not found" from inside a program the user never asked about.
     """
     want = (want or "").strip()
     if want:
+        if _voices.is_clone(want):
+            try:
+                _voices.parse(want)          # raises with the list of voices that do exist
+            except ValueError as e:
+                raise AssembleError(str(e)) from None
         return want
     known = voices()
     if not known:
@@ -207,14 +225,80 @@ def pick_voice(text: str, want: str = "") -> str:
     return known[0]["name"]
 
 
+def speak_timeout(voice: str, timeout: float) -> float:
+    """How long to give one line of narration.
+
+    `say` answers in about a second, which is why the caller caps it at two minutes. A cloning
+    engine loads a model before it says anything, so on a cold run that same cap fails the *first*
+    line of a correctly configured film — and the message would be about the narration rather than
+    about the cap. One cap for both would be a cap that works for neither, so the clone's own budget
+    (900s by default) applies, and a voice can raise or lower it in its own file.
+    """
+    if not _voices.is_clone(voice):
+        return min(120.0, timeout)
+    got = _voices.row((voice or "")[len(_voices.CLONE_PREFIX):].strip()) or {}
+    return float(got.get("timeout") or 900)
+
+
+async def _speak_clone(row: dict, text: str, out: Path, timeout: float) -> float:
+    """One line in one of the user's cloned voices.
+
+    The reference recording goes in as a local file and nothing leaves the machine — which is the
+    whole reason to run a clone locally at all, and the reason this is not wired to a hosted voice
+    service even though that would be faster.
+    """
+    exe = _voices.binary(row["engine"], row.get("bin") or "")
+    if not exe:
+        raise AssembleError(_voices.reason_missing(row["engine"]))
+    cmd = _voices.argv_for(row, text, out)
+    cmd[0] = exe                    # the path we resolved, not the bare name
+    code, detail = await asyncio.to_thread(lambda: _run(cmd, timeout))
+    if code != 0 or not out.is_file():
+        raise AssembleError(i18n.pick_now(
+            f"The narration could not be recorded with the cloned voice \"{row['name']}\": "
+            f"{detail.strip()[-300:]}",
+            f"用克隆音色「{row['name']}」配旁白失败:{detail.strip()[-300:]}"))
+    info = await asyncio.to_thread(duration_of, out)
+    return max(info, 0.1)
+
+
+def fade_fits(seconds: float, style: dict) -> bool:
+    """Whether a shot is long enough for the layout's transition to mean anything.
+
+    A half-second shot with a half-second fade at each end is a shot you never see. The rule lives
+    here so the renderer and the note in `render` agree on it, rather than one skipping the fade
+    while the other reports it was applied.
+    """
+    t = style.get("transition") or {}
+    if str(t.get("kind") or "cut") != "fade":
+        return False
+    d = float(t.get("seconds") or 0.4)
+    return float(seconds) > 2 * d + 0.1
+
+
+def _fade_chain(seconds: float, style: dict) -> list[str]:
+    """The fade filters for one shot when the layout asks for them, else nothing at all."""
+    if not fade_fits(seconds, style):
+        return []
+    d = float(style["transition"]["seconds"])
+    dur = float(seconds)
+    return [f"fade=t=in:st=0:d={d:g}", f"fade=t=out:st={dur - d:.3f}:d={d:g}"]
+
+
 async def speak(text: str, out: Path, voice: str, timeout: float) -> float:
     """Record one line of narration locally, and return its real length in seconds.
 
-    `say` rather than a cloud service: it costs nothing, needs no key, works offline, and — the
-    part that matters for assembly — it is the *only* route that lets the shot be timed before
-    anything is rendered. The upside of a cloud voice is a nicer read; the cost is a dependency,
-    a bill and a reason the whole film stops when the network does.
+    Two engines behind one function, because the *caller* should not care which: `say` for the
+    system voices (free, offline, and the reason a film can be timed before anything renders), and a
+    local cloning engine for the user's own voice. Both write a file the rest of the assembly
+    already knows how to use.
     """
+    try:
+        kind, row = _voices.parse(voice)
+    except ValueError as e:
+        raise AssembleError(str(e)) from None
+    if kind == "clone" and row is not None:
+        return await _speak_clone(row, text, out, timeout)
     tmp = out.with_suffix(".txt")
     tmp.write_text(text, encoding="utf-8")
     code, detail = await asyncio.to_thread(
@@ -245,7 +329,8 @@ def narration_seconds(text: str, voice: str = "") -> float:
 
 
 def subtitle_png(text: str, size: tuple[int, int], out: Path, *, font_scale: float = 0.045,
-                 box: str = "#000000", alpha: int = 130) -> Path:
+                 box: str = "#000000", alpha: int = 130, bottom: float = 0.86,
+                 wrap: float = 0.86, colour: str = "#FFFFFF") -> Path:
     """One transparent full-frame PNG holding one line of subtitle.
 
     Full-frame on purpose: the `overlay` filter is then a no-op placement, and the position is
@@ -254,33 +339,64 @@ def subtitle_png(text: str, size: tuple[int, int], out: Path, *, font_scale: flo
     The block sits at 86% of the height rather than at the very bottom, and that number came out of
     looking at a real assembled frame: a generated clip often carries its own caption along the
     bottom edge, and every vertical platform covers roughly the last tenth with its own UI. At 90%
-    the two overlapped; at 86% neither does.
+    the two overlapped; at 86% neither does. **`bottom`, `wrap`, `font_scale`, `box`, `alpha` and
+    `colour` are all layout decisions** and arrive from `layouts.py`; the defaults here are the
+    measured ones, so a film assembled without a layout is unchanged.
     """
     from PIL import Image, ImageDraw
     w, h = size
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _font(max(20, int(h * font_scale)))
-    lines = _wrap(text, font, int(w * 0.86), draw)
+    lines = _wrap(text, font, int(w * wrap), draw)
     line_h = int(max(1, draw.textlength("国", font=font)) * 1.45)
     block = line_h * len(lines)
-    bottom = int(h * 0.86)                       # see below: clear of two things that live lower
-    top = bottom - block
+    bottom_px = int(h * bottom)                  # see above: clear of two things that live lower
+    top = bottom_px - block
     pad = int(line_h * 0.35)
     if box and COLOR_RE.match(box) and alpha > 0:
         rgb = tuple(int(box[i:i + 2], 16) for i in (1, 3, 5))
+        # The plate is the wrap width plus a hair of margin, which is what the original 5%..95%
+        # worked out to at the default `wrap` of 0.86 — one number here instead of two literals
+        # that could drift apart from the text they are behind.
+        inset = max(0.0, (1.0 - wrap) / 2 - 0.02)
         # One rounded plate behind the whole block, not behind each line: a stack of separate
         # plates reads as three unrelated labels.
-        draw.rounded_rectangle([int(w * 0.05), top - pad, int(w * 0.95), bottom + pad],
+        draw.rounded_rectangle([int(w * inset), top - pad, int(w * (1 - inset)), bottom_px + pad],
                                radius=int(line_h * 0.25), fill=(*rgb, alpha))
+    ink = (*_rgb(colour, (255, 255, 255)), 255)
     for i, line in enumerate(lines):
-        _shadow(draw, (w // 2, top + i * line_h + line_h // 2), line, font, (255, 255, 255, 255))
+        _shadow(draw, (w // 2, top + i * line_h + line_h // 2), line, font, ink)
+    img.save(out)
+    return out
+
+
+def credit_png(text: str, size: tuple[int, int], out: Path, *, scale: float = 0.026,
+               position: str = "bottom", colour: str = "#FFFFFF") -> Path:
+    """The standing line — who made this, whose picture it is — as one transparent full-frame PNG.
+
+    Drawn per film and overlaid on **every** shot rather than put on a card: a card is the first
+    thing a re-cut drops, and this is the line that has to survive a re-cut. No plate behind it, so
+    it reads as a caption on the film rather than as a label stuck on it.
+    """
+    from PIL import Image, ImageDraw
+    w, h = size
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = _font(max(14, int(h * scale)))
+    text = text.strip()
+    while text and draw.textlength(text, font=font) > w * 0.94:
+        text = text[:-1]
+    ink = (*_rgb(colour, (255, 255, 255)), 235)
+    y = int(h * 0.035) if position == "top" else int(h * 0.955)
+    _shadow(draw, (w // 2, y), text, font, ink)
     img.save(out)
     return out
 
 
 def card_png(title: str, subtitle: str, size: tuple[int, int], out: Path, *,
-             background: str = "#0E1B2A", accent: str = "#2E7CF6") -> Path:
+             background: str = "#0E1B2A", accent: str = "#2E7CF6",
+             title_scale: float = 0.062, subtitle_scale: float = 0.032) -> Path:
     """A title card or a closing card, drawn here so a film can open and close without spending a
     generation on it (and so the text is spelled the way the group agreed, not the way a model
     felt about it)."""
@@ -291,15 +407,19 @@ def card_png(title: str, subtitle: str, size: tuple[int, int], out: Path, *,
     img = Image.new("RGB", (w, h), rgb)
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, int(h * 0.42), w, int(h * 0.42) + max(2, h // 400)], fill=accent)
-    big = _font(int(h * 0.062))
-    small = _font(int(h * 0.032))
+    big = _font(int(h * title_scale))
+    small = _font(int(h * subtitle_scale))
     lines = _wrap(title, big, int(w * 0.82), draw)
     top = int(h * 0.42) - int(h * 0.075) * len(lines)
-    draw.text((w // 2, top), "\n".join(lines), font=big, fill=(255, 255, 255), anchor="ma",
-              align="center")
+    # A white card needs dark ink: the page below is a film frame, not a sheet of paper, and a
+    # `#FFFFFF` background with white title text is an empty frame.
+    paper = sum(rgb) > 380
+    draw.text((w // 2, top), "\n".join(lines), font=big,
+              fill=(24, 28, 34) if paper else (255, 255, 255), anchor="ma", align="center")
     if subtitle:
         draw.text((w // 2, int(h * 0.47)), "\n".join(_wrap(subtitle, small, int(w * 0.8), draw)),
-                  font=small, fill=(190, 205, 225), anchor="ma", align="center")
+                  font=small, fill=(90, 100, 116) if paper else (190, 205, 225), anchor="ma",
+                  align="center")
     img.save(out)
     return out
 
@@ -554,7 +674,8 @@ def contain_chain(w: int, h: int) -> str:
 
 
 async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: int,
-                       voice: str, burn: bool, timeout: float) -> tuple[Path, list[str]]:
+                       voice: str, burn: bool, timeout: float, *, style: dict,
+                       credit: "Path | None" = None) -> tuple[Path, list[str]]:
     """One shot, as a file with exactly the length the plan decided.
 
     Normalising here (same size, same frame rate, always an audio track) is what makes the concat
@@ -575,10 +696,12 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
     audio_in: Path | None = None
     speaking = bool(entry["say"]) and entry["audio"] in ("voice", "mix")
     if speaking:
-        audio_in = plan_dir / f"s{idx:03d}-voice.aiff"
         entry["voice"] = pick_voice(entry["say"], voice)
+        # The container follows the narrator, not our habit: `say` writes AIFF, a cloning engine
+        # writes WAVE, and naming the second one `.aiff` would be a file that lies about itself.
+        audio_in = plan_dir / (f"s{idx:03d}-voice" + _voices.audio_suffix(entry["voice"]))
         entry["voice_seconds"] = await speak(entry["say"], audio_in, entry["voice"],
-                                             min(120.0, timeout))
+                                             speak_timeout(entry["voice"], timeout))
         if entry["voice_seconds"] > entry["seconds"] + 0.15:
             # A line of narration chopped off mid-sentence is the most obvious way an assembled
             # film looks broken, so the narration always wins over the length that was asked for —
@@ -616,7 +739,11 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
         pre.append("[0:v]null[vbase]")      # drawn at the frame size and rate already
     elif entry["kind"] == "card":
         png = plan_dir / f"s{idx:03d}-card.png"
-        await asyncio.to_thread(card_png, entry["title"], entry["subtitle"], size, png)
+        plate = style["card"]
+        await asyncio.to_thread(card_png, entry["title"], entry["subtitle"], size, png,
+                                background=plate["background"], accent=plate["accent"],
+                                title_scale=plate["title_scale"],
+                                subtitle_scale=plate["subtitle_scale"])
         cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{entry['seconds']:g}", "-i", str(png)]
         pre.append("[0:v]null[vbase]")          # a card is drawn at the frame size already
     elif entry["kind"] == "image":
@@ -634,7 +761,12 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
     if entry["kind"] == "image" and entry.get("motion"):
         # A slow push on a still: without it a slide reads as a mistake, with it as a shot. After the
         # fitting rather than before, so it pushes the whole composition and not just the inset.
-        post.append(f"zoompan=z='min(1+0.00035*on,1.12)':x='iw/2-(iw/zoom/2)'"
+        # The push-in rate is the layout's (`pace.zoom`), because "how slowly a long take should
+        # drift" is taste; 0.00035 per frame is the value that used to be hardcoded, and it reaches
+        # the ceiling over about four seconds.
+        zoom = float(style["pace"]["zoom"] or 0.00035)
+        zoom_max = float(style["pace"]["zoom_max"] or 1.12)
+        post.append(f"zoompan=z='min(1+{zoom:g}*on,{zoom_max:g})':x='iw/2-(iw/zoom/2)'"
                     f":y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={fps}")
 
     # ---- the remaining inputs, counted as they are added so the graph can name them by index
@@ -642,9 +774,20 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
     sub_index: int | None = None
     if burn and entry["text"]:
         sub = plan_dir / f"s{idx:03d}-sub.png"
-        await asyncio.to_thread(subtitle_png, entry["text"], size, sub)
+        line = style["subtitle"]
+        await asyncio.to_thread(subtitle_png, entry["text"], size, sub,
+                                font_scale=line["font_scale"], box=line["box"],
+                                alpha=line["alpha"], bottom=line["bottom"], wrap=line["wrap"],
+                                colour=line["colour"])
         sub_index, n_in = n_in, n_in + 1
         cmd += ["-i", str(sub)]
+    # The standing line goes on **every** shot, not on a card: a card is the first thing a re-cut
+    # drops, and this is the line that has to survive a re-cut. Same file for every shot, so the
+    # cost is one more input and one more overlay in a pass that was happening anyway.
+    credit_index: int | None = None
+    if credit is not None:
+        credit_index, n_in = n_in, n_in + 1
+        cmd += ["-i", str(credit)]
     voice_index: int | None = None
     if speaking and audio_in:
         voice_index, n_in = n_in, n_in + 1
@@ -663,8 +806,15 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
     graph = list(pre)
     # `post` always has at least `setsar` and `fps`, so this fragment always exists.
     graph.append(f"[vbase]{','.join(post)}[vshot]")
-    graph.append(f"[vshot][{sub_index}:v]overlay=0:0[vout]" if sub_index is not None
-                 else "[vshot]null[vout]")
+    graph.append(f"[vshot][{sub_index}:v]overlay=0:0[vsub]" if sub_index is not None
+                 else "[vshot]null[vsub]")
+    graph.append(f"[vsub][{credit_index}:v]overlay=0:0[vov]" if credit_index is not None
+                 else "[vsub]null[vov]")
+    # The transition goes on **after** the overlays, so a fade brings the picture, the captions and
+    # the credit line down together. Fading the picture first would leave the text at full
+    # brightness over a black frame, which is the one way a fade looks wrong.
+    fades = _fade_chain(entry["seconds"], style)
+    graph.append(f"[vov]{','.join(fades)}[vout]" if fades else "[vov]null[vout]")
     if voice_index is not None and entry["audio"] == "mix" and source_audio:
         # Weights rather than amix's own averaging: the voice has to stay intelligible with the
         # clip's sound underneath it, and "half of each" is not a level, it is a guess.
@@ -696,23 +846,83 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
 async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 0.0,
                  fps: int = DEFAULT_FPS, voice: str = "", burn: bool = True, name: str = "",
                  timeout: float = 1800.0, still: float = STILL_SECONDS,
-                 fit: str = DEFAULT_FIT) -> dict:
-    """Assemble the shot list into one film. Returns what was made, where, and what was noted."""
+                 fit: str = DEFAULT_FIT, style: "dict | None" = None) -> dict:
+    """Assemble the shot list into one film. Returns what was made, where, and what was noted.
+
+    `style` is a layout's numbers (`layouts.style(name)`), already resolved by the caller — this
+    function does not read the settings or the disk. It decides the look only: subtitles, the title
+    and closing cards, the standing credit line, how long a still is held and how long a shot may
+    run. Everything about correctness (frame arithmetic, the encoder, the concat) is not in it.
+    """
     ff, why = available()
     if not ff:
         raise AssembleError(why)
+    if style is None:
+        style = layouts.style(layouts.DEFAULT)
     workspace = Path(workspace).resolve()
     tw, th, label = parse_size(size)
     size_px = (tw, th)
     fps = max(12, min(int(fps or DEFAULT_FPS), 60))
 
+    # A layout's own opening and closing cards are added **here**, as ordinary shots, so they go
+    # through the same validation, the same length arithmetic and the same narration handling as
+    # everything else. Building plan entries by hand instead would be a second, quietly different
+    # way to make a shot — and the first time the entry shape changed, one of the two would rot.
+    opening, closing = style.get("opening") or {}, style.get("closing") or {}
+    card_seconds = max(MIN_SHOT, min(float(style["pace"].get("still") or 0) or DEFAULT_CARD_SECONDS,
+                                     MAX_SHOT))
+    shots = list(shots or [])
+    if opening.get("title") or opening.get("subtitle"):
+        shots.insert(0, {"title": opening.get("title") or " ", "subtitle": opening.get("subtitle") or "",
+                         "seconds": card_seconds, "audio": "silent"})
+    if closing.get("title") or closing.get("subtitle"):
+        shots.append({"title": closing.get("title") or " ", "subtitle": closing.get("subtitle") or "",
+                      "seconds": card_seconds, "audio": "silent"})
+
     plan = make_plan(shots, workspace=workspace, total=total, voice=voice, still=still, fit=fit)
+
+    # A per-shot ceiling, from the layout. Applied after the plan rather than inside it because the
+    # plan's job is to work out how long each shot *needs*; capping is a taste decision about how
+    # fast the film should move, and it is allowed to lose to the narration — a shot whose voice
+    # does not fit is extended again below, which is the right precedence.
+    cap = float(style["pace"].get("max_shot_seconds") or 0)
+    if cap > 0:
+        capped = [e for e in plan if e["seconds"] > cap]
+        for e in capped:
+            e["seconds"], e["why"] = round(cap, 2), "layout"
+        if capped:
+            notes_cap = i18n.pick_now(
+                f"{len(capped)} shot(s) were longer than this layout's {cap:g}s ceiling and were "
+                "shortened to it.", f"有 {len(capped)} 个镜头超过这套版式的 {cap:g} 秒上限,已缩短到上限。")
+        else:
+            notes_cap = ""
+    else:
+        notes_cap = ""
+
+    # A fade needs a shot long enough to survive it. Saying which shots were left as hard cuts is
+    # the difference between a layout that was applied and a layout that was applied to the shots
+    # it happened to suit.
+    if str((style.get("transition") or {}).get("kind") or "cut") == "fade":
+        short = [e["no"] for e in plan if not fade_fits(e["seconds"], style)]
+        notes_trans = i18n.pick_now(
+            f"{len(short)} shot(s) are too short for this layout's "
+            f"{float(style['transition']['seconds']):g}s fade and were left as hard cuts: "
+            f"{', '.join(str(n) for n in short[:8])}.",
+            f"有 {len(short)} 个镜头太短,承受不住这套版式的 "
+            f"{float(style['transition']['seconds']):g} 秒淡入淡出,它们保持硬切:"
+            f"{'、'.join(str(n) for n in short[:8])}。") if short else ""
+    else:
+        notes_trans = ""
 
     # A film whose every picture is a still is a slide show, and the usual reason for it is that
     # nobody thought about the motion — each shot was asked for one picture at a time. Saying so is
     # the whole point of having the animations: the group can then re-cut two or three shots instead
     # of shipping a deck with a soundtrack.
     notes: list[str] = []
+    if notes_cap:
+        notes.append(notes_cap)
+    if notes_trans:
+        notes.append(notes_trans)
     moving = [e for e in plan if e["kind"] in ("anim", "video")]
     if not moving:
         notes.append(i18n.pick_now(
@@ -738,11 +948,26 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
         raise AssembleError(i18n.pick_now("The output folder resolves outside the workspace.",
                                           "输出目录解析后在工作目录之外。"))
 
+    # The standing line, drawn once and reused by every shot. Skipped entirely when the layout sets
+    # none, so a film without a credit does not pay for an overlay of nothing.
+    credit: "Path | None" = None
+    line = (style.get("credit") or {}).get("text") or ""
+    if line:
+        credit = plan_dir / "credit.png"
+        await asyncio.to_thread(credit_png, line, size_px, credit,
+                                scale=float(style["credit"]["scale"]),
+                                position=str(style["credit"]["position"]),
+                                colour=str(style["credit"]["colour"]))
+        notes.append(i18n.pick_now(
+            f"The line \"{line}\" is on every frame of this film.",
+            f"「{line}」这句话印在本片每一帧上。"))
+
     started = time.time()
     try:
         parts: list[Path] = []
         for entry in plan:
-            shot, extra = await _render_shot(entry, plan_dir, size_px, fps, voice, burn, timeout)
+            shot, extra = await _render_shot(entry, plan_dir, size_px, fps, voice, burn, timeout,
+                                             style=style, credit=credit)
             parts.append(shot)
             notes.extend(extra)
         final = out_dir / f"{stem}.mp4"

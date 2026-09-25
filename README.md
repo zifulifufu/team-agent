@@ -303,13 +303,138 @@ model looks at pictures" answer the settings page gives).
 
 And when a search still comes back empty, the member is told **what this group can search**: the
 document titles it can reach, plus the note that the knowledge base may be in another language than
-the conversation. That is the difference between a dead end and a next step — BM25 matches words,
-and a question asked in Chinese shares none with an English document, which is the usual shape of a
-library here (atlases, papers, manuals).
+the conversation. That is the difference between a dead end and a next step — a word index matches
+words, and a question asked in Chinese shares none with an English document, which is the usual shape
+of a library here (atlases, papers, manuals).
+
+### Searching by meaning, not only by word
+
+A knowledge base is searched twice and the two rankings are merged.
+
+**Keywords** (BM25, over bigrams for Chinese) stay. They are better than anything else at an exact
+identifier — `MHT ILT`, a drug name, a catalogue number — and the vector half is weaker there.
+
+**Meaning** is added by an embedding model, and it is what makes a paraphrase or another language
+reachable at all. On this vault's neuroangiography notes, with keywords alone:
+
+| Query | keywords only | with vectors |
+|---|---|---|
+| `pulsatile tinnitus diagnosis` | the right page | the right page |
+| `Moyamoya revascularization` | **wrong page** (ophthalmic artery) | the revascularisation page |
+| `大脑中动脉分叉部动脉瘤怎么处理` | **nothing** | the MCA aneurysm page |
+| `颈动脉狭窄 支架还是开刀` | **nothing** | pages on carotid and intracranial stenosis |
+
+The two rankings are merged by **position, not by score** (`textindex.rrf`): a BM25 score is
+unbounded and means nothing outside its own corpus, a cosine lives in [-1, 1], and adding them
+invents a conversion nobody can justify. So a document found by both retrievers outranks one that
+either found alone, and the head of the result is what to trust — `score` and `sim` are the two
+inputs, not the answer.
+
+Two things this deliberately does *not* hide.
+
+**One passage per document.** A note in a real vault averages seventeen passages, so the best
+twenty-four passages are one or two notes — and a five-line answer made of five passages of the same
+page has answered once. Both retrievers are reduced to the best passage per document before they are
+merged, which also reaches further: a page whose best passage ranks 214th overall is around the
+thirtieth *document*, and the head of a passage list never sees it.
+
+**The model is the limit, and its cross-language alignment is uneven.** Measured on this library
+(`BAAI/bge-m3`), term by term:
+
+| Chinese | English | cosine |
+|---|---|---|
+| 搏动性耳鸣 | pulsatile tinnitus | 0.634 |
+| 脑血管痉挛 | vasospasm | **0.431** |
+| 脑血管痉挛 | cerebral vasospasm | 0.587 |
+| 蛛网膜下腔出血 | subarachnoid haemorrhage | 0.509 |
+
+`脑血管痉挛` sits closer to an unrelated English phrase (0.538) than to its own translation (0.431),
+and no re-ranking can invent a signal that is not there. What does work is measured, not guessed:
+
+| Query | where the vasospasm page lands |
+|---|---|
+| `蛛网膜下腔出血 脑血管痉挛` | not in the top 5 |
+| `蛛网膜下腔出血后脑血管痉挛的防治` (longer, still Chinese) | not in the top 5 |
+| `脑血管痉挛 angioplasty` (one English term in the same query) | **#1** |
+| `cerebral vasospasm after aneurysmal subarachnoid haemorrhage` | **#1** |
+
+So the advice written into the `library_search` description, the fallback message and the expert
+prompts is not "translate the question" but **"put the library's word for it into the same query"** —
+and the member is told to search again before concluding the library has nothing.
+
+#### Where the model runs, and why it is not in this process
+
+`scripts/embed-server.py` serves an OpenAI-compatible `/v1/embeddings` on `127.0.0.1:8799`, and
+`backend/app/embed.py` is its client. It has to be a separate process: this app's own virtualenv is
+**x86_64 under Rosetta on Python 3.14**, and neither torch nor onnxruntime publishes wheels for that,
+while the native arm64 interpreter beside it can run the model on Metal. Measured here: **12.5 s** to
+load, **~90 passages/s** to embed, 1024 dimensions, 8192-token context.
+
+```bash
+# once: the environment that can run the model
+uv venv --python 3.12 .venv-embed && uv pip install --python .venv-embed/bin/python sentence-transformers
+# once: the weights (huggingface.co is unreachable from some networks; the mirror works — and
+# huggingface_hub 1.x otherwise tries its Xet backend, which the mirror answers with a 401)
+HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 \
+  .venv-embed/bin/python scripts/embed-server.py --allow-download
+# then, whenever the library should be searchable by meaning:
+TEAM_AGENT_DATA=... .venv/bin/python scripts/ingest-vault.py --only <root>
+```
+
+Four rules it follows, each of them about not lying to the person searching:
+
+* **Nothing downloads by itself.** A server started without `--allow-download` reports a missing model
+  with the command that would fetch it. Fetching 2 GB because somebody typed a query is not a search.
+* **"Up" and "ready" are different answers.** `/health` replies immediately while the model is still
+  loading, and a 4xx is reported as the configuration problem it is instead of a state to wait out.
+* **A search never starts a model.** Retrieval with no server falls back to keywords and says so; a
+  mixture that quietly became keywords-only reads exactly like a library with nothing to say.
+* **Vectors from another model are left out, not mixed in.** They are not comparable, and averaging
+  them answers confidently and wrongly. The document records which model made its vectors, so
+  re-indexing is a decision rather than a guess.
+
+All of that is on **Settings → Library**, above the document list, because "can these documents be
+found by meaning or only by the words in them" is a property of the pile the page is showing. The
+card has the switch, the model and address, the coverage (`N of M passages have vectors`), a *Start
+it* button, *Index a first 1000 passages* / *Continue indexing* / *Index everything*, and *Drop the
+vectors* for re-indexing with another model. Whatever is missing is named with the command that
+fixes it, printed in full — the two commands above are what it shows.
+
+#### Putting a collection in: `scripts/ingest-vault.py`
+
+It reads a whitelist (`~/.team-agent/vault-whitelist.json`) rather than a folder, because a real
+vault is a mixture: the notes worth indexing, books nobody needs, and a few hundred gigabytes of
+other things. Each entry carries the reason it is there, so "why can I not find this book" has an
+answer that is written down. `--tier tier1,tier2,tier3` picks which layers to take — markdown trees,
+named PDFs, and the scans (which need OCR and are therefore opt-in).
+
+Four things it does that are worth knowing, all of them about not being quiet:
+
+* **A scanned PDF is named, not skipped.** It comes back with its page count in the report — `! 1
+  file has no text layer (713 pages), which needs OCR to enter the index` — because "this book is
+  not in the library" and "this book is in the library and says nothing about your question" are
+  different answers, and only one of them is honest.
+* **A text layer that extracts as static is refused.** A PDF whose fonts lack an encoding comes out
+  as replacement characters, and that sort of text indexes and retrieves *exactly as confidently as
+  prose* — a library full of it is worse than one missing the book, since nothing in a search result
+  would look wrong. Measured before it goes in; refused above 1%.
+* **A book longer than the library's own limit is cut on page boundaries**, and each part becomes its
+  own document titled with its page range. Cutting at character offsets would be easier and would
+  let a passage name a page it is not on; refusing the whole book would keep a 1343-page textbook out
+  of the index entirely. Measured on this vault: the largest book is 2.76 M characters, just under
+  the limit, so the cut did not fire — it exists for the next one.
+* **Identity is the file's path, not its title.** Two notes may share a title; matching on the title
+  then finds the wrong one, and the consequence is a *second copy on every run* — this vault had 28
+  notes duplicated that way, which showed up as the same page three times in a search result and
+  looked like bad ranking. Re-running is a replace, and leftovers from an older shape (a book that
+  used to be cut into five parts and is now four) are removed.
+
+Measured on this vault, one pass: **5956 notes + 12 books** (3,977 pages of PDF, 9.8 M characters)
+→ **96,341 passages**, text in 98 s and vectors in about an hour on Metal.
 
 ## Making video: bringing mature video tools in
 
-The sections above are about this app *generating* video itself (`generate_video`, and the three
+The sections above are about this app *generating* video itself (`generate_video`, and the four
 dialects behind it). This one is the other half: **wiring in video tools that already exist**. Their
 shapes differ a lot, so where each one goes differs too — putting them all in the provider list
 would only get each of them half right.
@@ -323,6 +448,7 @@ would only get each of them half right.
 | **ChatCut** | a **hosted** HTTP MCP with a Bearer header | Template gallery → MCP → *ChatCut (edit video by describing it)* | You obtain the token yourself with their sign-in flow; it is short-lived (about an hour), so **a 401 later usually means refreshing it, not a wrong key** |
 | **DaVinci Resolve** | stdio MCP (`uvx --python 3.11 --with 'mcp<2' davinci-resolve-mcp`) | Template gallery → MCP → *DaVinci Resolve (cut on a real timeline)* | Needs **Resolve Studio** (the free version exposes no scripting API), external scripting set to Local, and **Resolve open before you press test**. The `--python 3.11` and `mcp<2` pins are not optional: without either one the server dies at import |
 | **Jianying / CapCut** | no installable MCP exists — the code route: `uv run --with pyJianYingDraft` | built-in skill *Jianying (CapCut) drafts* | It writes Jianying's own draft files, so the **draft folder has to be asked for** — write it anywhere else and the user opens Jianying and sees nothing |
+| **ComfyUI** | a **local HTTP API** (`/prompt` → `/history/{id}` → `/view`) | Model providers → the *ComfyUI (local video)* preset, and a video-generation provider like any other | A ComfyUI you run yourself, **a video checkpoint installed**, and the workflow's file names matching what you have. Nothing is billed; a five-second clip took about eight minutes on an M-series Mac |
 
 ### Where a picture may come from
 
@@ -878,6 +1004,222 @@ control → Video generation*.
   international face of the same platform, calls it `dreamina-seedance-2-5-260628` — and **a key
   issued in one region does not authenticate against the other**, so the address and the id have to
   belong to the same account.
+
+### Layouts: the look of a film, chosen by name
+
+The assembler has one set of numbers for how a film looks, and they were taste written into code —
+which means nobody ever changed them. They are files now: `<data dir>/layouts/*.json`, one layout
+each, picked with the `layout` argument. Four ship:
+
+| Layout | For |
+|---|---|
+| `default` | Exactly what this app did before layouts existed — plain captions at the measured height, no cards, no credit. |
+| `public-science` | Vertical, larger captions held lower, slower stills, a 12s shot ceiling. |
+| `case-review` | 16:9, small captions, tighter shots, a dark card — for a room rather than a phone. |
+| `lecture` | 16:9, plain captions, a title card and a closing card. |
+
+A layout decides **picture size, frame rate, caption size and placement, the title and closing
+cards, the standing credit line, how long a still is held, how long a shot may run, and the
+transition** — and an explicit `size`/`fps`/`fit` still wins over it, because a caller who named
+both meant both.
+
+```json
+{
+  "title": "Ward round (vertical)",
+  "size": "1080x1920",
+  "subtitle": { "font_scale": 0.055, "bottom": 0.84, "alpha": 150, "colour": "#FFFFFF" },
+  "card": { "background": "#0E1B2A", "accent": "#2E7CF6" },
+  "pace": { "still": 4.5, "max_shot_seconds": 12, "zoom": 0.00035 },
+  "transition": { "kind": "fade", "seconds": 0.4 },
+  "credit": { "text": "", "position": "top", "scale": 0.024 }
+}
+```
+
+* **The layout owns where the words go; the caller owns what they say.** `title`, `closing` and
+  `credit` are tool arguments; a layout may carry a house line and an argument overrides it, but a
+  layout is never allowed to invent a title — the title of a film is the one thing the caller always
+  knows and the layout never does. That is why `default` ships with no card text and draws no cards.
+* **The standing line is on every frame, not on a card.** It is the line that has to survive a
+  re-cut, and a re-cut drops cards first.
+* **`transition` is `cut` or `fade`.** `cut` is a plain concat — what this app has always done.
+  `fade` dips through black at each end of every shot, applied **after** the captions are laid on so
+  the words fade with the picture instead of sitting at full brightness on a black frame. A shot too
+  short to survive the fade is left as a hard cut **and the reply says which shots those were**. A
+  cross-dissolve between shots would need one filter graph over the whole film and is not
+  implemented; naming it in the schema would be offering a knob that does nothing.
+* **`pace.zoom` is the push-in rate** for a shot that asks for `motion` — the knob a "slow, cinematic
+  long take" is actually asking for. `0.00035` per frame is the value that used to be hardcoded.
+
+The same four rules as the workflows folder: a file that cannot be used is **named with its reason**,
+a name that collides with a shipped layout is an **error**, an out-of-range number is an **error**
+rather than a clamp, and an unknown layout name lists what exists instead of quietly using the
+default look. Verified twice over: a render was measured frame by frame (brightness at both ends of
+a faded shot drops by ~150 of 255 while the middle does not move) and the resulting film's visible
+text was read back off the frames.
+
+### Cloned voices: narrating in the group's own voice
+
+`say` gives the assembler narration for free and is why a film can be timed before anything renders.
+What it cannot give is *your* voice. A local zero-shot cloning engine can, and the result is an
+**asset** rather than a command: `<data dir>/voices/<name>/`, holding a reference recording plus its
+transcript.
+
+```
+voices/clinic-zh/voice.json     {"ref_audio": "ref.wav", "ref_text": "这是十秒的参考录音。",
+                                 "language": "zh", "timeout": 900}
+voices/clinic-zh/ref.wav
+```
+
+Then `voice: "voice:clinic-zh"` on `assemble_video` narrates the whole film in it.
+
+* **Two namespaces, and telling them apart is the point.** `Tingting` is a macOS system voice;
+  `voice:clinic-zh` is one of these. A `voice:` name that is not in the registry is an **error that
+  lists the ones that are** — never a fallback to `say`, and never a fallback to the engine with a
+  system voice name. Both fallbacks end with a film narrated in a voice nobody chose, which is only
+  noticed after it has been watched, if ever.
+* **A voice is a file, not a trained model.** The engine clones zero-shot, so there is no training
+  step and nothing to re-run when the model updates.
+* **The narration budget follows the narrator.** `say` answers in about a second, so its lines are
+  capped at two minutes; a cloning engine loads a model first, so the same cap would fail the *first*
+  line of a correctly configured film. The voice's own `timeout` (900s by default) applies instead.
+* **The container follows the narrator.** `.aiff` for `say`, `.wav` for a cloned voice — naming the
+  second one `.aiff` would be a file that lies about itself, and ffmpeg reads it happily either way.
+* **Nothing leaves the machine.** The reference recording is read from disk and passed to a local
+  program; that is the reason to run a clone locally at all.
+* ⚠️ **Licensing is yours to satisfy, and we will not assume it for you.** The shipped engine
+  (`omnivoice`, from VoiceStudio's bundled OmniVoice) is AGPL-3.0 code whose default weights are
+  **CC-BY-NC** — non-commercial — and a cloned voice is a recording of a real person who has to have
+  agreed to it. `Test` on the provider names the binary and the command that installs it when the
+  engine is absent; nothing here downloads anything by itself.
+
+### 即梦 (Jimeng): a creative-craft knowledge base, from a public feed
+
+`scripts/ingest-jimeng.py` collects **prompts and style vocabulary** from 即梦's public gallery into
+a knowledge base, and the **Creative director** expert (`🎨 创意大师`) is built to use it.
+
+* **It collects the words, not the works.** Every note holds the prompt that made a picture, the
+  tags, the template it came from, the author, and a `source:` link back to the work — plus the
+  reference image, so a claim can be checked. The point is to learn how other people turn a mood into
+  concrete words (angle, light, material, palette, composition), which is the part that transfers.
+  The pictures belong to whoever made them and are not to be republished or reused as footage; the
+  expert's own instructions say so.
+* **The route is the site's own public feed**, verified by hand rather than assumed:
+  `GET /jsonp/mweb/v1/get_explore?category_id=<id>&feed_refer=feed_enterauto&_callback=cb` answers
+  **anonymously**, ~19 works per page, with `next_offset` for paging. ⚠️ Drop `feed_refer` and it
+  answers `ret:1000 invalid parameter`, which reads as "the site changed" rather than "you left a
+  parameter out". Each work's cover link carries an `x-expires` signature, so the images are
+  **downloaded** rather than linked — a note with a dead picture is one nobody can check.
+* **The work-detail pages are server-rendered and readable without logging in**; the explore *list*
+  page is not (its SSR payload is empty and the list arrives over the feed above). 即梦's
+  `robots.txt` is `User-Agent: * / Allow: /` with a declared sitemap.
+* ⚠️ **What this cannot give you.** The feed answers with `text_generate_image` works only — every
+  `category_id` tried returned the same shape, and no video-bearing item appeared. So camera-movement,
+  transition and storyboard **reference films are not on this endpoint**, and guessing further
+  endpoints is exactly what this project does not do. For those, the route that exists today is
+  `study_video`: point a member at a reference clip and it writes a structured style note into the
+  knowledge base, which the Creative director then cites. Making a transition *usable* is a separate
+  matter and it is a layout knob now — see above.
+
+### ComfyUI (local video, nothing billed per clip)
+
+The fourth dialect, and the only one that costs nothing per render — it runs the model on your own
+machine. It is also the only one that is **not a video service**: ComfyUI is a *graph runner*, so
+there is no prompt field, no model in the request, and no URL in the reply. What you configure here
+is therefore a **workflow**, and what a render costs is your machine's time:
+
+```
+POST prompt                    -> {"prompt_id": ...}                      submit a workflow graph
+GET  history/{prompt_id}       -> {"status": ..., "outputs": ...}         poll
+GET  view?filename=…&type=output -> the saved file                        download
+GET  system_stats, object_info -> what it is and what it has              probe
+```
+
+Add the **"ComfyUI (local video)"** preset under Model providers — the address is
+`http://127.0.0.1:8188` unless your instance listens elsewhere — then pick it under *Permissions &
+control → Video generation*.
+
+- **ComfyUI has to be running**, and it has to have the files the workflow names. Start it with
+  `python main.py` in its directory. The **Test** button asks all three questions rather than just
+  "is it up", and it names the file that is missing — a ComfyUI with no video checkpoint is running
+  perfectly and cannot make a clip.
+- **The workflow shipped here is `wan2.2-ti2v-5b`** — ComfyUI's own `video_wan2_2_5B_ti2v` template,
+  rearranged into the API format `/prompt` takes. It needs three files:
+
+  | Loader | File |
+  |---|---|
+  | `UNETLoader` | `wan2.2_ti2v_5B_fp16.safetensors` (the Wan2.2 TI2V 5B diffusion model) |
+  | `CLIPLoader` | `umt5_xxl_fp16.safetensors` (an umt5 text encoder, `type: wan`) |
+  | `VAELoader` | `wan2.2_vae.safetensors` |
+
+  Text-to-video, 24 fps, **no sound**, and no reference image: the graph fills a latent with noise,
+  so there is nowhere to put a keyframe — asking for `first_frame` is **refused with that reason**
+  rather than quietly dropped.
+- **It is slow, and the numbers are measured rather than guessed.** 832×480, 5 seconds (121 frames),
+  20 steps took **8 minutes** on an M-series Mac with the 5B checkpoint. Raise *Render timeout* if
+  your machine is slower; the default is set for hosted services. The clip length is capped at 10
+  seconds here because that is roughly where a local render stops being worth waiting for — the
+  model itself has no limit.
+- **Frame counts and sizes are arithmetic the model insists on**, so this app does it rather than
+  sending a number that will be rejected after you have waited: `length` must be `4n+1` (121 is five
+  seconds at 24 fps, the template's own figure), and both sides are rounded to a multiple of 16 with
+  the long side capped at 1280, which is what the checkpoint is built for.
+
+#### Bring your own workflow
+
+`wan2.2-ti2v-5b` is only the one we ship. **Any graph you build in ComfyUI's own UI becomes a choice
+in this app**: one JSON file per workflow in `<data dir>/workflows/`, and the file is a graph saved
+with ComfyUI's own **"Save (API format)"** plus a few lines of description around it.
+
+```json
+{
+  "use": "video",
+  "title": "Talking head (my graph)",
+  "fps": 24, "long_side_max": 1280, "steps": 20, "cfg": 5.0,
+  "needs": [["UNETLoader", "unet_name", "my-model.safetensors"]],
+  "graph": {
+    "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}"}},
+    "2": {"class_type": "KSampler", "inputs": {"seed": "{{seed}}", "steps": "{{steps}}"}},
+    "3": {"class_type": "SaveVideo",
+          "inputs": {"filename_prefix": "team-agent/{{slug}}", "format": "mp4"}}
+  }
+}
+```
+
+`needs` exists only so **Test** can name the file you are missing — a graph that downloads nothing
+leaves it empty. What this app fills in: `{{prompt}}` `{{negative}}` `{{width}}` `{{height}}`
+`{{frames}}` `{{seed}}` `{{fps}}` `{{steps}}` `{{cfg}}` `{{slug}}` `{{workflow}}`. Use `{{slug}}` in
+a `filename_prefix`; `{{prompt}}` in a filename is whatever was typed, slashes and all.
+
+Four rules, and each one is about not rendering the wrong thing:
+
+* **A file that cannot be used is named, with its reason** — never skipped. A workflow that quietly
+  does not load renders the *default* graph instead, and the result still says it succeeded.
+* **A name that collides with a shipped workflow is an error**, not an override. Two graphs
+  answering to one name is how "it worked yesterday" starts.
+* **A `{{placeholder}}` the app cannot fill raises.** A blank where a prompt should be renders
+  something; it just is not what the graph's author wrote.
+* **The reply reports the workflow that ran**, not the one that was asked for. A provider set to a
+  name this app does not know falls back to the default — and says so, in the reply.
+
+Save a file and it is read on the next look: no restart, no code change. It then appears under
+**Model providers → your ComfyUI → Refresh**, beside the shipped one.
+
+#### A capability you can declare before it is installed
+
+One workflow ships **declared but not installed**: `infinite-talk` — photo plus a recording of
+someone speaking, out comes a clip of them talking, with a Chinese audio encoder. Its nodes are part
+of ComfyUI itself (`WanInfiniteTalkToVideo`, `AudioEncoderLoader`, … — checked against a running
+0.35.0), so the only thing missing is six weight files. Choosing it and pressing **Test** answers
+with **each missing file and where to download it**, and asking a member to render with it **refuses
+with that same list** instead of quietly rendering something else. Install the files, save ComfyUI's
+own template in API format into a workflow file of your own, and the name renders.
+
+That declaration is the point: a capability that exists only in a README is one nobody ever gets
+running, and — much worse — a name that fell back to another workflow would produce a clip that
+looks finished and is not the one that was asked for. Keyframes
+(`first_frame`/`last_frame`) are **not** wired up for your own graphs yet — a local file has to be
+uploaded to ComfyUI first and that is not implemented, so asking for one says exactly that instead
+of dropping it.
 
 ### Generating members: the model itself, in the group
 

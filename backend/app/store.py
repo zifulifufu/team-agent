@@ -287,6 +287,12 @@ class Store(ExtStore):
             # every row; empty means the provider never said and the name is read instead.
             ("models", "use", "TEXT NOT NULL DEFAULT ''"),
             ("model_live", "modes", "TEXT NOT NULL DEFAULT '{}'"),             # id -> the provider's own word for it
+            # Vector search over the knowledge base. The passage keeps its own vector (fp16 — half
+            # the file for a difference no retrieval notices), and the document keeps the id of the
+            # model that made it: vectors from two different models are not comparable, and a
+            # library that mixed them would answer with confident nonsense and no way to notice.
+            ("library_chunks", "vec", "BLOB"),
+            ("library_docs", "embed_model", "TEXT NOT NULL DEFAULT ''"),
         ]
         for table, col, decl in adds:
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
@@ -477,6 +483,9 @@ something the user deleted is not seeded again."""
     # and "written in plaintext into a database that ends up in backups".
     SECRET_SETTINGS: dict[str, tuple[str, str]] = {
         "github_token": ("github-token", "default"),
+        # Only needed when the embedding address is somebody else's server. The bundled local one
+        # takes no key.
+        "embed_api_key": ("embed-api-key", "default"),
         # One entry per secret field a channel declares, so a new channel cannot ship a
         # credential that is quietly written into the database in the clear.
         **channels.secrets(),

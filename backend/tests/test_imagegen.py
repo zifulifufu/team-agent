@@ -400,7 +400,8 @@ def test_an_image_provider_is_not_usable_for_video_and_the_other_way_round(store
     assert image_only["id"] not in [p["id"] for p in media.providers_of_kind(store, video.KINDS)]
     assert video_only["id"] not in [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)]
     assert ark["id"] not in [p["id"] for p in media.providers_of_kind(store, imagegen.KINDS)]
-    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_media", "ark_video", "openai_image"}
+    assert set(media.MEDIA_KINDS) == {"minimax_video", "metachat_media", "ark_video", "openai_image",
+                                      "comfyui"}
     # and none of them is offered to a member as a chat model
     media_ids = (image_only["id"], video_only["id"], both["id"], ark["id"])
     assert [m["id"] for m in store.list_models() if m["provider_id"] in media_ids] == []

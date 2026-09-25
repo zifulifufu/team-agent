@@ -492,6 +492,119 @@ class ExtStore:
             args = tuple(doc_ids)
         return self._q(sql + " ORDER BY c.doc_id, c.idx", args)  # type: ignore[attr-defined]
 
+    def chunks_without_vectors(self, doc_ids: list[str] | None = None, limit: int = 256) -> list[dict]:
+        """Passages that still need a vector, oldest document first.
+
+        Paged by construction rather than by offset: each passage leaves this set as it is indexed,
+        so asking again always returns the *next* page — and a run that dies half way is picked up
+        where it stopped instead of starting over.
+        """
+        sql = ("SELECT c.doc_id, c.idx, c.text FROM library_chunks c "
+               "JOIN library_docs d ON d.id=c.doc_id "
+               "WHERE d.enabled=1 AND c.vec IS NULL")
+        args: list = []
+        if doc_ids is not None:
+            if not doc_ids:
+                return []
+            sql += " AND c.doc_id IN (%s)" % ",".join("?" * len(doc_ids))
+            args += list(doc_ids)
+        sql += " ORDER BY c.doc_id, c.idx LIMIT ?"
+        args.append(max(1, int(limit)))
+        return self._q(sql, tuple(args))  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------- passage vectors
+    def chunk_vectors(self, doc_ids: list[str] | None = None) -> list[dict]:
+        """`{doc_id, idx, vec, embed_model}` for every passage that has a vector.
+
+        Deliberately a separate query from `all_chunks`, and selected in the same order: the
+        keyword index is built on every write and must not carry a vector for every passage it
+        holds, while the vector index is built on demand and is worth loading in one pass.
+        """
+        sql = ("SELECT c.doc_id, c.idx, c.vec, d.embed_model FROM library_chunks c "
+               "JOIN library_docs d ON d.id=c.doc_id "
+               "WHERE d.enabled=1 AND c.vec IS NOT NULL")
+        args: tuple = ()
+        if doc_ids is not None:
+            if not doc_ids:
+                return []
+            sql += " AND c.doc_id IN (%s)" % ",".join("?" * len(doc_ids))
+            args = tuple(doc_ids)
+        return self._q(sql + " ORDER BY c.doc_id, c.idx", args)  # type: ignore[attr-defined]
+
+    def set_chunk_vectors(self, did: str, vecs: dict[int, bytes], model: str = "") -> int:
+        """Write the vectors of one document's passages, and record which model made them.
+
+        Written per passage rather than by rewriting the document: the text of a document that was
+        indexed before this feature existed must not be replaced just to attach a vector to it.
+        """
+        if not vecs:
+            return 0
+        with self._lock:  # type: ignore[attr-defined]
+            try:
+                self._db.executemany(  # type: ignore[attr-defined]
+                    "UPDATE library_chunks SET vec=? WHERE doc_id=? AND idx=?",
+                    [(blob, did, idx) for idx, blob in vecs.items()],
+                )
+                if model:
+                    self._db.execute("UPDATE library_docs SET embed_model=? WHERE id=?",  # type: ignore[attr-defined]
+                                     (model, did))
+                self._db.commit()  # type: ignore[attr-defined]
+            except Exception:
+                self._db.rollback()  # type: ignore[attr-defined]
+                raise
+        return len(vecs)
+
+    def clear_chunk_vectors(self, doc_ids: list[str] | None = None) -> int:
+        """Drop vectors (all of them, or one set of documents), for re-indexing with another model."""
+
+        def _run() -> int:
+            cur = self._db.execute("SELECT COUNT(*) AS n FROM library_chunks WHERE vec IS NOT NULL")  # type: ignore[attr-defined]
+            before = int(cur.fetchone()["n"])
+            if doc_ids is None:
+                self._db.execute("UPDATE library_chunks SET vec=NULL")  # type: ignore[attr-defined]
+                self._db.execute("UPDATE library_docs SET embed_model=''")  # type: ignore[attr-defined]
+            elif doc_ids:
+                marks = ",".join("?" * len(doc_ids))
+                self._db.execute(f"UPDATE library_chunks SET vec=NULL WHERE doc_id IN ({marks})", tuple(doc_ids))  # type: ignore[attr-defined]
+                self._db.execute(f"UPDATE library_docs SET embed_model='' WHERE id IN ({marks})", tuple(doc_ids))  # type: ignore[attr-defined]
+            else:
+                return 0
+            self._db.commit()  # type: ignore[attr-defined]
+            return before
+
+        with self._lock:  # type: ignore[attr-defined]
+            try:
+                return _run()
+            except Exception:
+                self._db.rollback()  # type: ignore[attr-defined]
+                raise
+
+    def doc_has_vectors(self, did: str) -> bool:
+        """Whether any passage of this document carries a vector.
+
+        Asked when deciding which of two copies of a document to keep (see the vault ingest): the one
+        with vectors is the one somebody already paid the embedding time for.
+        """
+        return self._one(  # type: ignore[attr-defined]
+            "SELECT 1 AS n FROM library_chunks WHERE doc_id=? AND vec IS NOT NULL LIMIT 1", (did,)) is not None
+
+    def vector_coverage(self) -> dict:
+        """How much of the library has vectors, and which models they came from.
+
+        A number the settings page can show and a person can act on: "0 of 7000" and "1200 of 7000"
+        are different problems, and "indexed with another model" is a third one entirely.
+        """
+        total = int((self._one("SELECT COUNT(*) AS n FROM library_chunks c JOIN library_docs d "  # type: ignore[attr-defined]
+                               "ON d.id=c.doc_id WHERE d.enabled=1") or {"n": 0})["n"])
+        with_vec = int((self._one("SELECT COUNT(*) AS n FROM library_chunks c JOIN library_docs d "  # type: ignore[attr-defined]
+                                  "ON d.id=c.doc_id WHERE d.enabled=1 AND c.vec IS NOT NULL") or {"n": 0})["n"])
+        models = self._q(  # type: ignore[attr-defined]
+            "SELECT COALESCE(NULLIF(d.embed_model,''),'(none)') AS model, COUNT(*) AS n "
+            "FROM library_chunks c JOIN library_docs d ON d.id=c.doc_id "
+            "WHERE d.enabled=1 AND c.vec IS NOT NULL GROUP BY model ORDER BY n DESC")
+        return {"chunks": total, "with_vectors": with_vec, "missing": max(0, total - with_vec),
+                "models": {r["model"]: int(r["n"]) for r in models}}
+
     # ------------------------------------------------- model lists (new/retired)
     def set_health(self, model_id: str, status: str, detail: str = "", latency_ms: int = 0, source: str = "test") -> None:
         self._x(

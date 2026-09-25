@@ -14,13 +14,13 @@ import tempfile
 import time
 import urllib.parse
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, i18n, imagegen, modelopts, presets, strengths as strength_lib, updater, video
+from . import coderun, embed, i18n, imagegen, modelopts, presets, strengths as strength_lib, updater, video
 from . import advisor
 from . import attachments as attachments_lib
 from . import vision
@@ -85,6 +85,17 @@ class LibraryDirIn(BaseModel):
     recursive: bool = True
     kb_id: str = ""
     group_id: str = ""
+
+
+class VectorIndexIn(BaseModel):
+    """Which documents to embed, and how many passages at most.
+
+    `limit` exists so a first run can be a pilot: on a real library the whole job is tens of minutes,
+    and somebody deciding whether the result is worth it should be able to buy ten minutes of it
+    first. An empty `kb_id` means every document in the database.
+    """
+    kb_id: str = ""
+    limit: int = 0
 
 
 class McpImportIn(BaseModel):
@@ -257,6 +268,10 @@ class Ctx:
     updater: Updater
     approvals: Approvals
     obsidian: ObsidianSync
+    # One long-running job at a time: indexing a knowledge base. Kept here rather than in the
+    # endpoint's closure because the job outlives the request that started it — the page that asked
+    # for it is told what is happening by polling, not by waiting.
+    vec_job: dict[str, Any] = field(default_factory=dict)
 
 
 def _need(x: Any, what: str) -> Any:
@@ -1494,6 +1509,88 @@ def build_router(c: Ctx) -> APIRouter:
         except LibraryError as e:
             raise HTTPException(400, str(e)) from None
 
+    # =================================================== searching by meaning (see app/embed.py)
+    # Three endpoints rather than one, because three different questions are being asked and only
+    # one of them can take fifteen minutes: what is the state, start the local model, index these
+    # documents. None of them waits for the work it starts — a request that blocks until the whole
+    # library is embedded is a request the user cancels, and a page cannot show progress either.
+
+    @r.get("/api/library/vector")
+    async def vector_state() -> dict:
+        """Everything the settings page needs, in one call: coverage, the model, the server, the job."""
+        cfg = store.get_settings()
+        st = await asyncio.to_thread(c.library.vector_status)
+        health = await embed.health(cfg)
+        st["server"] = {k: health.get(k) for k in
+                        ("up", "ready", "state", "device", "dim", "load_seconds", "error", "hint")}
+        # The two commands are given, not described: one starts the server, the other fetches the
+        # weights, and both carry this machine's own quirks (the mirror, and disabling Xet).
+        st["start_command"] = embed.fetch_command(cfg)
+        st["fetch_command"] = embed.fetch_command(cfg, download=True)
+        st["weights"] = await asyncio.to_thread(embed.cached, embed.model_of(cfg))
+        st["job"] = dict(c.vec_job)
+        return st
+
+    @r.post("/api/library/vector/start")
+    async def vector_start() -> dict:
+        cfg = store.get_settings()
+        before = await embed.health(cfg)
+        if before.get("up"):
+            return {"started": False, "ready": bool(before.get("ready")), "reason": ""}
+        got = await asyncio.to_thread(embed.start, cfg, data_dir=str(store.data_dir))
+        return {"started": bool(got.get("started")), "ready": False, "reason": got.get("reason", "")}
+
+    @r.post("/api/library/vector/index")
+    async def vector_index(body: VectorIndexIn) -> dict:
+        if c.vec_job.get("running"):
+            return {"started": False, "reason": i18n.pick_now(
+                "An indexing run is already going.", "已经有一次索引在跑了。")}
+        docs: list[str] | None = None
+        if body.kb_id:
+            docs = [d["id"] for d in store.list_docs(body.kb_id) if d["enabled"]]
+            if not docs:
+                raise HTTPException(404, i18n.pick_now("That knowledge base has no documents.",
+                                                       "这个知识库里没有文档。"))
+        c.vec_job = {"running": True, "indexed": 0, "done": 0, "started_at": time.time(),
+                     "error": "", "model": embed.model_of(store.get_settings())}
+
+        async def run() -> None:
+            try:
+                # The model is started here, and waited for: this job is expected to take minutes, so
+                # a thirteen-second load is nothing — unlike inside a search, where it would be the
+                # whole cost of answering.
+                st = await embed.ensure(store.get_settings(), data_dir=str(store.data_dir), wait=600)
+                if not st.get("ready"):
+                    c.vec_job["error"] = str(st.get("error") or st.get("reason") or st.get("state") or "")
+                    return
+
+                def progress(done: int, _total: int) -> None:
+                    c.vec_job["indexed"] = done
+
+                rep = await c.library.index_vectors(docs, max_chunks=body.limit, progress=progress)
+                c.vec_job["indexed"] = rep["indexed"]
+                c.vec_job["documents"] = rep["documents"]
+                c.vec_job["seconds"] = rep["seconds"]
+                c.vec_job["left"] = rep["left"]
+                if rep["errors"]:
+                    c.vec_job["error"] = rep["errors"][0]
+            except Exception as e:  # noqa: BLE001 - the page is told, not the traceback
+                c.vec_job["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                c.vec_job["running"] = False
+                c.vec_job["finished_at"] = time.time()
+
+        asyncio.create_task(run())
+        return {"started": True}
+
+    @r.post("/api/library/vector/clear")
+    async def vector_clear() -> dict:
+        """Throw the vectors away so the library can be indexed with another model. The documents
+        and their text stay exactly where they are."""
+        n = await asyncio.to_thread(store.clear_chunk_vectors)
+        await asyncio.to_thread(c.library.invalidate)
+        return {"cleared": int(n)}
+
     @r.get("/api/library/search")
     async def library_search(q: str, top_k: int = 5, group_id: str | None = None, kb_id: str | None = None) -> list[dict]:
         """With a group id, only what that group may search comes back — the same scope its
@@ -1506,8 +1603,9 @@ def build_router(c: Ctx) -> APIRouter:
         else:
             scope = None
         # the first search on a large library rebuilds the BM25 index, so run it in a thread pool
-        # to keep the event loop free
-        return await asyncio.to_thread(c.library.search, q, max(1, min(top_k, 20)), scope)
+        # to keep the event loop free; the query vector is asked for out here for the same reason
+        qvec, _note = await embed.query_vector(store.get_settings(), q)
+        return await asyncio.to_thread(c.library.search, q, max(1, min(top_k, 20)), scope, qvec)
 
     @r.get("/api/library/{did}")
     async def library_read(did: str, start: int = 0) -> dict:
