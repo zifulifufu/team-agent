@@ -282,7 +282,9 @@ substitute for looking**: it returns characters, not a description, and both the
 the attachment path say so in as many words — a member told "here is what the picture says" when all
 that happened was a recognition pass will describe a chart from its axis labels and believe it has
 understood the chart. Lines the recogniser was not sure about are **counted and named** rather than
-dropped, because text that quietly disappears is the one failure nobody can see.
+dropped, because text that quietly disappears is the one failure nobody can see. Character recognition
+**approximates punctuation** (measured on a real dialog: `--index-url` came back as `-index-url`, and
+`'torch'` as `torch®`), so anything that has to be copied exactly has to come from the file itself.
 
 Referencing something with `@` in the composer offers the group's members first, and once a
 character is typed it also offers files, folders and documents, inserting a token the backend

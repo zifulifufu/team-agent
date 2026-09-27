@@ -33,6 +33,7 @@ from tests.test_collab import setup
 # rest of this suite follows (see `conftest.has`). Each tuple is (English, Chinese), and the
 # assertions below check for the *claim*, never for the sentence.
 NOT_A_DESCRIPTION = ("NOT a description", "不是对画面的描述")
+PUNCTUATION_WARNING = ("approximates punctuation", "对标点是近似的")
 NO_TEXT_FOUND = ("no text found", "没有读出文字")
 LEFT_OUT = ("left out", "已略去")
 NOT_OURS = ("not the one this app expects", "不是本程序要的那个")
@@ -166,6 +167,15 @@ def test_text_is_never_presented_as_having_looked_at_the_picture(tmp_path, monke
     out = localocr.render(localocr.read([tmp_path / "a.png"]))
     assert says(out, NOT_A_DESCRIPTION), out
     assert "读到的一行" in out, "说清楚它不是什么,不等于不给文字"
+
+
+def test_the_answer_says_punctuation_is_approximate(tmp_path, monkeypatch):
+    """Measured, not assumed: on a real dialog `--index-url` came back as `-index-url` and `'torch'`
+    as `torch®`. A member that relays a command from this text without knowing that is the one way
+    reading text off a picture can do harm, so the warning travels with the text."""
+    monkeypatch.setenv(localocr.OVERRIDE_ENV, str(stub_ocr(tmp_path)))
+    out = localocr.render(localocr.read([tmp_path / "a.png"]))
+    assert says(out, PUNCTUATION_WARNING), out
 
 
 def test_a_slow_recogniser_is_a_sentence_not_a_traceback(tmp_path, monkeypatch):

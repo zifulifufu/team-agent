@@ -208,9 +208,14 @@ def render(blocks: list[dict]) -> str:
         "[Text read off these pictures by this machine's own OCR. These are the words printed on "
         "them, NOT a description of what they show — nobody here has looked at the pictures. If the "
         "answer needs the picture itself understood (layout, colour, what is happening), say so "
-        "rather than inferring it from this text.]",
+        "rather than inferring it from this text. Character recognition approximates punctuation: "
+        "measured on a real dialog, `--index-url` came back as `-index-url` and `'torch'` as "
+        "`torch®`, so for anything that has to be copied exactly, open the file instead of trusting "
+        "this.]",
         "【以下文字是本机 OCR 从图里读出来的。它们是图上的字,不是对画面的描述 —— 没有人看过这些图。"
-        "如果问题需要真正看懂画面(版式、配色、发生了什么),请直说,不要拿这些文字去推。】")
+        "如果问题需要真正看懂画面(版式、配色、发生了什么),请直说,不要拿这些文字去推。"
+        "文字识别对标点是近似的:在真实的弹窗上实测,`--index-url` 读成了 `-index-url`、`'torch'` "
+        "读成了 `torch®` —— 凡是要**照抄**的东西,请打开原文件,不要信这段文字。】")
     out = "\n\n".join([*found, *missed])
     if len(out) > MAX_CHARS:
         out = out[:MAX_CHARS] + i18n.pick_now(
