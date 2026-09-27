@@ -1342,6 +1342,8 @@ export interface MusicJob {
   id: string;
   state: "running" | "done" | "failed";
   prompt: string; name: string; seconds: number; bytes: number;
+  /** What the vocabulary had to say about the tag string, shown before and after composing. */
+  warnings?: string[];
   error: string; note: string; started: number; finished: number;
 }
 export interface MusicShelf {
@@ -1353,9 +1355,38 @@ export interface MusicShelf {
   limits: { min_seconds: number; max_seconds: number; default_seconds: number };
 }
 export interface MusicComposeIn {
-  prompt: string; seconds?: number; bpm?: number; language?: string; seed?: number;
+  /** Free text, appended after the faders. On its own it still works — that is what the tool sends. */
+  prompt?: string;
+  /** The faders. `musicprompt.compose_tags` turns these into the tag string the model reads. */
+  genre?: string;
+  instruments?: string[];
+  production?: string[];
+  vocals?: string;
+  seconds?: number; bpm?: number; language?: string; seed?: number;
   lyrics?: string; name?: string; mood?: string; tags?: string[];
 }
+/** One row of a vocabulary column: `label` is already in the UI language. */
+export interface VocabRow {
+  id: string; label: string;
+  /** genres only — the range this genre actually lives in, used to warn about a mismatched tempo */
+  bpm?: [number, number];
+  /** genres: what kind of film it suits. instruments: what it is good for. */
+  use?: string; for?: string;
+}
+export interface MusicPreset {
+  id: string; label: string; genre: string; mood: string;
+  instruments: string[]; production: string[]; vocals: string; bpm: number; note: string;
+}
+export interface MusicVocabulary {
+  genres: VocabRow[]; instruments: VocabRow[]; production: VocabRow[];
+  vocals: VocabRow[]; presets: MusicPreset[]; max_tags: number;
+  /** From the backend's `music.MOODS` — the shelf's closed vocabulary. Listed here rather than in
+   *  the page so the two cannot drift apart (`triumphant` was in a hand-written copy of this list
+   *  and is not a value the shelf accepts). */
+  moods: string[];
+}
+/** What the model would actually receive, and anything wrong with it. */
+export interface MusicPreview { tags: string; warnings: string[]; }
 
 // ------------------------------------------------------------------- http
 /** Turn the backend error body into something readable: FastAPI validation errors are arrays and must not be JSON.stringify'd straight to the user */
@@ -1450,6 +1481,10 @@ export const api = {
   videoZoneMusic: () => get<MusicShelf>("/api/video-zone/music"),
   /** Minutes, not seconds — returns a job id immediately; poll `musicJob` for it. */
   composeMusic: (b: MusicComposeIn) => post<{ job: MusicJob }>("/api/video-zone/music/compose", b),
+  /** The faders: genres (with their BPM ranges), instruments, production, vocals, scene presets. */
+  musicVocabulary: () => get<MusicVocabulary>("/api/video-zone/music/vocabulary"),
+  /** The tag string the model would receive, composed by the backend so the rules live in one place. */
+  previewMusic: (b: MusicComposeIn) => post<MusicPreview>("/api/video-zone/music/preview", b),
   musicJob: (id: string) => get<{ job: MusicJob }>(`/api/video-zone/music/jobs/${encodeURIComponent(id)}`),
   delMusic: (name: string) => del<{ ok: boolean }>(`/api/video-zone/music/${encodeURIComponent(name)}`),
   /** Bytes of one track, as a blob URL a player can use (see `blobUrl`). */

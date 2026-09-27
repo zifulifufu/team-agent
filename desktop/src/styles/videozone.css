@@ -93,3 +93,31 @@
 .vz-facts { margin: 8px 0 12px; padding-left: 20px; color: var(--text-2); font-size: 13px; line-height: 1.75; }
 .vz-facts li { margin-bottom: 4px; }
 .vz-facts b { color: var(--text); }
+
+/* ---- 词表:可点的标签。选中态要一眼看得出,它是这一页的主要操作。 */
+.vz-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.vz-chip {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 5px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--text-2);
+  font-size: 12.5px; line-height: 1.4; font-family: inherit;
+}
+.vz-chip:hover:not(:disabled) { border-color: var(--primary); color: var(--text); }
+.vz-chip.on { border-color: var(--primary); background: var(--primary-soft, var(--hover));
+  color: var(--text); font-weight: 600; }
+.vz-chip:disabled { opacity: .5; cursor: not-allowed; }
+.vz-chip em { font-style: normal; font-size: 10.5px; color: var(--text-3, var(--text-2)); }
+.vz-hint { margin: 6px 0 0; color: var(--text-3, var(--text-2)); font-size: 11.5px; line-height: 1.5; }
+
+/* ---- 预览:让用户看见模型真正会收到的那串词。虚线框(与"已经决定了"的实线区分开),
+   因为它显示的是**将要发送**的东西,不是已经存在的东西。 */
+.vz-preview {
+  margin: 4px 0 12px; padding: 10px 11px; border-radius: 10px;
+  border: 1px dashed var(--border); background: var(--hover);
+}
+.vz-preview-label { display: block; margin-bottom: 5px; color: var(--text-3, var(--text-2)); font-size: 11px; }
+.vz-preview code { display: block; color: var(--text); font-size: 12px; line-height: 1.6;
+  word-break: break-word; }
+.vz-warn { display: flex; align-items: flex-start; gap: 5px; margin: 7px 0 0;
+  color: var(--danger); font-size: 11.5px; line-height: 1.5; }
+.vz-warn svg { flex: 0 0 auto; margin-top: 2px; }

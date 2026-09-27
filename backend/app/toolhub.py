@@ -517,15 +517,21 @@ BUILTIN_SPECS: dict[str, dict] = {
         # minutes of GPU time. The approval is the ordinary one for running a local program.
         "description": "Compose music with ACE-Step, running locally inside this machine's ComfyUI, "
                        "and put it straight on this group's music shelf so a film can be scored with "
-                       "it. Describe the music itself in `prompt` — genre, instruments, mood, tempo "
-                       "— as **style tags** (ACE-Step's encoders were trained on English tags). "
+                       "it. `prompt` is **comma-separated style tags**, not a sentence: genre first "
+                       "(it anchors everything else), then mood, then 2–3 **concrete** instruments "
+                       "(`felt piano` renders, `sophisticated` does not), then production, then BPM "
+                       "— 5–12 tags in total, past that they dilute each other. A tempo outside "
+                       "what the genre actually lives at makes the model swing between the two. "
                        "`lyrics` is optional and is usually wrong for a bed under a narrator: leave "
                        "it out and the piece is instrumental. This takes minutes, not seconds. You "
                        "cannot hear the result — never describe how it sounds or claim to have "
                        "checked it.",
         "description_zh": "用本机 ComfyUI 里的 ACE-Step 作一首曲子,**直接上架**到本群的音乐库,片子就能拿它配乐。"
-                          "`prompt` 写音乐本身:流派、乐器、情绪、速度 —— 用**风格标签**写(ACE-Step 的编码器"
-                          "是在英文标签上训的)。`lyrics` 可选,而垫在旁白底下通常**不该**填:不填就是纯器乐。"
+                          "`prompt` 要写**逗号分隔的风格标签**,不是一句话:流派放第一(它锚定其余全部),"
+                          "然后是情绪、2–3 件**具体**乐器(`felt piano` 出来的是毡化钢琴,`sophisticated` 什么都不是)、"
+                          "制作质感,最后 BPM —— 一共 5–12 个标签,再多就开始互相稀释;"
+                          "速度若不在该流派惯常的区间里,模型会在两端摇摆。"
+                          "`lyrics` 可选,而垫在旁白底下通常**不该**填:不填就是纯器乐。"
                           "这一步要几分钟,不是几秒。**你听不到结果** —— 绝不要描述它听起来如何,也不要声称核对过。",
         "parameters": {
             "type": "object",

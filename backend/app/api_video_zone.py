@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import comfyui, i18n, music, musicwork
+from . import comfyui, i18n, music, musicprompt, musicwork
 from .api_ext import Ctx
 from .store import new_id
 
@@ -30,7 +30,19 @@ AUDIO_MEDIA_TYPES = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/a
 
 
 class MusicComposeIn(BaseModel):
-    prompt: str
+    """What to compose. Two ways in, and they are **added together**: the faders (`genre` …
+    `vocals`) are composed into a well-formed tag string by `musicprompt.compose_tags`, and
+    `prompt` is free text appended after it for anything the vocabulary has no word for.
+
+    ⚠️ `prompt` alone still works — that is what the tool and the first version of this page sent —
+    but a free sentence cannot carry the five things the model actually reads (genre first,
+    concrete instruments, production, BPM that matches the genre, no contradictory tags).
+    """
+    prompt: str = ""
+    genre: str = ""
+    instruments: list[str] = []
+    production: list[str] = []
+    vocals: str = ""
     seconds: float = 0.0
     bpm: int = 120
     language: str = "en"
@@ -54,8 +66,10 @@ def _job_view(job: dict) -> dict:
     ⚠️ The asyncio task lives in the same dict so it can be found again; serialising the whole dict
     would try to send it over the wire.
     """
-    return {k: job[k] for k in ("id", "state", "prompt", "name", "seconds", "bytes",
-                                "error", "note", "started", "finished")}
+    # `.get`, not `[...]`: a job row built by a test (or by an older page) may predate `warnings`,
+    # and a missing display field must not turn a working job into a 500.
+    return {k: job.get(k) for k in ("id", "state", "prompt", "name", "seconds", "bytes",
+                                    "error", "note", "warnings", "started", "finished")}
 
 
 def build_video_zone_router(c: Ctx) -> APIRouter:
@@ -113,6 +127,34 @@ def build_video_zone_router(c: Ctx) -> APIRouter:
         return FileResponse(path, media_type=AUDIO_MEDIA_TYPES.get(path.suffix.lower(), "audio/mpeg"),
                             filename=path.name)
 
+    @r.get("/api/video-zone/music/vocabulary")
+    async def music_vocabulary() -> dict:
+        """The faders: genres (with the BPM range each one actually lives in), concrete instruments,
+        production treatments, vocals, and the scene presets. Served rather than hard-coded in the
+        page so that a member using `make_music` is composing against the same words the person at
+        the keyboard is clicking.
+
+        `moods` comes from `music.MOODS` — the shelf's closed vocabulary — rather than being listed a
+        second time here: those seven words are what `publish()` validates against, and two lists
+        that drift apart give a track the shelf then refuses.
+        """
+        return {**musicprompt.vocabulary(), "moods": list(music.MOODS)}
+
+    @r.post("/api/video-zone/music/preview")
+    async def music_preview(body: MusicComposeIn) -> dict:
+        """The tag string the model would actually receive, and anything wrong with it.
+
+        Why this is a round trip rather than the page assembling the string itself: the composition
+        rules (genre first, the keyword ceiling, the BPM range each genre lives in) are
+        `musicprompt.compose_tags`'s, and a second copy in the page would drift from it — the user
+        would be shown one thing and sent another. It is a string join, so it costs nothing.
+        """
+        tags, warnings = musicprompt.compose_tags(
+            genre=body.genre, mood=body.mood, instruments=body.instruments,
+            production=body.production, vocals=body.vocals, bpm=int(body.bpm or 0),
+            extra=body.prompt)
+        return {"tags": tags, "warnings": warnings}
+
     # --------------------------------------------------------------- composing
     @r.post("/api/video-zone/music/compose")
     async def music_compose(body: MusicComposeIn) -> dict:
@@ -121,11 +163,19 @@ def build_video_zone_router(c: Ctx) -> APIRouter:
         Minutes, not seconds — ACE-Step loads ~13.7 GB of weights and then works. A request that
         waited for that would be a request that times out while the music is being made.
         """
-        text = str(body.prompt or "").strip()
-        if not text:
-            raise HTTPException(400, i18n.pick_now("Describe the music first — genre, instruments, "
-                                                   "mood, tempo.",
-                                                   "先写一句音乐描述 —— 流派、乐器、情绪、速度。"))
+        text, warnings = musicprompt.compose_tags(
+            genre=body.genre, mood=body.mood, instruments=body.instruments,
+            production=body.production, vocals=body.vocals, bpm=int(body.bpm or 0),
+            extra=body.prompt)
+        # ⚠️ What is refused here is **an empty choice**, not "an empty text box". `mood` has a
+        # default (`neutral`), so checking the composed string alone let a user who picked nothing
+        # submit a one-word prompt and get a track the model improvised off nothing — the same
+        # generic-piano outcome this whole vocabulary exists to avoid. A genre is the anchor the
+        # official guidance is built around; free text is the escape hatch.
+        if not (str(body.genre or "").strip() or str(body.prompt or "").strip()):
+            raise HTTPException(400, i18n.pick_now(
+                "Pick a genre, or describe the music yourself — instruments, mood, tempo.",
+                "先选一个流派；或者自己写一句描述 —— 乐器、情绪、速度。"))
         busy = next((j for j in jobs.values() if j["state"] == "running"), None)
         if busy:
             raise HTTPException(409, i18n.pick_now(
@@ -134,8 +184,8 @@ def build_video_zone_router(c: Ctx) -> APIRouter:
                 f"已经有一首在作曲(已开始 {int(time.time() - busy['started'])} 秒)。等它做完。"))
         job_id = new_id()
         job = {"id": job_id, "state": "running", "prompt": text, "name": "", "seconds": 0.0,
-               "bytes": 0, "error": "", "note": "", "started": time.time(), "finished": 0.0,
-               "task": None}
+               "bytes": 0, "error": "", "note": "", "warnings": warnings,
+               "started": time.time(), "finished": 0.0, "task": None}
         jobs[job_id] = job
 
         async def run() -> None:
