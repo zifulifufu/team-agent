@@ -47,6 +47,11 @@ from . import layouts
 # list), and a plain `import voices` would be shadowed by it — which surfaces as
 # "'function' object has no attribute 'is_clone'" at the first narrated shot.
 from . import voices as _voices
+from . import music as _music
+# The style gate and the house-style measurement. `visual` owns the one place that answers "may this
+# picture go into the frame, and how", so a film assembled here passes through it rather than making
+# a second, quietly different decision about shape and background.
+from . import visual
 # The typography (font, wrapping, shadow) belongs to `figure`, which owns everything drawn by
 # hand — a second font list here would drift from that one.
 from .figure import FigureError, font as _font, rgb as _rgb, shadow as _shadow, wrap as _wrap
@@ -114,7 +119,7 @@ def duration_of(path: Path) -> float:
             return 0.0
 
 
-def probe(path: Path) -> dict:
+def probe(path: Path, *, allow_audio: bool = False) -> dict:
     """What a file is: `{"kind", "seconds", "width", "height", "audio"}`.
 
     `seconds` is 0.0 for a still picture and for anything unreadable — the caller treats 0 as "no
@@ -142,6 +147,8 @@ def probe(path: Path) -> dict:
     except (TypeError, ValueError):
         seconds = 0.0
     if not video:
+        if allow_audio and audio:
+            return {"kind": "audio", "seconds": seconds, "width": 0, "height": 0, "audio": True}
         raise AssembleError(i18n.pick_now(
             f"\"{path.name}\" holds no picture, so it cannot be part of the film.",
             f"「{path.name}」里没有画面,不能放进成片。"))
@@ -240,6 +247,14 @@ def speak_timeout(voice: str, timeout: float) -> float:
     return float(got.get("timeout") or 900)
 
 
+# One cloning engine at a time. These are one-shot CLIs that load a model before they speak, and two
+# of them running at once on the same binary dies with `recursive_mutex lock failed` — measured
+# 2026-09-26 in group 视频制作, where one member synthesised five narration segments in a single turn
+# and two of them came back failed while the engine had already printed a written path. The tool's
+# callers run in parallel, so the serialisation has to live here rather than in the caller.
+_CLONE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 async def _speak_clone(row: dict, text: str, out: Path, timeout: float) -> float:
     """One line in one of the user's cloned voices.
 
@@ -252,7 +267,8 @@ async def _speak_clone(row: dict, text: str, out: Path, timeout: float) -> float
         raise AssembleError(_voices.reason_missing(row["engine"]))
     cmd = _voices.argv_for(row, text, out)
     cmd[0] = exe                    # the path we resolved, not the bare name
-    code, detail = await asyncio.to_thread(lambda: _run(cmd, timeout))
+    async with _CLONE_LOCKS.setdefault(exe, asyncio.Lock()):
+        code, detail = await asyncio.to_thread(lambda: _run(cmd, timeout))
     if code != 0 or not out.is_file():
         raise AssembleError(i18n.pick_now(
             f"The narration could not be recorded with the cloned voice \"{row['name']}\": "
@@ -301,8 +317,16 @@ async def speak(text: str, out: Path, voice: str, timeout: float) -> float:
         return await _speak_clone(row, text, out, timeout)
     tmp = out.with_suffix(".txt")
     tmp.write_text(text, encoding="utf-8")
+    # `say` infers the container from the extension and gets `.wav` right — but only if it is also
+    # told a sample format; without one it answers "Opening output file failed: fmt?" and writes
+    # nothing. Measured, including the wrong fix: adding `--file-format=WAVE` on top makes it fail
+    # the same way, because `say` does not have that option at all. `--data-format` alone is it.
+    #
+    # WAVE only where a browser has to play the result (the chat's read-aloud; Chromium cannot play
+    # the AIFF that `say` otherwise writes). The assembly pipeline keeps `say`'s own default.
+    fmt = ["--data-format=LEI16@22050"] if out.suffix.lower() == ".wav" else []
     code, detail = await asyncio.to_thread(
-        lambda: _run(["say", "-v", voice, "-f", str(tmp), "-o", str(out)], timeout))
+        lambda: _run(["say", *fmt, "-v", voice, "-f", str(tmp), "-o", str(out)], timeout))
     if code != 0 or not out.is_file():
         raise AssembleError(i18n.pick_now(
             f"The narration could not be recorded with the voice \"{voice}\": {detail[:200]}",
@@ -494,6 +518,7 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
         if not isinstance(raw, dict):
             raise AssembleError(i18n.pick_now(f"Shot {i} is not an object.", f"第 {i} 个镜头不是一条记录。"))
         say = str(raw.get("say") or "").strip()
+        audio_file = str(raw.get("audio_file") or "").strip()
         text = str(raw.get("text") or "").strip() or say
         title = str(raw.get("title") or "").strip()
         clip = str(raw.get("clip") or raw.get("source") or "").strip()
@@ -517,8 +542,20 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
                                  # and the question always arrives after the work is done.
                                  "credit": str(raw.get("credit") or raw.get("source") or "").strip(),
                                  "subtitle": str(raw.get("subtitle") or "").strip(),
-                                 "audio": str(raw.get("audio") or ("voice" if say else "clip")),
-                                 "motion": raw.get("motion", bool(raw.get("title"))),
+                                 "audio": str(raw.get("audio") or ("voice" if say or audio_file else "clip")),
+                                 # ⚠️⚠️ **A still moves by default.** This used to be
+                                 # `raw.get("motion", bool(raw.get("title")))` — i.e. only a title card
+                                 # drifted, and every other still sat perfectly still. Measured on the
+                                 # 300s science film (2026-09-26): the assembler reported "会动的镜头: 0
+                                 # 个是本程序画的" and an adjacent-frame difference of **0.00** at seven of
+                                 # eight sampled moments — the user's verdict was 「图片不是动态的」, and
+                                 # the fix has to be the default rather than a flag nobody passes.
+                                 # The one exception is `fit: contain`, whose whole purpose is to keep the
+                                 # whole picture inside the frame (a figure whose edges matter): pushing
+                                 # in would crop exactly what it was asked to preserve. `cover` and
+                                 # `blur` both fill the frame, so a drift costs them nothing.
+                                 "motion": raw.get("motion",
+                                                   str(raw.get("fit") or fit or DEFAULT_FIT).strip().lower() != "contain"),
                                  "source": "", "kind": "card", "own": 0.0}
         if anim is not None:
             entry["anim"], entry["kind"] = anim, "anim"
@@ -529,10 +566,30 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
                 f"{', '.join(FITS)}.",
                 f"第 {i} 个镜头:「{want_fit}」不是把画面装进画幅的方式。可用:{', '.join(FITS)}。"))
         entry["fit"] = want_fit
+        # Whether **the caller** decided the fit, as opposed to this module's default filling it in.
+        # The difference is the whole point of the style gate: a shot that named a fit is a decision
+        # and is left alone, and a shot that did not is decided by `visual.admit()` — which is what
+        # stops a sideways screenshot entering the frame as a stretched background.
+        entry["fit_asked"] = bool(str(raw.get("fit") or "").strip())
         if entry["audio"] not in ("voice", "clip", "mix", "silent"):
-            entry["audio"] = "voice" if say else "clip"
-        if not say and entry["audio"] == "voice":
+            entry["audio"] = "voice" if say or audio_file else "clip"
+        if not say and not audio_file and entry["audio"] == "voice":
             entry["audio"] = "clip"
+        if audio_file:
+            path = _local(workspace, audio_file, f"Shot {i} has no narration file.")
+            info = probe(path, allow_audio=True)
+            if not info.get("audio") or info["seconds"] <= 0:
+                raise AssembleError(f"Shot {i}: audio_file must contain a nonempty audio stream.")
+            try:
+                start = float(raw.get("audio_start", 0))
+                duration = float(raw.get("audio_duration", info["seconds"] - start))
+            except (TypeError, ValueError):
+                raise AssembleError(f"Shot {i}: audio_start/audio_duration must be seconds.") from None
+            if not (0 <= start < info["seconds"] and 0 < duration <= info["seconds"] - start + 0.01):
+                raise AssembleError(f"Shot {i}: narration range is outside audio_file.")
+            if entry["audio"] not in ("voice", "mix"):
+                raise AssembleError(f"Shot {i}: audio_file needs audio=voice or mix; refusing to discard it.")
+            entry.update(audio_file=str(path), audio_start=start, audio_duration=duration)
         if clip:
             path = _local(workspace, clip, i18n.pick_now(
                 f"Shot {i} has no clip.", f"第 {i} 个镜头没有素材。"))
@@ -547,7 +604,7 @@ def make_plan(shots: Any, *, workspace: Path, total: float = 0.0,
             raise AssembleError(i18n.pick_now(
                 f"Shot {i}: \"{want}\" is not a number of seconds.",
                 f"第 {i} 个镜头:「{want}」不是秒数。")) from None
-        needs = narration_seconds(say, voice) if say else 0.0
+        needs = entry.get("audio_duration") or (narration_seconds(say, voice) if say else 0.0)
         if asked > 0:
             entry["seconds"], entry["why"] = asked, "asked"
         elif needs:
@@ -673,6 +730,142 @@ def contain_chain(w: int, h: int) -> str:
     return scale_to(w, h) + f",pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"
 
 
+async def _unify(plan: list[dict], size: tuple[int, int], plan_dir: Path, out_dir: Path, *,
+                 named_fit: str = "") -> list[str]:
+    """Read the film's style off its own stills, then draw every one of them in it.
+
+    This is the step that answers 「图不专业」 at the level it actually fails. Measured on a finished
+    300-second film: 30 pictures, **nine different backgrounds**, a 14x spread in how many colours
+    each used, and 12 of the 30 not the film's shape at all — while the 15 pictures this app drew
+    itself were identical to each other. Nothing was wrong with the drawing code; what was wrong was
+    that a mixed pile of pictures was placed into the frame one at a time with no one deciding.
+
+    So: the material is measured as a set (`visual.profile`), the measurements are written beside the
+    film so a re-cut months later is the same film, and then every still is gated (`visual.admit`) —
+    a drawing is drawn again in the film's palette, a real picture that is already the frame's shape
+    fills it, and any other real picture is framed whole with its heading and its source line. A shot
+    that named its own `fit` is not touched: that is a decision, and this is only what happens when
+    nobody decided.
+
+    Runs off the event loop (`to_thread`) because it is all Pillow, which releases the GIL for the
+    resampling and would otherwise block the narration of the shot before it.
+
+    `named_fit` is a way of fitting that **somebody named for the whole film** — the tool argument or
+    the layout. Naming it is a decision, and this pass does not overrule a decision: it does nothing
+    at all. That is also what makes the three ways of fitting testable, since a test that asks for
+    `contain` must get `contain`.
+    """
+    if (named_fit or "").strip():
+        return []
+    stills = [Path(e["source"]) for e in plan
+              if e["kind"] == "image" and e.get("source") and not e.get("fit_asked")]
+    if not stills:
+        return []
+
+    prof = await asyncio.to_thread(visual.profile, stills)
+    # The style is a deliverable in its own right — it is what makes a re-cut months later the same
+    # film rather than a similar one — so it is written beside the film, not into the scratch folder.
+    out_dir.mkdir(parents=True, exist_ok=True)
+    visual.save_profile(prof, out_dir / "style.json")
+    notes = [i18n.pick_now(
+        f"Style read off this film's own {prof['read']} pictures: background {prof['canvas']}, "
+        f"palette {', '.join(prof['ramp'])}, agreement {prof['agreement']:.0%}"
+        + (f", and {len(prof['split'])} that do not match it" if prof["split"] else ""),
+        f"从本片自己的 {prof['read']} 张素材里量出风格:底色 {prof['canvas']},"
+        f"调色板 {', '.join(prof['ramp'])},一致度 {prof['agreement']:.0%}"
+        + (f",其中 {len(prof['split'])} 张与主流不一致" if prof["split"] else ""))]
+
+    counts = {"redraw": 0, "plate": 0, "cover": 0, "as_is": 0}
+    toned = {"flip": 0, "page": 0}
+    warned: list[str] = []
+    for entry in plan:
+        if entry["kind"] != "image" or not entry.get("source") or entry.get("fit_asked"):
+            continue
+        src = Path(entry["source"])
+        verdict = await asyncio.to_thread(
+            visual.admit, src, size, credit=str(entry.get("credit") or ""))
+        keep = {"redraw": "redraw", "plate": "plate", "cover": "cover"}[verdict["fit"]]
+        if keep == "redraw" and not verdict.get("repaint", True):
+            keep = "as_is"
+        counts[keep] += 1
+        warned.extend(verdict["warnings"])
+        try:
+            if verdict["fit"] == "redraw":
+                made = plan_dir / f"s{entry['no']:03d}-redraw.png"
+                await asyncio.to_thread(visual.redraw, src, made, size, prof,
+                                        repaint=verdict.get("repaint", True))
+                entry["unified"] = "as-is" if keep == "as_is" else "redraw"
+            elif verdict["fit"] == "plate":
+                made = plan_dir / f"s{entry['no']:03d}-plate.png"
+                await asyncio.to_thread(
+                    visual.plate_write, src, made, size,
+                    heading=str(entry.get("title") or ""),
+                    caption=str(entry.get("subtitle") or ""),
+                    credit=str(entry.get("credit") or ""))
+                # `plate_write` tones the picture itself, so the tag comes from the same rule it
+                # used rather than from a second guess at what it did.
+                entry["toned"] = {"flip": "flip", "page": "page removed"}.get(
+                    verdict.get("tone"), "")
+                if verdict.get("tone"):
+                    toned[verdict["tone"]] = toned.get(verdict["tone"], 0) + 1
+            elif verdict.get("tone"):
+                # `cover` with a page under it. The picture is the frame's shape, so it is not
+                # re-laid-out — it is only brought into the film's tone, and then it fills the frame
+                # the way it always did. Without this branch a white page that happened to be 9:16
+                # went in whole and became 67% of a shot.
+                made = plan_dir / f"s{entry['no']:03d}-tone.png"
+                done = await asyncio.to_thread(visual.tone_write, src, made, size)
+                entry["toned"] = ", ".join(done["applied"]) or "nothing needed"
+                toned[verdict["tone"]] = toned.get(verdict["tone"], 0) + 1
+                entry["source"] = str(made)
+                entry["fit"] = "cover"      # the toned still is already the frame's size
+                entry["unified"] = "tone"
+                entry["unified_why"] = verdict["reason"]
+                continue
+            else:
+                continue                    # already the frame's shape and a real picture: leave it
+        except Exception as e:              # noqa: BLE001 — a picture that cannot be drawn again
+            notes.append(i18n.pick_now(    # must not lose the film; it is placed as it was instead
+                f"Shot {entry['no']}: could not be {verdict['fit']}ed ({type(e).__name__}), so it goes "
+                f"in as it is.",
+                f"第 {entry['no']} 个镜头:无法「{verdict['fit']}」({type(e).__name__}),"
+                "按原样放进去了。"))
+            continue
+        entry["source"] = str(made)
+        # The file is already the frame's size and already on the film's background, so fitting it is
+        # a no-op — and saying `cover` rather than leaving `redraw` in place keeps the ffmpeg graph
+        # the one it has always been, which is the only thing that is tested end to end.
+        entry["fit"] = "cover"
+        entry["unified"] = keep
+        entry["unified_why"] = verdict["reason"]
+
+    notes.append(i18n.pick_now(
+        f"Every picture placed by this film's own material: {counts['redraw']} drawn again, "
+        f"{counts['as_is']} already in the film's colours and left untouched, "
+        f"{counts['plate']} framed whole, {counts['cover']} already the frame's shape.",
+        f"每张图都按本片自己的素材放置:重画 {counts['redraw']} 张、本来就在本片配色里因而**一张都没动** "
+        f"{counts['as_is']} 张、整张装框 {counts['plate']} 张、本来就是画幅形状 {counts['cover']} 张。"))
+    if toned["flip"] or toned["page"]:
+        notes.append(i18n.pick_now(
+            f"Tone brought into the film for {toned['flip'] + toned['page']} of them: "
+            + (f"{toned['flip']} reversed (a projection on a light field, the way a viewer shows it), "
+               if toned["flip"] else "")
+            + (f"{toned['page']} with the page taken out from under the content. " if toned["page"]
+               else "")
+            + f"Nothing was cropped and nothing was invented — the film's own black is "
+            f"{visual.SPEC['background']} and now every still's shadows sit on it. Two photographs "
+            f"that are bright all over kept their brightness: what a picture is, the film does not "
+            f"overrule.",
+            f"其中 {toned['flip'] + toned['page']} 张的色调被归入本片:"
+            + (f"{toned['flip']} 张反相(亮底投影,与阅片显示一致)," if toned["flip"] else "")
+            + (f"{toned['page']} 张去掉了纸底、内容不变。" if toned["page"] else "")
+            + f"没有裁切、没有编造——本片的黑是 {visual.SPEC['background']},"
+            "现在每张图的暗部都落在它上面。有两张整体明亮的照片保留了亮度:图是什么样,片子不覆盖它。"))
+    for w in warned[:6]:
+        notes.append(i18n.pick_now(f"A picture: {w}", f"有一张图:{w}"))
+    return notes
+
+
 async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: int,
                        voice: str, burn: bool, timeout: float, *, style: dict,
                        credit: "Path | None" = None) -> tuple[Path, list[str]]:
@@ -694,14 +887,18 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
 
     # ---- the narration
     audio_in: Path | None = None
-    speaking = bool(entry["say"]) and entry["audio"] in ("voice", "mix")
+    speaking = bool(entry["say"] or entry.get("audio_file")) and entry["audio"] in ("voice", "mix")
     if speaking:
-        entry["voice"] = pick_voice(entry["say"], voice)
-        # The container follows the narrator, not our habit: `say` writes AIFF, a cloning engine
-        # writes WAVE, and naming the second one `.aiff` would be a file that lies about itself.
-        audio_in = plan_dir / (f"s{idx:03d}-voice" + _voices.audio_suffix(entry["voice"]))
-        entry["voice_seconds"] = await speak(entry["say"], audio_in, entry["voice"],
-                                             speak_timeout(entry["voice"], timeout))
+        if entry.get("audio_file"):
+            # Reuse the reviewed recording. `say` remains its transcript, never a second TTS job.
+            audio_in = Path(entry["audio_file"])
+            entry["voice"] = "recorded:" + audio_in.name
+            entry["voice_seconds"] = entry["audio_duration"]
+        else:
+            entry["voice"] = pick_voice(entry["say"], voice)
+            audio_in = plan_dir / (f"s{idx:03d}-voice" + _voices.audio_suffix(entry["voice"]))
+            entry["voice_seconds"] = await speak(entry["say"], audio_in, entry["voice"],
+                                                 speak_timeout(entry["voice"], timeout))
         if entry["voice_seconds"] > entry["seconds"] + 0.15:
             # A line of narration chopped off mid-sentence is the most obvious way an assembled
             # film looks broken, so the narration always wins over the length that was asked for —
@@ -764,7 +961,12 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
         # The push-in rate is the layout's (`pace.zoom`), because "how slowly a long take should
         # drift" is taste; 0.00035 per frame is the value that used to be hardcoded, and it reaches
         # the ceiling over about four seconds.
-        zoom = float(style["pace"]["zoom"] or 0.00035)
+        # ⚠️ The rate is nudged per shot (±25%, cycling over three). With one rate for the whole film
+        # every still drifts at exactly the same speed, and the user's word for that is 「单调」 —
+        # measured on the same film, where all fourteen shots were stills. Same expression, so an
+        # ffmpeg that accepted the old graph accepts this one.
+        nudge = (1.0, 1.25, 0.8)[entry["no"] % 3]
+        zoom = float(style["pace"]["zoom"] or 0.00035) * nudge
         zoom_max = float(style["pace"]["zoom_max"] or 1.12)
         post.append(f"zoompan=z='min(1+{zoom:g}*on,{zoom_max:g})':x='iw/2-(iw/zoom/2)'"
                     f":y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={fps}")
@@ -791,6 +993,8 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
     voice_index: int | None = None
     if speaking and audio_in:
         voice_index, n_in = n_in, n_in + 1
+        if entry.get("audio_file"):
+            cmd += ["-ss", f"{entry['audio_start']:g}", "-t", f"{entry['audio_duration']:g}"]
         cmd += ["-i", str(audio_in)]
     source_audio = entry["kind"] == "video" and bool(entry.get("has_audio"))
     keep_clip = entry["audio"] in ("clip", "mix") and source_audio
@@ -846,13 +1050,31 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
 async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 0.0,
                  fps: int = DEFAULT_FPS, voice: str = "", burn: bool = True, name: str = "",
                  timeout: float = 1800.0, still: float = STILL_SECONDS,
-                 fit: str = DEFAULT_FIT, style: "dict | None" = None) -> dict:
+                 fit: str = "", style: "dict | None" = None, unify: bool = True,
+                 music: str = "", music_mood: str = "",
+                 music_tags: "tuple[str, ...] | list[str]" = ()) -> dict:
     """Assemble the shot list into one film. Returns what was made, where, and what was noted.
 
     `style` is a layout's numbers (`layouts.style(name)`), already resolved by the caller — this
     function does not read the settings or the disk. It decides the look only: subtitles, the title
     and closing cards, the standing credit line, how long a still is held and how long a shot may
     run. Everything about correctness (frame arithmetic, the encoder, the concat) is not in it.
+
+    `music` names a track on the shelf (`app/music.py`) or a path to an audio file — or the word
+    `auto`, which asks the shelf to choose. `music_mood` and `music_tags` are only consulted in that
+    case: they are how the caller says what the film *is*, which is the caller's business, while the
+    shelf knows what each track *is*, which is the shelf's. The split is the same one the title card
+    follows: **the layout decides how the music sits** — its level, its fades, whether it gets out of
+    the narrator's way — and **the caller decides which track** (or asks). An empty `music` means no
+    bed at all, which is not the same as an empty shelf.
+
+    `fit` is how a picture is put into a frame, and an **empty** `fit` means nobody decided — which
+    is not the same as deciding `blur`. Left empty, a still is placed by `visual.admit()`: the film's
+    own material is measured, a drawing is drawn again in that style, a real picture that is already
+    the frame's shape fills it, and any other real picture is framed whole. Named, it is obeyed for
+    every shot that does not name its own, and the style pass steps aside — a decision is not
+    overruled. `unify=False` turns the pass off entirely, which is what a test about something else
+    (a transition, a length) should use rather than measuring a film whose look has just changed.
     """
     ff, why = available()
     if not ff:
@@ -933,7 +1155,16 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
             "这条片子的每一镜都是静帧,所以它播出来像幻灯片。**解释机制**的镜头(血流、鼓出、弹簧圈填塞)"
             "用动画会好得多:把这种镜头的画面换成 \"anim\",或者用一段真实录像当 clip。"))
 
-    stem = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", (name or f"film-{time.strftime('%Y%m%d-%H%M%S')}"))
+    # ⚠️ A caller that already wrote the container gets it stripped, not doubled. `.` is in the
+    # allowed set below, so `name="交付-成片-60s.mp4"` used to land as `交付-成片-60s.mp4.mp4` —
+    # the plan's promised `…-60s.mp4` never appeared, which is the same "delivered but unfindable"
+    # shape as `synthesize_speech`'s and `make_animation`'s (measured 2026-09-26, group 视频制作).
+    wanted = (name or "").strip()
+    for suffix in (".mp4", ".mov", ".webm"):
+        if wanted.lower().endswith(suffix):
+            wanted = wanted[: -len(suffix)]
+            break
+    stem = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", (wanted or f"film-{time.strftime('%Y%m%d-%H%M%S')}"))
     stem = stem.strip("-")[:40] or f"film-{time.strftime('%Y%m%d-%H%M%S')}"
     out_dir = workspace / SUBDIR
     if out_dir.is_symlink():
@@ -963,8 +1194,14 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
             f"「{line}」这句话印在本片每一帧上。"))
 
     started = time.time()
+    music_used: dict = {}
     try:
         parts: list[Path] = []
+        if unify:
+            # Before a single frame is encoded: read the style off this film's own pictures and draw
+            # them in it. Doing it here rather than per shot is the point — a style is a property of
+            # the *set*, and measuring it one picture at a time is how every picture ended up its own.
+            notes.extend(await _unify(plan, size_px, plan_dir, out_dir, named_fit=fit))
         for entry in plan:
             shot, extra = await _render_shot(entry, plan_dir, size_px, fps, voice, burn, timeout,
                                              style=style, credit=credit)
@@ -973,6 +1210,30 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
         final = out_dir / f"{stem}.mp4"
         await _concat(parts, final, plan_dir, timeout)
         total_seconds = round(sum(e["seconds"] for e in plan), 2)
+        if music:
+            # The bed goes on **after** the join, not per shot: it is one continuous piece of music,
+            # and a per-shot mix would restart it (and its fade-in) at every cut. It is also the only
+            # place where "get out of the narrator's way" can exist at all — the side chain has to be
+            # the whole soundtrack, not one shot's worth of it.
+            has_voice = any(e.get("say") or e.get("audio_file") for e in plan)
+            if str(music).strip().lower() in ("auto", "自动"):
+                # The shelf chooses, and says why — a score the user cannot argue with is one they
+                # cannot correct either.
+                track_name, track, why = _music.pick(mood=music_mood, tags=music_tags,
+                                                     seconds=total_seconds, spoken=has_voice)
+            else:
+                track_name, track = _music.resolve(music)
+                why = i18n.pick_now("named by the caller", "调用方点名的")
+            band = style.get("music") or {}
+            windows = _speech_windows(plan, float(band.get("duck_tail") or 0.0))
+            await _mix_music(final, track, total_seconds, band, timeout, plan_dir, windows)
+            music_used = {"name": track_name, "file": track["file"], "why": why,
+                          "seconds": track.get("seconds") or 0.0,
+                          "ducked": round(float(band.get("duck_db") or 0.0), 1),
+                          "speech_windows": [[round(a, 2), round(b, 2)] for a, b in windows]}
+            notes.append(i18n.pick_now(
+                f"Music bed: {_music.describe(track)} — {why}",
+                f"配乐:{_music.describe(track)} —— {why}"))
         # The sidecar is written from the same plan that timed the film, so it is right even when
         # the concat was a re-encode.
         (out_dir / f"{stem}.srt").write_text(srt_of(plan), encoding="utf-8")
@@ -990,9 +1251,9 @@ async def render(workspace: Path, shots: Any, *, size: str = "", total: float = 
     size_bytes = final.stat().st_size if final.is_file() else 0
     return {"name": final.name, "path": str(final), "bytes": size_bytes,
             "seconds": total_seconds, "size": label, "fps": fps, "fit": plan[0]["fit"] if plan else "",
-            "shots": len(plan), "narrated": sum(1 for e in plan if e["say"]),
+            "shots": len(plan), "narrated": sum(1 for e in plan if e.get("voice_seconds")),
             "animated": sum(1 for e in plan if e["kind"] == "anim"),
-            "subtitled": sum(1 for e in plan if e["text"]), "burned": burn,
+            "subtitled": sum(1 for e in plan if e["text"]), "burned": burn, "music": music_used,
             "srt": str(out_dir / f"{stem}.srt"), "sheet": str(out_dir / f"{stem}.md"),
             "plan": plan, "notes": notes, "took": round(time.time() - started, 1)}
 
@@ -1028,6 +1289,94 @@ async def _concat(parts: list[Path], final: Path, plan_dir: Path, timeout: float
         raise AssembleError(i18n.pick_now(
             f"Joining the shots failed: {(out or '').strip()[-300:]}",
             f"拼接片段失败:{(out or '').strip()[-300:]}"))
+
+
+async def _mix_music(final: Path, track: dict, seconds: float, opts: dict, timeout: float,
+                     plan_dir: Path, windows: "list[tuple[float, float]] | None" = None) -> None:
+    """Lay a music bed under the finished film, then get out of the narrator's way.
+
+    Four things this has to get right, and each of them is a way a mix goes wrong:
+
+    * **The music is looped or cut to the film's length.** A track shorter than the film is the
+      normal case, and a film that falls silent two thirds of the way through is not an option.
+    * **The fades belong to the music, not to the film.** Fading the finished film would take the
+      narration down with it — the one thing the fades exist to protect.
+    * **The narrator wins**, over the spans where somebody is actually speaking.
+    * **The picture is copied, not re-encoded** (`-c:v copy`), so this costs seconds rather than a
+      second render.
+
+    On ducking, measured rather than assumed: the obvious tool is `sidechaincompress`, and it was
+    tried first. It does work, but weakly and invisibly — with the music at -16 dB under a -6 dB
+    narration, its own output fell **1.8 dB**, and since the voice dominates the sum, the finished
+    film measured *identical* to one with no ducking at all (0.0 dB difference across three
+    sampled spans, A/B against `duck: false`). A compressor is the wrong instrument here: we are not
+    detecting speech, we are *told* where it is, shot by shot, in `voice_seconds`. So the spans are
+    computed from the plan and the music is lowered by the layout's `duck_db` over exactly those
+    spans — deterministic, auditable, and measurable, which the compressor's behaviour was not.
+
+    Its own output goes to a sibling file and is moved into place, because ffmpeg cannot read and
+    write the same path.
+    """
+    src = Path(track["file"])
+    if not src.is_file():
+        raise AssembleError(i18n.pick_now(f"The music file is gone: {src}",
+                                          f"音乐文件不见了:{src}"))
+    volume = float(opts.get("volume_db", -16.0))
+    fade_in = max(0.0, float(opts.get("fade_in", 1.5)))
+    fade_out = max(0.0, float(opts.get("fade_out", 2.5)))
+    mix = float(opts.get("mix", 1.0))
+    duck_db = float(opts.get("duck_db", -10.0) or 0.0)
+
+    chain = ["aformat=sample_rates=44100:channel_layouts=stereo", f"volume={volume:g}dB"]
+    if fade_in > 0:
+        chain.append(f"afade=t=in:st=0:d={fade_in:g}")
+    if fade_out > 0 and seconds > fade_in + fade_out:
+        chain.append(f"afade=t=out:st={seconds - fade_out:g}:d={fade_out:g}")
+    if windows and duck_db < 0:
+        # One `volume` with an `enable` expression rather than a compressor: the timeline already
+        # knows when the narrator speaks, so nothing has to be detected.
+        factor = 10 ** (duck_db / 20.0)
+        span = "+".join(f"between(t,{a:.2f},{b:.2f})" for a, b in windows if b > a)
+        if span:
+            chain.append(f"volume=enable='{span}':volume={factor:.4f}")
+    chain += [f"atrim=0:{seconds:g}", "asetpts=N/SR/TB"]
+
+    graph = [f"[1:a]{','.join(chain)}[mus]"]
+    # `normalize=0` is load-bearing: amix's default divides by the sum of the weights, so a bed at
+    # 0.5 would come out a further ~9 dB down without anybody asking for it — and a level that is a
+    # side effect of two numbers is a level the layout cannot state. With it off, the music's level
+    # is exactly `music.volume_db` and nothing else.
+    graph.append(f"[0:a][mus]amix=inputs=2:duration=first:normalize=0:weights=1 {mix:g}[aout]")
+
+    tmp = plan_dir / (final.stem + ".music.mp4")
+    cmd = [ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y",
+           "-i", str(final), "-stream_loop", "-1", "-i", str(src),
+           "-filter_complex", ";".join(graph), "-map", "0:v", "-map", "[aout]",
+           "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+           "-t", f"{seconds:g}", "-movflags", "+faststart", str(tmp)]
+    code, out = await _ffmpeg(cmd, timeout)
+    if code != 0 or not tmp.is_file():
+        raise AssembleError(i18n.pick_now(
+            f"Mixing the music failed: {(out or '').strip()[-300:]}",
+            f"混配乐失败:{(out or '').strip()[-300:]}"))
+    tmp.replace(final)
+
+
+def _speech_windows(plan: list[dict], tail: float = 0.0) -> list[tuple[float, float]]:
+    """When the narration is actually speaking, in seconds from the start of the film.
+
+    Each shot records the real length of its line (`voice_seconds`, measured when it was recorded),
+    so this is read off the plan rather than estimated — a ducking window that is half a second off
+    either clips the first word or leaves the music up through it.
+    """
+    out: list[tuple[float, float]] = []
+    at = 0.0
+    for entry in plan:
+        spoken = float(entry.get("voice_seconds") or 0.0)
+        if spoken > 0:
+            out.append((at, min(at + spoken + max(0.0, tail), at + float(entry["seconds"]))))
+        at += float(entry["seconds"])
+    return out
 
 
 def _shot_sheet(plan: list[dict], size: tuple[int, int], fps: int, final: Path,

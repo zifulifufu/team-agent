@@ -1,3 +1,6 @@
+import asyncio
+
+from app import templates
 from app.orchestrator import Orchestrator, find_mentions
 from tests.conftest import TURN_NOW, FakeLLM, has
 
@@ -263,3 +266,195 @@ def test_a_member_that_keeps_failing_is_told_how_many_times_and_that_it_can_be_t
     note = orch._repeat_failure_note(g["id"], victim)
     assert "3" in note
     assert "移出本群" in note or "take it out of this group" in note
+
+
+# ------------------------------------------------------------- seeing how it got there
+async def test_a_reasoning_models_working_is_streamed_and_kept(store, make_router):
+    """The reasoning stream is the model's working, and it is most of what lets a reader judge the
+    answer: it belongs on screen while it arrives, above the reply, and with the message afterwards.
+    It used to be read only to tell "reasoned and never answered" apart from "returned nothing".
+    """
+    working = "先看用户要什么,再决定怎么答。" * 6
+    answer = "答案是 42。"
+    orch, g, _ = setup(store, make_router, FakeLLM(default=("reasoning", working, answer)))
+    c = Collector()
+    await orch.handle_user_message(g["id"], "算一下", c)
+    await orch.drain()
+
+    live = [e for e in c.events if e["type"] == "thinking"]
+    assert live, "the working never reached the chat"
+    assert "".join(e["text"] for e in live).startswith("先看用户要什么")
+    # …and it is not part of the answer: the two are separate things on screen.
+    streamed = "".join(e["text"] for e in c.events if e["type"] == "delta")
+    assert answer in streamed and "先看用户要什么" not in streamed
+
+    end = c.ends()[-1]
+    assert end["content"].endswith(answer)
+    assert "先看用户要什么" in end["meta"]["thinking"]
+
+
+async def test_a_fallback_clears_the_working_of_the_model_that_failed(store, make_router):
+    """The working on screen belongs to the model that produced it. When a stream fails and another
+    model takes over, leaving the first one's reasoning up would attribute it to the answer that
+    actually arrives.
+    """
+    from tests.conftest import chunk
+
+    class Halfway:
+        """A reasoning model that dies after thinking, before answering."""
+
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                async def dying():
+                    yield chunk("", "我是第一个模型的思考")
+                    raise ConnectionError("stream broke")
+                return dying()
+
+            async def second():
+                yield chunk("换了个模型,答案在这里。")
+            return second()
+
+    orch = Orchestrator(store, make_router(Halfway()))
+    store.update_provider("deepseek", {"api_key": "sk-test-1234567890"})
+    store.update_settings({"route_chain": ["deepseek/deepseek-flash", "ollama/qwen2.5:7b"]})
+    g = store.list_groups()[0]
+    c = Collector()
+    await orch.handle_user_message(g["id"], "写点什么", c)
+    await orch.drain()
+
+    think = "".join(e["text"] for e in c.events if e["type"] == "thinking")
+    assert "我是第一个模型的思考" not in think, "the failed attempt's working was left on screen"
+    assert any(e["type"] == "reset" for e in c.events), "the failed attempt should have been cleared"
+    assert "换了个模型" in c.ends()[-1]["content"]
+
+
+async def test_a_model_that_does_not_reason_gets_no_thinking_block(store, make_router):
+    """The block is for a model that has working to show, not a decoration every reply grows."""
+    orch, g, _ = setup(store, make_router, FakeLLM(default="就这么答。"))
+    c = Collector()
+    await orch.handle_user_message(g["id"], "你好", c)
+    await orch.drain()
+
+    assert not [e for e in c.events if e["type"] == "thinking"]
+    assert "thinking" not in c.ends()[-1]["meta"]
+
+
+# ------------------------------------------------- one message must fit one round of the group
+def _paused(collector) -> list[str]:
+    """The "reached the limit" notes the round posted.
+
+    Read from both event shapes on purpose — a system note is emitted as a `message`, while a member's
+    turns end as `message_end`, and a test that looks in only one of them sees "no note" when the
+    note is right there.
+    """
+    return [str((e.get("message") or {}).get("content") or "") for e in collector.events
+            if e.get("type") in ("message", "message_end")
+            and "paused" in str((e.get("message") or {}).get("content") or "")]
+
+
+def _ring(store, g, names=("Analyst", "Librarian", "Fact-checker")):
+    """A group whose members keep @-ing each other, so the queue never empties on its own."""
+    for name in names:
+        made = templates.ensure_agent(store, name)
+        assert made, name
+        store.add_member(g["id"], made["id"])
+    roster = [m["name"] for m in store.group_members(g["id"])]
+    turns = {"i": 0}
+
+    def reply(messages):                      # every speaker hands over to the next name
+        turns["i"] += 1
+        nxt = roster[(turns["i"]) % len(roster)]
+        return f"说完了,@{nxt} 接着来。"
+
+    return roster, FakeLLM(default=reply)
+
+
+def test_a_turn_limit_smaller_than_the_group_cannot_silence_the_end_of_the_list(store, make_router):
+    """A real fourteen-member group at the default limit of 8 paused members *every* round —
+    "reached the limit of 8 turns, so WorkBuddy, 小助 was paused" — and the steps they owned could
+    never be reached, however many messages were sent. A limit that cannot fit one round is not a
+    limit, it is a truncation: the members at the end of the list are never heard from at all.
+
+    The limit here is 2 on a four-member group, and the members talk to each other in a ring, so the
+    round cannot end by itself: exactly one full round runs (`max(2, 4 + 1) = 5` turns) and then the
+    cap stops it. That number — 5, not 2 and not Infinity — is the whole of the fix.
+    """
+    st = store
+    orch, g, _ = setup(st, make_router, FakeLLM(default="好。"))
+    roster, fake = _ring(st, g)
+    orch = Orchestrator(st, make_router(fake))
+    st.update_settings({"max_hops": 2, "plan_mode": "off"})
+
+    c = Collector()
+    asyncio.run(orch.handle_user_message(g["id"], "大家依次说说。", c))
+    asyncio.run(orch.drain())
+
+    said = [m["sender_name"] for m in c.ends() if m.get("sender_type") == "agent"]
+    notes = _paused(c)
+    cap = max(2, len(roster) + 1)
+    # One full round runs and then the cap stops it — `cap`, not 2 and not Infinity.
+    assert len(said) == cap, (len(said), cap, roster)
+    assert set(roster) <= set(said), "every member of the group spoke, including the end of the list"
+    assert notes and f"{cap} turns" in notes[0], notes     # and the limit that was actually applied
+
+
+def test_a_limit_bigger_than_the_group_is_still_the_limit(store, make_router):
+    """The floor is a floor, not a ceiling: a user who asks for twelve turns gets twelve, so the fix
+    for "the end of the list is never heard from" cannot quietly remove the guard against an endless
+    @-loop."""
+    st = store
+    orch, g, _ = setup(st, make_router, FakeLLM(default="好。"))
+    roster, fake = _ring(st, g)
+    orch = Orchestrator(st, make_router(fake))
+    st.update_settings({"max_hops": 12, "plan_mode": "off"})
+
+    c = Collector()
+    asyncio.run(orch.handle_user_message(g["id"], "大家依次说说。", c))
+    asyncio.run(orch.drain())
+
+    said = [m["sender_name"] for m in c.ends() if m.get("sender_type") == "agent"]
+    assert len(said) == 12, len(said)
+    assert _paused(c), "the ring is still talking, so the cap has to stop it"
+
+
+async def test_a_local_tool_member_listens_but_never_speaks_unasked(store, make_router):
+    """本机工具成员在**旁听席**上:不主动发言,但叫得动。
+
+    用户 2026-09-25:「工具可以不发言,作为旁听,但是群员可以随时调用这些工具的」。
+    一个渲染器没有话要说,它只产出文件 —— 让它进对话队列等于每轮请一个只会交文件的成员讲一段话,
+    而它十条里有九条在报「我跑不起来」(实测 Remotion/HyperFrames/video-shotcraft 每轮必败,
+    其中一次跑了 306 秒)。
+
+    ⚠️ 反过来的那一半同样重要(所以下面的断言成对写):
+      * 没点名 → **不给它回合**;
+      * 点了名 → 它有回合(引擎没装好会失败,但「轮到过它」必须验到);
+      * 它**不是 blocked** —— 被排进任务板照跑,否则「随时可用」就成了「永远用不上」。
+    """
+    fake = FakeLLM(default="好的")
+    # ⚠️ 本机工具成员也是「外部程序」,受同一个总开关管:开关关着时它们**连点名都跑不了**
+    # (这条也是实测出来的 —— 第一版测试没开这个开关,于是 `_blocked_members` 把它整个挡掉了)。
+    store.update_settings({"external_agents_enabled": True})
+    orch, g, _ag = setup(store, make_router, fake)
+    tool = store.create_agent("Remotion", engine="remotion", engine_cfg={})
+    store.add_member(g["id"], tool["id"], 9)
+
+    members = store.group_members(g["id"])
+    assert tool["id"] in orch._quiet_members(members), "本机工具成员应当坐在旁听席上"
+    assert tool["id"] not in orch._blocked_members(members, store.get_settings()), \
+        "旁听 != 被封:它被排进任务板时要能跑"
+
+    c = Collector()
+    await orch.handle_user_message(g["id"], "大家好,聊两句", c)
+    assert "Remotion" not in [m["sender_name"] for m in c.ends()], \
+        "没点名时它不该发言:" + str([m["sender_name"] for m in c.ends()])
+
+    # 点名 → 出列。引擎没装好,所以这一轮会失败 —— 但**失败也是回合**,系统消息里会出现它的名字。
+    c2 = Collector()
+    await orch.handle_user_message(g["id"], "@Remotion 渲染一个 15 秒的片子", c2)
+    said = " ".join(str(e.get("text") or "") + str((e.get("message") or {}).get("content") or "")
+                    for e in c2.events)
+    assert "Remotion" in said, "点了名就该轮到它(哪怕结果是报错):" + said[:400]

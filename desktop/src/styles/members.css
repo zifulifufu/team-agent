@@ -1,15 +1,96 @@
 /* 侧边栏「成员」区、添加成员面板、成员卡片 */
 /* 侧栏右侧的成员栏:本群成员单独一栏,侧栏本身只做导航 */
 .mrail { width: 272px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg-side); border-right: 1px solid var(--border); }
-.mrail-head { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); flex: none; }
+/* ⚠️ 头部里**第一行文字**必须和聊天栏的标题同一条水平线(用户 2026-09-25:「这两个地方的字体不在
+   一个平面上,需要调整到和中间栏同等高度」)。头部等高(52px)并不代表字在同一条线上:标题 + 副标题
+   作为一个块垂直居中时,第一行会比单行标题**高 7px**(实测)。所以这里不居中那个块,而是把内容盒
+   订在 16..36:第一行(行高 20)于是落在 y=16..36,中线 26 —— 和 `.chat-title` 一模一样;
+   副标题溢到下面 36..50,仍然在头部里。按钮用 `align-self: center` 自己居中(24px 的按钮在 20px
+   的内容盒里会对称溢出,中线还是 26)。 */
+.mrail-head { display: flex; align-items: flex-start; gap: 8px; height: 52px; padding: 16px 10px 16px 14px; border-bottom: 1px solid var(--border); flex: none; }
+.mrail-head > button { align-self: center; }
 .mrail-head > svg { color: var(--text-2); flex: none; }
 .mrail-titles { display: flex; flex-direction: column; min-width: 0; }
-.mrail-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrail-title { font-size: 13.5px; font-weight: 600; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mrail-sub { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mrail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
 .mrail-empty { color: var(--text-3); font-size: 12.5px; line-height: 1.7; padding: 8px 6px; }
 .mrail-foot { flex: none; padding: 8px 10px; border-top: 1px solid var(--border); display: flex; }
 .mrail-foot .btn { width: 100%; justify-content: center; }
+
+/* 右栏的两页页签 —— **2026-09-25 已删**。用户要求「成果不要放在这边、像 WorkBuddy 那样放到中间框的
+   右侧栏里」,于是「成果」搬到了 `.outpanel`,成员栏只剩一页,页签也就没有存在的理由了。
+   (页签曾经必须**另占一行**而不能塞进头部,因为头部必须正好 52px、和 `.chat-head` 同线 —— 现在
+   四条栏的头部仍然同线,见 `.op-head`。) */
+
+/* 「最大化」= 占满主区域,聊天让位。两个元素都**留在原地**:主区域只是不显示,而面板自己的头部
+   还在(那个按钮就在里面),所以「怎么进去的就怎么出来」。
+   ⚠️ 外壳上的类叫 `.maxed-rail` / `.maxed-outputs`,按钮上那个叫 `.rail-max` / `.op-max` ——
+   **故意不同名**:同名的话 `querySelector('.rail-max')` 会先命中外壳那个整页元素,而调试和冒烟
+   都会拿它当按钮去点。 */
+.shell.maxed-rail .main, .shell.maxed-outputs .main { display: none; }
+.shell.maxed-rail .mrail { flex: 1 1 auto; width: auto; border-right: 0; }
+.shell.maxed-outputs .outpanel { flex: 1 1 auto; width: auto; border-left: 0; }
+
+/* 成果:一个项目干出了什么。按文件夹分组,组内最新的在最上面(后端已经是按 mtime 倒序给的)。 */
+.out { display: flex; flex-direction: column; gap: 10px; }
+.out-head { display: flex; align-items: center; gap: 8px; padding: 2px 6px 0; }
+.out-count { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.out-group { display: flex; flex-direction: column; gap: 1px; }
+.out-ghead { display: flex; align-items: center; gap: 5px; padding: 2px 6px; color: var(--text-3); font-size: 11px; }
+.out-ghead svg { flex: none; }
+.out-gname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.out-gn, .out-gsz { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; }
+.out-gn + .out-gsz { margin-left: 0; }
+.out-row { position: relative; display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 8px; border-radius: 7px; font-size: 12px; text-align: left; }
+.out-row:hover { background: var(--hover); }
+/* 行分两半:**点行 = 在这里看它**,右边那个 ↗ = 交给别的程序打开。两个动作都要在,而且都要看得见
+   —— 合成一个的话,「看内容」和「拿文件」只能二选一(原来只有后者,所以用户看到的答案是"文件被交
+   出去了",而不是"结果在我眼前")。 */
+.out-pick { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; text-align: left; }
+.out-ico { flex: none; color: var(--text-2); }
+.out-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.out-time, .out-size { flex: none; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 悬停时把右侧那两个数字让给动作图标(而不是盖上去)—— 这一行点下去是「打开/下载」,
+   所以让位给「它会发生什么」这件事本身。 */
+.out-act { display: none; flex: none; color: var(--text-3); }
+.out-row:hover .out-act { display: inline-flex; }
+.out-row:hover .out-time, .out-row:hover .out-size { visibility: hidden; }
+@media (prefers-reduced-motion: no-preference) {
+  .spin { animation: out-spin 1s linear infinite; }
+  @keyframes out-spin { to { transform: rotate(360deg); } }
+}
+
+/* ============================== 成果栏:挂在中间框(聊天区)的右侧
+   用户给的参照是 WorkBuddy 的产物面板 —— 头部一行(图标 + 文件名/标题 + 动作 + 收起),下面直接
+   显示内容。所以这里有三种状态:清单、看某个文件、空。 */
+.outpanel { width: 300px; flex: none; display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-side); border-left: 1px solid var(--border); }
+/* ⚠️ 头部必须正好 52px —— 和 `.mrail-head`、`.chat-head`、侧栏顶部那一条下沿同线。这是四条栏共用的
+   一条不变量(冒烟里量着它)。 */
+.op-head { display: flex; align-items: flex-start; gap: 6px; height: 52px; padding: 16px 10px;
+  border-bottom: 1px solid var(--border); flex: none; }
+.op-head > button { align-self: center; }
+.op-head > svg { color: var(--text-2); flex: none; }
+.op-titles { display: flex; flex-direction: column; min-width: 0; }
+.op-title { font-size: 13.5px; font-weight: 600; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.op-sub { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.op-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
+/* 看内容那一页**自己滚**(图片可以比屏幕高,长文档也是),而不是让外层套一层滚动 ——
+   两层滚动条是这类面板最常出的毛病。 */
+.op-body-one { padding: 0; overflow: auto; }
+.op-media { display: block; width: 100%; height: auto; border-radius: 8px; }
+video.op-media { max-height: none; }
+.op-audio { width: calc(100% - 20px); margin: 12px 10px; }
+.op-note { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 22px 12px;
+  color: var(--text-3); font-size: 12.5px; line-height: 1.7; text-align: center; }
+.op-text { padding: 10px 12px 18px; font-size: 12.5px; line-height: 1.7; }
+.op-flag { margin-bottom: 10px; padding: 5px 8px; border-radius: 6px; background: var(--bg-sub);
+  color: var(--text-3); font-size: 11.5px; line-height: 1.6; }
+.op-pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .madd-wrap { position: relative; display: inline-flex; }
 .madd-pop { position: absolute; top: calc(100% + 6px); z-index: 60; width: 320px; max-width: calc(100vw - 24px); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
@@ -30,9 +111,50 @@
 .madd-sub { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .madd-sub.wrap { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
 .madd-here { align-self: center; white-space: nowrap; }
+.modal.wide:has(.madd) { width: 760px; }
+.madd-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.madd-sources button { padding: 6px 10px; border-radius: 7px; color: var(--text-3); font-size: 12px; }
+.madd-sources button[aria-pressed="true"] { color: var(--text); background: var(--hover); font-weight: 600; }
+.model-roster { display: flex; flex-direction: column; gap: 10px; }
+.model-roster-search input { width: 100%; min-width: 0; }
+.model-roster-filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+.model-roster-filters label { flex: 1; min-width: 150px; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-3); }
+.model-roster-filters select { width: 100%; font-size: 12px; }
+.model-roster-count { font-size: 12px; color: var(--text-3); }
+.model-roster-list { max-height: min(43vh, 440px); overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.model-roster-list .madd-item { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; margin: 0; padding: 12px; background: var(--card); }
+.model-roster-list .madd-item:last-child { border-bottom: 0; }
+.model-roster-list .btn { flex: none; }
+.model-roster-pages { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-3); }
+.model-roster-empty { padding: 24px 16px; text-align: center; font-size: 12px; color: var(--text-3); }
+.model-roster-empty p { margin: 8px 0 12px; }
+.team-review { display: flex; flex-direction: column; gap: 12px; }
+.team-flow, .home-flow-note { font-size: 12px; color: var(--text-3); line-height: 1.7; }
+.home-flow-note { margin: 8px 0; text-align: center; }
+.team-task { padding: 12px; border-radius: 10px; background: var(--bg); white-space: pre-wrap; max-height: 110px; overflow: auto; font-size: 13px; line-height: 1.6; }
+.team-host { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.team-host select { flex: 1; min-width: 0; }
+.team-review h4 { margin: 6px 0 8px; font-size: 12px; color: var(--text-3); }
+.team-review .chip.host { margin-left: 7px; }
+.team-existing-list { max-height: 340px; overflow: auto; }
+@media (max-width: 560px) {
+  .model-roster-filters label { min-width: 115px; }
+  .model-roster-list .madd-here { max-width: 75px; white-space: normal; font-size: 11px; }
+}
 
 /* 成员卡列表:只出现在侧栏右侧那一栏里,所以是正文样式,不缩进、不自己滚 */
 .mdock { display: flex; flex-direction: column; gap: 1px; }
+.roster-section { min-width: 0; margin-bottom: 12px; }
+.roster-heading { display: flex; align-items: center; gap: 6px; padding: 6px; font-size: 13px; }
+.roster-note { font-size: 11px; line-height: 1.5; color: var(--text-3); padding: 0 6px 7px; }
+.roster-section + .roster-section { border-top: 1px solid var(--border); padding-top: 10px; }
+.roster-tabs { display: flex; gap: 4px; position: sticky; top: 0; padding: 8px 0; background: var(--card); z-index: 1; }
+.roster-tabs button { flex: 1; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text-3); padding: 7px; cursor: pointer; }
+.roster-tabs button[aria-selected="true"] { color: var(--text-1); background: var(--bg); font-weight: 600; }
+@media (min-width: 900px) {
+  .mrail.maximized .mdock { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  .mrail.maximized .roster-section + .roster-section { border-top: 0; border-left: 1px solid var(--border); padding-top: 0; padding-left: 12px; }
+}
 .mdock-err { font-size: 12px; padding: 4px 6px; overflow-wrap: anywhere; }
 .mc { border-radius: 8px; }
 .mc.open { background: var(--hover); }
@@ -54,3 +176,31 @@
 .mc-warn svg { flex: none; margin-top: 2px; }
 .mc-err { font-size: 12px; overflow-wrap: anywhere; }
 .mc-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.local-tool-roster { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-height: 350px; overflow-y: auto; }
+.local-tool-roster .madd-item { margin: 0; }
+@media (max-width: 560px) { .local-tool-roster { grid-template-columns: 1fr; } }
+.membership-badge { align-self: center; flex: none; padding: 4px 8px; font-size: 11px; color: var(--text); background: var(--hover); border-radius: 6px; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- 一条成果上的右键菜单
+   为什么它是一块绝对定位的浮层而不是浏览器原生菜单:原生菜单画不出「哪些动作在这台机器上真的
+   做得到」(浏览器里没有外壳能力,分享目标也只有装了才有),而这块菜单**按能力渲染**——做不到的项
+   根本不出现,不是灰着也不是点了没反应。
+   ⚠️ z-index 要高过成果栏自己那一摞(预览里的图/视频通常带自己的层),否则菜单会被内容压住。 */
+.om { position: fixed; z-index: 60; min-width: 208px; max-width: 300px;
+  max-height: min(70vh, 420px); overflow-y: auto;
+  padding: 4px; border-radius: 10px; font-size: 12.5px;
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.18); }
+/* 菜单顶上那一行是**这一条东西的名字**,不是标题:用户右键完之后要能确认自己点的是哪一条
+   (尤其清单里有 report-v2.docx 和 report.docx 的时候)。 */
+.om-head { padding: 5px 8px 6px; color: var(--text-3); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.om-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px;
+  border-radius: 7px; text-align: left; color: var(--text); }
+.om-item:hover, .om-item:focus-visible { background: var(--hover); }
+.om-item svg { flex: none; color: var(--text-2); }
+.om-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.om-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.om-group { display: flex; align-items: center; gap: 6px; padding: 5px 8px 3px;
+  color: var(--text-3); font-size: 11px; }

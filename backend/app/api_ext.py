@@ -13,6 +13,7 @@ import re
 import tempfile
 import time
 import urllib.parse
+from collections import Counter
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,16 +21,19 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import coderun, embed, i18n, imagegen, modelopts, presets, strengths as strength_lib, updater, video
+from . import assemble, coderun, embed, feedback as feedback_lib, i18n, imagegen, modelopts, presets, speech
+from . import strengths as strength_lib, updater, video, media
+from . import teamrec, cooperation
 from . import advisor
 from . import attachments as attachments_lib
 from . import vision
 from .approvals import Approvals, risk_label, risk_of
 from .discovery import DiscoveryError
-from .library import Library, LibraryError, watch_workspace
+from .library import Library, LibraryError
+from . import library
 from .mcp_client import McpManager, parse_mcp_json, pick_transport, slug, validate_cfg
 from .presets import builtin_names, localize_prompt, localize_system_prompt
-from .templates import group_view, member_view, skill_list_view, template_rows
+from .templates import group_view, member_view, save_group_as_template, skill_list_view, template_rows
 from .gallery import MCP_TEMPLATES, mcp_display_name as display_mcp_name
 from .memory import MemoryService
 from .obsidian import ObsidianError, ObsidianSync
@@ -38,7 +42,7 @@ from .presets import DEFAULT_SYSTEM_PROMPT
 from .prompting import VARIABLES, PromptBuilder, estimate_tokens, render_vars
 from .router import ModelRouter, has_credentials
 from .store import Store, new_id
-from .templates import (create_group_from_template, ensure_agent_from_key,
+from .templates import (agent_view, create_group_from_template, ensure_agent_from_key,
                         process_status as process_panel)
 from .toolhub import ToolHub, builtin_specs
 from .tools import (
@@ -136,6 +140,67 @@ class DocPatch(BaseModel):
     kb_id: str | None = None          # moves the document to another knowledge base
 
 
+def _to_trash(path: Path) -> bool:
+    """Move a folder to the Finder's Trash. `False` when this machine cannot do it.
+
+    The order matters: the `trash` command if the user has it, then the Finder through AppleScript.
+    **Never** a plain delete — this app has no business removing a user's files, and a project folder
+    is where a month of an agent's work can live. Returning `False` rather than raising keeps the
+    decision ("refuse, and say why") with the endpoint, where the sentence the user reads lives.
+    """
+    import shutil
+    import subprocess
+
+    helper = shutil.which("trash")
+    if helper:
+        got = subprocess.run([helper, str(path)], capture_output=True, text=True, timeout=60)
+        return got.returncode == 0 and not path.exists()
+    script = f'tell application "Finder" to delete POSIX file "{path}"'
+    try:
+        got = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return got.returncode == 0 and not path.exists()
+
+
+def _plain_text(markdown: str) -> str:
+    """What to read out loud: the words, without the marks that mean something only on screen.
+
+    A member's reply is Markdown — headings, bullets, `code`, links, tables, emoji status chips. Read
+    literally, `say` announces the punctuation ("hash hash 未破裂动脉瘤") and reads a URL character by
+    character. This keeps the prose and drops the furniture; it is deliberately not a parser, because
+    the only thing that matters is that nothing unreadable is left for the voice.
+    """
+    text = str(markdown or "")
+    text = re.sub(r"```[\s\S]*?```", " ", text)                   # fenced code blocks
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)            # images
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)         # links keep their text
+    text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.M)      # headings
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.M)           # bullets
+    text = re.sub(r"^\s*\|.*\|\s*$", " ", text, flags=re.M)        # table rows
+    text = re.sub(r"[`*_>]", "", text)                            # inline marks
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
+
+
+class FolderRenameIn(BaseModel):
+    name: str
+
+
+class FolderConfirmIn(BaseModel):
+    confirm: bool = False
+    # How many files the caller believes are in there (from the dialog that was just shown). A
+    # mismatch means things changed while the dialog was open, and the answer is to refuse.
+    expect_files: int | None = None
+
+
+class RatingIn(BaseModel):
+    rating: str = ""              # up | down | "" (clears)
+    note: str = ""
+
+
 class KBIn(BaseModel):
     name: str
     description: str = ""
@@ -145,6 +210,13 @@ class KBIn(BaseModel):
 class KBPatch(BaseModel):
     name: str | None = None
     description: str | None = None
+    # The heading a base is filed under. Free text on purpose (`library.PURPOSES` only supplies the
+    # suggestions): a person's own headings are theirs.
+    purpose: str | None = None
+    # An **override** for where the material came from, and normally empty. The word is derived from
+    # the base's own documents when the list is read, so writing one here is a statement that the
+    # derivation is wrong for this base. Sending `""` puts it back to derived.
+    source: str | None = None
     # `group_id` is deliberately not patchable: it is the ownership field, and rewriting it would hand
     # one workspace's documents to another group (or orphan a shared base from every group at once).
     # A knowledge base is created in the workspace it belongs to instead.
@@ -219,6 +291,13 @@ class ModelMemberIn(BaseModel):
     model_id: str
 
 
+class SuggestIn(BaseModel):
+    """A task, as typed. `limit` bounds the lineup — the panel can show about six before it stops
+    being a suggestion and becomes a list."""
+    text: str = ""
+    limit: int = 6
+
+
 class TemplateIn(BaseModel):
     name: str | None = None
 
@@ -272,6 +351,10 @@ class Ctx:
     # endpoint's closure because the job outlives the request that started it — the page that asked
     # for it is told what is happening by polling, not by waiting.
     vec_job: dict[str, Any] = field(default_factory=dict)
+    # The video zone's composer, same shape and the same reason as `vec_job`: composing a track
+    # takes minutes, so the page that asked is told what is happening by polling rather than by
+    # waiting — and the job outlives the request that started it.
+    music_job: dict[str, Any] = field(default_factory=dict)
 
 
 def _need(x: Any, what: str) -> Any:
@@ -317,6 +400,12 @@ def _mask(d: dict[str, str]) -> dict[str, str]:
 
 WORKSPACE_SKIP = {".runs", ".tmp", ".extract"}
 WORKSPACE_MAX_FILES = 500
+# What the panel may pull in just to look at. A deliverable is prose, a script or a table; a file
+# past these numbers is being stored, not previewed, and reading it into the webview would stall the
+# window for the sake of something nobody is going to scroll through (measured: a 306-second run left
+# a multi-megabyte log behind).
+WORKSPACE_TEXT_MAX_BYTES = 4 * 1024 * 1024
+WORKSPACE_TEXT_MAX_CHARS = 120_000
 
 
 def attachment_view(row: dict) -> dict:
@@ -333,11 +422,20 @@ def workspace_files(root: Path) -> list[dict]:
 
     A walk rather than a listing: members create files inside folders they make themselves, and a
     panel that only showed the top level would hide exactly the work the user wants to find.
+
+    ⚠️⚠️ **A dot-prefixed path part is not a deliverable, and that is the whole convention** — the
+    places this app writes intermediates all say so themselves (`assemble.SCRATCH = ".assemble"`,
+    "intermediates; the leading dot keeps them out of every scan"; `list_workspace_files` skips any
+    dot-directory). This filter used to name three of them and miss the rest, so the 成果 panel listed
+    them: measured 2026-09-26 on the video group, 141 files of which **more than a hundred were
+    `s0NN.mp4` parts and `-sub.png` subtitle plates** out of `.assemble/`. The finished film and the
+    documents were in there and unfindable — the user's complaint was 「任务结果」看不见, and this is
+    what was hiding it.
     """
     out: list[dict] = []
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
-        if any(part in WORKSPACE_SKIP or part.startswith(".runs") for part in rel.parts):
+        if any(part in WORKSPACE_SKIP or part.startswith(".") for part in rel.parts):
             continue
         try:
             if not path.is_file() or path.is_symlink():
@@ -401,6 +499,22 @@ def build_router(c: Ctx) -> APIRouter:
         return {"tags": [{"id": t, "label": strength_lib.label(t, lang),
                           "desc": strength_lib.description(t, lang)} for t, _ in strength_lib.TAGS]}
 
+    @r.post("/api/team/suggest")
+    async def team_suggest(body: SuggestIn) -> dict:
+        """Who should be in a group chat for this task, and why each one.
+
+        Read-only on purpose: it answers a question about a group that does not exist yet. The
+        experts it names are presets the caller may create later (`/api/agents` from a preset key
+        does that); nothing is created here, so calling this while the user is still typing costs
+        one pass over the member list and writes nothing.
+
+        The rule engine is `teamrec`; it is deliberately not a model call — the home screen asks
+        this on every pause in typing, and a round trip to a cloud model for a *suggestion* would
+        make the box feel broken on a slow line. What a model adds on top is a separate, opt-in
+        step.
+        """
+        return teamrec.suggest(store, body.text, limit=body.limit)
+
     @r.get("/api/catalog")
     async def catalog_info() -> dict:
         cat = store.catalog
@@ -448,6 +562,14 @@ def build_router(c: Ctx) -> APIRouter:
         for e in c.prompts.roster_entries(members):
             m, model = e["agent"], e["model"]
             problem = ""
+            if m.get("origin") == media.MEDIA_ORIGIN:
+                target = media.member_target(store, m)
+                if target:
+                    model = {**target["model"], "is_local": target["provider"]["is_local"]}
+                    if not model["enabled"] or not target["provider"]["enabled"]:
+                        problem = i18n.pick_now("The generator or its provider is disabled.", "生成模型或服务商已停用。")
+                else:
+                    problem = i18n.pick_now("The generating model is missing.", "生成模型不存在。")
             # A generating member's `model_id` is its own image/video model, which is deliberately kept
             # out of the dialogue roster. Measured consequence of not exempting it: all five generating
             # members in the video group wore a permanent "the pinned model is unavailable right now,
@@ -466,6 +588,7 @@ def build_router(c: Ctx) -> APIRouter:
                            "is_local": model["is_local"]} if model else None),
                 "manual_model": bool(m["model_id"]), "strengths": e["strengths"], "origin": m.get("origin", ""), "engine": m.get("engine", ""),
                 "model_problem": problem,  # why the requested model cannot be used right now (no key set / disabled / circuit broken...); requests fall back to another model
+                "participation": cooperation.contract(store, m),
             })
         ctx = await c.toolhub.context(group, host, connect=False) if host else None
         cfg = store.get_settings()
@@ -509,7 +632,7 @@ def build_router(c: Ctx) -> APIRouter:
         Bounded per press (`limit`, at most 50): a batch that runs for minutes with no way to see
         where it is has no business being one request. `pending` says how many are left.
         """
-        group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         pending = [row for row in store.list_attachments(gid)
                    if (row.get("kind") or "") == attachments_lib.IMAGE
                    and not str(row.get("vision_text") or "").strip()
@@ -533,9 +656,9 @@ def build_router(c: Ctx) -> APIRouter:
             if text:
                 store.set_attachment_vision(str(row["id"]), text)
                 done += 1
-        if done:
-            c.library.sync_group_material(gid, store.workspace_dir(gid),
-                                          with_files=watch_workspace(group))
+        # Nothing is copied into a knowledge base here: describing a picture fills in the attachment
+        # itself (which the group reads directly), and a library only holds what a user filed. See
+        # the note above `Library.workspace_kb`.
         left = len(pending) - done
         return {"described": done, "pending": left, "documents": c.library.own_kb_size(gid),
                 # Why nothing happened, in the words of whoever knows (the vision settings page
@@ -553,8 +676,10 @@ def build_router(c: Ctx) -> APIRouter:
     async def agent_presets() -> list[dict]:
         # `include_hidden=True` on purpose: the process engineer exists, it is simply invisible — and
         # a lookup that could not see it would report every preset as "not added yet".
-        have = {a["name"] for a in store.list_agents(include_hidden=True)}
-        rows = [{**p, "exists": any(n in have for n in builtin_names(p))} for p in presets.offered_presets()]
+        have = {a["name"]: a["id"] for a in store.list_agents(include_hidden=True)}
+        rows = [{**p, "exists": any(n in have for n in builtin_names(p)),
+                 "agent_id": next((have[n] for n in builtin_names(p) if n in have), None)}
+                for p in presets.offered_presets()]
         return i18n.localize(rows)
 
     @r.post("/api/groups/{gid}/members/from-preset")
@@ -563,6 +688,23 @@ def build_router(c: Ctx) -> APIRouter:
         agent = _need(ensure_agent_from_key(store, body.key), i18n.pick_now("Preset", "预设"))
         store.add_member(gid, agent["id"])
         return group_view(store.get_group(gid))  # type: ignore[arg-type]
+
+    @r.post("/api/agents/from-preset")
+    async def agent_from_preset(body: PresetIn) -> dict:
+        """Create (or find) the member a preset describes, **without** putting it in a group.
+
+        The team suggester names experts by preset key, and it runs while the group does not exist
+        yet — the lineup is chosen *before* the group is created, so there is no group id to add
+        anybody to. The member therefore has to be able to exist on its own, and `create_group`
+        then takes its id in `member_ids` like any other member's. Reusing a member of the same
+        name is what `ensure_agent_from_key` already does, so accepting the same lineup twice does
+        not create two of them.
+        """
+        agent = _need(ensure_agent_from_key(store, body.key), i18n.pick_now("Preset", "预设"))
+        # ⚠️ `agent_view(...)`, not `templates.agent_view(...)`: this module has a route handler
+        # named `templates` (the template list), and it shadows the module of the same name — the
+        # attribute error read as "templates has no agent_view", which is true of a function.
+        return agent_view(agent)
 
     @r.post("/api/groups/{gid}/members/from-model")
     async def member_from_model(gid: str, body: ModelMemberIn) -> dict:
@@ -584,7 +726,30 @@ def build_router(c: Ctx) -> APIRouter:
 
     @r.get("/api/templates")
     async def templates() -> list[dict]:
-        return template_rows()
+        """Every group template: the ones saved from groups the user ran come first, newest first,
+        then the built-in ones. One list, one order — the home screen, the gallery and the picker in
+        a dialog all read this and none of them re-sorts it."""
+        return template_rows(store)
+
+    @r.post("/api/groups/{gid}/save-as-template")
+    async def save_as_template(gid: str, body: TemplateIn) -> dict:
+        """Keep this group as a template — the team that was actually used, not one that was designed."""
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        try:
+            return save_group_as_template(store, gid, body.name or "")
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @r.delete("/api/templates/{tid}")
+    async def template_delete(tid: str) -> dict:
+        """Only the user's own can be removed: a built-in one is part of the app, and deleting it
+        would leave a hole that comes back on the next start anyway."""
+        if not str(tid).startswith("user-"):
+            raise HTTPException(400, i18n.pick_now(
+                "Only a template saved from a group can be deleted.",
+                "只有从群聊存下来的模板才能删除。"))
+        store.delete_group_template(tid)
+        return {"ok": True}
 
     @r.post("/api/templates/{tid}/create-group")
     async def template_create(tid: str, body: TemplateIn) -> dict:
@@ -832,7 +997,8 @@ def build_router(c: Ctx) -> APIRouter:
         if blocked:
             return {"ok": False, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]},
                     "detail": blocked}
-        ok, detail = await video.probe(prov)
+        ready, detail = await c.toolhub.comfy_runtime.ensure(prov, cfg)
+        ok, detail = await video.probe(prov) if ready else (False, detail)
         return {"ok": ok, "provider": {"id": prov["id"], "name": prov["name"], "base_url": prov["base_url"]}, "detail": detail}
 
     @r.get("/api/media/options")
@@ -1322,7 +1488,19 @@ def build_router(c: Ctx) -> APIRouter:
                 "tasks": await asyncio.to_thread(workspace_tasks, root)}
 
     @r.get("/api/groups/{gid}/workspace/file")
-    async def workspace_file(gid: str, path: str) -> Response:
+    async def workspace_file(gid: str, path: str, inline: int = 0) -> Response:
+        """A file out of this group's workspace: downloaded, or — with `inline=1` — shown.
+
+        `inline` exists for the reviews. `review_picture` and `review_audio` hand back the very file
+        they looked at, so that a person reading the chat can see the picture or play the recording
+        instead of taking a model's word for it; that only works if the browser is told what the file
+        *is*, because an `<img>` or a `<video>` given `application/octet-stream` shows nothing. The
+        type is read off the bytes (`attachments.classify`), never off the name, so a workspace file
+        cannot claim to be something it is not.
+
+        Only kinds a browser can render inline get the treatment; anything else is downloaded, which
+        is the safe default for a file this app did not write.
+        """
         _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
         root = store.workspace_dir(gid)
         target = attachments_lib.resolve(root, path)
@@ -1330,8 +1508,248 @@ def build_router(c: Ctx) -> APIRouter:
             raise HTTPException(404, i18n.pick_now("No such file in this workspace",
                                                    "工作目录里没有这个文件"))
         name = urllib.parse.quote(target.name)
+        if inline:
+            data = target.read_bytes()
+            kind, mime, _ext = attachments_lib.classify(data, target.name)
+            if kind in attachments_lib.VISUAL or kind == attachments_lib.AUDIO:
+                return Response(data, media_type=mime,
+                                headers={"Content-Disposition": f"inline; filename*=UTF-8''{name}",
+                                         "Cache-Control": "private, max-age=60"})
         return Response(target.read_bytes(), media_type="application/octet-stream",
                         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+
+    @r.get("/api/groups/{gid}/workspace/text")
+    async def workspace_text(gid: str, path: str) -> dict:
+        """One file's text, so the panel can **show** a deliverable instead of handing it away.
+
+        The right column lists what a project produced; clicking a row should put that work in front
+        of the user, not launch another program and leave the answer somewhere else on the screen.
+        Text is the only thing the frontend can render without trusting the file, so this route
+        exists to hand over exactly that.
+
+        Two rules, and both are load-bearing:
+
+        * **Who counts as text is not decided here.** The name goes through the same judges the rest
+          of the app uses — `attachments.PLAIN_EXT` for text files, `attachments.extract_text` for
+          pdf and office documents — so this panel and the knowledge base cannot end up disagreeing
+          about what "has text" means. A file neither judge can read is refused (415), and the panel
+          says so instead of showing an empty box.
+        * **Never as HTML.** The reply is JSON with the characters in a field, so a workspace file
+          that happens to be a web page is read as text and never executed in the app's origin.
+        """
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        root = store.workspace_dir(gid)
+        target = attachments_lib.resolve(root, path)
+        if not target or not target.is_file():
+            raise HTTPException(404, i18n.pick_now("No such file in this workspace",
+                                                   "工作目录里没有这个文件"))
+        if target.stat().st_size > WORKSPACE_TEXT_MAX_BYTES:
+            raise HTTPException(413, i18n.pick_now("This file is too large to show here",
+                                                   "这个文件太大,没法在这里显示"))
+        data = await asyncio.to_thread(target.read_bytes)
+        plain = Path(target.name).suffix.lower() in attachments_lib.PLAIN_EXT
+        text = await asyncio.to_thread(attachments_lib.extract_text, target.name, data)
+        if not text:
+            raise HTTPException(415, i18n.pick_now("There is no text in this file to show",
+                                                   "这个文件里没有可以显示的文字"))
+        # `extracted` is a fact the panel words: a docx shown as prose was pulled out of the
+        # document, and saying so is the difference between "this is the file" and "this is what
+        # could be read out of the file".
+        return {"text": text[:WORKSPACE_TEXT_MAX_CHARS], "chars": len(text),
+                "truncated": len(text) > WORKSPACE_TEXT_MAX_CHARS,
+                "extracted": not plain, "name": target.name}
+
+    # ============================================================ the folder a project works in
+    @r.get("/api/groups/{gid}/folder")
+    async def folder_info(gid: str) -> dict:
+        """What is in this project's folder, before anything is done to it.
+
+        The confirmation dialog needs the two numbers a person actually decides with — how many files
+        and how much data — and it needs them *before* asking, so "empty this folder" can say what it
+        means instead of being a button that might mean anything.
+        """
+        group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        path = store.workspace_path(gid)
+        mine = bool(str(group.get("workspace") or "").strip())
+        out = {"name": path.name if mine else str(group.get("name") or path.name),
+               "path": str(path), "mine": mine, "exists": path.is_dir(),
+               "files": 0, "bytes": 0, "items": []}
+        if not out["exists"]:
+            return out
+        try:
+            for p in sorted(path.rglob("*")):
+                if p.is_file():
+                    out["files"] += 1
+                    try:
+                        out["bytes"] += p.stat().st_size
+                    except OSError:
+                        pass
+            # The first few names, newest first: enough to recognise the folder by what is in it.
+            newest = sorted((p for p in path.rglob("*") if p.is_file()),
+                            key=lambda p: -p.stat().st_mtime if p.exists() else 0)[:8]
+            out["items"] = [str(p.relative_to(path)) for p in newest]
+        except OSError as e:
+            out["note"] = str(e)
+        return out
+
+    @r.post("/api/groups/{gid}/folder/rename")
+    async def rename_folder(gid: str, body: FolderRenameIn) -> dict:
+        """Rename the folder this project works in, on disk.
+
+        Only a folder the user chose can be renamed. The app-managed one is named after the group's id
+        and *is* the mapping: renaming it would leave a group whose workspace no longer resolves, and
+        the next write would land in a fresh empty directory while the files sat next to it. The
+        answer says that, instead of doing something quietly.
+
+        The name is checked before anything is touched — no separators, no `..`, not empty — and a
+        name that is already taken is refused rather than merged into.
+        """
+        group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        if not str(group.get("workspace") or "").strip():
+            raise HTTPException(400, i18n.pick_now(
+                "This folder is managed by the app, so its name is not yours to change. Pick your own "
+                "directory for this group first (in the group's own settings), then it can be renamed.",
+                "这个文件夹由程序管理,名字不归你改。先在群设置里给这个群挑一个你自己的目录,之后就能改名了。"))
+        name = body.name.strip().strip("/")
+        if not name or name in (".", "..") or "/" in name or "\\" in name or name.startswith("."):
+            raise HTTPException(400, i18n.pick_now(
+                "That is not a folder name — no slashes, no dots at the front.",
+                "这不是一个文件夹名 —— 不能带斜杠,也不能以点开头。"))
+        old = store.workspace_path(gid)
+        if not old.is_dir():
+            raise HTTPException(404, i18n.pick_now("That folder is not there any more",
+                                                   "这个文件夹已经不在了"))
+        target = old.parent / name
+        if target.exists():
+            raise HTTPException(400, i18n.pick_now(f"\"{name}\" is already there.",
+                                                   f"「{name}」已经存在了。"))
+        try:
+            old.rename(target)
+        except OSError as e:
+            raise HTTPException(400, i18n.pick_now(f"The folder could not be renamed: {e}",
+                                                   f"改不了这个文件夹的名字:{e}")) from None
+        store.update_group(gid, {"workspace": str(target)})
+        return {"ok": True, "path": str(target), "name": target.name}
+
+    @r.post("/api/groups/{gid}/folder/delete")
+    async def delete_folder(gid: str, body: FolderConfirmIn) -> dict:
+        """Empty this project's folder — by moving it to the Finder's Trash, never by deleting it.
+
+        Every write an agent made in this project lives here, so this is the one action in the app
+        that can destroy work, and it is built as such: the caller has to say what it believes is
+        there (`expect_files`, from the confirmation dialog), and a mismatch is refused rather than
+        carried out. Nothing is ever `rm`-ed: the folder goes to the Trash through the Finder, so the
+        user can put it back. If this machine has no way to trash it, the answer says so and nothing
+        happens.
+
+        After the move the group keeps working: a managed workspace is recreated empty, and a
+        user-chosen one is *cleared from the group's settings* rather than left pointing at a folder
+        that is in the Trash.
+        """
+        group = _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        if not body.confirm:
+            raise HTTPException(400, i18n.pick_now(
+                "This moves the whole folder to the Trash — it needs to be confirmed.",
+                "这会把整个文件夹移到废纸篓,需要明确确认。"))
+        folder = store.workspace_path(gid)
+        if not folder.is_dir():
+            store.update_group(gid, {"workspace": ""})
+            return {"ok": True, "trashed": "", "note": i18n.pick_now(
+                "There was no folder left, so the group was pointed back at a managed one.",
+                "文件夹已经不在了,已把这个群改回程序管理的目录。")}
+        here = sum(1 for p in folder.rglob("*") if p.is_file())
+        if body.expect_files is not None and int(body.expect_files) != here:
+            raise HTTPException(409, i18n.pick_now(
+                f"That folder now holds {here} files, not {body.expect_files} — something changed since "
+                "the dialog was opened, so nothing was moved. Look again and decide.",
+                f"这个文件夹里现在是 {here} 个文件,不是 {body.expect_files} 个 —— 对话框打开以后有变化,"
+                "所以什么都没动。请再看一眼再决定。"))
+        moved = await asyncio.to_thread(_to_trash, folder)
+        if not moved:
+            raise HTTPException(400, i18n.pick_now(
+                "This machine has no way to move a folder to the Trash, and this app does not delete "
+                "files outright. Move it with the Finder yourself.",
+                "这台机器上找不到把文件夹移进废纸篓的办法,而本程序不会直接删文件。请你自己用访达处理。"))
+        if str(group.get("workspace") or "").strip():
+            store.update_group(gid, {"workspace": ""})
+        store.workspace_dir(gid)          # a managed group needs somewhere to write again
+        return {"ok": True, "trashed": str(folder), "files": here}
+
+    # ============================================================ judging a reply, and hearing it
+    @r.post("/api/groups/{gid}/messages/{mid}/feedback")
+    async def rate_message(gid: str, mid: str, body: RatingIn) -> dict:
+        """The user's verdict on one member's reply, which is the whole point of the feature.
+
+        Stored as one row per message rather than a log of clicks, so changing your mind is one
+        opinion and a mis-click is undoable (`rating=""`). The answer carries the group's scoreboard
+        back, because the panel and the thumbs read the same number — a UI that shows a count the
+        backend does not agree with is worse than showing none.
+        """
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        row = _need(store.get_message(mid), i18n.pick_now("Message", "消息"))
+        if str(row.get("group_id") or "") != gid:
+            raise HTTPException(404, i18n.pick_now("That message is not in this group",
+                                                   "这条消息不在这个群里"))
+        if not feedback_lib.may_rate(row):
+            raise HTTPException(400, i18n.pick_now(
+                "Only a member's reply can be judged — not your own message and not a system note.",
+                "只有成员的回复可以被评价 —— 你自己的消息和系统提示不算。"))
+        try:
+            rating, note = feedback_lib.clean(body.rating), feedback_lib.clean_note(body.note)
+        except feedback_lib.FeedbackError as e:
+            raise HTTPException(400, str(e)) from None
+        if rating == "" and not note:
+            store.clear_feedback(mid)                 # cleared, not stored as an empty verdict
+        else:
+            store.rate_message(mid, gid, str(row.get("sender_id") or ""),
+                               str(row.get("sender_name") or ""), rating, note)
+        rows = store.list_feedback(gid, limit=500)
+        return {"feedback": next((f for f in rows if f["message_id"] == mid), None),
+                **feedback_lib.summary(rows)}
+
+    @r.get("/api/feedback")
+    async def feedback(gid: str = "", limit: int = 200) -> dict:
+        """Everything the user has judged, newest first, with the scoreboard.
+
+        Grouped per member rather than per message because that is the question this data answers:
+        "which member is not doing well, and what did the user say about it". The messages themselves
+        are already in the chat.
+        """
+        if gid:
+            _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        rows = store.list_feedback(gid or None, limit=max(1, min(int(limit), 500)))
+        return {"items": rows, **feedback_lib.summary(rows)}
+
+    @r.delete("/api/groups/{gid}/messages/{mid}/feedback")
+    async def unrate_message(gid: str, mid: str) -> dict:
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        store.clear_feedback(mid)
+        rows = store.list_feedback(gid, limit=500)
+        return {"ok": True, **feedback_lib.summary(rows)}
+
+    @r.get("/api/groups/{gid}/messages/{mid}/speech")
+    async def read_aloud(gid: str, mid: str) -> Response:
+        """The message read out loud, by this machine, as a WAV a browser can play.
+
+        Local on purpose: reading a reply aloud is a convenience of the moment, and sending the text
+        of a private group to a cloud voice service to get it back as audio is not a trade this app
+        makes for it. The voice follows the language, the reading is cached per text and voice, and
+        a long reply is read up to a cap — the header says whether it was cut, so the button can say
+        so instead of pretending the whole thing was heard.
+        """
+        _need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        row = _need(store.get_message(mid), i18n.pick_now("Message", "消息"))
+        text = _plain_text(str(row.get("content") or ""))
+        voice = speech.voice_for(text)
+        try:
+            made, reused = await speech.record(text, voice, store.data_dir / "speech")
+        except assemble.AssembleError as e:
+            raise HTTPException(400, str(e)) from None
+        return Response(made.read_bytes(), media_type="audio/wav",
+                        headers={"Cache-Control": "private, max-age=3600",
+                                 "X-Team-Agent-Voice": urllib.parse.quote(voice or "default"),
+                                 "X-Team-Agent-Cut": "1" if speech.was_cut(text) else "0",
+                                 "X-Team-Agent-Reused": "1" if reused else "0"})
 
     @r.post("/api/groups/{gid}/workspace/folder")
     async def workspace_folder(gid: str, body: WorkspaceFolder) -> dict:
@@ -1366,10 +1784,38 @@ def build_router(c: Ctx) -> APIRouter:
         that workspace's own plus the shared ones, which is what the group may attach."""
         _check_group(group_id or "")
         counts = store.count_by_kb()
+        origins = store.origins_by_kb()
         members = store.collection_kb_ids()
         in_collections = {kid: cid for cid, kids in members.items() for kid in kids}
-        return [{**k, "docs": counts.get(k["id"], 0), "collection_id": in_collections.get(k["id"], "")}
-                for k in store.list_kbs(group_id)]
+        # `source` on the way out is **the word to show**: the base's own documents if nobody has said
+        # otherwise, and the user's own value when they have (`knowledge_bases.source` is only ever
+        # that override). Deriving it here rather than storing it is what stops the label going stale
+        # the moment a document is added — and a stale label is worse than none, because it is exactly
+        # the thing a user would trust. Each row also carries the breakdown behind the word, so
+        # "mixed" arrives with the numbers that make it true rather than as an adjective.
+        out = []
+        for k in store.list_kbs(group_id):
+            spread = origins.get(k["id"], {})
+            out.append({**k, "docs": counts.get(k["id"], 0), "origins": spread,
+                        "source": k.get("source") or library.shelf_of(list(spread)),
+                        # Both, because the page needs to tell "the user said this" from "the
+                        # documents say this": the editor opens on the override (empty = automatic),
+                        # while the badge shows the word that is actually in force.
+                        "source_override": k.get("source") or "",
+                        "collection_id": in_collections.get(k["id"], "")})
+        return out
+
+    @r.get("/api/library/vocabulary")
+    async def library_vocabulary() -> dict:
+        """The words the two labels are written in: where material came from, and what a base is for.
+
+        Served rather than hard-coded in the page, because the origin list is the *same* closed
+        vocabulary the rows are labelled with (`library.ORIGINS`) — two copies would drift, and the
+        day they drift is the day a filter silently stops matching. `purposes` is only a list of
+        suggestions and the field accepts anything (see `library.PURPOSES`).
+        """
+        return {"origins": list(library.ORIGINS), "mixed": library.MIXED,
+                "purposes": list(library.PURPOSES), "categories": list(library.CATEGORIES)}
 
     @r.post("/api/knowledge-bases")
     async def kbs_add(body: KBIn) -> dict:
@@ -1456,7 +1902,22 @@ def build_router(c: Ctx) -> APIRouter:
         return _need(c.library.shared_kb(), i18n.pick_now("Knowledge base", "知识库"))
 
     @r.get("/api/library")
-    async def library_list(kb_id: str | None = None, group_id: str | None = None) -> dict:
+    async def library_list(kb_id: str | None = None, group_id: str | None = None,
+                           q: str = "", origin: str = "", kind: str = "", category: str = "",
+                           group_by: str = "", offset: int = 0, limit: int = 50,
+                           per_group: int = 8) -> dict:
+        """The documents in scope, one page at a time.
+
+        A real library is thousands of documents (6160 on this machine, from one directory import),
+        and both halves of that were broken: the response carried every row and the page rendered
+        every row, so the list took a second to arrive and was impossible to read. So the list is
+        paged, filtered by title / origin / kind / category — and `group_by` returns the
+        classification itself: each class with its count and the first few documents in it.
+
+        The counts are always computed over the whole scope, never over the filtered view: they are
+        how the user picks a class, so they have to describe the library rather than the current
+        query. The filtered view's own size comes back as `total`.
+        """
         if kb_id:
             _check_kb(kb_id)
             docs = store.list_docs(kb_id)
@@ -1467,7 +1928,49 @@ def build_router(c: Ctx) -> APIRouter:
             docs = store.list_docs(kb_ids=[k["id"] for k in store.list_kbs("")])
         else:
             docs = store.list_docs()
-        return {"docs": docs, "total_chars": sum(d["chars"] for d in docs), "count": len(docs)}
+
+        # The classification, over the whole scope. `Counter` on a plain attribute, so a new origin
+        # or category token shows up here the moment `library.ORIGINS` / `library.CATEGORIES` gains
+        # one.
+        origins = dict(Counter(d.get("origin") or "" for d in docs))
+        kinds = dict(Counter(d.get("kind") or "" for d in docs))
+        bases = dict(Counter(d.get("kb_id") or "" for d in docs))
+        categories = dict(Counter(d.get("category") or "" for d in docs))
+
+        needle = q.strip().lower()
+        view = [
+            d for d in docs
+            if (not needle or needle in str(d.get("title") or "").lower()
+                or needle in str(d.get("filename") or "").lower())
+            and (not origin or (d.get("origin") or "") == origin)
+            and (not kind or (d.get("kind") or "") == kind)
+            and (not category or (d.get("category") or "") == category)
+        ]
+        head = {
+            "total": len(view), "total_chars": sum(d["chars"] for d in view),
+            "origins": origins, "kinds": kinds, "bases": bases, "categories": categories,
+        }
+
+        if group_by in ("origin", "kind", "kb", "category"):
+            key = {"origin": "origin", "kind": "kind", "kb": "kb_id", "category": "category"}[group_by]
+            buckets: dict[str, list[dict]] = {}
+            for d in view:
+                buckets.setdefault(str(d.get(key) or ""), []).append(d)
+            # Biggest class first: the point of the view is that the library has a shape, and a
+            # class of two documents does not deserve the top of the page. The empty token goes
+            # last whatever its size — "nothing in its own words says" is the absence of a class,
+            # not the biggest one, and 6,046 unclassified documents would otherwise sit on top.
+            groups = [
+                {"id": gid, "count": len(rows), "docs": rows[: max(1, min(per_group, 50))]}
+                for gid, rows in sorted(buckets.items(), key=lambda kv: (kv[0] == "", -len(kv[1]), kv[0]))
+            ]
+            return {**head, "groups": groups, "docs": [], "count": 0}
+
+        start = max(0, offset)
+        size = max(1, min(limit, 500))
+        page = view[start:start + size]
+        return {**head, "docs": page, "count": len(page), "offset": start, "limit": size}
+
 
     @r.post("/api/library/upload")
     async def library_upload(request: Request, filename: str, kb_id: str = "", group_id: str = "") -> dict:

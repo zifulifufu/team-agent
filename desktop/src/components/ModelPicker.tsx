@@ -5,6 +5,8 @@ import { useData } from "../data";
 import { Modal, useBusy, useConfirm } from "../ui";
 import ModelUseTag from "./ModelUseTag";
 import { StrengthChips, useStrengthTags } from "./Strengths";
+import ModelCategories, { matchesCategory, type ModelCategory } from "./ModelCategories";
+import ModelAvailability, { modelAvailability, type Availability } from "./ModelAvailability";
 import { tr, useI18n } from "../i18n";
 import "../styles/models.css";
 
@@ -45,13 +47,16 @@ export function ModelPicker({
   /** Latest options, so the caller can refresh its "N new models" badge */
   onOptions?: (o: ModelOptions) => void;
 }) {
-  const { reload } = useData();
+  const { reload, health, settings } = useData();
   const confirm = useConfirm();
   const { t } = useI18n();
   const allTags = useStrengthTags();
   const [opts, setOpts] = useState<ModelOptions | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [q, setQ] = useState("");
+  const [category, setCategory] = useState<ModelCategory | null>(null);
+  const [status, setStatus] = useState("not-added");
+  const [page, setPage] = useState(0);
   const [want, setWant] = useState<Tag[]>([]);
   const [onlyNew, setOnlyNew] = useState(focusNew);
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -80,15 +85,23 @@ export function ModelPicker({
   }, [provider.id, apply]);
 
   const list = opts?.models ?? [];
+  const activeCategory = category ?? (list.some((m) => m.use === "chat") ? "chat"
+    : list.some((m) => m.use === "image") ? "image" : list.some((m) => m.use === "video") ? "video" : "all");
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
     return list.filter(
       (m) =>
+        matchesCategory(m, activeCategory) &&
+        (status === "all" || (status === "not-added" ? !m.added && !m.retired_reason && !m.gone
+          : status === "added" ? m.added : !!m.retired_reason || m.gone || m.live === false || m.installed === false)) &&
         (!onlyNew || m.is_new) &&
         want.every((t) => m.strengths.includes(t)) &&
         (!k || m.name.toLowerCase().includes(k) || m.id.toLowerCase().includes(k) || (m.summary ?? "").toLowerCase().includes(k)),
     );
-  }, [list, q, want, onlyNew]);
+  }, [list, q, want, onlyNew, activeCategory, status]);
+  const pages = Math.max(1, Math.ceil(shown.length / 12));
+  const currentPage = Math.min(page, pages - 1);
+  const pageRows = shown.slice(currentPage * 12, (currentPage + 1) * 12);
   const pickable = shown.filter((m) => !m.added);
   const allOn = pickable.length > 0 && pickable.every((m) => sel.has(m.id));
 
@@ -187,29 +200,39 @@ export function ModelPicker({
         <div className="mp-bar">
           <div className="search-box">
             <Search size={14} />
-            <input autoFocus placeholder={t("Search by name / id / description")} value={q} onChange={(e) => setQ(e.target.value)} aria-label={t("Search models")} />
+            <input autoFocus placeholder={t("Search by name / id / description")} value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} aria-label={t("Search models")} />
           </div>
-          <label className="check-inline"><input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />{t("New only")}{opts && opts.new_count > 0 ? `(${opts.new_count})` : ""}</label>
+          <label className="check-inline"><input type="checkbox" checked={onlyNew} onChange={(e) => { setOnlyNew(e.target.checked); setPage(0); }} />{t("New only")}{opts && opts.new_count > 0 ? `(${opts.new_count})` : ""}</label>
           <button className="btn small" disabled={refreshing} onClick={refresh} title={t("Ask the provider what it offers right now (needs network access)")}>
             <RefreshCw size={13} className={refreshing ? "mp-spin" : ""} /> {refreshing ? t("Refreshing…") : t("Refresh live list")}
           </button>
           <button className="btn small ghost" disabled={!opts || opts.new_count === 0} onClick={markSeen} title={t("Clear every \"new\" badge")}>{t("Mark all as seen")}</button>
         </div>
 
+        <ModelCategories value={activeCategory} models={list} onChange={(value) => { setCategory(value); setPage(0); }} />
+        <label className="mp-catalog-status">{t("Catalog status")}<select value={status} onChange={(e) => { setStatus(e.target.value); setPage(0); }}>
+          <option value="not-added">{t("Not added yet")}</option>
+          <option value="all">{t("All statuses")}</option>
+          <option value="added">{t("Added")}</option>
+          <option value="attention">{t("Needs attention")}</option>
+        </select></label>
+        <details className="mp-advanced">
+        <summary>{t("More capability filters")}</summary>
         <div className="mp-filter">
           <span className="mp-filter-label">{t("Strengths (multiple allowed, all required):")}</span>
           <span className="str-picker">
             {allTags.map((t) => {
               const on = want.includes(t.id);
               return (
-                <button key={t.id} type="button" className={"str-chip pick" + (on ? " on" : "")} aria-pressed={on} title={t.desc} onClick={() => setWant(on ? want.filter((x) => x !== t.id) : [...want, t.id])}>
+                <button key={t.id} type="button" className={"str-chip pick" + (on ? " on" : "")} aria-pressed={on} title={t.desc} onClick={() => { setWant(on ? want.filter((x) => x !== t.id) : [...want, t.id]); setPage(0); }}>
                   {t.label ?? t.id}
                 </button>
               );
             })}
           </span>
-          {want.length > 0 && <button className="link small" onClick={() => setWant([])}>{t("Clear")}</button>}
+          {want.length > 0 && <button className="link small" onClick={() => { setWant([]); setPage(0); }}>{t("Clear")}</button>}
         </div>
+        </details>
 
         {refreshErr ? (
           <div className="mp-status err-box" role="alert">
@@ -234,17 +257,25 @@ export function ModelPicker({
         <div className="mp-list" role="list" aria-label={t("Model list")}>
           {!opts && !loadErr && <div className="empty">{t("Loading…")}</div>}
           {loadErr && <div className="empty err">{loadErr}</div>}
-          {shown.map((m) => (
-            <ModelRow key={m.id} m={m} local={provider.is_local} checked={m.added || sel.has(m.id)} onToggle={() => void toggle(m)} />
+          {pageRows.map((m) => (
+            <ModelRow key={m.id} m={m} local={provider.is_local} checked={m.added || sel.has(m.id)} onToggle={() => void toggle(m)}
+              availability={modelAvailability({ enabled: m.added ? m.enabled : true, use: m.use }, provider,
+                health[`${provider.id}/${m.id}`], settings)} />
           ))}
           {opts && shown.length === 0 && (
             <div className="empty">
               {list.length === 0 ? t("The catalog has no models for this provider; you can add one by hand below")
                 : onlyNew && !q && want.length === 0 ? t("No new models. Use \"Refresh live list\" to see whether the provider released any")
                 : t("No models match")}
+              {list.length > 0 && <button className="btn small" onClick={() => { setCategory("all"); setStatus("all"); setWant([]); setQ(""); setOnlyNew(false); setPage(0); }}>{t("Clear filters")}</button>}
             </div>
           )}
         </div>
+        {pages > 1 && <nav className="model-roster-pages" aria-label={t("Model pages")}>
+          <button className="btn small" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>{t("Previous page")}</button>
+          <span>{t("Page {page} of {pages}", { page: currentPage + 1, pages })}</span>
+          <button className="btn small" disabled={currentPage === pages - 1} onClick={() => setPage(currentPage + 1)}>{t("Next page")}</button>
+        </nav>}
 
         <div className="mp-manual">
           <button className={"mp-manual-toggle" + (manualOpen ? " open" : "")} aria-expanded={manualOpen} onClick={() => setManualOpen((v) => !v)}>
@@ -265,7 +296,7 @@ export function ModelPicker({
   );
 }
 
-function ModelRow({ m, local, checked, onToggle }: { m: ModelOption; local: boolean; checked: boolean; onToggle: () => void }) {
+function ModelRow({ m, local, checked, onToggle, availability }: { m: ModelOption; local: boolean; checked: boolean; onToggle: () => void; availability: Availability }) {
   const { t } = useI18n();
   const meta: string[] = [];
   const ctx = fmtContext(m.context);
@@ -294,6 +325,7 @@ function ModelRow({ m, local, checked, onToggle }: { m: ModelOption; local: bool
           </span>
         </div>
         {m.summary && <div className="mp-summary">{m.summary}</div>}
+        <ModelAvailability value={availability} />
         {m.retired_reason && <div className="mp-warn">{m.retired_reason}</div>}
         <div className="mp-meta">
           {meta.map((part, i) => (

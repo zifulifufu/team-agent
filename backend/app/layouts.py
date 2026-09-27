@@ -90,6 +90,7 @@ def _style_body(body: dict) -> dict:
     card = body.get("card") or {}
     credit = body.get("credit") or {}
     pace = body.get("pace") or {}
+    band = body.get("music") or {}
     opening = body.get("opening") or {}
     closing = body.get("closing") or {}
     transition = body.get("transition") or {}
@@ -157,6 +158,28 @@ def _style_body(body: dict) -> dict:
             "position": (_text(credit.get("position")) or "bottom").lower(),
             "scale": _n(credit.get("scale"), 0.026, "credit.scale", low=0.010, high=0.08),
             "colour": _c(credit.get("colour", "#FFFFFF"), "#FFFFFF", "credit.colour"),
+        },
+        # How a music bed sits under the film, when the caller names a track. Same split as the
+        # title card: **the layout owns the mixing** — level, fades, and whether the music gets out
+        # of the narrator's way — and **the caller owns the choice of track**. "Which piece" changes
+        # with every film; "how loud under a voice" does not, and a film that answered it per film
+        # would be mixed differently by whoever happened to be driving.
+        "music": {
+            # Relative to the narration, not to the encoder's ceiling: -16 dB under a voice is a
+            # bed you notice only when it stops, which is what a bed is for.
+            "volume_db": _n(band.get("volume_db"), -16.0, "music.volume_db", low=-40.0, high=6.0),
+            "fade_in": _n(band.get("fade_in"), 1.5, "music.fade_in", low=0.0, high=20.0),
+            "fade_out": _n(band.get("fade_out"), 2.5, "music.fade_out", low=0.0, high=20.0),
+            "mix": _n(band.get("mix"), 1.0, "music.mix", low=0.0, high=2.0),
+            # Ducking, driven by the timeline instead of guessed at by a compressor: each shot
+            # records how long its narration actually ran (`voice_seconds`), so the music can be
+            # lowered over exactly those spans. 0 disables it, and is what you want when there is
+            # no narration at all. `db` rather than a ratio, because "how far down" is the thing a
+            # person can hear and state; the compressor's ratio is not.
+            "duck_db": _n(band.get("duck_db"), -10.0, "music.duck_db", low=-30.0, high=0.0),
+            # A little overlap past the last syllable, so the music swells back rather than snapping
+            # up the instant the voice stops.
+            "duck_tail": _n(band.get("duck_tail"), 0.35, "music.duck_tail", low=0.0, high=3.0),
         },
     }
 

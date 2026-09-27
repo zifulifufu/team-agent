@@ -1,27 +1,24 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { UserPlus } from "lucide-react";
 import type { Group } from "../../api";
-import { useOutside } from "../../ui";
+import { Modal } from "../../ui";
 import MemberAdder from "./MemberAdder";
 import { useI18n } from "../../i18n";
 
-/** The "+" button: opens the add-member panel (drops down; a click outside closes it). */
-export default function AddMemberButton({ group, align = "left", label, className = "icon-btn tiny" }: { group: Group; align?: "left" | "right"; label?: string; className?: string }) {
+/** The section "+" opens a shared invitation dialog outside the scrolling roster. */
+export default function AddMemberButton({ group, label, section = "members", className = "icon-btn tiny" }: { group: Group; align?: "left" | "right"; label?: string; section?: "members" | "tools"; className?: string }) {
   const { t } = useI18n();
-  const text = label ?? t("Add group member");
+  const text = label ?? t(section === "tools" ? "Add group tool" : "Add group member");
   const [open, setOpen] = useState(false);
-  const ref = useOutside<HTMLDivElement>(open, () => setOpen(false));
   return (
-    <div className="madd-wrap" ref={ref}>
+    <div className="madd-wrap">
       <button className={className + (open ? " on" : "")} title={text} aria-label={text} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         <UserPlus size={15} />
       </button>
-      {open && (
-        <div className={"madd-pop " + align} role="dialog" aria-label={t("{label}: {group}", { label: text, group: group.name })}>
-          <div className="madd-title">{t("Add to \"{group}\"", { group: group.name })}</div>
-          <div className="madd-scroll"><MemberAdder group={group} /></div>
-        </div>
-      )}
+      {open && createPortal(<Modal title={t("Add to \"{group}\"", { group: group.name })} onClose={() => setOpen(false)} wide>
+        <MemberAdder group={group} initialSection={section} />
+      </Modal>, document.body)}
     </div>
   );
 }

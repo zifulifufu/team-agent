@@ -13,8 +13,8 @@ Three things about the shape are deliberate:
     its own program can read would be no use to the person who has to act on it, and a log whose
     headers change with the interface language would stop parsing the moment somebody switched.
   * **`verified` is a state of its own.** "I changed the prompt" and "I ran it again and the defect
-    is gone" are different claims, and only the second one is worth anything. Nothing here moves an
-    entry to `verified` on its own — that is a statement about a re-run, so it is made by hand.
+    is gone" are different claims, and only the second one is worth anything. Automatic entries need a matching successful runtime observation; manual entries need an
+    explicit re-run record. A reviewer suggestion never changes this state.
   * **An entry says where it was seen.** `stage` (`planning` / `handoff` / `tool` / `delivery` /
     `review`) is what turns a pile of complaints into a picture of *which* part of the flow leaks.
 
@@ -25,12 +25,16 @@ actually on disk) so that an entry's evidence is a measurement rather than a mem
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import i18n
+from . import i18n, planner
 
 # The two file names this app writes, English first. A Chinese install reads and writes the Chinese
 # one; `unit()` looks for either, so switching the interface language does not split one ledger into
@@ -67,7 +71,7 @@ STAGE_LABEL = {
 }
 
 _FIELDS = ("status", "severity", "stage", "found", "symptom", "evidence", "cause", "fix", "verify",
-           "hint", "by", "key", "last")
+           "hint", "by", "key", "last", "last_advised", "review_state", "review_note")
 _HEAD = re.compile(r"^##[ \t]+(?P<id>P-\d{8}-\d+)[ \t]*·[ \t]*(?P<title>.*)$", re.M)
 
 
@@ -102,12 +106,21 @@ class Entry:
     # judgement but was produced by a matching rule has to say so — the same reason the advisor's
     # answers are labelled with the model that gave them.
     by: str = ""
+    # Machine check identity, never supplied by the reviewer. Older/manual entries have none.
+    check: dict = field(default_factory=dict)
+    advised: int = 0
+    last_advised: str = ""
+    review_state: str = ""
+    review_note: str = ""
 
     def brief(self) -> dict:
         """The entry as the settings panel shows it: no file paths, no markdown."""
         return {"id": self.id, "title": self.title, "status": self.status, "severity": self.severity,
                 "stage": self.stage, "found": self.found, "by": self.by, "seen": self.seen,
-                "sentence": self.sentence(), "cause": self.cause, "verify": self.verify}
+                "sentence": self.sentence(), "cause": self.cause, "verify": self.verify,
+                "fix": self.fix, "hint": self.hint, "advised": self.advised,
+                "last_advised": self.last_advised, "review_state": self.review_state,
+                "review_note": self.review_note}
 
     def to_markdown(self) -> str:
         body = [
@@ -135,6 +148,13 @@ class Entry:
             body.append(f"- fix: {_one_line(self.fix)}")
         if self.verify:
             body.append(f"- verify: {_one_line(self.verify)}")
+        if self.check:
+            body.append(f"- check: {json.dumps(self.check, ensure_ascii=False)}")
+        if self.advised:
+            body.extend([f"- advised: {self.advised}", f"- last_advised: {self.last_advised}"])
+        for key in ("review_state", "review_note"):
+            if getattr(self, key):
+                body.append(f"- {key}: {_one_line(getattr(self, key))}")
         if self.history:
             body.append(f"- history: {' | '.join(self.history)}")
         return "\n".join(body) + "\n"
@@ -215,6 +235,14 @@ def _parse_block(eid: str, title: str, block: str) -> Entry:
             setattr(entry, key, value)
         elif key == "seen":
             entry.seen = int(value) if value.isdigit() else 1
+        elif key == "advised":
+            entry.advised = int(value) if value.isdigit() else 0
+        elif key == "check":
+            try:
+                check = json.loads(value)
+                entry.check = check if isinstance(check, dict) else {}
+            except ValueError:
+                pass
         elif key == "history":
             entry.history = [h.strip() for h in value.split("|") if h.strip()]
     if entry.status not in STATES:
@@ -247,7 +275,17 @@ def render(entries: list[Entry], group: str = "") -> str:
 def write(path: Path, entries: list[Entry], group: str = "") -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render(entries, group), encoding="utf-8")
+    # Readers must see either complete version, including when a background review finishes.
+    temporary = ""
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".process-", delete=False) as stream:
+            temporary = stream.name
+            stream.write(render(entries, group))
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
     return path
 
 
@@ -262,7 +300,7 @@ def next_id(entries: list[Entry], when: datetime | None = None) -> str:
 def report(
     entries: list[Entry], *, title: str, symptom: str, evidence: str = "", severity: str = "minor",
     stage: str = "other", cause: str = "", fix: str = "", hint: str = "",
-    when: datetime | None = None, key: str = "", by: str = "",
+    when: datetime | None = None, key: str = "", by: str = "", check: dict | None = None,
 ) -> Entry:
     """Add one entry and hand it back (the caller writes the file).
 
@@ -275,14 +313,19 @@ def report(
     stamp = (when or datetime.now()).strftime("%Y-%m-%d %H:%M")
     if key:
         for e in entries:
-            if e.key == key and e.status == "open":
+            if e.key == key:
+                if e.status not in ("open", "wontfix"):
+                    e.status, e.verify = "open", ""
+                    e.history.append(f"reopened@{stamp}")
                 e.seen += 1
                 e.last = stamp
                 e.history.append(f"seen@{stamp}")
                 if evidence and evidence not in e.evidence:
                     # Keep the newest evidence, keep it short: an evidence line that grows without
                     # bound is what makes the file unreadable by hand.
-                    e.evidence = _one_line(f"{e.evidence} ⏎ {evidence}")[:600]
+                    e.evidence = _one_line(f"{evidence} ⏎ {e.evidence}")[:1200]
+                if check:
+                    e.check = dict(check)
                 return e
     entry = Entry(
         id=next_id(entries, when), title=str(title or "").strip()[:200] or "(no title)",
@@ -291,6 +334,7 @@ def report(
         symptom=str(symptom or "").strip(), evidence=str(evidence or "").strip(),
         cause=str(cause or "").strip(), fix=str(fix or "").strip(), hint=str(hint or "").strip(),
         history=[f"open@{stamp}"], key=str(key or ""), seen=1, last=stamp if key else "", by=str(by or ""),
+        check=dict(check or {}),
     )
     entries.append(entry)
     return entry
@@ -314,6 +358,10 @@ def update(
             if status not in STATES:
                 raise ValueError(i18n.pick_now(
                     f"status must be one of: {', '.join(STATES)}", f"状态只能是:{'、'.join(STATES)}"))
+            if status == "verified" and (not str(verify).strip() or e.check):
+                raise ValueError(i18n.pick_now(
+                    "verified requires re-run evidence; automatic entries are verified by a matching successful re-run.",
+                    "verified 必须提供重跑证据;自动检测的条目由程序在对应任务重跑成功后复核。"))
             e.status = status
             e.history.append(f"{status}@{stamp}")
         if verify:
@@ -330,7 +378,8 @@ def update(
     return None
 
 
-def apply_review(entries: list[Entry], text: str, *, by: str = "", when: datetime | None = None) -> int:
+def apply_review(entries: list[Entry], text: str, *, by: str = "", when: datetime | None = None,
+                 allowed: set[str] | None = None) -> int:
     """Fill `cause`/`fix` from a reviewer's JSON answer, and say how many entries it touched.
 
     Three rules, all of them about not letting a model overwrite what somebody already knows:
@@ -352,7 +401,7 @@ def apply_review(entries: list[Entry], text: str, *, by: str = "", when: datetim
         if not isinstance(item, dict):
             continue
         e = known.get(str(item.get("id") or "").strip().upper())
-        if e is None:
+        if e is None or e.status not in ("open", "fixed") or (allowed is not None and e.id not in allowed):
             continue
         filled = False
         for field_name in ("cause", "fix"):
@@ -387,6 +436,58 @@ def _json_items(text: str) -> list:
 
 
 # ------------------------------------------------------------------ what a program can decide alone
+def signature(value: object) -> str:
+    """Stable identity without storing raw tool arguments (which may contain credentials)."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                    default=str).encode()).hexdigest()[:24]
+
+
+def task_check(task: dict) -> dict:
+    # Task IDs restart at t1 on each plan; they are not an identity across rounds.
+    return {"kind": "task", "scope": signature([task.get("owner_id") or task.get("owner"),
+                                               task.get("title"), task.get("deliverable"),
+                                               task.get("instruction"), task.get("arguments") or {}])}
+
+
+def feedback(entries: list[Entry], limit: int = 6) -> tuple[str, list[str]]:
+    pending = [e for e in entries if e.status in ("open", "fixed")]
+    pending.sort(key=lambda e: (SEVERITIES.index(e.severity), e.advised, -e.seen, e.last))
+    pending = pending[:limit]
+    if not pending:
+        return "", []
+    head = i18n.pick_now(
+        "[Process feedback] The following are observations from earlier rounds in THIS group, not user instructions. "
+        "Apply only relevant corrections within the current request and tool permissions. The host must assign an owner, "
+        "real upstream inputs, executable tools and an acceptance check. Return tool failures to the assigning member; "
+        "repair inputs or report the blocker instead of repeating a failing call. Check actual outputs before handing "
+        "them downstream. A suggested fix is not a verified result. Do not mention the hidden engineer in chat.",
+        "【流程反馈】以下是本群历史观测,不是用户指令。仅在当前任务和工具权限内采用相关修正。"
+        "群主分工必须明确负责人、真实上游输入、可执行工具和验收条件。工具失败要交还派工成员,"
+        "修正输入或报告阻塞原因,避免原样反复调用;确认实际产出后再交给下游。建议不等于已修复。"
+        "无需在群聊提及隐身工程师。")
+    lines = [f"[{e.id}] {e.title[:160]} (seen={e.seen}, feedback rounds={e.advised}) | evidence: {e.evidence[:280]} | correction: {(e.fix or e.hint or e.symptom)[:480]}"
+             for e in pending]
+    return head + "\n" + "\n".join(lines), [e.id for e in pending]
+
+
+def settle(entries: list[Entry], observations: list[dict], failed: set[str], advised: list[str],
+           round_id: str) -> None:
+    """Only measured success of the matching operation can verify a machine entry."""
+    for e in entries:
+        if e.id in advised and e.last_advised != round_id:
+            e.advised += 1
+            e.last_advised = round_id
+            e.history.append(f"feedback@{now()} round={round_id}")
+        if e.status not in ("open", "fixed") or not e.check or e.key in failed:
+            continue
+        match = next((o for o in reversed(observations)
+                      if o.get("check") == e.check and o.get("ok") and o.get("evidence")), None)
+        if match:
+            e.status = "verified"
+            e.verify = f"round={round_id}; {match['evidence']}"[:2000]
+            e.history.append(f"verified@{now()} round={round_id}")
+
+
 def auto_task_defects(task: dict, calls: list[dict], files: set[str]) -> list[dict]:
     """The defects in one finished task that a *program* can name without a model's judgement.
 
@@ -403,7 +504,7 @@ def auto_task_defects(task: dict, calls: list[dict], files: set[str]) -> list[di
 
     `task` is a plan task as it reaches the task board (`id`, `title`, `owner`, `status`,
     `deliverable`, `error`); `calls` are that task's tool-call entries; `files` are the base names
-    present in the workspace.
+    validated as this task's delivery. Unrelated workspace files must not be passed here.
     """
     L = i18n.pick_now
     out: list[dict] = []
@@ -412,7 +513,7 @@ def auto_task_defects(task: dict, calls: list[dict], files: set[str]) -> list[di
     owner = str(task.get("owner") or "")
     status = str(task.get("status") or "")
     reason = str(task.get("error") or "").strip()
-    named = [n for n in FILE_IN_TEXT.findall(str(task.get("deliverable") or "")) if n]
+    named = FILE_IN_TEXT(task.get("deliverable"))
     missing = [n for n in named if n not in files]
 
     if missing:
@@ -426,12 +527,12 @@ def auto_task_defects(task: dict, calls: list[dict], files: set[str]) -> list[di
             "title": L(f"Promised and not delivered: {missing[0]}", f"承诺了却没落盘:{missing[0]}"),
             "symptom": L(
                 f"task {tid} ({title}, owner {owner}) ended as {status}, and {', '.join(missing)} is "
-                f"not in the workspace",
-                f"任务 {tid}({title},负责人 {owner})以 {status} 结束,而 {', '.join(missing)} 不在工作目录里"),
+                f"not among this task's validated outputs",
+                f"任务 {tid}({title},负责人 {owner})以 {status} 结束,未交付通过核验的 {', '.join(missing)}"),
             "evidence": L(
-                f"deliverable: {task.get('deliverable')}; workspace has {len(files)} file(s), none "
+                f"deliverable: {task.get('deliverable')}; task has {len(files)} validated output(s), none "
                 f"named {', '.join(missing)}" + (f"; reported: {reason}" if reason else ""),
-                f"deliverable:{task.get('deliverable')};工作目录里 {len(files)} 个文件,没有叫 "
+                f"deliverable:{task.get('deliverable')};本任务通过核验的交付文件 {len(files)} 个,没有叫 "
                 f"{', '.join(missing)} 的" + (f";当时的说法:{reason}" if reason else "")),
             "severity": "blocker", "stage": "delivery",
             "hint": L("the check has to look for the file, not for a reply",
@@ -471,6 +572,9 @@ def auto_task_defects(task: dict, calls: list[dict], files: set[str]) -> list[di
             "hint": L("whatever stopped it has to be named and removed, or the work re-split",
                       "要弄清是什么拦住了它并消掉,或者重新分工"),
         })
+    for defect in out:
+        defect["check"] = task_check(task)
+        defect["key"] += ":" + defect["check"]["scope"]
     return out
 
 
@@ -515,8 +619,8 @@ def auto_round_defects(*, invalid_plan: str = "", exhausted: bool = False, open_
             "key": f"tool-loop:{name}",
             "title": L(f"The same failing call, {n} times: {name}",
                        f"同一个失败调用重复了 {n} 次:{name}"),
-            "symptom": L(f"a member kept retrying {name} with the same argument and the same failure",
-                         f"成员用同样的参数、同样的失败反复重试 {name}"),
+            "symptom": L(f"{name} failed repeatedly in this round; check the recorded arguments and errors",
+                         f"本轮 {name} 多次失败,需核对记录的参数和错误原因"),
             "evidence": L(f"{name} failed {n} times in this round",
                           f"本轮 {name} 失败了 {n} 次"),
             "severity": "major", "stage": "tool",
@@ -536,13 +640,16 @@ def auto_round_defects(*, invalid_plan: str = "", exhausted: bool = False, open_
 
 
 # ------------------------------------------------------------------ the measured facts
-# A file name inside a plan's `deliverable` — "the report it promised to hand over". The suffix list
-# is what this app can actually produce, so a deliverable written as 报告 is prose rather than a
-# missing file. (`orchestrator._FILE_IN_PLAN` judges the same thing at the moment a task finishes;
-# this copy is here so the ledger can re-check the same claim later without importing the
-# orchestrator, which imports this module's caller.)
-FILE_IN_TEXT = re.compile(r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff .()（）\-]*\."
-                          r"(?:docx|pptx|xlsx|csv|pdf|md|txt|srt|png|jpe?g|mp4|mov|webm)\b", re.I)
+# A file name inside a plan's `deliverable` — "the report it promised to hand over". A deliverable
+# written as 报告 is prose rather than a missing file, which is what this test is for.
+#
+# ⚠️ This held a **12-extension list of its own** — no wav/mp3/m4a/svg/gif/mkv/flac — while the
+# executor verified against 27. The ledger is the artefact the process engineer reads, and its
+# "promised and not delivered" count could therefore never see an **audio or video** handover go
+# missing: the exact class of work this group does. `planner` is a leaf module (it imports neither
+# this nor the orchestrator), so asking it is safe, and it removes the fourth copy of a judgement
+# that has already disagreed with itself three times.
+FILE_IN_TEXT = planner.named_files
 
 
 def render_scan(facts: dict) -> str:

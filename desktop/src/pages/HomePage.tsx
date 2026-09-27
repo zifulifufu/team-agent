@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import { LayoutTemplate, LoaderCircle, Sparkles } from "lucide-react";
-import { api, type GroupTemplate } from "../api";
+import { LayoutTemplate, LoaderCircle } from "lucide-react";
+import { api, mayHost, type GroupTemplate, type TeamAdvice, type TeamDraftMember, type TeamAdviceExpert } from "../api";
 import { useData } from "../data";
 import { HOME_DRAFT, draftText, setDraftText } from "../drafts";
 import { useRoute } from "../hooks";
 import { useI18n } from "../i18n";
 import { SCENES } from "../lib";
+import BrandMark from "../components/BrandMark";
 import Composer from "../components/Composer";
 import HomeSetup from "../components/HomeSetup";
+import TeamReview from "../components/TeamReview";
 import type { SettingsTab } from "../settings/SettingsModal";
 import "../styles/chat.css";
 
 export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string, autoSend: string) => void; onSettings?: (tab: SettingsTab) => void }) {
   const { t, pick, lang } = useI18n();
-  const { agents, groups, reload, reloadGroups } = useData();
+  const { agents, groups, reload } = useData();
   const route = useRoute();
   const [sceneId, setSceneId] = useState(SCENES[0].id);
   // The task being described is kept outside this component: opening a group unmounts the home
@@ -28,6 +30,9 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   // people nobody had picked — and with nowhere of its own to put their files.
   const [workspace, setWorkspace] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
+  const [pickedModels, setPickedModels] = useState<string[]>([]);
+  const [pickedExperts, setPickedExperts] = useState<TeamAdviceExpert[]>([]);
+  const [review, setReview] = useState<{ task: string; advice: TeamAdvice; initial: TeamDraftMember[] } | null>(null);
   const [templates, setTemplates] = useState<GroupTemplate[]>([]);
   const [tplErr, setTplErr] = useState("");
   const [tplBusy, setTplBusy] = useState("");
@@ -63,10 +68,8 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
   const homeTemplates = useMemo(() => templates.filter((tpl) => tpl.home !== false), [templates]);
   const scene = SCENES.find((s) => s.id === sceneId)!;
   const creating = target === "new";
-  // Who a new group can be built from. The same rule the member adder uses: a "model member" is a
-  // handle the app created for a model, not somebody the user made, so it is not offered here —
-  // models join a group through the member adder's model list.
-  const pickable = useMemo(() => agents.filter((a) => a.origin !== "model"), [agents]);
+  // Existing model members and role members can both be staged in a new team.
+  const pickable = agents;
   // The scene's own lineup, offered as a *suggestion* rather than applied: the scene tabs used to
   // fill a new group with these three names whether or not anybody wanted them. Now nothing is
   // added until the button is pressed. `/api/agents` answers with the name in the request
@@ -79,6 +82,61 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     () => picked.map((id) => agents.find((a) => a.id === id)).filter(Boolean) as typeof agents,
     [picked, agents],
   );
+  // Who runs the group. It used to be "whoever was ticked first", which silently meant that ticking
+  // an external agent (WorkBuddy) or a generator (a picture or video model) first made the *server*
+  // refuse the whole creation — the picker showed two names ticked, the send failed, and no group
+  // appeared. The chair now goes to the first member who can actually hold it, so the order people
+  // happen to tick in stops deciding whether the group can exist at all.
+  const host = useMemo(() => members.find(mayHost) ?? null, [members]);
+  // The lineup suggested for the task as typed. Computed on a pause rather than per keystroke: the
+  // server's rule pass is cheap, but it walks the whole member list, and calling it 40 times for
+  // 40 characters is work nobody asked for. Nothing is created here — see `adopt`.
+  const [advice, setAdvice] = useState<TeamAdvice | null>(null);
+  const [adviceBusy, setAdviceBusy] = useState(false);
+  // Chips the user took out of the suggestion: a member id, or an expert key. It lives here rather
+  // than inside `AdviceBlock` so it survives that component re-rendering, **and it is cleared the
+  // moment a new suggestion arrives**: a removal was made against one lineup, and carrying it into
+  // the next one would silently drop somebody the user never looked at.
+  const [skipped, setSkipped] = useState<string[]>([]);
+  useEffect(() => {
+    if (!creating) { setAdvice(null); setSkipped([]); return; }
+    const q = text.trim();
+    // Below this there is nothing to read: "做个" or "hello" would match half the member list and
+    // the suggestion would be noise dressed as advice.
+    if (q.length < 6) { setAdvice(null); setAdviceBusy(false); return; }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      setAdviceBusy(true);
+      api.teamSuggest(q).then((a) => { if (live) { setAdvice(a); setSkipped([]); } })
+        .catch(() => { if (live) setAdvice(null); })
+        .finally(() => { if (live) setAdviceBusy(false); });
+    }, 700);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [text, creating]);
+
+  /** Take one chip out of the suggestion.
+   *
+   *  Two effects, and both are needed for the screen to stay true: the chip is struck out, and if
+   *  that member happened to be ticked already it is unticked as well — otherwise the panel would
+   *  show it as in-the-group while the suggestion says it was removed, and the user would have to
+   *  work out which of the two the send button is going to believe. */
+  const skipOne = (key: string) => {
+    setSkipped((cur) => (cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key]));
+    setPicked((cur) => cur.filter((x) => x !== key));
+    setPickedExperts((cur) => cur.filter((e) => e.key !== key));
+    setPickedModels((cur) => cur.filter((id) => id !== key));
+  };
+
+  // Choosing a suggested lineup only edits the draft. New expert rows are created on confirmation.
+  const adopt = (a: TeamAdvice) => {
+    setErr("");
+    setPicked(a.members.filter((m) => !skipped.includes(m.id)).map((m) => m.id));
+    setPickedExperts(a.experts.filter((e) => !skipped.includes(e.key)));
+    setPickedModels((a.models ?? []).filter((m) => !skipped.includes(m.id)).map((m) => m.id));
+  };
+  // Only generators and external agents were picked: there is no chair to hand out, and the server
+  // would refuse. Said here, next to the choice that caused it, instead of as a red line under the
+  // box after the fact.
   const toggle = (id: string) => setPicked((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
 
   const targetGroup = creating ? null : groups.find((g) => g.id === target) ?? null;
@@ -91,10 +149,6 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
     const task = text.trim();
     if (!task || busy) return;
     setErr("");
-    if (creating && members.length === 0) {
-      setErr(t("Choose who is in this group chat first — a group needs somebody to do the work."));
-      return;
-    }
     setBusy(true);
     try {
       // The task is handed over and the draft goes with it. It used to disappear on its own,
@@ -105,11 +159,17 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
         setText("");
         return onOpen(targetGroup.id, task);
       }
-      const title = task.replace(/@\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 14) || pick(scene.label, scene.labelZh);
-      const g = await api.createGroup(title, members.map((a) => a.id), members[0].id, { workspace });
-      await reloadGroups();
-      setText("");
-      onOpen(g.id, task);
+      if (!creating) throw new Error(t("The target group is no longer available. Choose a group again."));
+      const next = await api.teamSuggest(task);
+      const manual = picked.length > 0 || pickedExperts.length > 0 || pickedModels.length > 0;
+      const ids = manual ? picked : next.members.length ? next.members.map((m) => m.id) : suggested.map((m) => m.id);
+      const experts = manual ? pickedExperts : next.experts;
+      const initial: TeamDraftMember[] = [
+        ...ids.map((id) => ({ kind: "agent" as const, id })),
+        ...experts.map((e) => ({ kind: "preset" as const, id: e.key })),
+        ...(manual ? pickedModels : (next.models ?? []).map((m) => m.id)).map((id) => ({ kind: "model" as const, id })),
+      ];
+      setReview({ task, advice: { ...next, experts: [...new Map([...next.experts, ...experts].map((e) => [e.key, e])).values()] }, initial });
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -119,9 +179,11 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
 
   return (
     <div className="home">
+      {review && <TeamReview task={review.task} workspace={workspace} advice={review.advice} initial={review.initial}
+        onClose={() => setReview(null)} onStart={(group, task) => { setReview(null); setText(""); onOpen(group.id, task); }} />}
       <div className="home-inner">
         <div className="hero">
-          <div className="hero-logo"><Sparkles size={22} /></div>
+          <BrandMark size={46} className="hero-logo" />
           <h1>Team Agent</h1>
           <p>{t("Pull hosted and local models into one group and let each do what it is best at — office documents, video production, writing.")}</p>
         </div>
@@ -134,10 +196,12 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
           ))}
         </div>
 
+        {creating && <p className="home-flow-note">{t("Describe task → Review team → Assign work → Verify delivery")}</p>}
         <Composer
           value={text}
           onChange={setText}
           onSend={start}
+          sendLabel={creating ? t("Build and review team") : t("Send")}
           busy={busy}
           members={mentionable}
           placeholder={t("Describe the task; type @ to hand it to a member")}
@@ -170,6 +234,12 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
                   onPicked={setPicked}
                   suggested={suggested}
                   sceneName={pick(scene.label, scene.labelZh)}
+                  hostId={host ? host.id : null}
+                  advice={advice}
+                  adviceBusy={adviceBusy}
+                  skipped={skipped}
+                  onSkip={skipOne}
+                  onAdopt={adopt}
                 />
               )}
             </>
@@ -192,6 +262,16 @@ export default function HomePage({ onOpen, onSettings }: { onOpen: (gid: string,
               {onSettings && <button className="link small" style={{ marginLeft: "auto" }} onClick={() => onSettings("gallery")}>{t("More teams: template gallery →")}</button>}
             </div>
             {tplErr && <div className="err tpl-err" role="alert">{tplErr}</div>}
+            {/* A template brings its own members, its own host and its own prompt — so a lineup
+                ticked above, and a folder chosen above, are not used. That used to happen in
+                silence: the picker said "Members · 2", the template card was pressed, and the group
+                that appeared had the template's people in it. Saying it here costs one line and
+                removes the only way this ends with "the members I chose never joined". */}
+            {(picked.length > 0 || workspace !== "") && (
+              <div className="tpl-note">
+                {t("A template brings its own members and working folder, so what you picked above is not used.")}
+              </div>
+            )}
             <div className="tpl-grid">
               {homeTemplates.map((tpl) => (
                 <button key={tpl.id} className="tpl-card" disabled={!!tplBusy} onClick={() => void useTemplate(tpl)} aria-label={t('Create a group chat from template "{name}"', { name: tpl.name })}>

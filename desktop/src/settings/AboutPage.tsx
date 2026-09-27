@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Sparkles } from "lucide-react";
 import { api, type SystemInfo } from "../api";
+import BrandMark from "../components/BrandMark";
 import { useI18n } from "../i18n";
 import { APP_VERSION } from "../lib";
 
@@ -11,7 +11,7 @@ export default function AboutPage() {
   return (
     <div className="sp">
       <div className="about-hero">
-        <div className="hero-logo"><Sparkles size={24} /></div>
+        <BrandMark size={54} className="hero-logo" />
         <div>
           <h2 className="sp-title" style={{ margin: 0 }}>Team Agent</h2>
           <div className="muted">{t("Version {v}", { v: sys?.app_version ?? APP_VERSION })}</div>

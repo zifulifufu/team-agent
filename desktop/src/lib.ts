@@ -173,3 +173,38 @@ export const SCENES: Scene[] = [
     ],
   },
 ];
+
+
+/** Bytes as a person reads them. One definition: this formula had been copied into three other
+ *  files, and "12.3 MB" written four ways is how a panel starts disagreeing with itself. */
+/**
+ * 项目名的长度上限。用户 2026-09-25:「项目的名称把下面功能键挡住了,这里项目名称要短,一定是最重要的
+ * 关键词,建议不超过 10 个字」。**10 这个数字只有这一处**:建群时用它裁名字,列表里用它裁显示。
+ */
+/**
+ * 项目名的长度上限。**只用于显示这一层。**
+ *
+ * ⚠️⚠️ 真正的命名规则(「一句话 → 最核心的那几个字」)住在后端 `backend/app/names.py`:
+ * 建群时由它给名字,启动时也用它把老长名字改短。前端**不再自己算名字** —— 同一条规则抄成两份,
+ * 迟早各说各话,而这条规则已经改过一次口径(用户先要 10 个字,第二天收紧到 8 个)。
+ * 这里只做一件事:名字长了,列表里少显示几个字。
+ */
+export const NAME_MAX = 8;
+
+/**
+ * 列表里显示的名字:超过上限就截断加省略号。**只在显示这一层做** —— 名字本身不动,
+ * 群聊头部、搜索结果、导出里读到的都还是全名(完整名字挂在这个元素的 `title` 上)。
+ */
+export function shortName(name: string): string {
+  const n = name || "";
+  return n.length > NAME_MAX ? n.slice(0, NAME_MAX) + "…" : n;
+}
+
+export function humanBytes(bytes?: number): string {
+  const n = Number(bytes ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}

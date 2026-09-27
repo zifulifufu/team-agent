@@ -81,9 +81,13 @@ JUDGE_HEAD = (
     "task, answer two questions with a number from 0 to 1:\n"
     "  delivered = did the member actually produce what the instruction asked for?\n"
     "  usable    = could the next task in the list use this result as it stands, without redoing it?\n"
-    "Judge only what is in front of you. An empty or truncated result is not delivered. A result "
-    "that answers a different question than the one asked is not delivered. Do not reward length. "
-    "If you cannot tell, answer 0.5 rather than guessing high.\n\n"
+    "Judge only the supplied evidence. The app may shorten a CHAT SUMMARY with an omitted-characters "
+    "marker; this does NOT mean the actual file or task was truncated. Recorded file paths are tool "
+    "delivery evidence, not proof of content quality. Do not demand full documents be pasted into chat. "
+    "A result that answers a different question is not delivered. Do not reward length. "
+    "When evidence is insufficient (including an excerpt that omits what you need), return null for "
+    "delivered and usable, with the missing evidence in reason. Do not infer a defect or rework from "
+    "an excerpt alone. Concrete observed defects may still be graded.\n\n"
     "Answer with JSON only, no prose, no code fence, in exactly this shape:\n"
     '{"<task id>": {"delivered": 0.0, "usable": 0.0, "reason": "<one short sentence>"}, ...}\n'
     "Include every task id you were given. Write the reason in the same language as the task."
@@ -110,8 +114,12 @@ def build_judge_messages(plan: planner.Plan, excerpts: dict[str, str]) -> list[d
                                        f"  期望交付物:{t.deliverable}"))
         if t.error:
             lines.append(i18n.pick_now(f"  the round reported: {t.error}", f"  运行时报错:{t.error}"))
+        lines.append("  execution_status: " + t.status)
+        if t.files:
+            lines.append("  recorded_tool_files: " + json.dumps(t.files, ensure_ascii=False))
         body = excerpts.get(t.id) or ""
-        lines.append(i18n.pick_now("  what the member produced:", "  成员产出的内容:"))
+        lines.append(i18n.pick_now("  member's chat summary (may be abridged, not the full files):",
+                                  "  成员聊天摘要（可能被节选，并非文件全文）:"))
         lines.append(body if body else i18n.pick_now("  (nothing)", "  (空)"))
     return [{"role": "user", "content": "\n".join(lines)}]
 
@@ -219,6 +227,14 @@ def pick_judge(store: Any, router: Any, group: dict, used_models: set[str] | Non
     except Exception:  # noqa: BLE001
         return ""
     eligible = [m for m in models if m.get("id") and m["id"] not in members]
+    health = store.all_health() if callable(getattr(store, "all_health", None)) else {}
+    now = time.time()
+    eligible = [m for m in eligible if not (
+        health.get(m["id"], {}).get("status") == "bad"
+        and now - float(health[m["id"]].get("checked_at") or 0) < 900)]
+    # A configured model may have returned 404 in the previous group. Prefer
+    # measured success over repeatedly choosing the first configured entry.
+    eligible.sort(key=lambda m: health.get(m["id"], {}).get("status") != "ok")
     if not eligible:
         return ""
     local = [m for m in eligible if m.get("is_local")]
@@ -309,17 +325,31 @@ async def score_round(
         return _finish(card)
 
     excerpts = {t.id: abridge(outputs.get(t.id) or "", excerpt) for t in plan.tasks}
-    try:
-        res = await router.complete(build_judge_messages(plan, excerpts), only=judge, source="score")
-        verdicts = parse_judge_reply(res.text, [t.id for t in plan.tasks])
-        card["judge"] = judge
-    except Exception as e:  # noqa: BLE001 — grading must never break the round it grades
-        card["judge_error"] = f"{judge}: {e}"
+    # Asked twice, then said out loud. A judge whose reply does not parse is usually one whose reply
+    # was cut off mid-object, and the same question asked again comes back whole — measured
+    # 2026-09-26 (group 视频制作), where the round's only scorecard was lost to
+    # `Expecting ',' delimiter` and `summarize_card` could report nothing but "Nothing graded them".
+    # ⚠️ Still not salvaged with a regex: `parse_judge_reply` refuses a broken reply on purpose, and
+    # reading one anyway would let a judge that answered nonsense write a lesson into memory.
+    last: Exception = RuntimeError("the judge was never asked")
+    verdicts: dict[str, dict] = {}
+    for attempt in (1, 2):
+        try:
+            res = await router.complete(build_judge_messages(plan, excerpts), only=judge, source="score")
+            verdicts = parse_judge_reply(res.text, [t.id for t in plan.tasks])
+            card["judge"] = judge
+            break
+        except Exception as e:  # noqa: BLE001 — grading must never break the round it grades
+            last = e
+            if attempt == 2:
+                card["judge_error"] = f"{judge}: {last} " + i18n.pick_now("(asked twice)",
+                                                                          "（问了两次）")
+    if not card["judge"]:
         return _finish(card)
 
     for s in scores:
         judged = verdicts.get(s.task_id)
-        s.judged = judged is not None
+        s.judged = bool(judged and judged.get("delivered") is not None and judged.get("usable") is not None)
         if judged:
             s.delivered, s.usable, s.reason = judged["delivered"], judged["usable"], judged["reason"]
         s.verdict = verdict_of(s.mechanical, judged, threshold)
@@ -362,7 +392,7 @@ def _write_lessons(store: Any, group: dict, scores: list[TaskScore]) -> list[dic
     # `weak` belongs here as much as `rework` does — "delivered, but whoever comes next cannot use
     # it" is exactly the hand-off problem worth remembering. Leaving it out would have kept the one
     # verdict this whole two-question design exists to produce from ever reaching memory.
-    weak = [s for s in scores if s.verdict in ("rework", "failed", "weak") and s.reason]
+    weak = [s for s in scores if s.judged and s.verdict in ("rework", "failed", "weak") and s.reason]
     weak.sort(key=lambda s: s.delivered if s.delivered is not None else 0.0)
     try:
         existing = {_norm(m["content"]) for m in store.list_memories(kind="lesson", limit=200)}
@@ -416,11 +446,15 @@ def summarize_card(card: dict) -> str:
         return line
     line = i18n.pick_now(
         f"Scored by {card['judge']} ({s.get('judged', 0)} of {s['total']} tasks judged): "
-        f"{s.get('ok', 0)} good, {s.get('weak', 0)} delivered but unusable downstream, "
+        f"{sum(t['verdict'] == 'ok' and t['judged'] for t in card.get('tasks', []))} passed AI review, {s.get('weak', 0)} delivered but unusable downstream, "
         f"{s.get('rework', 0)} to redo, {s.get('failed', 0)} failed.",
         f"由 {card['judge']} 评分(评分覆盖 {s.get('judged', 0)}/{s['total']} 个任务):"
-        f"{s.get('ok', 0)} 个合格,{s.get('weak', 0)} 个交付了但下一步用不了,"
+        f"{sum(t['verdict'] == 'ok' and t['judged'] for t in card.get('tasks', []))} 个通过AI复核,{s.get('weak', 0)} 个交付了但下一步用不了,"
         f"{s.get('rework', 0)} 个需返工,{s.get('failed', 0)} 个失败。")
+    pending = s["total"] - s.get("judged", 0)
+    if pending:
+        line += i18n.pick_now(f" {pending} task(s) have insufficient quality evidence; mechanical results only.",
+                              f" {pending} 个任务质量证据不足，仅保留机械执行结果。")
     weak = [t for t in card.get("tasks", []) if t["verdict"] in ("weak", "rework", "failed")]
     if weak:
         line += i18n.pick_now(" Weakest: ", " 最弱:") + "; ".join(

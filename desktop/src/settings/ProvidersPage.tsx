@@ -26,6 +26,37 @@ const KIND_LABEL: Record<string, string> = {
  *  the backend's set of media kinds — a kind missing here is not an error, it just quietly shows
  *  the raw string and renders the provider as if it were a chat provider. */
 const MEDIA_KINDS = new Set(["minimax_video", "metachat_media", "ark_video", "comfyui"]);
+
+function ComfyRuntimeSettings() {
+  const { t } = useI18n();
+  const { settings, reload } = useData();
+  const [folder, setFolder] = useState(settings?.comfyui_dir ?? "");
+  const [python, setPython] = useState(settings?.comfyui_python ?? "");
+  const [auto, setAuto] = useState(settings?.comfyui_auto_start ?? false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const save = async () => {
+    setBusy(true);
+    setNote("");
+    try {
+      await api.putSettings({ comfyui_auto_start: auto, comfyui_dir: folder.trim(), comfyui_python: python.trim() });
+      await reload();
+      setNote(t("Saved"));
+    } catch (error) {
+      setNote((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="field-block">
+    <label className="row"><Switch checked={auto} onChange={setAuto} />{t("Start ComfyUI when needed")}</label>
+    <div className="fb-note muted">{t("Use an existing installation. The app starts it when testing or generating and leaves other ComfyUI jobs running. No models are downloaded.")}</div>
+    <label className="fb-label">{t("ComfyUI folder")}<input value={folder} onChange={(event) => setFolder(event.target.value)} aria-label={t("ComfyUI folder")} spellCheck={false} /></label>
+    <label className="fb-label">{t("ComfyUI Python executable")}<input value={python} onChange={(event) => setPython(event.target.value)} aria-label={t("ComfyUI Python executable")} spellCheck={false} /></label>
+    <button className="btn small" disabled={busy} onClick={() => void save()}>{t("Save")}</button>
+    {note && <div className="fb-note" role="status">{note}</div>}
+  </div>;
+}
 const isMedia = (kind: string) => MEDIA_KINDS.has(kind);
 // Only the kinds whose wording actually differs need a Chinese entry; the rest are proper
 // nouns. Read through a plain function (`currentLang()`), not a hook, because AddProvider
@@ -227,6 +258,7 @@ function ProviderDetail({
     setBusy(true);
     setCheck("");
     try {
+      if (!(await save())) return;
       const r = await api.testVideo(p.id);
       setCheck((r.ok ? `✓ ${t("Connected")}` : `✗ ${t("Not reachable")}`) + (r.detail ? ` · ${r.detail}` : ""));
     } catch (e) {
@@ -292,9 +324,10 @@ function ProviderDetail({
               : p.kind === "ark_video"
                 ? t("This is not a chat model: it goes to Volcengine Ark's own video API, and members reach it through the generate_video tool. Its model (Seedance 2.5) ships with the preset — Ark publishes no model list to fetch — so there is nothing to add here; pick it under Permissions & control → Video generation. It takes workspace files or public URLs as reference pictures, video and audio, makes clips up to 30 seconds, and has sound on by default. A member can also be made out of this model, so you can address it directly in a group chat. Test the address here.")
                 : p.kind === "comfyui"
-                  ? t("Not a chat model, and not a hosted service either: this drives a ComfyUI you run yourself, so a clip costs nothing but your machine's time. ComfyUI is a workflow runner rather than a video API, so the \"model\" here is one of the workflows this app ships — there is nothing to fetch and nothing to add; pick it under Permissions & control → Video generation. It has to be running, and it has to have the files the workflow names: Test says which one is missing. It renders from the prompt alone — no reference image, no sound — and a five-second clip measured about eight minutes on an M-series Mac.")
+                  ? t("ComfyUI runs workflows on this machine. Add an enabled workflow from the group's Generating members list, then address that member or let the host assign it a video task. Wan generates silent clips from text; image and audio inputs require a compatible imported workflow. Testing checks the service, nodes and model files.")
                   : t("This is not a chat model: it renders video with sound, and members reach it through the generate_video tool. There is no model list to fill in — turn the tool on under Permissions & control, then test the address here.")}
           </div>
+          {p.kind === "comfyui" && <ComfyRuntimeSettings />}
           <div className="row" style={{ marginTop: 8 }}>
             <button className="btn small" disabled={busy} onClick={checkVideo}>{busy ? t("Checking…") : t("Test the service")}</button>
           </div>

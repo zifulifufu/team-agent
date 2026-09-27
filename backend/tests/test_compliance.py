@@ -93,14 +93,14 @@ def test_api_key_is_stored_as_a_keychain_reference(tmp_path: Path, monkeypatch: 
     st = Store(tmp_path / "data")
     st.update_provider("deepseek", {"api_key": "sk-live-abcdef123456"})
 
-    assert _raw_key(st) == "keychain:provider:deepseek"          # only a reference lives in the database
+    assert _raw_key(st) == secrets_store.make_ref(st._secret_ref("provider", "deepseek"))          # only a reference lives in the database
     assert "sk-live" not in json.dumps(st._q("SELECT * FROM providers"), ensure_ascii=False)
-    assert kc.items["provider:deepseek"] == "sk-live-abcdef123456"
+    assert kc.items[st._secret_ref("provider", "deepseek")] == "sk-live-abcdef123456"
     assert st.get_provider("deepseek")["api_key"] == "sk-live-abcdef123456"   # reads still yield the real value
     assert st.list_providers()[0]["api_key"] == "sk-live-abcdef123456"       # callers notice nothing
 
     st.update_provider("deepseek", {"api_key": ""})
-    assert "provider:deepseek" not in kc.items                  # clearing also removes the keychain entry
+    assert st._secret_ref("provider", "deepseek") not in kc.items                  # clearing also removes the keychain entry
     assert _raw_key(st) == ""
 
 
@@ -136,8 +136,8 @@ def test_migration_moves_plaintext_keys_into_keychain(tmp_path: Path, monkeypatc
 
     kc = _FakeKeychain().install(monkeypatch)
     st2 = Store(tmp_path / "data")
-    assert _raw_key(st2) == "keychain:provider:deepseek"
-    assert kc.items["provider:deepseek"] == "sk-old-abcdef123456"
+    assert _raw_key(st2) == secrets_store.make_ref(st._secret_ref("provider", "deepseek"))
+    assert kc.items[st._secret_ref("provider", "deepseek")] == "sk-old-abcdef123456"
     assert st2.get_provider("deepseek")["api_key"] == "sk-old-abcdef123456"
 
 
@@ -162,8 +162,8 @@ def test_github_token_is_stored_as_a_keychain_reference(tmp_path: Path, monkeypa
     kc = _FakeKeychain().install(monkeypatch)
     st = Store(tmp_path / "data")
     st.update_settings({"github_token": "ghp_testtoken0123456789"})
-    assert st._one("SELECT value FROM settings WHERE key='github_token'")["value"] == '"keychain:github-token:default"'
-    assert kc.items["github-token:default"] == "ghp_testtoken0123456789"
+    assert st._one("SELECT value FROM settings WHERE key='github_token'")["value"] == json.dumps(secrets_store.make_ref(st._secret_ref("github-token", "default")))
+    assert kc.items[st._secret_ref("github-token", "default")] == "ghp_testtoken0123456789"
     assert st.get_settings()["github_token"] == "ghp_testtoken0123456789"
 
 
@@ -201,7 +201,7 @@ def test_mcp_keys_are_stored_as_references_too(tmp_path: Path, monkeypatch: pyte
     assert "ghp_live" not in stored["env"] and "live-token" not in stored["headers"]
     assert "PATH" in stored["env"], "a setting that is not a secret stays readable in the database"
     assert json.loads(stored["env"])["PATH"] == "/usr/bin"
-    assert kc.items[f"mcp:{mid}:GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_live_abcdefghijkl"
+    assert kc.items[st._secret_ref(f"mcp:{mid}", "GITHUB_PERSONAL_ACCESS_TOKEN")] == "ghp_live_abcdefghijkl"
 
     back = st.get_mcp(mid)                       # callers see the real values, as with api_key
     assert back["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_live_abcdefghijkl"
@@ -226,7 +226,7 @@ def test_mcp_keys_an_older_database_left_in_plaintext_are_moved(tmp_path: Path, 
     kc = _FakeKeychain().install(monkeypatch)
     assert st._move_keys_to_keychain() == 1
     assert "sk-old" not in st._one("SELECT env FROM mcp_servers WHERE id=?", (mid,))["env"]
-    assert kc.items[f"mcp:{mid}:SOME_API_KEY"] == "sk-old-abcdef123456"
+    assert kc.items[st._secret_ref(f"mcp:{mid}", "SOME_API_KEY")] == "sk-old-abcdef123456"
     assert st.get_mcp(mid)["env"]["SOME_API_KEY"] == "sk-old-abcdef123456"
     assert st._move_keys_to_keychain() == 0, "and it is idempotent"
 
@@ -242,3 +242,24 @@ def test_a_key_the_keychain_cannot_take_stays_where_it_is(tmp_path: Path, monkey
     kc.fail_write = True
     assert st._move_keys_to_keychain() == 0
     assert "sk-locked-123456" in st._one("SELECT env FROM mcp_servers WHERE id=?", (mid,))["env"]
+
+
+def test_separate_data_directories_cannot_clear_or_replace_each_others_keys(tmp_path, monkeypatch):
+    kc = _FakeKeychain().install(monkeypatch)
+    first, second = Store(tmp_path / 'first'), Store(tmp_path / 'second')
+    first.add_provider('Shared', 'openai_compatible', pid='shared', api_key='first-key')
+    second.add_provider('Shared', 'openai_compatible', pid='shared', api_key='')
+    assert first.get_provider('shared')['api_key'] == 'first-key'
+    second.update_provider('shared', {'api_key': 'second-key'})
+    assert first.get_provider('shared')['api_key'] == 'first-key'
+    assert second.get_provider('shared')['api_key'] == 'second-key'
+    second.update_provider('shared', {'api_key': ''})
+    assert first.get_provider('shared')['api_key'] == 'first-key'
+    assert first._secret_ref('provider','shared') != second._secret_ref('provider','shared')
+
+
+def test_default_profile_preserves_legacy_keychain_names(tmp_path, monkeypatch):
+    _FakeKeychain().install(monkeypatch)
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+    st = Store(tmp_path / '.team-agent')
+    assert st._secret_ref('provider', 'deepseek') == 'provider:deepseek'

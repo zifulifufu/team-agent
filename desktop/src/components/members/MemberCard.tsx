@@ -47,8 +47,10 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
   const ext = !!m.engine;
   // Only the command-line engine has a working directory and permission levels; every other engine
   // is a chat gateway (Cherry Studio, MetaChat), which just exchanges messages.
-  const gateway = ext && m.engine !== "workbuddy";
-  const modelText = ext
+  const localTool = m.participation?.kind === "local_tool" || (ext && !!agent?.is_tool);
+  const listener = m.participation?.mode === "listener" || !!agent?.is_tool;
+  const gateway = ext && !localTool && m.engine !== "workbuddy";
+  const modelText = localTool ? t("Local execution tool") : ext
     ? (gateway ? t("External agent · chat gateway")
                : t("External agent · {level}", { level: levelLabel(agent?.engine_cfg?.level ?? "read") }))
     : m.model
@@ -62,7 +64,8 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
           <span className="mc-name">
             {m.name}
             {m.is_host && <span className="chip host" title={t("Host")}>{t("Host")}</span>}
-            {ext && <span className="chip mc-model-chip" title={gateway
+            {listener && <span className="chip mc-model-chip">{t("On assignment")}</span>}
+            {ext && !localTool && <span className="chip mc-model-chip" title={gateway
               ? t("External agent: replies come from a chat gateway you configured, not through this app's model routing")
               : t("External agent: replies come from a command-line engine of its own, not through this app's model routing")}><TerminalSquare size={10} /> {t("External")}</span>}
             {m.origin === "model" && <span className="chip mc-model-chip" title={t("Added to the group from \"Models I added\"")}><Cpu size={10} /> {t("Model")}</span>}
@@ -77,7 +80,9 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
 
       {open && (
         <div className="mc-detail">
-          {ext ? (
+          {localTool ? (
+            <div className="mc-line"><span className="mc-k">{t("Folder")}</span><span className="mc-path">{m.participation?.workspace || m.engine}</span></div>
+          ) : ext ? (
             gateway ? (
               <>
                 <div className="mc-line"><span className="mc-k">{t("Model")}</span>{agent?.engine_cfg?.model || t("Not set")}</div>
@@ -91,7 +96,7 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
                 <div className="mc-line muted small">{t("Each reply is a separate process and usually takes a while; it cannot host a group.")}</div>
               </>
             )
-          ) : m.origin === "model" ? (
+          ) : m.origin === "model" || m.origin === "media" ? (
             <div className="mc-line"><span className="mc-k">{t("Model")}</span>{m.model ? <><HealthDot h={health[m.model.id]} label />&nbsp;{m.model.display_name}</> : t("No model available")}{t("(a model member, pinned to this model)")}</div>
           ) : (
             <div className="mc-line">
@@ -99,8 +104,10 @@ export default function MemberCard({ group, m, hasCaps }: { group: Group; m: Mem
               <ModelSelect value={agent?.model_id ?? null} autoLabel={t("Auto (pick by strength)")} disabled={busy} ariaLabel={t("Model used by {name}", { name: m.name })} onChange={(id) => void run(() => api.patchAgent(m.agent_id, { model_id: id }), true)} />
             </div>
           )}
+          {listener && <div className="mc-line muted small">{t("Members assign work with @ or the task board. Results return to the assigning member for review.")}</div>}
+          {m.participation?.preparation && <div className="mc-line muted small">{m.participation.preparation}</div>}
           {!ext && hasCaps && m.model && <div className="mc-line mc-now"><span className="mc-k">{t("In use")}</span>{m.manual_model ? "" : <em>{t("Auto ·")}</em>}{m.model.display_name}&nbsp;<HealthDot h={health[m.model.id]} label /></div>}
-          {!ext && m.model_problem && <div className="mc-warn" role="status"><AlertTriangle size={12} /> {t("The pinned model is unavailable right now ({problem}); falling back to another for now", { problem: m.model_problem })}</div>}
+          {!ext && m.model_problem && <div className="mc-warn" role="status"><AlertTriangle size={12} /> {m.origin === "media" ? m.model_problem : t("The pinned model is unavailable right now ({problem}); falling back to another for now", { problem: m.model_problem })}</div>}
           {m.strengths.length > 0 && <StrengthChips tags={m.strengths} max={6} className="mc-str" />}
           {err && <div className="err mc-err" role="alert">{err}</div>}
           <div className="mc-acts">

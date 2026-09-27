@@ -41,6 +41,41 @@ def tiny_clip(workspace: pathlib.Path, name: str = "clip.mp4", seconds: int = 2)
 
 
 # ------------------------------------------------------------------ how long each shot runs
+@needs_ffmpeg
+def test_reviewed_audio_is_reused_without_tts_and_keeps_its_real_length(tmp_path, monkeypatch):
+    import asyncio
+    import math
+    import struct
+    import wave
+
+    root = ws(tmp_path)
+    with wave.open(str(root / "reviewed.wav"), "wb") as wav:
+        wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"".join(struct.pack("<h", int(9000 * math.sin(i * 440 * 2 * math.pi / 24000)))
+                                 for i in range(48000)))
+
+    async def no_tts(*args, **kwargs):
+        raise AssertionError("a reviewed recording must never be synthesized again")
+    monkeypatch.setattr(assemble, "speak", no_tts)
+    shot = {"title": "已核验声音", "audio_file": "reviewed.wav", "audio_start": 0.5,
+            "audio_duration": 1.5, "seconds": 1, "say": "原稿仅作字幕"}
+    out = asyncio.run(assemble.render(root, [shot], size="270x480", name="reuse", burn=False))
+    assert out["narrated"] == 1
+    assert out["plan"][0]["voice_seconds"] == 1.5
+    assert out["seconds"] >= 1.5
+    assert assemble.probe(pathlib.Path(out["path"]))["audio"]
+    code, volume = assemble._run([assemble.ffmpeg_path(), "-hide_banner", "-i", out["path"],
+                                  "-af", "volumedetect", "-f", "null", "-"], 60)
+    assert code == 0 and "mean_volume: -inf" not in volume and "mean_volume:" in volume
+    for patch in ({"audio_start": -1}, {"audio_start": 2}, {"audio_duration": 3},
+                  {"audio_duration": float("nan")}, {"audio": "silent"},
+                  {"audio_file": "../outside.wav"}, {"audio_file": "/etc/hosts"}):
+        with pytest.raises(assemble.AssembleError):
+            assemble.make_plan([{**shot, **patch}], workspace=root)
+    plan = assemble.make_plan([{"title": "不用再提供台词", "audio_file": "reviewed.wav"}], workspace=root)
+    assert plan[0]["audio"] == "voice" and plan[0]["seconds"] == 2
+
+
 def test_a_shot_runs_as_long_as_its_narration_needs(tmp_path):
     """Nobody writes a length for every shot, and a shot timed to nothing is a guess. The narration
     is the one thing whose length is knowable before anything is rendered, so it sets the pace —
@@ -370,3 +405,60 @@ def test_the_tool_is_not_offered_to_a_generating_member(store, make_router):
     maker = {**store.list_agents()[0], "origin": media.MEDIA_ORIGIN}
     ctx = asyncio.run(orch.toolhub.context(group, maker, connect=False))
     assert "assemble_video" not in ctx.tools
+
+
+@needs_ffmpeg
+def test_a_still_moves_unless_it_is_asked_not_to(tmp_path):
+    """A still drifts by default — 2026-09-26, after a whole film came out frozen.
+
+    The 300s science film was 14 stills. The assembler itself reported 「会动的镜头: 0 个是本程序画的」,
+    and measuring it here confirmed the picture: adjacent frames 0.5s apart differed by **0.00** at seven
+    of eight sampled moments. The user's words were 「图片不是动态的」.
+
+    The cause was this default: `motion` was true only for a *title card*, so every illustration sat
+    perfectly still unless the caller passed a flag nobody passes. Now it is true for stills, with two
+    exceptions that stay still on purpose: `fit: contain` (its whole point is to keep the whole picture
+    inside the frame — pushing in crops exactly what it was asked to preserve) and an explicit
+    `motion: false`.
+    """
+    import asyncio
+    import pathlib
+
+    from PIL import Image, ImageChops, ImageDraw
+
+    root = ws(tmp_path)
+    # ⚠️ A **patterned** still, not a flat colour: a push-in on a single-colour frame changes nothing,
+    # and the test would pass while the film stayed frozen. (`ImageDraw` clips, so the checkerboard
+    # does not need the arithmetic to land exactly on the edges.)
+    still = Image.new("RGB", (270, 480), (20, 20, 20))
+    pen = ImageDraw.Draw(still)
+    for y in range(0, 480, 24):
+        for x in range(0, 270, 24):
+            if (x // 24 + y // 24) % 2:
+                pen.rectangle([x, y, x + 11, y + 11], fill=(235, 235, 235))
+    still.save(root / "still.png")
+
+    def grabbed(film: pathlib.Path, seconds: float) -> Image.Image:
+        png = root / f"g{seconds}.png"
+        code, detail = assemble._run([assemble.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y",
+                                      "-ss", str(seconds), "-i", str(film),
+                                      "-frames:v", "1", str(png)], 60)
+        assert code == 0, detail
+        return Image.open(png).convert("L")
+
+    def drift(shot: dict, name: str) -> float:
+        info = asyncio.run(assemble.render(root, [shot], size="270x480", name=name, burn=False))
+        film = pathlib.Path(info["path"])
+        assert film.is_file(), info
+        a, b = grabbed(film, 0.2), grabbed(film, 1.6)
+        diff = ImageChops.difference(a, b)
+        return sum(i * n for i, n in enumerate(diff.histogram())) / (a.width * a.height)
+
+    moved = drift({"clip": "still.png", "seconds": 3, "fit": "cover"}, "still")
+    assert moved > 1.0, f"静帧没有动（帧差 {moved:.2f}）—— 默认又关掉了"
+
+    kept = drift({"clip": "still.png", "seconds": 3, "fit": "contain"}, "wide")
+    assert kept < 0.5, f"fit: contain 的图被推镜裁掉了（帧差 {kept:.2f}）"
+
+    frozen = drift({"clip": "still.png", "seconds": 3, "fit": "cover", "motion": False}, "frozen")
+    assert frozen < 0.5, f"显式 motion: false 仍然在动（帧差 {frozen:.2f}）"

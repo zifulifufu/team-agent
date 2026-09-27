@@ -116,21 +116,40 @@ export function useBusy(): [boolean, <T>(fn: () => Promise<T>) => Promise<T | un
   return [busy, run];
 }
 
+/** One-line notices raised by code, shown by `Toaster`.
+ *
+ *  Until this existed the notice bar only listened for **unhandled promise rejections** — so an action
+ *  that succeeded or failed *as expected* (a copy that put a path on the clipboard when the file was
+ *  not an image, a share the system refused) had no way to say so, and the user was left reading a
+ *  menu that had already closed. A module-level emitter rather than a context: the callers are event
+ *  handlers deep inside panels, and threading a hook down to each of them would cost more than it
+ *  explains.
+ */
+const noticeSinks = new Set<(m: string) => void>();
+export function notify(message: string) {
+  for (const sink of noticeSinks) sink(message);
+}
+
 /** Fallback for asynchronous errors nothing else caught (a failed button request, say): show at least one notice instead of failing silently. */
 export function Toaster() {
   const { t } = useI18n();
   const [msg, setMsg] = useState("");
   useEffect(() => {
     let timer: number | undefined;
-    const h = (e: PromiseRejectionEvent) => {
-      e.preventDefault();
-      const r = e.reason;
-      setMsg(r instanceof Error ? r.message : String(r));
+    const show = (text: string) => {
+      setMsg(text);
       window.clearTimeout(timer);
       timer = window.setTimeout(() => setMsg(""), 6000);
     };
+    noticeSinks.add(show);
+    const h = (e: PromiseRejectionEvent) => {
+      e.preventDefault();
+      const r = e.reason;
+      show(r instanceof Error ? r.message : String(r));
+    };
     window.addEventListener("unhandledrejection", h);
     return () => {
+      noticeSinks.delete(show);
       window.removeEventListener("unhandledrejection", h);
       window.clearTimeout(timer);
     };

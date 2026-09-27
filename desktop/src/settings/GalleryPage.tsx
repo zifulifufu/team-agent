@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ChevronRight, Loader2, PackagePlus, Search, ShieldCheck } from "lucide-react";
-import { api, type GalleryApplyResult, type GalleryItem, type GalleryKind, type GalleryOverview } from "../api";
+import { api, relTime, type GalleryApplyResult, type GalleryItem, type GalleryKind, type GalleryOverview, type Group, type GroupTemplate } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import type { PageProps } from "./SettingsModal";
@@ -54,6 +54,12 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
   const [ov, setOv] = useState<GalleryOverview | null>(null);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<Tab>("all");
+  // 把用过的群聊存成模板:群列表在这里读一次,存下来的模板由同一张列表给出(它们在 /api/templates
+  // 里排在最新,所以首页与这里看到的是同一批)。
+  const [myGroups, setMyGroups] = useState<Group[]>([]);
+  const [tpl, setTpl] = useState<GroupTemplate[]>([]);
+  const [busyTpl, setBusyTpl] = useState("");
+  const [tplErr, setTplErr] = useState("");
   const [q, setQ] = useState("");
   const [open, setOpen] = useState("");
   const [details, setDetails] = useState<Record<string, GalleryItem & { def: Record<string, unknown> }>>({});
@@ -65,7 +71,48 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
   const load = useCallback(() => {
     api.gallery().then(setOv).catch((e) => setErr((e as Error).message));
   }, []);
+
+  /** The groups that could be saved, and the templates already saved from them. */
+  const loadTemplates = useCallback(() => {
+    Promise.all([api.groups(), api.templates()])
+      .then(([gs, ts]) => {
+        setMyGroups(gs);
+        // Only the user's own: the built-in templates are already on this page as gallery cards, and
+        // listing them a second time under a different heading is how a page stops being readable.
+        setTpl(ts.filter((t) => t.user));
+        setTplErr("");
+      })
+      .catch((e) => setTplErr((e as Error).message));
+  }, []);
+
   useEffect(load, [load]);
+  useEffect(loadTemplates, [loadTemplates]);
+
+  const keepGroup = async (g: Group) => {
+    setBusyTpl(g.id);
+    setTplErr("");
+    try {
+      await api.saveGroupAsTemplate(g.id);
+      loadTemplates();
+    } catch (e) {
+      setTplErr((e as Error).message);
+    } finally {
+      setBusyTpl("");
+    }
+  };
+
+  const forgetTemplate = async (t: GroupTemplate) => {
+    setBusyTpl(t.id);
+    setTplErr("");
+    try {
+      await api.delTemplate(t.id);
+      loadTemplates();
+    } catch (e) {
+      setTplErr((e as Error).message);
+    } finally {
+      setBusyTpl("");
+    }
+  };
 
   const apply = async (it: GalleryItem, overwrite = false) => {
     if (busy) return;
@@ -277,6 +324,39 @@ export default function GalleryPage({ onTab, onOpenGroup }: PageProps) {
               </div>
             );
           })}
+      </div>
+
+      <div className="sec">{t("Templates saved from your groups")}</div>
+      <p className="sp-desc">
+        {t("A group you have already run is a better starting point than one that was designed: keep it as a template and it comes back with the same members, host, skills and prompt. Saved templates appear first in the group templates above and on the home screen.")}
+      </p>
+      {tplErr && <div className="err">{tplErr}</div>}
+      <div className="card gl-saved">
+        <div className="gl-saved-head">{t("Saved ({n})", { n: tpl.length })}</div>
+        {tpl.length === 0 && <div className="muted small">{t("Nothing saved yet — pick a group below.")}</div>}
+        {tpl.map((t2) => (
+          <div className="gl-saved-row" key={t2.id}>
+            <b>{t2.name}</b>
+            <span className="muted small">{t2.from_group_name ? t("from {name}", { name: t2.from_group_name }) : ""}</span>
+            <span className="tag">{t("{n} members", { n: t2.members.length })}</span>
+            <span className="grow" />
+            <button className="btn tiny" disabled={!!busyTpl} onClick={() => void forgetTemplate(t2)}>
+              {busyTpl === t2.id ? <Loader2 size={12} className="spin" /> : null} {t("Delete")}
+            </button>
+          </div>
+        ))}
+        <div className="gl-saved-head">{t("Your groups")}</div>
+        {myGroups.filter((g) => g.member_ids && g.member_ids.length > 0).map((g) => (
+          <div className="gl-saved-row" key={g.id}>
+            <b>{g.name}</b>
+            <span className="muted small">{relTime(g.last_at)}</span>
+            <span className="tag">{t("{n} members", { n: g.member_ids.length })}</span>
+            <span className="grow" />
+            <button className="btn tiny" disabled={!!busyTpl} onClick={() => void keepGroup(g)}>
+              {busyTpl === g.id ? <Loader2 size={12} className="spin" /> : null} {t("Save as a template")}
+            </button>
+          </div>
+        ))}
       </div>
 
       <div className="sec">{t("Custom templates (optional)")}</div>

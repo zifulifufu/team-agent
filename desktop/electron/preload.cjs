@@ -17,4 +17,16 @@ contextBridge.exposeInMainWorld("teamAgent", {
   api: isAppPage ? argOf("team-agent-api") : "",
   // Opens the system folder picker and returns the path; null when it is cancelled
   pickFolder: isAppPage ? () => ipcRenderer.invoke("team-agent:pick-folder") : () => Promise.resolve(null),
+  // Show a folder in the Finder. Present only in the desktop app: a browser tab has no way to, and
+  // the sidebar hides the button when this is missing rather than offering one that cannot work.
+  openPath: isAppPage ? (p) => ipcRenderer.invoke("team-agent:open-path", p) : null,
+  // One **file** from the 成果 column: right-clicking a row offers these. Same rule as `openPath` —
+  // absent in a browser tab, and the menu simply does not show the actions it cannot perform.
+  openFile: isAppPage ? (p) => ipcRenderer.invoke("team-agent:open-file", p) : null,
+  reveal: isAppPage ? (p) => ipcRenderer.invoke("team-agent:reveal", p) : null,
+  copyFile: isAppPage ? (p) => ipcRenderer.invoke("team-agent:copy-file", p) : null,
+  copyText: isAppPage ? (text) => ipcRenderer.invoke("team-agent:copy-text", text) : null,
+  // Which applications this machine can hand a file to (scanned in the main process).
+  shareTargets: isAppPage ? () => ipcRenderer.invoke("team-agent:share-targets") : null,
+  openWith: isAppPage ? (app, p) => ipcRenderer.invoke("team-agent:open-with", app, p) : null,
 });

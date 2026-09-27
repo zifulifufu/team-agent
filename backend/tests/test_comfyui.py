@@ -45,7 +45,10 @@ def object_info(*, unet: str = UNET, clip: str = CLIP, vae: str = VAE,
     Each loader declares its file list as the first element of a `[list, {...}]` spec — that is the
     shape `comfyui._choices` reads, and the shape measured against ComfyUI 0.35.0.
     """
-    out: dict = {}
+    out: dict = {n["class_type"]: {"input": {"required": {}}}
+                 for n in comfyui.graph(WORKFLOW, prompt="test", width=256, height=256,
+                                       frames=25, seed=1, prefix="test").values()
+                 if n["class_type"] not in without}
     for cls, field, name in (("UNETLoader", "unet_name", unet),
                              ("CLIPLoader", "clip_name", clip),
                              ("VAELoader", "vae_name", vae)):

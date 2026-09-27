@@ -19,12 +19,17 @@ convenience:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 import signal
 import sys
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
+
+# What the live view in the chat gets while a program is still running: the text as it appears.
+# It may be a coroutine function (the caller emits over a socket) or a plain one.
+Output = Callable[[str], "Awaitable[None] | None"]
 
 from . import i18n
 from .bindirs import search_path
@@ -38,9 +43,20 @@ def base_dir(data_dir: Path, settings: dict) -> Path:
 
     `code_workdir` is a base, not the workspace itself: each group gets its own folder inside it,
     so one group's code and files never sit next to another's.
+
+    ⚠️ **Resolved, and that is the whole point of doing it here.** Every writer downstream compares a
+    path it built itself against this root, and most of them resolve their own side first (they have
+    to: the check is what keeps a member from writing outside the workspace). If this side keeps the
+    spelling the user typed, the two disagree the moment a component is a symlink — macOS makes
+    `/tmp`, `/var` and `/etc` symlinks, and a picked workspace may sit under one. Measured: a group
+    whose workspace was under `/tmp` could not write a single file. `docwrite` wrote it, then failed
+    to compute its own relative path, so `write_document` reported "writing the file failed" **six
+    times in one round while the file was on disk**, and the task was marked failed with it. One
+    canonical root fixes every such comparison at once, which is why it is here rather than at each
+    of the call sites.
     """
     raw = str(settings.get("code_workdir") or "").strip()
-    return Path(raw).expanduser() if raw else Path(data_dir) / "workspaces"
+    return (Path(raw).expanduser() if raw else Path(data_dir) / "workspaces").resolve()
 
 
 # A group id is generated as 12 hex characters. The check is here anyway: a restored backup can
@@ -290,6 +306,11 @@ def child_env(tmp_dir: Path) -> dict[str, str]:
     env["PATH"] = search_path(env["PATH"])
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Piped stdout is block-buffered, so a python program that prints progress would hand it over
+    # in 8 KB lumps — hours of work showing as nothing, then everything at once. Unbuffered output
+    # is what makes the live view in the chat show anything at all. Inherited by grandchildren,
+    # which `-u` on the interpreter itself would not reach.
+    env["PYTHONUNBUFFERED"] = "1"
     env["TMPDIR"] = str(tmp_dir)
     env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost,::1"
     return env
@@ -303,8 +324,16 @@ def command_for(language: str, path: Path, code: str) -> list[str] | None:
     return None
 
 
-async def run(language: str, code: str, cwd: Path, workspace: Path, timeout: float, limit: int) -> tuple[str, bool]:
-    """Run one program and return (text for the model, ok)."""
+async def run(language: str, code: str, cwd: Path, workspace: Path, timeout: float, limit: int,
+              on_output: Output | None = None) -> tuple[str, bool]:
+    """Run one program and return (text for the model, ok).
+
+    `on_output` receives the child's output in chunks *while it runs*. A build or a download takes
+    minutes often enough that waiting for the exit code leaves the user watching a spinner with no
+    idea what is happening — and "the member is running something" is not an answer when the thing
+    it is running is what they want to see. Passing it changes nothing about the result: the text
+    is accumulated either way, and the return value is the same.
+    """
     if language not in SUFFIX:
         return i18n.pick_now(f"Unsupported language {language}; use python or shell.", f"不支持的语言 {language},请用 python 或 shell。"), False
     if not code.strip():
@@ -337,16 +366,38 @@ async def run(language: str, code: str, cwd: Path, workspace: Path, timeout: flo
     )
     pgid = proc.pid                     # the group leader: read it now, it is gone once it exits
     timed_out = False
+    chunks: list[str] = []
+
+    async def pump() -> None:
+        """Read the child's output as it appears, not only at the end.
+
+        `read(4096)` returns as soon as *some* bytes are there, so a program that prints and then
+        keeps working is visible while it works; `communicate()` would hold everything back until
+        the process exits. Both the model's copy and the live view come from this one read, so the
+        two can never disagree.
+        """
+        assert proc.stdout is not None
+        while True:
+            chunk = await proc.stdout.read(4096)
+            if not chunk:
+                return
+            text = chunk.decode("utf-8", errors="replace")
+            chunks.append(text)
+            if on_output is not None:
+                result = on_output(text)
+                if inspect.isawaitable(result):
+                    await result
+
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+        await asyncio.wait_for(pump(), timeout)
+        await proc.wait()               # the stream is at EOF; collect the exit status
     except asyncio.TimeoutError:
         timed_out = True
-        out = b""
     finally:
         # Always reap the whole group, not only on the timeout path. A program that leaves a
         # child behind (`sh -c "sleep 999 &"`) would otherwise keep running after the call
         # returned, while the tool promises the run has ended. Everything the child needs is
-        # already in `out`, so there is nothing left to wait for.
+        # already in `chunks`, so there is nothing left to wait for.
         kill_group(pgid)
     if timed_out:
         await proc.wait()
@@ -355,7 +406,7 @@ async def run(language: str, code: str, cwd: Path, workspace: Path, timeout: flo
             f"运行超过 {int(timeout)} 秒,已被终止。不支持长时间运行或需要交互的程序。",
         ), False
 
-    text = (out or b"").decode("utf-8", errors="replace")
+    text = "".join(chunks)
     ok = proc.returncode == 0
     if len(text) > limit:
         text = text[:limit] + i18n.pick_now(f"\n…(output cut at {limit} characters)", f"\n…(输出已截断到 {limit} 字)")

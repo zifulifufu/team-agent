@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleMinus, CircleSlash, CircleX, ListChecks, LoaderCircle, Target, Wrench } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Circle, CircleCheck, CircleMinus, CircleSlash, CircleX, ListChecks, LoaderCircle, Target, Wrench } from "lucide-react";
 import type { Agent, Message, PlanStatus, PlanTaskStatus } from "../api";
 import { useData } from "../data";
 import { StrengthChips } from "./Strengths";
@@ -71,16 +71,25 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
   const [conv, setConv] = useState(true);
   const meta = m.meta ?? {};
   const tasks = meta.tasks ?? [];
+  const dropped = meta.dropped ?? [];
   const status: PlanStatus = meta.status ?? "running";
+  const needsRework = (meta.score?.tasks ?? []).some((s) => s.judged && ["weak", "rework", "failed"].includes(s.verdict));
+  const boardState = status === "done" && needsRework ? "failed" : status;
+  const boardLabel = status === "done"
+    ? needsRework ? t("Needs rework") : pick("Execution finished", "执行结束")
+    : PLAN_LABEL[status]?.() ?? status;
   const group = groups.find((g) => g.id === m.group_id);
   const host: Agent | undefined = agents.find((a) => a.id === group?.host_agent_id) ?? agents.find((a) => a.id === group?.member_ids[0]);
   const byId = new Map(agents.map((a) => [a.id, a]));
   const titleOf = new Map(tasks.map((t) => [t.id, t.title]));
 
-  const done = tasks.filter((t) => t.status === "done").length;
-  const total = tasks.length;
+  const done = tasks.filter((t) => t.status === "done").length + (meta.integration?.status === "done" ? 1 : 0);
+  const total = tasks.length + (meta.integration ? 1 : 0);
   const pct = total ? Math.round((done / total) * 100) : status === "done" ? 100 : 0;
-  const fin = finalMessageId ? { status: "done" as const, label: t("Done") } : finalStatus(status);
+  const fin = meta.integration
+    ? { status: meta.integration.status, label: TASK_LABEL[meta.integration.status]() }
+    : finalStatus(status);
+  const finalId = meta.integration?.message_id || finalMessageId;
   const conventions = (meta.conventions ?? "").trim();
 
   const rowProps = (mid: string | undefined) =>
@@ -104,13 +113,24 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
       <header className="plan-head">
         <span className="plan-ico"><ListChecks size={15} /></span>
         <b className="plan-title">{t("Plan board")}</b>
-        <span className={"plan-pill " + status}>
+        <span className={"plan-pill " + boardState}>
           {(status === "running" || status === "integrating") && <LoaderCircle size={11} className="spin" aria-hidden />}
-          {PLAN_LABEL[status]?.() ?? status}
+          {boardLabel}
         </span>
         <span className="grow" />
-        <span className="plan-count" title={t("Finished tasks / total tasks")}>
-          {t("{done}/{total} finished", { done, total })}
+        {dropped.length > 0 && (
+          // ⚠️⚠️ Shown **in the header, next to the progress**, not only as a list at the bottom.
+          // The count reads "8/8 executed" on a board where part of the request was never handed to
+          // anybody, and that reads as success at a glance. The backend has always written a
+          // "(dropped, could not be assigned) …" line into the board's body — which this card, the
+          // only renderer of a plan message, never displays. So the number is the honest headline.
+          <span className="plan-dropped-n"
+            title={pick(`${dropped.length} task(s) could not be assigned`, `${dropped.length} 项没能派出去`)}>
+            {pick(`${dropped.length} not assigned`, `${dropped.length} 项未派单`)}
+          </span>
+        )}
+        <span className="plan-count" title={pick("Execution progress; quality review is shown separately", "执行进度；质量复核另行标明")}>
+          {pick(`${done}/${total} executed`, `${done}/${total} 已执行`)}
         </span>
       </header>
       <div className="plan-bar" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-label={t("Task progress")}>
@@ -121,9 +141,11 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
         <div className={"plan-score" + (meta.score.judge ? "" : " plain")}>
           {meta.score.judge
             ? t("Graded by {judge}: {ok} good, {weak} delivered but unusable downstream, {rework} to redo, {failed} failed.",
-                { judge: meta.score.judge, ok: meta.score.summary.ok, weak: meta.score.summary.weak,
+                { judge: meta.score.judge, ok: meta.score.tasks.filter((s) => s.judged && s.verdict === "ok").length, weak: meta.score.summary.weak,
                   rework: meta.score.summary.rework, failed: meta.score.summary.failed })
             : t("No model graded this round, so only the mechanical checks are shown.")}
+          {meta.score.judge && meta.score.summary.judged < meta.score.summary.total
+            ? pick(" Some tasks lack evidence for quality review.", " 部分任务质量证据不足，尚未完成复核。") : ""}
           {meta.score.judge_error ? ` ${meta.score.judge_error}` : ""}
         </div>
       )}
@@ -148,6 +170,11 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
       <ol className="plan-tasks">
         {tasks.map((task, i) => {
           const owner = byId.get(task.owner_id) ?? agents.find((a) => a.name === task.owner);
+          const grade = meta.score?.tasks.find((s) => s.task_id === task.id);
+          const rework = task.status === "done" && grade?.judged && grade.verdict !== "ok";
+          const state = rework ? "failed" : task.status;
+          const label = rework ? t("Needs rework") : task.status === "done"
+            ? pick("Executed", "已执行") : TASK_LABEL[task.status]();
           return (
             <li key={task.id} className={"plan-row " + task.status + (task.message_id ? " jump" : "")} {...rowProps(task.message_id)}>
               <span className="plan-no">{i + 1}</span>
@@ -194,7 +221,7 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
                   return (
                     <div className={"plan-verdict " + sc.verdict} title={tip}>
                       <span className="pv-dot" aria-hidden />
-                      {sc.verdict === "ok" ? t("Good") : sc.verdict === "weak" ? t("Unusable downstream")
+                      {!sc.judged ? pick("Quality not reviewed", "质量未复核") : sc.verdict === "ok" ? pick("AI review passed", "AI 复核通过") : sc.verdict === "weak" ? t("Unusable downstream")
                         : sc.verdict === "rework" ? t("Needs rework") : t("Failed")}
                       {sc.delivered !== null && sc.usable !== null && (
                         <em>{sc.delivered.toFixed(2)} / {sc.usable.toFixed(2)}</em>
@@ -203,14 +230,14 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
                   );
                 })()}
               </div>
-              <span className={"plan-state " + task.status} title={TASK_LABEL[task.status]()}>
-                <StatusIcon status={task.status} />
-                <em>{TASK_LABEL[task.status]()}</em>
+              <span className={"plan-state " + state} title={label}>
+                <StatusIcon status={state} />
+                <em>{label}</em>
               </span>
             </li>
           );
         })}
-        <li className={"plan-row final " + fin.status + (finalMessageId ? " jump" : "")} {...rowProps(finalMessageId)}>
+        <li className={"plan-row final " + fin.status + (finalId ? " jump" : "")} {...rowProps(finalId)}>
           <span className="plan-no final">∑</span>
           <div className="plan-main">
             <div className="plan-line1">
@@ -221,6 +248,7 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
               <span className="plan-ttl">{t("Host consolidation")}</span>
             </div>
             <div className="plan-deliv"><span>{t("Note")}</span>{t("Merges every member's deliverable into one final answer.")}</div>
+            {meta.integration?.error && <div className="plan-err">{meta.integration.error}</div>}
           </div>
           <span className={"plan-state " + fin.status} title={fin.label}>
             <StatusIcon status={fin.status} />
@@ -228,6 +256,25 @@ function PlanCard({ m, finalMessageId, onJump, highlight }: Props) {
           </span>
         </li>
       </ol>
+
+      {dropped.length > 0 && (
+        // ⚠️⚠️ The part of the request that **nobody was given**. `Plan.dropped` is built by the
+        // validator and its own comment says "the board has to say what was left out — dropping a
+        // task silently would be the same lie as dropping the whole plan used to be". It was written
+        // into the message body, and a plan message renders as this card and nothing else, so
+        // nothing ever said it. Each entry is `"<id>: <why>"`.
+        <div className="plan-dropped">
+          <div className="plan-dropped-head">
+            <AlertTriangle size={13} aria-hidden />
+            {pick("Left out of this plan — nobody was given these", "这次分工里没能派出去的任务")}
+          </div>
+          <ul>
+            {dropped.map((d, i) => (
+              <li key={i}>{d}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }

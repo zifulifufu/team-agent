@@ -3,7 +3,16 @@ import { currentLang, tr } from "./i18n";
 
 declare global {
   interface Window {
-    teamAgent?: { token?: string; api?: string; pickFolder?: () => Promise<string | null> };
+    teamAgent?: { token?: string; api?: string; pickFolder?: () => Promise<string | null>;
+                  openPath?: ((p: string) => Promise<{ ok: boolean; why?: string }>) | null;
+                  // 成果栏右键菜单用的那一组。**浏览器里全是 null** —— 菜单据此不显示做不到的动作,
+                  // 而不是给一个点了没反应的条目(和 `openPath` 同一条规矩)。
+                  openFile?: ((p: string) => Promise<{ ok: boolean; why?: string }>) | null;
+                  reveal?: ((p: string) => Promise<{ ok: boolean; why?: string }>) | null;
+                  copyFile?: ((p: string) => Promise<{ ok: boolean; why?: string; how?: "image" | "path" }>) | null;
+                  copyText?: ((text: string) => Promise<{ ok: boolean; why?: string }>) | null;
+                  shareTargets?: (() => Promise<{ id: string; app: string }[]>) | null;
+                  openWith?: ((app: string, p: string) => Promise<{ ok: boolean; why?: string }>) | null };
   }
 }
 // Backend address: VITE_API at build time wins; the desktop build gets it from the Electron preload script (same port the main process uses); otherwise 8765
@@ -43,6 +52,7 @@ export interface ModelHealth {
 export type ModelUse = "chat" | "image" | "video" | "responses";
 
 export interface Model {
+  setup_required?: boolean;       // Declared workflow without an executable graph
   id: string;                      // provider_id/model_name
   provider_id: string;
   model_name: string;
@@ -72,6 +82,7 @@ export interface Provider {
   enabled: boolean;
   is_local: boolean;
   has_key: boolean;
+  credentials_ready?: boolean;     // Includes supported environment-variable credentials
   key_hint: string;
   models: Model[];
   /** The rows that generate instead of chatting. Kept apart from `models` because that list is what
@@ -135,6 +146,7 @@ export interface ModelOptions {
  *  also what makes a second import of the same package a skip. */
 export type AgentOrigin = "" | "model" | "media" | `workbuddy:${string}`;
 export interface Agent {
+  is_tool?: boolean;
   id: string;
   name: string;
   avatar: string;
@@ -146,9 +158,58 @@ export interface Agent {
   origin?: AgentOrigin;            // "model" = a member created automatically when a model from My models was pulled into the group (the member is that model itself); "media" = the same, for a model that *generates* — it can be addressed in a group, and the sentence it is addressed with becomes its prompt; "workbuddy:<slug>" = imported from an expert package
   engine?: string;                 // Non-empty = an external agent member (e.g. workbuddy): it bypasses model routing and speaks through its own CLI engine
   engine_cfg?: ExternalCfg;
+  /** Can this member be the one in charge of a group chat? False for an external agent (it has its
+   *  own tools and does not take part in the plan protocol) and for a generator (`origin="media"`).
+   *  Sent by the backend from `media.may_host` rather than worked out here: the first member picked
+   *  for a new group becomes its host, so the picker has to know who may take that seat, and a
+   *  second copy of the rule in TypeScript is one that can drift away from the API's answer.
+   *  Absent means "not told" (an older backend) — treat that as yes, not as no. */
+  may_host?: boolean;
 }
-export type ExternalLevel = "read" | "edit" | "full";
-export interface ExternalCfg {
+
+/** Can this member hold the chair of a group chat?
+ *
+ *  The rule is the backend's (`media.may_host`, decided by `engine` and `origin`) and arrives per
+ *  member. This asks it — the one place in the client that reads the field, so "absent means not
+ *  told, which means yes" is written down once instead of at every picker that cares. */
+export const mayHost = (a: Agent): boolean => a.may_host !== false;
+
+/** One member the team suggester picked, with the sentence explaining what for. */
+export interface TeamAdviceMember {
+  id: string;
+  name: string;
+  avatar: string;
+  role: string;
+  may_host: boolean;
+  why: string;
+  score: number;
+}
+
+/** An expert preset that fits this task but is not a member yet. `key` is what creates it. */
+export interface TeamAdviceExpert {
+  key: string;
+  name: string;
+  name_zh: string;
+  avatar: string;
+  role: string;
+  why: string;
+  score: number;
+}
+
+/** What the suggester read out of the task, and who it would put in the group.
+ *
+ *  `reads` is shown as well as the names: a lineup nobody can check is a lineup nobody trusts, and
+ *  "I read this as a video + writing job" is the one line that makes the choice arguable. */
+export interface TeamAdvice {
+  host_ref?: string;
+  members: TeamAdviceMember[];
+  experts: TeamAdviceExpert[];
+  reads: { concepts: string[]; needs: string[] };
+  models?: { id: string; name: string; use: ModelUse; why: string }[];
+  warnings?: string[];
+}
+export interface TeamDraftMember { kind: "agent" | "model" | "preset"; id: string }
+export type ExternalLevel = "read" | "edit" | "full";export interface ExternalCfg {
   level: ExternalLevel;
   risk_ack: boolean;
   cwd: string;                     // Empty = a dedicated working directory under the data directory
@@ -189,11 +250,26 @@ export interface ExternalBinding {
   model_default?: boolean;         // true = we fell back (empty, or the chosen model is gone)
   problem?: string;                // plain-language reason when it cannot run as saved
 }
+/** An address + model pair that was measured working, so "which service?" is one choice instead of
+ *  two fields whose spelling the user would have to know. `models` is what the service's own
+ *  `/models` answered; `measured` is the subset actually called and answered from here. */
+export interface ModelPreset {
+  id: string; name: string;
+  base_url: string;
+  models: string[];
+  measured: string[];
+  where: string;
+}
 export interface ExternalOverview {
   enabled: boolean;                // Master switch for external agents
   external_calls_enabled: boolean;
   engines: { id: string; name: string; avatar: string; role: string; found: boolean; path: string; via: string; hint: string;
-             kind: "cli" | "http"; base_url: string; docs: string; key_hint: string;
+             // `cmd` = a program on this machine that takes its turn in a group and runs the tool's
+             // own command (see localcmd.py). The backend has had it for a while; this union did
+             // not, so the dialog could not ask "is this a local tool" — and answered every such
+             // member with the command-line engine's form (permission level, working directory,
+             // model address, and a path field labelled for WorkBuddy).
+             kind: "cli" | "http" | "cmd"; base_url: string; docs: string; key_hint: string;
              // single = this machine has one of these engines, so only one such member can exist;
              // signin = its command line can be signed in by hand at all (false = the interactive
              // bundle is not shipped, so the only way to make it run is to point it at a model)
@@ -201,6 +277,8 @@ export interface ExternalOverview {
              provider: ExternalProvider | null }[];
   levels: { id: ExternalLevel; label: string; desc: string }[];
   defaults: ExternalCfg;
+  model_presets: ModelPreset[];
+  presets_verified: string;        // the date those pairs were measured on
   members: { id: string; name: string; engine: string; cfg: ExternalCfg; workspace: string;
              binding: ExternalBinding }[];
 }
@@ -271,7 +349,7 @@ export interface HookEntry {
   name: string;
   description: string;
   events: string[];
-  kind: "observe" | "gate";
+  kind: "observe" | "inject" | "gate";
   timeout_ms: number;
   on_error: "auto" | "open" | "closed";
   enabled: boolean;
@@ -296,6 +374,7 @@ export interface AgentPreset {
   tags: Tag[];
   prompt: string;
   kind: "role" | "expert";         // general roles and domain experts are listed separately
+  agent_id?: string | null;        // Existing profile, used for per-group membership status
   exists: boolean;                 // A member with this name already exists (adding reuses it)
 }
 export type LibraryMode = "all" | "selected" | "off";
@@ -305,15 +384,14 @@ export interface GroupExt {
   plugins: string[];               // Enabled plugin IDs
   mcp: string[];                   // Enabled MCP server IDs
   /** Which knowledge bases this group searches; selection is by base, not by document */
-  library: { mode: LibraryMode; kb_ids: string[]; collection_ids: string[];
-             /** Whether this group's workspace also feeds its own knowledge base. Absent = the
-              *  default, which the backend decides from where the workspace is: a folder this app
-              *  manages is watched, one the user picked is not. */
-             watch_workspace?: boolean };
+  library: { mode: LibraryMode; kb_ids: string[]; collection_ids: string[] };
   plan: PlanMode;                  // inherit = follow the global setting
   memory: boolean;
 }
 export interface Group {
+  /** Where this project works, and what it is doing (computed by the backend). */
+  folder?: GroupFolder;
+  task?: GroupTask | null;
   id: string;
   name: string;
   host_agent_id: string | null;
@@ -349,8 +427,15 @@ export interface ToolCall {
   status: "running" | "waiting" | "ok" | "failed" | "denied";   // waiting = waiting for you to confirm in the chat; denied = refused, timed out, or blocked, so it never ran
   ms?: number;
   preview?: string;
+  /** Output produced *while the call is still running* (the tail only). Present on a running call
+   *  that has something to say mid-flight — a program being run — and gone once it finishes, when
+   *  `preview` carries the result. */
+  live?: string;
   /** Files the call produced (a generated clip); they live in the group's workspace */
-  files?: { kind: string; name: string; bytes?: number; seconds?: number }[];
+  /** What the call produced, and where to fetch it. `where: "workspace"` means `name` is a path
+   *  inside the group's workspace (`MessageLook`); without it, `name` is a bare file name in one of
+   *  the generator's own folders (`MessageVideo` / `MessageImageGen`). */
+  files?: { kind: string; name: string; path?: string; bytes?: number; seconds?: number; where?: string }[];
 }
 export type PlanTaskStatus = "pending" | "running" | "done" | "failed" | "stopped" | "skipped";
 interface PlanTaskView {
@@ -379,7 +464,12 @@ export interface Message {
   fallback_from?: string | null;
   meta?: {
     attempts?: Attempt[];
+    routing_tags?: string[];
+    routing_auto?: boolean;
     tools?: ToolCall[];
+    /** The model's working, when it streamed any (a reasoning model, or an engine's "thinking"
+     *  block). Shown above the reply: the answer says what, this says how. */
+    thinking?: string;
     /** Images the user attached to this message; only a model that can look at images receives them */
     files?: Attachment[];           // Attachments since they became any kind of file
   images?: Attachment[];           // What a message stored before that is called
@@ -394,8 +484,14 @@ export interface Message {
     kind?: "plan";
     goal?: string;
     conventions?: string;
+    integration?: { status: PlanTaskStatus; message_id: string; error: string };
     status?: PlanStatus;
     tasks?: PlanTaskView[];
+    /** Tasks the host wrote that could not be assigned, each `"<id>: <why>"`. **The board has to
+     *  show these**: they are part of what the user asked for, and a board that simply lists fewer
+     *  rows is how a request goes missing without anybody noticing. Until this was rendered the
+     *  backend wrote them into the message body, which `PlanCard` never displays. */
+    dropped?: string[];
     /** Present once the round has been graded. The mechanical half is always filled in; `judged`
      *  on a task says whether a model actually scored it, so "no score" never reads as "good". */
     score?: PlanScore;
@@ -433,6 +529,8 @@ export interface Settings {
   external_calls_enabled: boolean;
   external_agents_enabled: boolean;   // Master switch for external agents (e.g. WorkBuddy); off by default
   route_chain: string[];
+  route_auto_match: boolean;
+  host_auto_recruit: boolean;
   max_hops: number;
   history_limit: number;
   history_clip: number;            // Max characters of past messages carried into the prompt
@@ -472,11 +570,15 @@ export interface Settings {
   perm_allow: string[];            // Tool names set to Always allow
   perm_deny: string[];             // Tool names set to Always block
   video_enabled: boolean;          // Let members generate video; off by default. The endpoint is not a chat model
+  comfyui_auto_start: boolean;
+  comfyui_dir: string;
+  comfyui_python: string;
   video_provider_id: string;       // Which video provider to use; empty = the first enabled one
   video_model: string;             // Which of its models, where it serves more than one; empty for a single-checkpoint H3
   video_short_edge: number;        // Output short edge in pixels (H3 is natively 768; MetaChat's API takes 480p/720p and this is mapped onto them)
   video_max_seconds: number;       // Longest clip a member may ask for (H3 accepts 4-15, MetaChat 1-15)
   video_timeout: number;           // How long one generation may take before giving up, in seconds
+  music_timeout: number;           // How long composing one piece may take (slower than a clip)
   video_max_mb: number;
   assemble_timeout: number;        // How long joining the shots into one film may take, in seconds
   image_enabled: boolean;            // Let members draw images through an OpenAI-compatible service
@@ -885,10 +987,84 @@ export interface LibraryDoc {
   enabled: boolean;
   /** The knowledge base this document lives in */
   kb_id: string;
+  /** Where this document came from (`library.ORIGINS`): imported, fetched, uploaded, a link, an
+   *  attachment, a workspace file, or typed in here. A fact about the row, not a label. */
+  origin: string;
+  /** What the material is *for* (`library.CATEGORIES`), read off its own words when it is fetched
+   *  skill material; empty is a real answer ("its own words do not say"). */
+  category: string;
   created_at: number;
 }
-export interface LibraryHit {
-  doc_id: string;
+/** How the document list is asked for: a page, a filter, or the classification. */
+export interface LibraryView {
+  /** Title / filename substring */
+  q?: string;
+  /** One `library.ORIGINS` token, or "" for all */
+  origin?: string;
+  /** One document kind (md, pdf, note…), or "" for all */
+  kind?: string;
+  /** One `library.CATEGORIES` token (what the material is for), or "" for all */
+  category?: string;
+  /** "", or the dimension the classification view groups by */
+  groupBy?: "" | "origin" | "kind" | "kb" | "category";
+  offset?: number;
+  limit?: number;
+  /** How many documents each class shows in the classification view */
+  perGroup?: number;
+}
+/** One class in the classification view: its size, and the first few documents in it. */
+export interface LibraryGroup {
+  id: string;
+  count: number;
+  docs: LibraryDoc[];
+}
+export interface LibraryPage {
+  docs: LibraryDoc[];
+  /** Documents in the filtered view, and how many are on this page. */
+  total: number;
+  count: number;
+  total_chars: number;
+  offset?: number;
+  limit?: number;
+  /** The classification of the whole scope: token → documents. */
+  origins: Record<string, number>;
+  kinds: Record<string, number>;
+  /** Knowledge base id → documents */
+  bases: Record<string, number>;
+  /** What the material is for → documents. `""` is "its own words do not say". */
+  categories: Record<string, number>;
+  /** Present only when a `groupBy` was asked for; then `docs` is empty. */
+  groups?: LibraryGroup[];
+}
+/** One message's verdict, as the feedback system stores it. */
+export interface MessageFeedback {
+  message_id: string;
+  group_id: string;
+  agent_id: string;
+  agent_name: string;
+  /** `""` is "taken back" — the row is gone, not a neutral verdict. */
+  rating: "" | "up" | "down";
+  note: string;
+  created_at: number;
+}
+
+/** One row of feedback with the message it is about, as the panel reads it. */
+export interface FeedbackItem extends MessageFeedback {
+  text?: string;
+  sender_type?: string;
+  group_name?: string;
+}
+
+/** The scoreboard: every member with both counts, so the bad news is not the part that is missing. */
+export interface FeedbackBoard {
+  items?: FeedbackItem[];
+  members: { agent_id: string; name: string; up: number; down: number;
+             notes: { rating: string; note: string; message_id: string; at: number; group: string; text: string }[] }[];
+  totals: { up: number; down: number; rated: number };
+  feedback?: MessageFeedback | null;
+}
+
+export interface LibraryHit {  doc_id: string;
   title: string;
   idx: number;
   text: string;
@@ -932,7 +1108,28 @@ export interface KnowledgeBase {
   description: string;
   group_id: string;
   docs: number;
+  /** One word for where this base's material came from, or `mixed` — with `origins` as the evidence.
+   *  Derived from the documents unless `source_override` holds a value; empty means there is nothing
+   *  in the base to describe yet. */
+  source: string;
+  /** What the user set, or empty for "read it from the documents". The badge shows `source`; the
+   *  editor opens on this, so "automatic" and "the user chose the same word" stay distinguishable. */
+  source_override: string;
+  /** The heading this base is filed under. A suggestion when it matches `LibraryVocabulary.purposes`,
+   *  otherwise whatever the user typed; empty means nobody has said yet. */
+  purpose: string;
+  /** {origin: documents}. Present so "mixed" arrives with the numbers that make it true. */
+  origins: Record<string, number>;
   created_at: number;
+}
+/** The words the two labels are written in, served by the backend so the closed origin vocabulary
+ *  has exactly one definition (`library.ORIGINS`). */
+export interface LibraryVocabulary {
+  origins: string[];
+  mixed: string;
+  purposes: string[];
+  /** What fetched material can be *for* (`library.CATEGORIES`) — closed, unlike `purposes`. */
+  categories: string[];
 }
 /** A flat, reusable list of knowledge bases. Not nestable on purpose. */
 export interface Collection {
@@ -987,6 +1184,7 @@ export interface Capabilities {
     strengths: Tag[];              // Member role strengths ∪ strengths of the models used (at most 6)
     origin: AgentOrigin;
     engine?: string;               // Non-empty = an external agent
+    participation?: { mode: "listener" | "discussion"; kind: "local_tool" | "generator" | "chat" | "external"; summary: string; preparation: string; workspace: string; tools: string[] };
     model_problem: string;         // Why the assigned model is unusable right now (another model is used instead); empty = fine
   }[];
   tools: { name: string; description: string; source: string }[];
@@ -1001,6 +1199,36 @@ export interface Capabilities {
    *  the panel offers it as a button rather than doing it on a timer. */
   pictures_pending: number;
 }
+/** The folder a project works in, as the sidebar shows it: a short name, and whether it is the
+ *  user's own (only their own can be renamed — the app-managed one *is* the group's id). */
+export interface GroupFolder {
+  name: string;
+  path: string;
+  mine: boolean;
+  exists?: boolean;
+  files?: number;
+  bytes?: number;
+  items?: string[];
+  note?: string;
+}
+
+/** The one task a project is summarised by: what is running, else what is next, else what it just
+ *  finished — plus the board's counts. `null` for a project that never ran a split. */
+export interface GroupTask {
+  id: string;
+  title: string;
+  owner: string;
+  status: string;
+  board: string;
+  goal: string;
+  at: number;
+  done: number;
+  failed: number;
+  /** Tasks that still have work in them (pending or running) — the ones neither count above covers */
+  open?: number;
+  total: number;
+}
+
 export interface GroupTemplate {
   id: string;
   name: string;
@@ -1012,6 +1240,10 @@ export interface GroupTemplate {
   prompt: string;
   /** false = only shown in Settings → Template gallery, not on the home screen (which stays lean) */
   home?: boolean;
+  /** A template saved from a group the user actually ran — it comes first, newest first. */
+  user?: boolean;
+  /** The group it was saved from, when it was. */
+  from_group_name?: string;
 }
 type UpdateKind = "app" | "catalog" | "skill" | "plugin" | "model" | "localmodel" | "localcatalog";
 export interface UpdateItem {
@@ -1081,6 +1313,7 @@ export interface SystemInfo {
 }
 
 export type ChatEvent =
+  | { type: "group_updated"; group: Group }
   | { type: "message"; message: Message }
   | { type: "message_start"; message: Message }
   | { type: "delta"; message_id: string; text: string }
@@ -1089,10 +1322,40 @@ export type ChatEvent =
   | { type: "message_discard"; message_id: string }
   | { type: "plan"; message: Message }                                        // Plan board updated (the whole message is replaced)
   | { type: "tool"; message_id: string; index: number; call: ToolCall }       // Status change for the tool call at index
+  // The member's working, streamed while it is still working. Appended to `meta.thinking`; an
+  // empty text clears it (the attempt it belonged to failed and another model took over).
+  | { type: "thinking"; message_id: string; text: string }
   | { type: "approval"; approval: Approval }                                  // A tool call is waiting for your confirmation
   | { type: "approval_done"; id: string; group_id: string; decision: "allow" | "deny" | "timeout" | "cancelled" }
   | { type: "stopped" }
   | { type: "idle" };
+
+// -------------------------------------------------------------- video zone
+/** 曲库里的一首。`source`/`licence` 是**记录**，不是承诺：库里既可能有本机作的分，也可能有用户
+ *  自己放进去的。 */
+export interface MusicTrack {
+  name: string; title: string; mood: string; tags: string[]; seconds: number;
+  bytes: number; source: string; licence: string;
+}
+/** 一首曲子的**制作过程**。分钟级，所以它是后台任务：页面拿到 id 之后轮询它。 */
+export interface MusicJob {
+  id: string;
+  state: "running" | "done" | "failed";
+  prompt: string; name: string; seconds: number; bytes: number;
+  error: string; note: string; started: number; finished: number;
+}
+export interface MusicShelf {
+  tracks: MusicTrack[];
+  /** 读不出来的 sidecar 文件，点名。空数组 = 没有坏文件，不是"没查"。 */
+  errors: string[];
+  /** 这台机器现在能不能作曲。不能就给出 `why` —— 一句话说清缺什么、去哪配。 */
+  composer: { ready: boolean; base_url: string; why: string };
+  limits: { min_seconds: number; max_seconds: number; default_seconds: number };
+}
+export interface MusicComposeIn {
+  prompt: string; seconds?: number; bpm?: number; language?: string; seed?: number;
+  lyrics?: string; name?: string; mood?: string; tags?: string[];
+}
 
 // ------------------------------------------------------------------- http
 /** Turn the backend error body into something readable: FastAPI validation errors are arrays and must not be JSON.stringify'd straight to the user */
@@ -1146,6 +1409,19 @@ async function call(path: string, init: RequestInit): Promise<Response> {
   return r;
 }
 
+/**
+ * 一份二进制内容，交回一个 blob URL。
+ *
+ * ⚠️ 为什么不能用 `<audio src="…/api/…">`：那个请求**带不上**本应用的访问令牌（它走自定义表头
+ * `X-Team-Agent-Token`，不是 cookie），端点会回 401，播放器只会静默地什么都不放。把令牌塞进
+ * 查询串能"修好"这一条，代价是令牌开始出现在 URL、日志与历史里 —— 那是拿安全换方便。所以走
+ * 一次带表头的 fetch，拿字节换成 blob URL 再交给播放器。
+ */
+async function blobUrl(path: string): Promise<string> {
+  const r = await call(path, { headers: authHeaders() });
+  return URL.createObjectURL(await r.blob());
+}
+
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await call(path, {
     method,
@@ -1169,6 +1445,15 @@ export const api = {
   /** Heartbeat: is the backend alive? (no token needed) */
   ping: () => get<{ ok: boolean }>("/api/health"),
   presets: () => get<Preset[]>("/api/presets"),
+  // ---- Video zone. Music first: it is the one block whose engine is already on this machine.
+  /** The shelf, plus whether this machine can compose another one right now. */
+  videoZoneMusic: () => get<MusicShelf>("/api/video-zone/music"),
+  /** Minutes, not seconds — returns a job id immediately; poll `musicJob` for it. */
+  composeMusic: (b: MusicComposeIn) => post<{ job: MusicJob }>("/api/video-zone/music/compose", b),
+  musicJob: (id: string) => get<{ job: MusicJob }>(`/api/video-zone/music/jobs/${encodeURIComponent(id)}`),
+  delMusic: (name: string) => del<{ ok: boolean }>(`/api/video-zone/music/${encodeURIComponent(name)}`),
+  /** Bytes of one track, as a blob URL a player can use (see `blobUrl`). */
+  musicAudio: (name: string) => blobUrl(`/api/video-zone/music/${encodeURIComponent(name)}/audio`),
   // ---- Model services
   providers: () => get<Provider[]>("/api/providers"),
   addProvider: (b: Record<string, unknown>) => post<Provider>("/api/providers", b),
@@ -1244,12 +1529,23 @@ export const api = {
   patchAgent: (id: string, b: Partial<Agent>) => patch<Agent>(`/api/agents/${id}`, b),
   delAgent: (id: string) => del(`/api/agents/${id}`),
   agentPresets: () => get<AgentPreset[]>("/api/agent-presets"),
+  /** Create (or find) the member a preset describes, without putting it in a group. The team
+   *  suggester names experts by preset key while the group does not exist yet, so they have to be
+   *  able to exist on their own — `createGroup` then takes the id like any other member's. */
+  agentFromPreset: (key: string) => post<Agent>("/api/agents/from-preset", { key }),
+  /** Who should be in a group chat for this task, and why each. Read-only: nothing is created and
+   *  the group need not exist. Rule-based on the server, so it is cheap enough to call while the
+   *  user is still typing. */
+  teamSuggest: (text: string) => post<TeamAdvice>("/api/team/suggest", { text }),
   groups: () => get<Group[]>("/api/groups"),
-  createGroup: (name: string, member_ids: string[], host_agent_id: string | null, extra?: { ext?: Partial<GroupExt>; prompt?: string; workspace?: string }) =>
+  /** 建一个群。`name` 传空串、`extra.task` 传用户敲的那句话 → **服务端**从里面取关键词命名
+   *  (规则只有后端那一份,见 `backend/app/names.py`)。模板与老调用方照旧传自己的名字。 */
+  createGroup: (name: string, member_ids: string[], host_agent_id: string | null, extra?: { ext?: Partial<GroupExt>; prompt?: string; workspace?: string; task?: string; lineup?: TeamDraftMember[]; host_ref?: string }) =>
     post<Group>("/api/groups", { name, member_ids, host_agent_id, ...extra }),
   patchGroup: (id: string, b: { name?: string; host_agent_id?: string | null; prompt?: string; ext?: Partial<GroupExt>; workspace?: string; status?: "active" | "done"; archived?: boolean }) =>
     patch<Group>(`/api/groups/${id}`, b),
   delGroup: (id: string) => del(`/api/groups/${id}`),
+  bindCapability: (gid: string, b: { kind: "skills" | "plugins" | "mcp"; ref: string; attached: boolean }) => patch<Group>(`/api/groups/${gid}/capability-binding`, b),
   addMember: (gid: string, agent_id: string) => post<Group>(`/api/groups/${gid}/members`, { agent_id }),
   /** Pull preset roles (host/reviewer/scribe/librarian/programmer/translator/analyst/planner…) into a group at any time; a member with the same name is reused */
   addMemberFromPreset: (gid: string, key: string) => post<Group>(`/api/groups/${gid}/members/from-preset`, { key }),
@@ -1275,11 +1571,46 @@ export const api = {
   systemPromptPreview: (gid: string, agent_id?: string) =>
     get<{ text: string; tokens: number }>(`/api/groups/${gid}/system-prompt-preview${qs({ agent_id })}`),
   templates: () => get<GroupTemplate[]>("/api/templates"),
+  /** Keep a group as a template: the members, host, skills and prompt it ran with. */
+  /** What is in a project's folder: the numbers the confirmation dialog decides with. */
+  folder: (gid: string) => get<GroupFolder>(`/api/groups/${gid}/folder`),
+  /** Rename the folder on disk (only a folder the user picked can be). */
+  renameFolder: (gid: string, name: string) =>
+    post<{ ok: boolean; path: string; name: string }>(`/api/groups/${gid}/folder/rename`, { name }),
+  /** Move the folder to the Trash. `expect` is the file count the dialog showed; a mismatch is
+   *  refused by the backend rather than carried out. */
+  deleteFolder: (gid: string, expect: number | null = null) =>
+    post<{ ok: boolean; trashed: string; files?: number; note?: string }>(
+      `/api/groups/${gid}/folder/delete`, { confirm: true, expect_files: expect }),
+  saveGroupAsTemplate: (gid: string, name = "") =>
+    post<GroupTemplate>(`/api/groups/${gid}/save-as-template`, { name }),
+  delTemplate: (tid: string) => del<{ ok: boolean }>(`/api/templates/${tid}`),
   createFromTemplate: (tid: string, name?: string) => post<Group>(`/api/templates/${tid}/create-group`, { name }),
   messages: (gid: string) => get<Message[]>(`/api/groups/${gid}/messages`),
   /** Whether a collaboration round is running in this group (used after a page refresh or WebSocket reconnect to restore the sending state) */
   groupStatus: (gid: string) => get<{ busy: boolean }>(`/api/groups/${gid}/status`),
   clearMessages: (gid: string) => del(`/api/groups/${gid}/messages`),
+  // ---- What the user thought of a reply, and what can be done with one afterwards
+  /** A verdict on one member's reply. `rating` is `"up"`, `"down"`, or `""` to take it back. */
+  rate: (gid: string, mid: string, rating: MessageFeedback["rating"], note = "") =>
+    post<FeedbackBoard>(`/api/groups/${gid}/messages/${mid}/feedback`, { rating, note }),
+  unrate: (gid: string, mid: string) => del<FeedbackBoard>(`/api/groups/${gid}/messages/${mid}/feedback`),
+  /** The scoreboard: per member, with the notes beside both thumbs. Whole app, or one group. */
+  feedback: (gid = "", limit = 200) => get<FeedbackBoard>(`/api/feedback${qs({ gid, limit })}`),
+  /** Hand a reply to another group, through the same path a typed message takes. */
+  forward: (gid: string, mid: string, toGroupId: string) =>
+    post<{ ok: boolean; group_id: string; group_name: string }>(`/api/groups/${gid}/messages/${mid}/forward`, { to_group_id: toGroupId }),
+  /** The reading of one message, made on this machine. WAV, and the headers say which voice read it
+   *  and whether a long reply was cut — the button has to be able to say so rather than imply the
+   *  whole thing was heard. */
+  speech: async (gid: string, mid: string) => {
+    const r = await call(`/api/groups/${gid}/messages/${mid}/speech`, { headers: authHeaders() });
+    return {
+      blob: await r.blob(),
+      voice: decodeURIComponent(r.headers.get("X-Team-Agent-Voice") || ""),
+      cut: r.headers.get("X-Team-Agent-Cut") === "1",
+    };
+  },
   /** `files` are ids from `uploadImage` — any kind of file, not only pictures. */
   send: (gid: string, text: string, files: string[] = []) => post(`/api/groups/${gid}/messages`, { text, attachments: files }),
   stop: (gid: string) => post(`/api/groups/${gid}/stop`),
@@ -1323,7 +1654,9 @@ export const api = {
   // workspace's own knowledge bases plus the shared ones.
   kbs: (group?: string) => get<KnowledgeBase[]>(`/api/knowledge-bases${qs({ group_id: group })}`),
   addKb: (b: { name: string; description?: string; group_id?: string }) => post<KnowledgeBase>("/api/knowledge-bases", b),
-  patchKb: (id: string, b: { name?: string; description?: string }) => patch<KnowledgeBase>(`/api/knowledge-bases/${id}`, b),
+  patchKb: (id: string, b: { name?: string; description?: string; source?: string; purpose?: string }) => patch<KnowledgeBase>(`/api/knowledge-bases/${id}`, b),
+  /** Origin vocabulary + purpose suggestions, so the page never keeps its own copy of them. */
+  libraryVocabulary: () => get<LibraryVocabulary>("/api/library/vocabulary"),
   /** Removes the knowledge base and every document in it */
   delKb: (id: string) => del<{ ok: boolean; deleted_docs: number }>(`/api/knowledge-bases/${id}`),
   collections: () => get<Collection[]>("/api/collections"),
@@ -1332,8 +1665,17 @@ export const api = {
   delCollection: (id: string) => del<{ ok: boolean }>(`/api/collections/${id}`),
   // ---- Documents. Narrow to one knowledge base, or to everything a group can reach; no scope
   // means the whole library, which is what the overview shows.
-  library: (scope: { kb?: string; group?: string } = {}) =>
-    get<{ docs: LibraryDoc[]; total_chars: number; count: number }>(`/api/library${qs({ kb_id: scope.kb, group_id: scope.group })}`),
+  //
+  // One page at a time, plus the classification: a real library is thousands of documents, and both
+  // halves of that used to be broken (the response carried every row, the page rendered every row).
+  // The counts in `origins`/`kinds`/`bases` describe the whole scope, never the filtered view —
+  // they are how the user picks a class, so they must not shrink with the query.
+  library: (scope: { kb?: string; group?: string } = {}, view: LibraryView = {}) =>
+    get<LibraryPage>(`/api/library${qs({
+      kb_id: scope.kb, group_id: scope.group, q: view.q, origin: view.origin, kind: view.kind,
+      category: view.category,
+      group_by: view.groupBy, offset: view.offset, limit: view.limit, per_group: view.perGroup,
+    })}`),
   addNote: (title: string, content: string, scope: { kb?: string; group?: string } = {}) =>
     post<LibraryDoc>("/api/library/note", { title, content, kb_id: scope.kb ?? "", group_id: scope.group ?? "" }),
   /** The request body is the file's raw bytes (txt/md/csv/json/html/pdf/docx) */
@@ -1352,6 +1694,14 @@ export const api = {
   /** The group's workspace: what the members have written, and one folder per task. */
   workspace: (gid: string) => get<WorkspaceView>(`/api/groups/${gid}/workspace`),
   workspaceBytes: (gid: string, path: string) => getBlob(`/api/groups/${gid}/workspace/file${qs({ path })}`),
+  /** The same file, but served with the type the browser needs to show or play it — what a
+   *  `review_picture` / `review_audio` result is displayed through (`MessageLook`). */
+  workspaceMediaBytes: (gid: string, path: string) => getBlob(`/api/groups/${gid}/workspace/file${qs({ path, inline: 1 })}`),
+  /** One file's text, so the outputs column can show a deliverable in place instead of handing it
+   *  to another program. The backend decides what counts as text; a file with none is refused. */
+  workspaceText: (gid: string, path: string) =>
+    get<{ text: string; chars: number; truncated: boolean; extracted: boolean; name: string }>(
+      `/api/groups/${gid}/workspace/text${qs({ path })}`),
   makeFolder: (gid: string, path: string) => post<{ ok: boolean; path: string }>(`/api/groups/${gid}/workspace/folder`, { path }),
   /** Who can look at pictures; the settings page shows this instead of failing quietly. */
   vision: () => get<VisionStatus>("/api/vision"),
@@ -1360,7 +1710,7 @@ export const api = {
   machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string } }>("/api/capabilities"),
   /** The process engineer: where it is and what it has written. It is invisible in every group, so
    *  this panel is the only place it can be seen at all. */
-  process: () => get<{ name: string; hidden: boolean; autojoin: boolean; autolog: boolean; review: boolean; groups: number; in_groups: number; not_in: string[]; entries: Record<string, number>; ledgers: number; recent: { group: string; gid: string; id: string; title: string; status: string; severity: string; stage: string; found: string; by: string; seen: number; sentence: string; cause: string; verify: string }[] }>("/api/process"),
+  process: () => get<{ name: string; hidden: boolean; autojoin: boolean; autolog: boolean; review: boolean; groups: number; in_groups: number; not_in: string[]; entries: Record<string, number>; ledgers: number; recent: { group: string; gid: string; id: string; title: string; status: string; severity: string; stage: string; found: string; by: string; seen: number; sentence: string; cause: string; fix: string; hint: string; verify: string; advised: number; last_advised: string; review_state: string; review_note: string }[] }>("/api/process"),
   /** A clip a member generated, out of that group's own workspace. Same header problem, so the
    *  bytes come through the API and are turned into an object URL (`MessageVideo`). */
   videoBytes: (gid: string, name: string) => getBlob(`/api/groups/${gid}/video/${encodeURIComponent(name)}`),

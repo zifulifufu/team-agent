@@ -150,9 +150,12 @@ def test_team_template_is_idempotent_for_members(client) -> None:
 def test_agent_template_creates_member_and_can_join_group(client) -> None:
     r = client.post("/api/gallery/agent:researcher/apply", json={}).json()
     assert r["agents"] == ["Researcher"] and r["added"] == ["Member: Researcher"]
-    gid = client.get("/api/groups").json()[0]["id"]
+    first = client.get("/api/groups").json()[0]
+    gid = first["id"]
     r2 = client.post("/api/gallery/agent:researcher/apply", json={"group_id": gid}).json()
-    assert r2["added"] == ["Joined: Product launch group"]
+    # ⚠️ 按**这只群自己的名字**断言,不写死种子名:启动时项目名规则会把长于上限的名字改短,
+    # 抄一份名字进断言,一条本来就对的测试会因为改名而红。
+    assert r2["added"] == [f"Joined: {first['name']}"]
     g = next(g for g in client.get("/api/groups").json() if g["id"] == gid)
     aid = next(a["id"] for a in client.get("/api/agents").json() if a["name"] == "Researcher")
     assert aid in g["member_ids"]
@@ -290,7 +293,7 @@ def test_a_bearer_token_pasted_in_goes_to_the_keychain(tmp_path, monkeypatch) ->
 
         stored = json.dumps(c.app.state.store._q("SELECT * FROM mcp_servers"), ensure_ascii=False)
         assert "cc-live" not in stored, "the token was written to the database in the clear"
-        assert kc.items[f"mcp:{mid}:Authorization"] == "Bearer cc-live-abcdef"
+        assert kc.items[c.app.state.store._secret_ref(f"mcp:{mid}", "Authorization")] == "Bearer cc-live-abcdef"
         # The app still gets a usable header when it connects, and never sends it back to the UI.
         assert c.app.state.store.get_mcp(mid)["headers"]["Authorization"] == "Bearer cc-live-abcdef"
         listed = next(m for m in c.get("/api/mcp").json() if m["id"] == mid)

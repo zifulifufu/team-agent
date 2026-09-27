@@ -3,6 +3,17 @@
 /* ---- 选择模型对话框 ---- */
 .modal.wide:has(.mp-root) { width: 780px; }
 .mp-root { display: flex; flex-direction: column; gap: 10px; }
+.model-categories { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-categories button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-2); font-size: 12px; }
+.model-categories button span { font-size: 11px; opacity: .65; }
+.model-categories button[aria-pressed="true"] { color: var(--primary); background: var(--primary-soft); border-color: var(--primary); }
+.model-categories button:disabled { opacity: .4; cursor: default; }
+.model-state { display: inline-flex; align-items: center; gap: 5px; width: fit-content; font-size: 11.5px; color: var(--text-3); }
+.model-state i { width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; flex: none; }
+.model-state-ok { color: var(--ok); }
+.model-state-bad { color: var(--danger); }
+.model-state-limited { color: var(--warn); }
+.model-state-ok i, .model-state-bad i, .model-state-limited i { background: currentColor; }
 .mp-sub { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.7; }
 .mp-sub .mp-note { color: var(--text-3); }
 .mp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -10,6 +21,11 @@
 .mp-bar .check-inline { font-size: 12.5px; color: var(--text-2); }
 .mp-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .mp-filter-label { font-size: 12px; color: var(--text-3); margin-right: 2px; }
+.mp-catalog-status { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-3); }
+.mp-catalog-status select { width: auto; min-width: 140px; font-size: 12px; }
+.mp-advanced summary { cursor: pointer; color: var(--text-3); font-size: 12px; }
+.mp-advanced .mp-filter { margin-top: 8px; }
+.mp-list .empty { gap: 12px; }
 .mp-status { font-size: 12.5px; line-height: 1.6; }
 .mp-status.err-box { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 .mp-status.err-box .mp-err-note { display: block; color: var(--text-2); margin-top: 2px; }

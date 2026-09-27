@@ -12,13 +12,15 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 from __future__ import annotations
 
 from . import (animate, assemble, attachments, coderun, comfyui, embed, ffmpeg, figure, i18n,
-                 imagegen, layouts, media, net, study, video, vision)
+                 imagegen, layouts, media, music, musicwork, net, study, video, vision)
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import time
+import httpx
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,9 @@ from .mcp_client import McpManager, pick_transport, slug
 from .memory import MemoryService, looks_sensitive
 from .store import Store
 from .tools import ToolRegistry
-from . import advisor, docwrite, proclog
+from . import advisor, docwrite, document_preview, proclog, voices, recruitment
+from .literature import LiteratureSearch
+from .comfy_runtime import LocalRuntime
 
 
 @dataclass
@@ -45,6 +49,7 @@ class ToolOutcome:
     # [{"kind": "video", "name": "...", "bytes": 123}] — where they live is the group's workspace,
     # which the UI already knows how to reach.
     files: list[dict] = field(default_factory=list)
+    effective_args: dict | None = None
 
 
 @dataclass
@@ -63,12 +68,125 @@ class ToolContext:
     # from the group's settings, and a member called "Seedance" has to run Seedance whatever was
     # chosen last — one field rather than a second copy of the tool.
     media: dict = field(default_factory=dict)
+    read_only: bool = False
 
     def specs(self) -> list[dict]:
         return list(self.tools.values())
 
 
+def narration_dest(workspace: Path, name: str, suffix: str, generated: str) -> Path:
+    """Where one narration segment lands — decided here, once.
+
+    `name` is the caller's choice, because a plan that promises `音频/旁白-镜1.wav` can only ever be
+    verified if the tool can write **exactly** there: with nothing but a generated name under
+    `speech/`, a member that recorded every segment is still stamped "did not deliver" and the task
+    gets redone until the round's turns run out (measured 2026-09-26, group 视频制作).
+
+    Raises `ValueError` with a readable reason for a name that cannot be honoured, rather than
+    landing the file somewhere else and saying nothing.
+
+    ⚠️ The value is used as given and never rewritten: `lstrip("./")` turns `../a.wav` into `a.wav`,
+    which writes somewhere the caller did not ask for **and** hides the escape from the check below.
+    """
+    root = workspace.resolve()
+    rel = (name or "").strip().replace("\\", "/").removeprefix("./")
+    if not rel:
+        return (workspace / "speech" / generated).resolve()
+    if rel.endswith("/"):
+        raise ValueError(i18n.pick_now(
+            f"`name` has to name a file, not a folder (got \"{name}\").",
+            f"`name` 要是一个文件,不是文件夹(收到「{name}」)。"))
+    dest = workspace / rel
+    # The container is the engine's, not a wish: a `.mp3` holding WAVE bytes is a file whose name
+    # lies about its contents — and ffmpeg reads it happily, so nothing would ever point it out.
+    if dest.suffix.lower() != suffix:
+        dest = dest.with_suffix(suffix)
+    dest = dest.resolve()
+    if not dest.is_relative_to(root):
+        raise ValueError(i18n.pick_now(
+            "That path points outside this group's workspace / 该路径指向本群工作目录之外。"))
+    return dest
+
+
+# What a caller may legitimately have already put on the end of a name. Stripping a suffix that is
+# **not** here would eat part of a name (`v2.3`), which is how a "helpful" tidy-up loses the file.
+_MEDIA_SUFFIXES = (".mp4", ".mov", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp")
+
+
+def output_name_parts(name: str, default_name: str, default_folder: str) -> tuple[str, str]:
+    """(folder, leaf) for a file the caller named — one spelling, one place.
+
+    All three drawing tools take `name` to mean the **same thing** `synthesize_speech.name` means:
+    where inside this group's workspace the file goes, because that is what a plan promises and what
+    delivery is checked against. It used to be a leaf only, so a caller asking for `anim/镜2-2.mp4`
+    — exactly the path its plan promised — got `anim/anim-镜2-2.mp4.mp4`: `workspace_output`
+    sanitises `/` into `-` and the `.mp4` the name already carried was kept too. The clip was on
+    disk, the plan's name was not, and the task was stamped "did not deliver" (measured 2026-09-26,
+    group 视频制作, twice in one round — and the same turn's narration had the same disease).
+
+    Raises `ValueError` for a folder that climbs out of the workspace; the last line of defence is
+    `figure.workspace_output`'s own containment check, which runs after `mkdir`.
+    """
+    raw = (name or "").strip().replace("\\", "/")
+    if not raw:
+        return default_folder, default_name
+    # ⚠️ An absolute path is refused, not relativised. `narration_dest` refuses it too, and these two
+    # must answer alike: quietly turning `/tmp/x.mp4` into `<workspace>/tmp/x.mp4` is the same
+    # disease as rewriting `../a.wav` — the caller gets a file somewhere it did not ask for, and
+    # nothing says so.
+    if raw.startswith("/"):
+        raise ValueError(i18n.pick_now(
+            f"`name` is a path inside this group's workspace, not an absolute path (got \"{name}\").",
+            f"`name` 是**本群工作目录内**的路径,不能是绝对路径(收到「{name}」)。"))
+    folder, _, leaf = raw.rpartition("/")
+    folder = folder.rstrip("/") or default_folder
+    if ".." in folder.split("/"):
+        raise ValueError(i18n.pick_now(
+            f"`name` points outside this group's workspace (got \"{name}\").",
+            f"`name` 指向本群工作目录之外(收到「{name}」)。"))
+    if not leaf or leaf == ".":
+        raise ValueError(i18n.pick_now(
+            f"`name` has to name a file, not a folder (got \"{name}\").",
+            f"`name` 要是一个文件,不是文件夹(收到「{name}」)。"))
+    for suffix in _MEDIA_SUFFIXES:
+        if leaf.lower().endswith(suffix):
+            leaf = leaf[: -len(suffix)]
+            break
+    return folder, leaf or default_name
+
+
 BUILTIN_SPECS: dict[str, dict] = {
+    "list_workspace_files": {
+        "description": "List actual files in this group's workspace with exact paths, sizes and modification times. Use before reading or assembling when a handoff path is missing. query filters paths by substring; offset/limit paginate. File presence is not quality approval.",
+        "description_zh": "列出本群工作目录中真实存在的文件，返回准确路径、大小和修改时间。交接路径不清时先查再读取或装配。query按路径关键词过滤，offset/limit分页；存在文件不等于质量通过。",
+        "risk": "read", "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": []},
+    },
+    "find_team_resources": {
+        "description": "Find registered members, expert roles, models, local tools, plugins and MCP servers for a capability gap. Returns stable refs, configuration status and whether each is already in this group. Configured does not mean tested online.",
+        "description_zh": "按能力缺口查找已登记成员、专家、模型、本地工具、插件及MCP，返回稳定ref、配置状态和是否已入群。已配置不等于在线检测通过。",
+        "risk": "read", "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}}, "required": ["query"]},
+    },
+    "invite_team_resource": {
+        "description": "Host only: add a registered resource to THIS group by ref from find_team_resources. State its concrete job in reason. Never installs resources, enables disabled services, changes permissions or replaces the host. The result includes the new roster and tools; use them in the subsequent plan.",
+        "description_zh": "仅主持人：按find_team_resources的ref拉入本群，reason说明能力缺口及具体职责。不安装、不启用停用服务、不改变权限、不更换主持人。返回新名册及工具；随后据此更新分工。",
+        "risk": "write", "parameters": {"type": "object", "properties": {
+            "ref": {"type": "string"}, "reason": {"type": "string"}}, "required": ["ref", "reason"]},
+    },
+    "synthesize_speech": {
+        "description": "Synthesize an exact narration segment with an already registered cloned voice. Returns a real audio file for review and assembly. Maximum 1000 characters; split longer scripts. `name` decides where the file lands inside the group workspace (use the path the plan promised, e.g. 音频/旁白-镜1.wav); without it the file goes to speech/ under a generated name. Length is decided by the engine, there is no speed setting: if a segment comes out longer than its shot, shorten the text and record that segment again. This does not read documents or interpret instructions.",
+        "description_zh": "用已登记的本人克隆音色合成一段逐字旁白，返回可试听、可装配的真实音频文件。每次最多1000字，长稿请分段；`name` 决定文件在本群工作目录里的落点（请填计划里承诺的路径，如 音频/旁白-镜1.wav），不传则写进 speech/ 并自动命名。时长由引擎决定、没有语速参数：某段超出镜头就缩短文本重录。不会读取文档或理解任务说明。",
+        "risk": "exec", "timeout_key": "assemble_timeout",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "Exact narration, without task instructions; 1–1000 characters."},
+            "voice": {"type": "string", "description": "Registered cloned voice, for example voice:clinic-zh. No system voice substitution."},
+            "name": {"type": "string",
+                     "description": "Where inside this group's workspace to write the audio, e.g. 音频/旁白-镜1.wav. Optional; the container is the one the voice's engine produces.",
+                     "description_zh": "音频在本群工作目录里的落点，如 音频/旁白-镜1.wav；可选，容器格式由该音色的引擎决定。"}},
+            "required": ["text", "voice"]},
+    },
     # English is the canonical text and `<field>_zh` the Chinese wording; the specs are run
     # through `i18n.localize()` where they are turned into a tool list, so the description the
     # model and the UI see follows the request language. (Calling pick_now in here would be
@@ -78,6 +196,15 @@ BUILTIN_SPECS: dict[str, dict] = {
         "description_zh": "获取当前本地日期和时间",
         "risk": "read",
         "parameters": {"type": "object", "properties": {}},
+    },
+    "search_literature": {
+        "description": "Search live PubMed for medical evidence. Use English medical terms; returns verified citation metadata (PMID/DOI) and available abstracts, not full-text verification. Search narrowly, then write the evidence and its limitations to the required deliverable.",
+        "description_zh": "实时检索 PubMed 医学文献。使用英文医学关键词，返回实际查到的 PMID、DOI 和摘要；不等于全文核验。围绕具体问题检索后，应把证据及局限写入任务要求的文件。",
+        "risk": "read",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "PubMed query, preferably English medical terms"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Number of records, default 5"}},
+            "required": ["query"]},
     },
     "library_search": {
         "description": "Search the library for the most relevant documents (returns document "
@@ -104,14 +231,25 @@ BUILTIN_SPECS: dict[str, dict] = {
                       "description_zh": "返回片段数,默认 5"}}, "required": ["query"]},
     },
     "library_read": {
-        "description": "Read a document from the library by title, one chunk at a time.",
-        "description_zh": "按标题读取资料库中某份文档的原文(分段读取)。",
+        "description": "Read one document in full, a chunk at a time — by its library title, or the "
+                       "path/name of a file in this group's own working directory "
+                       "(`tasks/…/科普短文.md` or just `科普短文.md`), which is how you check what "
+                       "somebody actually delivered instead of trusting their summary. Use it "
+                       "instead of guessing from a search snippet when the answer has to be exact "
+                       "— a figure's caption, a number, a whole section.",
+        "description_zh": "按标题读取资料库文档的原文(分段读取);也可以直接读本群**工作目录**里的文件 —— "
+                          "给它路径或文件名(`tasks/…/科普短文.md` 或 `科普短文.md`)即可,"
+                          "这是核验别人交付物的方式,而不是只听汇报。需要在数字、图注、整段文字上准确时"
+                          "用它,别拿检索片段去猜。",
         "risk": "read",
         "parameters": {"type": "object", "properties": {
-            "doc": {"type": "string", "description": "Document title or ID",
-                    "description_zh": "文档标题或 ID"},
+            "doc": {"type": "string", "description": "Document title or ID, or a file path/name inside the group's workspace",
+                    "description_zh": "文档标题或 ID,或本群工作目录里的文件路径/文件名"},
             "start": {"type": "integer", "description": "Character offset to start from; 0 by default",
-                      "description_zh": "从第几个字符开始,默认 0"}}, "required": ["doc"]},
+                      "description_zh": "从第几个字符开始,默认 0"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 12000,
+                      "description": "Characters per page, default 3000, maximum 12000",
+                      "description_zh": "本次读取字符数，默认3000，最多12000"}}, "required": ["doc"]},
     },
     "memory_search": {
         "description": "Search long-term memory (user preferences, earlier decisions, past practice).",
@@ -170,8 +308,8 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "a workspace file or a URL for every kind of reference (pictures, video, audio) "
                        "and is the only one that accepts reference_videos/reference_audios; its "
                        "prompt refers to the references by position (\"@图片1\", \"@视频1\"). A local "
-                       "ComfyUI renders from the prompt alone — no reference material at all, no "
-                       "sound, and slower than the hosted ones — but it costs nothing per clip. "
+                       "ComfyUI uses the selected workflow; its accepted image/audio inputs depend "
+                       "on that workflow. The built-in Wan workflow is silent text-to-video. "
                        "Rendering takes minutes, on a local one often more than ten. You cannot "
                        "watch or hear the result: say what you asked for, never describe what came "
                        "out.",
@@ -183,7 +321,7 @@ BUILTIN_SPECS: dict[str, dict] = {
                           "火山方舟(Doubao Seedance 2.5)生成 4-30 秒的片段,默认带声音,参考素材(图、视频、音频)"
                           "既可以是工作目录里的文件也可以是公网地址,而且是唯一支持 reference_videos/"
                           "reference_audios 的;它的提示词用序号指代素材(「@图片1」「@视频1」)。"
-                          "本地的 ComfyUI 只按提示词生成 —— 不收任何参考素材、没有声音、比云端慢,但不按次计费。"
+                          "本地 ComfyUI 能接受哪些图片/音频取决于所选工作流；内置 Wan 为无声文生视频。"
                           "渲染需要等几分钟,本地那种常常要十分钟以上。"
                           "你看不到也听不到结果:只说你要求了什么,绝不要描述生成出来的画面。",
         # Every built-in carries its own `risk`: it runs something outside this app, so it asks.
@@ -195,6 +333,9 @@ BUILTIN_SPECS: dict[str, dict] = {
             "prompt": {"type": "string",
                        "description": "What to generate. On a self-hosted H3: shots, then soundscape and music. On Ark: a description of the shot, naming any references by their position (@图片1, @视频1)",
                        "description_zh": "要生成什么。自建 H3:分镜,再写声音环境与配乐。火山方舟:对画面的描述,用序号指代素材(@图片1、@视频1)"},
+            "model": {"type": "string",
+                      "description": "Optional enabled model/workflow name from this provider's configured catalogue. A generator member always uses its own assigned model.",
+                      "description_zh": "可选：该服务商已配置并启用的模型/工作流名称。生成工具成员始终使用自己绑定的模型。"},
             "duration_seconds": {"type": "integer",
                                  "description": f"Clip length, {video.MIN_SECONDS}-{video.MAX_SECONDS} seconds, and at most what this group allows; the group's own limit is used when omitted",
                                  "description_zh": f"时长,{video.MIN_SECONDS}-{video.MAX_SECONDS} 秒,且不超过本群上限;不填则用本群允许的最长时长"},
@@ -202,8 +343,8 @@ BUILTIN_SPECS: dict[str, dict] = {
                              "description": f"One of: {', '.join(video.ASPECT_RATIOS)}; omit for the provider's own default. Which of them apply depends on the provider",
                              "description_zh": f"可选:{', '.join(video.ASPECT_RATIOS)};不填则用服务商自己的默认值。具体哪些可用取决于服务商"},
             "first_frame": {"type": "string",
-                            "description": "Reference image to start from: a path inside the workspace on a self-hosted H3 server or on Ark, an http(s) URL on MetaChat's video API (which fetches it itself, and where it is required). On Ark a keyframe pins the aspect ratio to adaptive. A local ComfyUI renders from the prompt alone and refuses this",
-                            "description_zh": "起始参考图:自建 H3 或火山方舟可填工作目录内的路径;MetaChat 的视频接口必须是 http(s) 地址(它自己去取),而且是必填的。方舟上用了关键帧就会把画幅锁成 adaptive。本地 ComfyUI 只按提示词生成,填了会被拒绝"},
+                            "description": "Reference image: workspace path for H3, Ark, or a ComfyUI workflow with an image input; public URL for MetaChat. The built-in ComfyUI Wan text-to-video workflow has no image input.",
+                            "description_zh": "参考图片：H3、方舟和带图片输入的 ComfyUI 工作流可用群内文件；MetaChat 要求公网 URL。内置 ComfyUI Wan 文生视频工作流不接收图片。"},
             "last_frame": {"type": "string",
                            "description": "Image to end on, same forms as first_frame. Self-hosted H3 and Ark only — MetaChat's API generates from a single keyframe, and a local ComfyUI has no image input at all, so both refuse this",
                            "description_zh": "结束图片,写法同 first_frame。仅自建 H3 与火山方舟支持;MetaChat 的接口只按一张参考图生成、本地 ComfyUI 根本没有图片输入口,填了都会被拒绝"},
@@ -214,8 +355,8 @@ BUILTIN_SPECS: dict[str, dict] = {
                                  "description": "Reference clips, Ark only: give the model a camera move or a subject to carry over (@视频1)",
                                  "description_zh": "参考视频,仅火山方舟支持:把运镜或主体交给模型参考(@视频1)"},
             "reference_audios": {"type": "array", "items": {"type": "string"},
-                                 "description": "Reference audio, Ark only: a voice or a piece of music to use (@音频1)",
-                                 "description_zh": "参考音频,仅火山方舟支持:要沿用的音色或音乐(@音频1)"},
+                                 "description": "Reference audio for Ark, or one workspace audio file for a ComfyUI workflow with an audio input (e.g. talking avatar).",
+                                 "description_zh": "方舟的参考音频；或为带 audio 输入的 ComfyUI 工作流提供一个群内音频文件（如数字人口播）。"},
             "generate_audio": {"type": "boolean",
                                "description": "Ark only, and only when you want the opposite of its default: Seedance 2.5 already makes sound, so pass false for a silent clip",
                                "description_zh": "仅火山方舟,而且只在你要「反着来」时才填:Seedance 2.5 默认就生成声音,想静音才填 false"},
@@ -237,8 +378,10 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "published, and shots without it are listed in the answer. "
                        "**A shot can move by itself: give it \"anim\" instead of a picture** and "
                        "this app draws the motion frame by frame — see `make_animation` for the "
-                       "list. Use it for every shot that explains a mechanism, and a real "
-                       "recording for anatomy: a film whose every picture is a still plays as a "
+                       "list. Use a preset only when its actual geometry and motion match the shot. "
+                       "Changing a heading does not create a different procedure or device; unsupported "
+                       "shots need purpose-built assets and subject-matter review before assembly. "
+                       "A film whose every picture is a still plays as a "
                        "slide show, and the answer says so when that happens. "
                        "Pictures can be shots too (they get a slow push and hold as long as they "
                        "are told). A shot's length follows the narration when you do not give one, "
@@ -251,7 +394,8 @@ BUILTIN_SPECS: dict[str, dict] = {
                           "东西。按顺序给一份分镜表,每条形如 {\"clip\": \"video/x.mp4\", \"seconds\": 6, "
                           "\"say\": \"要录的旁白\", \"text\": \"屏幕上的字\"};没有素材的卡片写 "
                           "{\"title\": \"...\", \"subtitle\": \"...\"}。**镜头可以自己动:把画面换成 `anim`**"
-                          "(本程序逐帧画出来,可用清单见 `make_animation`);凡是解释机制的镜头都用它,解剖用真实录像 —— "
+                          "(本程序逐帧画出来,可用清单见 `make_animation`);仅当预设的实际结构与动作符合分镜时使用。"
+                          "修改标题不会改变术式或器械；未覆盖的镜头须专门制作素材，由专业成员核验后装配。"
                           "每一镜都是静帧的片子播出来就是幻灯片,装配结果会明确告诉你这一点。"
                           "图片也能当镜头(会缓慢推近,并按住"
                           "你给的时长)。不写时长时,镜头长度跟着旁白走 —— 话被截断比超时长更糟。产物是一个"
@@ -282,12 +426,16 @@ BUILTIN_SPECS: dict[str, dict] = {
             "shots": {"type": "array", "items": {"type": "object"}, "description":
                       "The shots, in order. Each: {clip: a path inside the workspace, seconds: how long, "
                       "say: narration to record, text: words on screen, audio: voice|clip|mix|silent, "
+                      "audio_file: reviewed narration WAV path (reused, no TTS), audio_start: seconds "
+                      "into that file (default 0), audio_duration: seconds to use (default remaining), "
                       "motion: true|false for a still, anim: an animation spec} — or {title, subtitle} "
                       "for a card with no footage. `anim` is either a name or {kind, camera, "
                       "labels, coil_turns, show}",
                       "description_zh":
                       "按顺序的镜头。每条形如 {clip: 工作目录内的路径, seconds: 时长, say: 要录的旁白, "
-                      "text: 屏幕字幕, audio: voice|clip|mix|silent, motion: 静帧是否缓慢推近, anim: 让镜头自己动的动画} —— "
+                      "text: 屏幕字幕, audio: voice|clip|mix|silent, audio_file: 已核验旁白的工作目录相对路径(直接复用不重合成), "
+                      "audio_start: 该音频起点秒数(默认0), audio_duration: 使用秒数(默认余下全长), "
+                      "motion: 静帧是否缓慢推近, anim: 让镜头自己动的动画} —— "
                       "没有素材的卡片写 {title, subtitle}"},
             "size": {"type": "string", "enum": list(assemble.SIZES),
                      "description": f"Picture size, one of: {', '.join(assemble.SIZES)}. 1080x1920 is the "
@@ -341,23 +489,109 @@ BUILTIN_SPECS: dict[str, dict] = {
                                       "are, which unit made it, where it may be used. It is on every "
                                       "frame rather than on a card because a re-cut drops cards first",
                        "description_zh": "印在**每一帧**上的一句话:画面来自谁、哪个单位做的、可用于何处。"
-                                         "它印在每一帧而不是一张卡上,因为重新剪辑时最先丢的就是卡"}},
+                                         "它印在每一帧而不是一张卡上,因为重新剪辑时最先丢的就是卡"},
+            "music": {"type": "string",
+                      "description": "The music bed. Either a track name from this group's music "
+                                     "shelf, a path to an audio file in the workspace, or the word "
+                                     "`auto` to let the shelf choose — when it chooses, it says why, "
+                                     "so the choice can be argued with. Left out, the film has no "
+                                     "music. The **layout** owns how the bed sits (its level, its "
+                                     "fades, how far it gets out of the narrator's way); this only "
+                                     "says *which* track",
+                      "description_zh": "配乐。可以是本群音乐库里的曲名、工作目录里的音频文件路径,"
+                                        "或写 `auto` 让音乐库自己挑 —— 它挑的时候会说明理由,好让你能推翻它。"
+                                        "留空则不加配乐。**音量、淡入淡出、旁白期间让路多少由版式决定**,"
+                                        "这里只说**用哪一首**"},
+            "music_mood": {"type": "string",
+                           "description": "Only meaningful together with `music: \"auto\"`: what this "
+                                          "film feels like, so the shelf has something to match "
+                                          "against. One of: calm, warm, tense, sad, uplifting, "
+                                          "epic, neutral",
+                           "description_zh": "只在 `music: \"auto\"` 时起作用:这支片子是什么情绪,"
+                                             "好让音乐库有依据可挑。取值:calm / warm / tense / sad / "
+                                             "uplifting / epic / neutral"}},
             "required": ["shots"]},
+    },
+    "make_music": {
+        # `exec`: it drives this machine's ComfyUI, which loads ~13.7 GB of weights and then spends
+        # minutes of GPU time. The approval is the ordinary one for running a local program.
+        "description": "Compose music with ACE-Step, running locally inside this machine's ComfyUI, "
+                       "and put it straight on this group's music shelf so a film can be scored with "
+                       "it. Describe the music itself in `prompt` — genre, instruments, mood, tempo "
+                       "— as **style tags** (ACE-Step's encoders were trained on English tags). "
+                       "`lyrics` is optional and is usually wrong for a bed under a narrator: leave "
+                       "it out and the piece is instrumental. This takes minutes, not seconds. You "
+                       "cannot hear the result — never describe how it sounds or claim to have "
+                       "checked it.",
+        "description_zh": "用本机 ComfyUI 里的 ACE-Step 作一首曲子,**直接上架**到本群的音乐库,片子就能拿它配乐。"
+                          "`prompt` 写音乐本身:流派、乐器、情绪、速度 —— 用**风格标签**写(ACE-Step 的编码器"
+                          "是在英文标签上训的)。`lyrics` 可选,而垫在旁白底下通常**不该**填:不填就是纯器乐。"
+                          "这一步要几分钟,不是几秒。**你听不到结果** —— 绝不要描述它听起来如何,也不要声称核对过。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string",
+                           "description": "The music as style tags: genre, instruments, mood, tempo "
+                                          "(e.g. \"calm piano, soft strings, documentary bed, 90 bpm\")",
+                           "description_zh": "用风格标签写音乐:流派、乐器、情绪、速度(例:"
+                                             "「calm piano, soft strings, documentary bed, 90 bpm」)"},
+                "lyrics": {"type": "string",
+                           "description": "Optional lyrics, with [verse]/[chorus] tags for structure. "
+                                          "Leave empty for an instrumental — which is what a music "
+                                          "bed under narration wants",
+                           "description_zh": "可选歌词,可用 [verse]/[chorus] 标段落。留空 = 纯器乐 —— "
+                                             "旁白底下的配乐要的就是器乐"},
+                "seconds": {"type": "number",
+                            "description": "Length in seconds, 10–300 (default 60)",
+                            "description_zh": "时长(秒,10–300,默认 60)"},
+                "mood": {"type": "string",
+                         "description": "How to file it on the shelf, so the film that needs it can "
+                                        "find it: calm / warm / tense / sad / uplifting / epic / neutral",
+                         "description_zh": "上架到音乐库时归到哪一类,好让需要它的片子找得到:"
+                                           "calm / warm / tense / sad / uplifting / epic / neutral"},
+                "tags": {"type": "array", "items": {"type": "string"},
+                         "description": "Free-form labels for the shelf (e.g. \"instrumental\", "
+                                        "\"piano\", \"no drums\")",
+                         "description_zh": "音乐库的自由标签(例:「instrumental」「piano」「no drums」)"},
+                "bpm": {"type": "integer", "description": "Tempo (default 120)",
+                        "description_zh": "速度(默认 120)"},
+                "language": {"type": "string",
+                             "description": "Only matters when there are lyrics: en / zh / ja / … "
+                                            "(default en)",
+                             "description_zh": "只在有歌词时有用:en / zh / ja / …(默认 en)"},
+                "name": {"type": "string",
+                         "description": "What to call the track on the shelf and in the workspace",
+                         "description_zh": "这首曲子在音乐库与工作目录里的名字"},
+                "seed": {"type": "integer", "description": "0 = a fresh one every time",
+                         "description_zh": "0 = 每次都不一样"},
+            },
+            "required": ["prompt"]},
+        "risk": "exec",
+        "timeout_key": "music_timeout",
     },
     "make_animation": {
         "description": "Draw a real animation of a mechanism and save it as a clip: blood flowing "
                        "along the vessel, a weak spot bulging out into the sac, a coil being wound "
                        "into it, the microcatheter being navigated there, contrast opacifying the "
-                       "finding. Every frame is computed and drawn on this machine, so the anatomy is "
-                       "exactly the drawing the stills use and nothing is invented; the clip lands in "
+                       "finding. These are fixed schematic presets, not a general anatomical simulator "
+                       "or a guarantee of clinical accuracy. The clip lands in "
                        "the workspace as an .mp4 ready to be a shot's `clip` in `assemble_video`, with "
-                       "a poster frame beside it to look at first. Reach for this for every shot that "
-                       "explains *how* something works — a film of still pictures plays as a slide "
-                       "show. The drawings:\n" + animate.describe(),
+                       "a poster frame beside it to look at first. Headings and labels cannot add devices "
+                       "or mechanisms absent from the preset. If the required structure or action is "
+                       "unsupported, recruit a capable creator/tool for custom assets instead of relabeling "
+                       "an unrelated animation. Have a subject-matter reviewer check the actual frames "
+                       "against the shot's intended mechanism. Colours and where the credit line sits "
+                       "are fixed by each preset and are **not** parameters — a storyboard must not "
+                       "promise a palette or a corner the drawing cannot deliver, because a reviewer "
+                       "holding the shot to that promise can only reject every take. The drawings:\n"
+                       + animate.describe(),
         "description_zh": "把一个机制画成**真正的动画**并存成片段:血流沿血管流动、薄弱处鼓出成瘤、弹簧圈一圈圈填进去、"
-                          "微导管被导航过去、造影剂让病变显影。每一帧都是本机算出来画出来的,所以解剖与静帧用的是同一张图、"
-                          "不会凭空编造;产物是工作目录里的 .mp4,可直接当 `assemble_video` 里某镜的 `clip`,"
-                          "旁边还有一张关键帧可以先看。凡是解释**机制**的镜头都用它 —— 一串静帧播出来就是幻灯片。"
+                          "微导管被导航过去、造影剂让病变显影。这些是固定示意预设，不是通用解剖模拟器，也不保证医学正确。"
+                          "产物是工作目录里的 .mp4,可直接当 `assemble_video` 里某镜的 `clip`,旁边附关键帧。"
+                          "标题和标注不能增添预设没有的器械或机制；所需结构或动作未覆盖时，应找具备能力的成员/工具"
+                          "专门制作，不能把无关动画改名冒充。由专业审查成员对照分镜要求检查实际画面。"
+                          "颜色与免责声明的落点是每种预设固定的、**都不是参数** —— 分镜里不要约定配色或角标位置，"
+                          "否则审查成员拿着这条约定只能把每一版都打回。"
                           "可选画面:\n" + animate.describe("zh"),
         # It draws frames here and runs `ffmpeg` to encode them, so it asks like the other runners.
         "risk": "exec",
@@ -392,24 +626,29 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "`at_part` 用锚点名(sac/coil/catheter_tip/vessel/flow_in/flow_out),标注才会指到对的东西上;"
                        "`from`/`to` 是 0..1 的时间,标注就能在它说的部件出现时才出现"},
             "name": {"type": "string",
-                     "description": "What to call the clip; left out, it is named after the animation",
-                     "description_zh": "片段的名字;留空则用动画名"}},
+                     "description": "Where the clip goes inside this group's workspace — a path such "
+                                    "as anim/镜2-2.mp4. Use the path the plan promised: that is what "
+                                    "delivery is checked against. Left out, it is named after the "
+                                    "animation under anim/.",
+                     "description_zh": "片段在本群工作目录里的落点 —— 可以带目录,如 anim/镜2-2.mp4。"
+                                       "请填计划承诺的路径,交付就按它核验;留空则按动画名放在 anim/ 下。"}},
             "required": ["kind"]},
     },
     "list_figures": {
         "description": "List the real pictures and recordings that came with one of this group's "
                        "documents. A knowledge base usually came from notes, atlases or case "
                        "collections that embed their own figures — angiograms, anatomical plates, "
-                       "intra-operative photographs, procedure recordings — and those are already "
-                       "correct, already captioned and already reviewed by somebody who knows the "
-                       "subject. **Look here before you generate anything for a shot that shows "
+                       "intra-operative photographs, procedure recordings. These are source candidates; "
+                       "their presence in a library does not establish correctness, relevance, or reuse "
+                       "rights. Verify the caption, case context, provenance and applicable terms. "
+                       "**Look here before you generate anything for a shot that shows "
                        "anatomy, a lesion, an instrument or a step of a procedure**: a real picture "
                        "beats anything a model can invent, and a model asked for a realistic artery "
                        "has no anatomy to draw from — only the metaphor in your prompt. The names it "
                        "prints are what `make_figure` takes.",
         "description_zh": "列出本群某篇文档**自己带的**真实图片与影像。知识库通常来自笔记、图谱或病例库,"
-                          "而它们本身就嵌着自己的配图 —— 造影、解剖图版、术中照片、手术录像 —— 这些图本来是对的、"
-                          "本来就有图注、而且被懂行的人审过。**凡是画面里要出现解剖结构、病变、器械或操作步骤的镜头,"
+                          "而它们本身就嵌着自己的配图 —— 造影、解剖图版、术中照片、手术录像。资料库收录不等于内容正确、"
+                          "符合当前分镜或已获复用许可；须核对图注、病例情境、来源和适用条款。**凡是画面里要出现解剖结构、病变、器械或操作步骤的镜头,"
                           "先查这里,再考虑生成**:真实图片胜过模型能造出的任何东西,而被要求画「写实的动脉」的模型"
                           "并没有解剖可依,它只有你提示词里那个比喻。它打印出来的名字就是 `make_figure` 要收的。",
         "risk": "read",
@@ -432,8 +671,9 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "workspace as a still, ready to be a shot in `assemble_video`, and it carries "
                        "**A still is the last frame of the same drawing** — these drawings can move "
                        "(`make_animation`: blood flowing, a bulge growing, a coil filling in). If the "
-                       "shot has to explain how something works, ask for the animation rather than the "
-                       "still: a film of stills plays as a slide show. "
+                       "shot needs motion, first check whether the preset actually depicts that mechanism. "
+                       "Otherwise create a suitable custom asset and verify it; a heading alone cannot "
+                       "make a generic schematic accurate. "
                        "its own credit line — a picture in a film that cannot say where it came from is "
                        "one nobody may publish. You cannot see the result: say what you made, never "
                        "describe how it looks.",
@@ -445,8 +685,8 @@ BUILTIN_SPECS: dict[str, dict] = {
                           "时才用真实图片。标注的位置用画面比例(0..1,从左上角算),不要给像素。产物落在本群"
                           "工作目录里,是一张静帧,可直接作为 `assemble_video` 的镜头,而且自带来源行。"
                           "**静帧就是同一张画的最后一帧** —— 这些画是可以动的(`make_animation`:血流、鼓出、"
-                          "弹簧圈填塞)。如果这一镜是解释机制怎么运作的,要的就是动画而不是静帧:"
-                          "一串静帧播出来就是幻灯片。 "
+                          "弹簧圈填塞)。镜头需要运动时先确认预设真的覆盖该机制；不覆盖就专门制作并核验，"
+                          "不能只改标题便把通用示意图当作准确的术式画面。 "
                           "片子里一张说不清来路的图,是谁都不能发布的。你看不到结果:只说你做了什么,不要描述画面。",
         # It writes a file in the workspace and executes nothing, so it is a write rather than an exec.
         "risk": "write",
@@ -491,7 +731,13 @@ BUILTIN_SPECS: dict[str, dict] = {
                                    "cropped part is often the part somebody points at; cover fills the frame",
                     "description_zh": "full(默认)保留完整画面 —— 造影图应该这样,被裁掉的那块往往正是要指的地方;"
                                      "cover 则填满画面"},
-            "name": {"type": "string", "description": "What to call the file", "description_zh": "文件名"}},
+            "name": {"type": "string",
+                     "description": "Where the file goes inside this group's workspace — a path such "
+                                    "as figures/解剖对照.png. Use the path the plan promised: that is "
+                                    "what delivery is checked against. Left out, it is named after the "
+                                    "picture and put in figures/.",
+                     "description_zh": "文件在本群工作目录里的落点 —— 可以带目录,如 figures/解剖对照.png。"
+                                       "请填计划承诺的路径,交付按它核验;留空则按图片名放在 figures/ 下。"}},
             "required": []},
     },
     "write_document": {
@@ -502,19 +748,21 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "same body works in every format: `#`/`##` headings, `- ` bullets, `1. ` numbered "
                        "items, `| a | b |` tables, blank line between paragraphs. In .pptx each `##` "
                        "starts a slide (its body is the bullets under it); in .xlsx each `##` is a sheet. "
-                       "The file lands inside this group's workspace and is indexed into its library, so "
-                       "the next member can read it by title. Rewriting the same file name replaces it — "
-                       "that is how a second draft is delivered. Nothing is generated or checked here: it "
-                       "lays out the text you wrote. You cannot open the result, so do not describe the "
-                       "pages — report the path, the size and what you put in it.",
+                       "The file lands inside this group's workspace. It is **not** filed into a "
+                       "library — a library is a shelf somebody chose to build — so anyone checking it "
+                       "reads it back with `library_read` and this path. Rewriting the same path "
+                       "replaces it — that is how a second draft is delivered. Nothing is generated or "
+                       "checked here: it lays out the text you wrote. You cannot open the result, so do "
+                       "not describe the pages — report the path, the size and what you put in it.",
         "description_zh": "把**写完的稿子**落成一个用户能打开的真实文件:.docx(Word)、.pptx(幻灯片)、"
                           ".xlsx(表格)、.md。凡是「交付一份报告/课件/论文/海报文案」的任务,终点就是它 —— "
                           "在群里聊过不算交付。正文是 Markdown 风格纯文本,四种格式共用同一份正文:"
                           "`#`/`##` 是标题、`- ` 是项目符号、`1. ` 是编号、`| a | b |` 是表格、空行分段。"
                           "在 .pptx 里每个 `##` 开一页(它下面的条目就是该页正文);在 .xlsx 里每个 `##` 是一张表。"
-                          "文件落在本群工作目录里,并会被索引进本群知识库,下一位成员可以按标题读到它。"
-                          "**用同一个文件名再写一次就是覆盖** —— 第二稿就该这么交。这里不生成也不核对内容,"
-                          "只把你写的字排好;你看不到成品,所以不要描述版面,报路径、大小和你放了什么进去。",
+                          "文件落在本群工作目录里 —— 它**不会进知识库**(知识库是人自己挑出来的书架),"
+                          "要核对的人用 `library_read` 加这个路径读回全文。**同一个路径再写一次就是覆盖**,"
+                          "第二稿就该这么交。这里不生成也不核对内容,只把你写的字排好;"
+                          "你看不到成品,所以不要描述版面,报路径、大小和你放了什么进去。",
         # It writes a file inside the workspace and runs nothing: a write, like `make_figure`.
         "risk": "write",
         "parameters": {"type": "object", "properties": {
@@ -524,8 +772,11 @@ BUILTIN_SPECS: dict[str, dict] = {
                      "description_zh": "写到哪里(相对本群工作目录),例如 交付/科普脚本.docx。"
                                        "不写后缀就按 `format` 补上"},
             "format": {"type": "string", "enum": list(docwrite.KINDS),
-                       "description": "docx (Word) / pptx (slides) / xlsx (workbook) / md (plain text)",
-                       "description_zh": "docx(Word)/ pptx(幻灯片)/ xlsx(表格)/ md(纯文本)"},
+                       "description": "Optional: docx (Word) / pptx (slides) / xlsx (workbook) / md "
+                                      "(plain text). Leave it out if the path already ends with the "
+                                      "right suffix — `.md` is read as md",
+                       "description_zh": "可选:docx(Word)/ pptx(幻灯片)/ xlsx(表格)/ md(纯文本)。"
+                                         "路径后缀已经写对就可以不填 —— `.md` 会被当成 md"},
             "title": {"type": "string", "description": "The document's title, shown as its first heading "
                                                        "(and as the cover slide in pptx)",
                       "description_zh": "文档标题,作为第一个标题显示(pptx 里就是封面页标题)"},
@@ -533,8 +784,25 @@ BUILTIN_SPECS: dict[str, dict] = {
                                                       "described above. This is the deliverable itself: write it "
                                                       "out in full, not a summary of it",
                      "description_zh": "要排版的全文,用上面那种 Markdown 风格。**交付物就是这段正文**:"
-                                       "请写全,不要写成摘要"}},
-            "required": ["path", "format", "body"]},
+                                       "请写全,不要写成摘要"},
+            "source_path": {"type": "string",
+                "description": "Instead of body, use the complete existing .md/.txt file in this group's workspace. Converts the same source without rewriting or truncating it; omit title to preserve its own heading.",
+                "description_zh": "与 body 二选一：读取本群工作目录内已有 .md/.txt 全文，直接同源转换，不要让模型重新抄写或缩减。省略 title 可保留源文件自己的标题。"},
+            "mode": {"type": "string", "enum": ["replace", "append"],
+                "description": "`replace` (default) overwrites the file — that is how a second draft is "
+                               "delivered. `append` adds this body to the end of what is already in the "
+                               "file, and that is how a **document longer than one reply** gets written: "
+                               "first section with replace, then one more call per section with append. "
+                               "Keep each call's body under ~1500 characters. A single reply that runs "
+                               "past the model's output limit is thrown away whole — the section is lost "
+                               "and the task fails — so write long documents in sections rather than in "
+                               "one enormous call.",
+                "description_zh": "replace(默认)覆盖文件 —— 第二稿就该这么交。append 把这段正文接到文件"
+                                  "已有内容的**后面**,这是「一篇比单次回复更长的文档」的写法:第一节用 "
+                                  "replace,之后每节各调一次 append。每次 body 控制在 1500 字以内。"
+                                  "单次回复一旦超出模型的输出上限,整个调用会被丢掉 —— 那一节就白写了、"
+                                  "任务会失败 —— 所以长文档要分节写,不要一次塞完。"}},
+            "required": ["path"]},
     },
     "process_log": {
         "description": "The ledger of what is wrong with the WAY THIS GROUP WORKS — not with the "
@@ -552,9 +820,9 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "note, and what a re-check showed. `verified` claims the same thing was run "
                        "again and the defect is gone; do not use it for \"I changed something\".\n"
                        "  `list` — read the ledger back, by status.\n"
-                       "The ledger is a Markdown file in this group's workspace and is indexed into "
-                       "its library, so the user can open it and the next round can see what has "
-                       "already been reported and what has already been ruled out.\n"
+                       "The ledger is a Markdown file in this group's workspace. With automatic "
+                       "recording enabled, unresolved corrections enter the next round's prompts. "
+                       "Automatic entries require a matching successful re-run for verification.\n"
                        "**It also fills itself**: after every round the app records the defects it "
                        "can measure (`by: auto`), and a defect seen again is *counted* (`seen ×N`) "
                        "rather than written twice. So read before you write — if the entry you were "
@@ -569,8 +837,8 @@ BUILTIN_SPECS: dict[str, dict] = {
                           "  `update` —— 推进一条:状态(open / fixed / verified / wontfix)、备注、以及复核结果。"
                           "`verified` 的含义是「同样的事又跑了一遍,问题已消失」,不要拿它表示「我改了点东西」。\n"
                           "  `list` —— 按状态把账本读回来。\n"
-                          "账本是本群工作目录里的一个 Markdown 文件,并已索引进本群知识库 —— 用户能打开,"
-                          "下一轮也能看到哪些已经报过、哪些已经被排除。**它还会自己填**:每一轮结束后程序会把"
+                          "账本是本群工作目录里的一个 Markdown 文件。开启自动记录时,未解决问题的修正建议会进入下一轮提示词。"
+                          "自动检测的条目由程序在对应操作重跑成功后复核。**它还会自己填**:每一轮结束后程序会把"
                           "自己量得出来的毛病写进去(标 `by: auto`),同一个毛病再出现是**计数**"
                           "(`seen ×N`)而不是多写一条。所以**先读再写** —— 你想记的那条如果已经开着,"
                           "就用 `update` 推进它,不要另开一条。",
@@ -655,16 +923,34 @@ BUILTIN_SPECS: dict[str, dict] = {
                                            "不要写成摘要"}},
             "required": ["question"]},
     },
+    "render_document": {
+        "description": "Render a workspace DOCX/PDF into actual page PNGs. Returns page count, source hash and page paths. Then use review_picture on EVERY returned page to check layout; rendering success does not mean visual approval. Request another page range for long documents. A partially filled final page is normal: flag lost content, unintended blank pages or forced breaks, not ordinary space after the document ends.",
+        "description_zh": "将本群DOCX/PDF渲染为真实页面PNG，返回页数、源文件哈希和页面路径。随后须用review_picture检查每一页的中文、分页、裁切和版式，渲染成功不等于排版通过。长文档可分批指定页码。末页未铺满是正常情况；应检查丢失内容、意外空白整页或强制分页，不把正文结束后的正常留白判为缺陷。",
+        "risk": "write", "timeout_key": "assemble_timeout",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Workspace-relative DOCX/PDF path"},
+            "start_page": {"type": "integer", "minimum": 1, "default": 1},
+            "max_pages": {"type": "integer", "minimum": 1, "maximum": 12, "default": 12}},
+            "required": ["path"]},
+    },
     "review_picture": {
-        "description": "Look at ONE picture, or ONE frame of a video, in this group's workspace — through "
-                       "the vision model this app is set up with — and get back what is actually in it. "
-                       "Use it before signing off any picture or film: you cannot see, so this is how a "
-                       "claim about how something looks gets checked instead of assumed. For a video, "
-                       "pass `at_seconds` to choose the moment. Say what you want checked, and treat the "
-                       "answer as a description of the picture, not as proof that it is clinically right.",
-        "description_zh": "看**一张**本群工作目录里的图片,或一段视频中的**一帧** —— 借本程序配置的视觉模型,"
-                          "拿回画面里真实有什么。给任何图或成片签字之前都用它:你自己看不见,「看起来对不对」"
-                          "只能这样核,不能靠假定。视频要指定时刻就传 `at_seconds`。请写清要核什么,"
+        "description": "Look at pictures in this group's workspace — through the vision model this app is "
+                       "set up with — and get back what is actually in them. Use it before signing off "
+                       "any picture or film: you cannot see, so this is how a claim about how something "
+                       "looks gets checked instead of assumed. **Checking several frames? Pass `paths` "
+                       "and they are looked at in ONE pass** — six separate calls is six times the wait "
+                       "for one answer. For a video, `at_seconds` chooses the moment (the middle by "
+                       "default). A picture that has already been looked at, with the same question, "
+                       "comes back from the memory of the group in no time at all; pass `fresh` only "
+                       "when you need to know what it looks like right now, after it was changed. Say "
+                       "what you want checked, and treat the answer as a description of the picture, not "
+                       "as proof that it is clinically right.",
+        "description_zh": "看本群工作目录里的图片 —— 借本程序配置的视觉模型,拿回画面里真实有什么。"
+                          "给任何图或成片签字之前都用它:你自己看不见,「看起来对不对」只能这样核,不能靠假定。"
+                          "**要核好几帧?用 `paths` 一次给过来,一趟就看完全部** —— 分六次调就是六倍等待,"
+                          "而答案本来一趟装得下。视频用 `at_seconds` 指定时刻(默认取中间)。"
+                          "同一张图、同一个问题,已经被看过的会直接从本群的记忆里拿回来,几乎不花时间;"
+                          "**只在图被改过、你需要知道它现在长什么样时**才传 `fresh`。请写清要核什么,"
                           "并把回答当成对画面的**描述**,而不是「内容在临床上正确」的证明。",
         # `read`, not `exec`. It never writes and never changes anything, and the only effect outside
         # this machine is showing a picture to a cloud model — which is already governed by the
@@ -672,29 +958,55 @@ BUILTIN_SPECS: dict[str, dict] = {
         # and it gets described. Marking it `exec` would put an approval prompt, and a read-only round's
         # tool list, in front of the one step whose whole purpose is to be used often.
         "risk": "read",
+        # The media-inspection budget, the same one `review_audio` and `study_video` take. It is not
+        # the generic one on purpose: this call may decode a video frame and then spend one model call,
+        # and the generic 60 s budget is what a look on a heavyweight model used to arrive *at* — see
+        # `vision._brisk` for why the model, not the deadline, was the thing to fix.
+        "timeout_key": "assemble_timeout",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string",
-                     "description": "Path inside this group's workspace, e.g. video/shot.png or figures/x.png",
-                     "description_zh": "本群工作目录内的相对路径,例如 video/shot.png 或 figures/x.png"},
+                     "description": "One picture, or a video whose frame you want. Inside this group's "
+                                    "workspace, e.g. video/shot.png or figures/x.png",
+                     "description_zh": "一张图片,或你想取帧的视频。本群工作目录内的相对路径,"
+                                       "例如 video/shot.png 或 figures/x.png"},
+            "paths": {"type": "array", "items": {"type": "string"},
+                      "description": "Several at once (up to 12), looked at in one pass — use this for a "
+                                     "set of frames instead of calling once per frame. `at_seconds` "
+                                     "applies to the videos among them",
+                      "description_zh": "一次给几个(最多 12 个),一趟看完全部 —— 核一组帧就用它,"
+                                        "不要一帧调一次。`at_seconds` 对其中视频生效"},
             "question": {"type": "string",
                          "description": "What to check: e.g. \"is the blood flowing along the vessel, and does "
                                         "the tube look round?\" The answer is written against this",
                          "description_zh": "要核什么:例如「血是不是沿血管在流、管子看起来是不是圆的?」回答会针对它写"},
             "at_seconds": {"type": "number",
                            "description": "For a video: which moment to look at, in seconds; halfway by default",
-                           "description_zh": "视频:看第几秒那一帧,默认取中间"}},
-            "required": ["path"]},
+                           "description_zh": "视频:看第几秒那一帧,默认取中间"},
+            "fresh": {"type": "boolean",
+                      "description": "Look again even if this picture has been looked at before — for "
+                                     "when it has just been changed and the remembered answer is about "
+                                     "the old version",
+                      "description_zh": "即使这张图之前看过也要重新看一遍 —— 用在图刚被改过、"
+                                        "记住的那份说的是旧版本的时候"}},
+            "required": []},
     },
     "review_audio": {
         "description": "Hear an audio file, or the sound track of a video, inside this group's workspace: "
                        "how long it is, whether there is any sound in it at all, and a transcript of what "
                        "is said. Use it to check a voice sample or a narration before it goes into a "
-                       "film. Transcription happens **on this machine** and nothing is sent anywhere, so "
-                       "it needs no cloud model. If this machine has no transcriber the answer says so "
-                       "and gives the single command that installs one — say that to the user rather than "
-                       "guessing what the recording says.",
+                       "film. **On a long recording, listen to the part you are asking about**: "
+                       "`start_seconds` and `seconds` cut that window out first, so checking one line of "
+                       "a ten-minute narration does not mean reading all ten minutes again. A recording "
+                       "this machine has already read comes back from memory immediately. Transcription "
+                       "happens **on this machine** and nothing is sent anywhere, so it needs no cloud "
+                       "model. If this machine has no transcriber the answer says so and gives the single "
+                       "command that installs one — say that to the user rather than guessing what the "
+                       "recording says.",
         "description_zh": "听一段本群工作目录里的音频,或一段视频里的声音:多长、里面到底有没有声音、说了什么。"
-                          "音色样本或旁白要进成片之前,用它核。转写**在本机**完成、不外发,不需要云端模型。"
+                          "音色样本或旁白要进成片之前,用它核。**录音很长时,只听你问的那一段**:"
+                          "`start_seconds` 与 `seconds` 会先把这一段切出来,核十分钟旁白里的一句话不必再读十分钟。"
+                          "这台机器读过的录音会立刻从记忆里拿回来。"
+                          "转写**在本机**完成、不外发,不需要云端模型。"
                           "这台机器若没装转写器,回答会明说,并给出装上它需要的那一条命令 —— "
                           "请把这句话转告用户,不要猜录音里说了什么。",
         # `read`, like `review_picture`: it changes nothing, and the one thing it runs is a local
@@ -707,7 +1019,15 @@ BUILTIN_SPECS: dict[str, dict] = {
             "path": {"type": "string",
                      "description": "Path inside this group's workspace — an audio file, or a video whose "
                                     "sound you want",
-                     "description_zh": "本群工作目录内的相对路径 —— 音频文件,或你想听它声音的视频"}},
+                     "description_zh": "本群工作目录内的相对路径 —— 音频文件,或你想听它声音的视频"},
+            "start_seconds": {"type": "number",
+                              "description": "Start listening here instead of from the beginning "
+                                             "(0 by default)",
+                              "description_zh": "从第几秒开始听,默认从头"},
+            "seconds": {"type": "number",
+                        "description": "How much of it to listen to from there; omit for the rest of the "
+                                       "file",
+                        "description_zh": "从这里往后听多久;不传就是听到结尾"}},
             "required": ["path"]},
     },
     # ---------------------------------------------------------------- reading a reference
@@ -758,19 +1078,29 @@ BUILTIN_SPECS: dict[str, dict] = {
                        "composition, style, and any text that must appear — rather than asking "
                        "for a summary or a diagram of a document. The file lands in this group's "
                        "workspace. You cannot see the result, so say what you asked for, never "
-                       "describe what came out.",
+                       "describe what came out. reference_images passes actual workspace images to an "
+                       "OpenAI-compatible /images/edits endpoint. Mentioning filenames in prompt does not "
+                       "send images. Unsupported reference inputs fail without a text-only fallback.",
         "description_zh": "用本机配置的图片服务,按文字描述画一张图。描述要写画面本身 —— 主体、构图、风格,"
                           "以及需要出现的文字 —— 而不是让它「总结一份文档」或「画一张文档的图」。文件会落在"
-                          "本群工作目录里。你看不到生成结果,所以只说你要求了什么,绝不要描述画出来是什么样。",
+                          "本群工作目录里。你看不到生成结果,所以只说你要求了什么,绝不要描述画出来是什么样。"
+                          "reference_images 会把本群真实图片传给 OpenAI 兼容 /images/edits 接口；仅在提示词写文件名不会传图。"
+                          "不支持参考图的接口会明确失败，不会丢掉参考图后改为纯文生图。",
         "risk": "exec",            # it reaches a service outside this app, so it asks first
         "timeout_key": "image_timeout",
         "parameters": {"type": "object", "properties": {
             "prompt": {"type": "string",
                        "description": "What to draw, written as a description of the picture",
                        "description_zh": "要画什么,写成对画面的描述"},
+            "model_id": {"type": "string",
+                         "description": "Optional full model ID of an enabled image member already in this group. Lets a chat member use a newly recruited image generator without changing global settings. A generating member cannot override its own model.",
+                         "description_zh": "可选：已入本群且启用的绘图成员的完整模型ID。对话成员可借此调用刚拉入的绘图能力，无需改全局配置；生成成员不能借此更换自己的模型。"},
             "size": {"type": "string", "enum": list(imagegen.SIZES),
                      "description": f"One of: {', '.join(imagegen.SIZES)}; the configured default is used when omitted",
-                     "description_zh": f"可选:{', '.join(imagegen.SIZES)};不填则用配置里的默认尺寸"}},
+                     "description_zh": f"可选:{', '.join(imagegen.SIZES)};不填则用配置里的默认尺寸"},
+            "reference_images": {"type": "array", "items": {"type": "string"}, "maxItems": 4,
+                                 "description": "Optional 1–4 PNG/JPEG/WebP paths in this group's workspace, 20 MB total. Requires an OpenAI-compatible image editing endpoint; the MetaChat media adapter does not upload local references.",
+                                 "description_zh": "可选，1–4 个本群 PNG/JPEG/WebP 图片路径，合计最多 20 MB。需 OpenAI 兼容图片编辑接口；MetaChat 媒体适配器尚未上传本地参考图。"}},
             "required": ["prompt"]},
     },
 }
@@ -809,7 +1139,15 @@ def read_only_tools(tools: dict[str, dict]) -> tuple[dict[str, dict], list[str]]
     stores no `risk` at all: a server advertising its own tool as read-only is repeating the
     server's claim, not something this app has verified, so those are withheld as well.
     """
-    kept = {n: s for n, s in tools.items() if s.get("risk") == "read"}
+    kept = {n: s for n, s in tools.items()
+            if s.get("risk") == "read" and s.get("source", "builtin") == "builtin"}
+    return kept, [n for n in tools if n not in kept]
+
+
+def planning_tools(tools: dict[str, dict]) -> tuple[dict[str, dict], list[str]]:
+    kept, _ = read_only_tools(tools)
+    if "invite_team_resource" in tools:
+        kept["invite_team_resource"] = tools["invite_team_resource"]
     return kept, [n for n in tools if n not in kept]
 
 
@@ -828,6 +1166,58 @@ def _age_label(when: float) -> str:
     if minutes < 60 * 24:
         return i18n.pick_now(f"{int(minutes // 60)} h ago", f"{int(minutes // 60)} 小时前")
     return i18n.pick_now(f"{int(minutes // (60 * 24))} d ago", f"{int(minutes // (60 * 24))} 天前")
+
+
+# How many pictures one `review_picture` call may cover. A member checking a storyboard asks about
+# six to eight frames at once; more than that is not a review, it is a survey, and the answer stops
+# being readable before it stops being cheap. Bounded rather than unbounded because the whole point
+# of the batch is that it is *one* call.
+PICTURE_BATCH = 12
+
+# What `_frame_of` can hand to a vision endpoint as-is. Deliberately narrower than the extensions
+# `kind_of_name` calls images: the provider takes `image/png`, `image/jpeg`, `image/webp`, `image/gif`
+# and `image/bmp`, so a `.heic` or a `.tiff` in the workspace is *not* a picture this tool can read,
+# and saying so is better than sending a type the endpoint will reject.
+_STILL_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+
+
+def _looked_when(entry: dict) -> str:
+    """When a remembered look was made — "3 minutes ago", or "earlier" if the entry does not say.
+
+    The age travels with a remembered answer on purpose. Every risk a cache creates here is the
+    reader taking an old look for a new one, and no amount of wording removes that better than
+    saying how old it is.
+    """
+    try:
+        when = float(entry.get("at"))
+    except (TypeError, ValueError):
+        when = 0.0
+    return _age_label(when) if when > 0 else i18n.pick_now("earlier", "早先")
+
+
+def _window_of(args: dict) -> tuple[float, float | None]:
+    """`(start_seconds, length | None)` from the arguments, refusing nonsense rather than guessing.
+
+    A negative start or a zero-length window is a member that has mixed up two numbers; silently
+    reading the whole file would answer a question nobody asked, which is worse than an error.
+    """
+    def number(key: str) -> float | None:
+        raw = args.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            raise figure.FigureError(i18n.pick_now(
+                f"`{key}` has to be a number of seconds, not {raw!r}.",
+                f"`{key}` 要写成秒数,不是 {raw!r}。")) from None
+
+    start = number("start_seconds") or 0.0
+    window = number("seconds")
+    if window is not None and window <= 0:
+        raise figure.FigureError(i18n.pick_now(
+            "`seconds` has to be longer than zero.", "`seconds` 要比 0 长。"))
+    return start, window
 
 
 def timeout_budget(cfg: dict, spec: dict) -> float:
@@ -865,6 +1255,8 @@ class ToolHub:
         # every existing construction — including a test's — keeps working, and the tool then reports
         # that it cannot look rather than raising inside a member's turn.
         self.router = router
+        self.comfy_runtime = LocalRuntime(store.data_dir)
+        self.literature = LiteratureSearch()
         # Hooks are asked twice around a tool call: once to object (`pre_tool_use`) and once to be
         # told what happened (`tool.called`). They are consulted *after* the user's own permission
         # rules, so a hook can only ever tighten a call, never grant one (see app/hooks.py).
@@ -880,7 +1272,7 @@ class ToolHub:
     async def context(self, group: dict, agent: dict, connect: bool = True,
                       read_only: bool = False) -> ToolContext:
         cfg = self.store.get_settings()
-        ctx = ToolContext(group, agent)
+        ctx = ToolContext(group, agent, read_only=read_only)
         if int(cfg["tool_rounds"]) <= 0:
             return ctx
         ext = group["ext"]
@@ -890,6 +1282,11 @@ class ToolHub:
         # early is the point: everything below hands a *conversational* member the tools of the
         # group, and none of that applies to a member whose whole turn is one call.
         if agent.get("origin") == media.MEDIA_ORIGIN:
+            if read_only:
+                ctx.problems.append(i18n.pick_now(
+                    "This round came from a chat channel; media generation is not a read-only operation.",
+                    "这一轮来自聊天通道;图像和视频生成不属于只读操作。"))
+                return ctx
             specs = builtin_specs()
             target = media.member_target(self.store, agent)
             if target is None:
@@ -943,11 +1340,25 @@ class ToolHub:
                                "timeout_key": spec.get("timeout_key"), **extra}
 
         add("current_time", specs["current_time"], source="builtin")
+        if self.router is not None:
+            add("find_team_resources", specs["find_team_resources"], source="builtin")
+            if cfg.get("host_auto_recruit") and group.get("host_agent_id") == agent["id"] and not read_only:
+                add("invite_team_resource", specs["invite_team_resource"], source="builtin")
+        if cfg["external_calls_enabled"]:
+            add("search_literature", specs["search_literature"], source="builtin")
+        # ⚠️ `library_read` is offered **whether or not** a knowledge base is in scope, and that is
+        # deliberate: it also reads a file out of this group's own working directory, which is where
+        # every deliverable the group produces lives. Gating it on "this group has a library" meant
+        # the member whose job is to check somebody's file had no way to open it — the gate was
+        # accurate when the tool could only reach a library, and stopped being accurate the moment it
+        # could reach the workspace. `library_search` stays gated: searching a library with nothing
+        # in it is not a capability, it is a dead end with 6,000 unrelated titles under it.
+        add("library_read", specs["library_read"], source="builtin")
+        add("list_workspace_files", specs["list_workspace_files"], source="builtin")
         # "The library is not empty for this group" now means "at least one knowledge base is in
         # scope and has an enabled document", not "the database has documents".
         if self.library.scope_ids(ext["library"], group["id"]):
             add("library_search", specs["library_search"], source="builtin")
-            add("library_read", specs["library_read"], source="builtin")
             # The pictures that came with those documents. Offered on the same condition as the
             # search, because it is the same knowledge base: being able to read a document and not
             # being able to reach its figures is exactly the gap that made groups generate fake
@@ -959,6 +1370,8 @@ class ToolHub:
         # one thing a drawing or a render needs before it is signed off is somebody looking at it.
         if self._can_review():
             add("review_picture", specs["review_picture"], source="builtin")
+        if document_preview.available():
+            add("render_document", specs["render_document"], source="builtin")
         # Offered whenever the machine can measure a file, which is whenever ffprobe is here — the
         # transcription being absent is not a reason to withhold it, it is the thing the answer has to
         # say. A group that cannot hear a voice sample and does not know why is worse off than one that
@@ -968,6 +1381,9 @@ class ToolHub:
         # the tests that exist to keep the "here is the command" answer alive caught it.)
         if ffmpeg.probe_path():
             add("review_audio", specs["review_audio"], source="builtin")
+        if cfg["external_agents_enabled"] and voices.names():
+            add("synthesize_speech", specs["synthesize_speech"], source="builtin")
+            ctx.tools["synthesize_speech"]["description"] += "\nAvailable cloned voices: " + ", ".join("voice:" + n for n in voices.names())
         # Offered whenever the machine can *measure* a file — the same line `review_audio` takes, and
         # for the same reason: what is missing beyond that (something that can look, `yt-dlp` for a
         # link) is not a reason to withhold it, because the answer is the thing that has to say so.
@@ -1021,6 +1437,14 @@ class ToolHub:
             # Same condition, same reason: drawing a real animation needs nothing but ffmpeg, and a
             # group that can only make stills will make a slide show.
             add("make_animation", specs["make_animation"], source="builtin")
+            # Music is composed by this machine's own ComfyUI, so the condition is "is there one",
+            # not a switch: a group that can assemble a film but not score it is the state this ends.
+            # ⚠️ Nothing goes into `ctx.problems` when the weights are missing: problems become a
+            # system message in the chat *every turn*, and a missing 13.7 GB download is not news
+            # every turn. The tool is offered and names the file itself when it is asked to work.
+            if any(p.get("kind") == comfyui.KIND and p.get("enabled")
+                   for p in self.store.providers_for_use("video", video.KINDS)):
+                add("make_music", specs["make_music"], source="builtin")
         else:
             ctx.problems.append(why)
         if cfg["video_enabled"]:
@@ -1033,22 +1457,34 @@ class ToolHub:
                 ctx.problems.append(why or blocked)
             else:
                 add("generate_video", specs["generate_video"], source="builtin")
+                choices = [m["model_name"] for m in self.store.list_media_models()
+                           if m["provider_id"] == vprov["id"] and m.get("enabled") and m.get("use") == "video"]
+                if choices:
+                    ctx.tools["generate_video"]["description"] += "\nConfigured models/workflows: " + ", ".join(choices)
         if cfg["image_enabled"]:
             # Same rule as video: a member is not handed a tool that cannot work, and the user is
             # told why it is missing instead.
             iprov, why = imagegen.pick_provider(self.store, cfg)
             blocked = imagegen.blocked_by_offline(iprov, cfg) if iprov else ""
-            if why or blocked:
+            from .teamsetup import model_problem
+            joined = [target["model"]["id"] for a in self.store.group_members(group["id"])
+                      if (target := media.member_target(self.store, a)) and target["use"] == "image"
+                      and not model_problem(self.store, target["model"])]
+            if (why or blocked) and not joined:
                 ctx.problems.append(why or blocked)
             else:
                 add("generate_image", specs["generate_image"], source="builtin")
+                if joined:
+                    ctx.tools["generate_image"]["description"] += "\nJoined image model_id choices: " + ", ".join(joined)
         for t in self.registry.plugin_tools(ext["plugins"]):
             if t.name in ctx.tools or t.name in BUILTIN_TOOL_NAMES:   # a plugin cannot displace a built-in tool (permission checks go by name)
                 ctx.problems.append(i18n.pick_now(f"The plugin tool \"{t.name}\" has the same name as a built-in tool, so it was ignored.", f"插件工具「{t.name}」和内置工具重名,已忽略。"))
                 continue
             ctx.tools[t.name] = {**t.spec(), "source": "plugin"}
         taken = set(ctx.tools)
-        for sid in ext["mcp"]:
+        # A server may execute code as soon as it starts. Filtering its tools afterwards is
+        # too late for network-triggered rounds, which must never start these processes.
+        for sid in ([] if read_only else ext["mcp"]):
             server = self.store.get_mcp(sid)
             if not server or not server["enabled"]:
                 continue
@@ -1072,8 +1508,8 @@ class ToolHub:
             ctx.tools, withheld = read_only_tools(ctx.tools)
             if withheld:
                 ctx.problems.append(i18n.pick_now(
-                    f"This round came from WhatsApp, so only read-only tools are available — {len(withheld)} tool(s) were withheld.",
-                    f"这一轮来自 WhatsApp,因此只开放只读工具——已停用 {len(withheld)} 个工具。"))
+                    f"This round came from a chat channel, so only read-only tools are available — {len(withheld)} tool(s) were withheld.",
+                    f"这一轮来自聊天通道,因此只开放只读工具——已停用 {len(withheld)} 个工具。"))
         return ctx
 
     # ----------------------------------------------------------- calls
@@ -1083,9 +1519,14 @@ class ToolHub:
     async def call(
         self, ctx: ToolContext, name: str, args: dict[str, Any],
         approve: Callable[[dict, dict], Awaitable[bool]] | None = None,
+        on_progress: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> ToolOutcome:
         """approve: calls that need confirmation are handed to it to ask the user (True = allowed).
-When it is not supplied, calls needing confirmation are always denied."""
+When it is not supplied, calls needing confirmation are always denied.
+
+`on_progress` is for tools that produce output *while they work* (a program being run): the
+fragment is forwarded as it appears, so the chat can show what is happening instead of only that
+something is. Tools that have nothing to say mid-flight simply ignore it."""
         t0 = time.time()
         spec = ctx.tools.get(name)
         if not spec:
@@ -1097,13 +1538,6 @@ When it is not supplied, calls needing confirmation are always denied."""
         pol = self.policy(spec)
         if pol == "deny":
             return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run. Do not retry — find another way, or tell the user directly.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。不要重试,请换个办法或直接告诉用户。"), False, 0, True)
-        if pol == "ask" and not (approve and await approve(spec, args)):
-            return ToolOutcome(
-                i18n.pick_now(f"The user did not approve this call ({name}: denied, or no confirmation before the timeout), so it was not run. Do not retry the same operation — find another way, or tell the user what you need and why.", f"用户没有批准这次调用({name}:拒绝或超时未确认),没有执行。不要重试同一操作,请换个办法,或直接告诉用户你需要做什么、为什么。"),
-                False, int((time.time() - t0) * 1000), True,
-            )
-        if pol == "ask" and self.policy(spec) == "deny":   # while waiting for confirmation the user changed it to "forbidden"
-            return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。"), False, 0, True)
         if self.hooks is not None:
             blocked, args = await self.hooks.gate_tool(ctx.group["id"], spec, args)
             if blocked:
@@ -1111,18 +1545,38 @@ When it is not supplied, calls needing confirmation are always denied."""
                     i18n.pick_now(f"{blocked} Do not retry the same call — find another way, or tell the user what you need and why.",
                                   f"{blocked}不要重试同一调用,请换个办法,或直接告诉用户你需要做什么、为什么。"),
                     False, 0, True)
+        # Hooks run before asking, so the approval describes the operation that will actually
+        # execute. A hook may take time; settings can change while it is running.
+        pol = self.policy(spec)
+        if pol == "deny":
+            return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。"), False, 0, True)
+        if pol == "ask" and not (approve and await approve(spec, args)):
+            return ToolOutcome(
+                i18n.pick_now(f"The user did not approve this call ({name}: denied, or no confirmation before the timeout), so it was not run. Do not retry the same operation — find another way, or tell the user what you need and why.", f"用户没有批准这次调用({name}:拒绝或超时未确认),没有执行。不要重试同一操作,请换个办法,或直接告诉用户你需要做什么、为什么。"),
+                False, int((time.time() - t0) * 1000), True,
+            )
+        if pol == "ask" and self.policy(spec) == "deny":   # while waiting for confirmation the user changed it to "forbidden"
+            return ToolOutcome(i18n.pick_now(f"Tool {name} is blocked by the user under Permissions & control, so it was not run.", f"工具 {name} 已被用户在「权限与操控」里禁止,没有执行。"), False, 0, True)
         t0 = time.time()  # elapsed time excludes the wait for user confirmation
         timeout = timeout_budget(self.store.get_settings(), spec)
         try:
-            text, ok, files = await asyncio.wait_for(self._dispatch(ctx, spec, args, timeout), timeout + 5)
+            text, ok, files = await asyncio.wait_for(self._dispatch(ctx, spec, args, timeout, on_progress), timeout + 5)
         except asyncio.TimeoutError:
             self._note_unstoppable(spec)
             text, ok, files = i18n.pick_now(f"Tool execution timed out ({int(timeout)} seconds)", f"工具执行超时({int(timeout)} 秒)"), False, []
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
+            # ⚠️ The member gets **one line**; the traceback goes to the log. It used to go nowhere,
+            # and that cost a real hunt: `library_read` failed with "AttributeError: 'NoneType' object
+            # has no attribute 'relative_to'" in three groups and from four different members, and a
+            # message with no frame, no file and no line number is not findable in a 10k-line codebase
+            # (an afternoon went into reading `relative_to` call sites by hand). The member's text
+            # stays short on purpose — internal frames are not its business.
+            logging.getLogger("team_agent.tool").exception(
+                "tool %s crashed (group %s, agent %s)", name, ctx.group.get("id"), ctx.agent.get("name"))
             text, ok, files = i18n.pick_now(f"Tool execution failed: {type(e).__name__}: {e}", f"工具执行出错:{type(e).__name__}: {e}")[:500], False, []
-        outcome = ToolOutcome(text, ok, int((time.time() - t0) * 1000), False, files)
+        outcome = ToolOutcome(text, ok, int((time.time() - t0) * 1000), False, files, scrub_args(args))
         if self.hooks is not None:
             self.hooks.notify("tool.called", ctx.group["id"], {
                 "agent": ctx.agent.get("name", ""), "tool": name, "source": spec.get("source"),
@@ -1140,7 +1594,8 @@ When it is not supplied, calls needing confirmation are always denied."""
             print(f"plugin tool {spec.get('name')!r} is still running in a worker thread after its "
                   f"timeout; the side effects of that call were not stopped")
 
-    async def _dispatch(self, ctx: ToolContext, spec: dict, args: dict, timeout: float) -> tuple[str, bool, list[dict]]:
+    async def _dispatch(self, ctx: ToolContext, spec: dict, args: dict, timeout: float,
+                        on_progress: Callable[[str], Awaitable[None] | None] | None = None) -> tuple[str, bool, list[dict]]:
         """Always (text, ok, files): whether the tool produced files is not a special case."""
         src, name = spec["source"], spec["name"]
         if src == "mcp":
@@ -1151,8 +1606,12 @@ When it is not supplied, calls needing confirmation are always denied."""
             return (res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, default=str)), True, []
         if name == "generate_video":
             return await self._generate_video(ctx, args)
+        if name == "synthesize_speech":
+            return await self._synthesize_speech(ctx, args, timeout)
         if name == "generate_image":
             return await self._generate_image(ctx, args)
+        if name == "make_music":
+            return await self._make_music(ctx, args)
         if name == "assemble_video":
             return await self._assemble_video(ctx, args)
         if name == "make_animation":
@@ -1161,6 +1620,16 @@ When it is not supplied, calls needing confirmation are always denied."""
             return await self._make_figure(ctx, args)
         if name == "write_document":
             return await self._write_document(ctx, args)
+        if name == "render_document":
+            try:
+                result = await document_preview.render(self.store.workspace_dir(ctx.group["id"]),
+                                                       str(args.get("path") or ""),
+                                                       int(args.get("start_page", 1)), int(args.get("max_pages", 12)))
+                return (json.dumps(result, ensure_ascii=False)
+                        + "\nUse review_picture on every rendered PNG / 请逐页调用review_picture核验排版，渲染成功不等于验收通过。",
+                        True, result["files"])
+            except (ValueError, OSError, asyncio.TimeoutError, assemble.AssembleError) as e:
+                return f"Document preview failed / 文档预览失败: {e}", False, []
         if name == "process_log":
             return await self._process_log(ctx, args)
         if name == "ask_advisor":
@@ -1171,8 +1640,47 @@ When it is not supplied, calls needing confirmation are always denied."""
             return await self._study_video(ctx, args)
         if name == "review_audio":
             return await self._review_audio(ctx, args)
-        text, ok = await self._builtin(ctx, name, args)
+        text, ok = await self._builtin(ctx, name, args, on_progress)
         return text, ok, []
+
+    async def _synthesize_speech(self, ctx: ToolContext, args: dict, timeout: float) -> tuple[str, bool, list[dict]]:
+        if not self.store.get_settings()["external_agents_enabled"]:
+            return "Local execution is disabled / 本地执行已关闭。", False, []
+        text = str(args.get("text") or "").strip()
+        voice = str(args.get("voice") or "").strip()
+        if not 1 <= len(text) <= 1000:
+            return "Narration must contain 1–1000 characters / 旁白须为 1–1000 字，请先分段。", False, []
+        try:
+            kind, row = voices.parse(voice)
+        except ValueError as error:
+            return str(error), False, []
+        if kind != "clone" or row is None:
+            return "Choose a registered cloned voice / 请选择已登记的克隆音色，不能用系统嗓音代替。", False, []
+        from .store import new_id
+        workspace = self.store.workspace_dir(ctx.group["id"])
+        suffix = voices.audio_suffix(voice)
+        try:
+            dest = narration_dest(workspace, str(args.get("name") or ""), suffix,
+                                  f"narration-{new_id()}{suffix}")
+        except ValueError as error:
+            return str(error), False, []
+        root = workspace.resolve()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            seconds = await assemble.speak(text, dest, voice, timeout)
+            if not dest.is_file() or dest.stat().st_size <= 0:
+                raise assemble.AssembleError("No nonempty audio file was produced")
+        except (assemble.AssembleError, OSError) as error:
+            dest.unlink(missing_ok=True)
+            return str(error), False, []
+        rel = str(dest.relative_to(root))
+        return (i18n.pick_now(
+            f"Audio: {rel}; {seconds:.2f}s measured; voice={voice}. If that is longer than the shot, "
+            f"shorten the text and record this segment again — there is no speed setting. Review with "
+            f"review_audio before assembly.",
+            f"音频:{rel};实测 {seconds:.2f} 秒;voice={voice}。若超出该镜时长,请缩短文本重录这一段"
+            f"(本工具没有语速参数)。装配前用 review_audio 核验。"), True,
+            [{"kind": "audio", "name": rel, "bytes": dest.stat().st_size, "seconds": seconds}])
 
     # ----------------------------------------------------------- video generation
     async def _generate_video(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
@@ -1192,7 +1700,31 @@ When it is not supplied, calls needing confirmation are always denied."""
         blocked = video.blocked_by_offline(prov, cfg)
         if blocked:
             return blocked, False, []
-        model = str(member.get("model") or cfg.get("video_model") or "").strip()
+        # Same split as the drawing tool: a generating member's own model is the user's choice and
+        # is passed through; the group's setting is compared with what this provider serves, because
+        # the two are chosen in different places and nothing used to compare them. `when_empty=""`
+        # here: MetaChat's two video models are not interchangeable (both generate from a keyframe),
+        # so an unset name still has to be refused and the setting named, rather than guessed at.
+        if str(member.get("model") or "").strip():
+            model, model_note = str(member["model"]).strip(), ""
+            requested = str(args.get("model") or args.get("model_name") or "").strip()
+            if requested and requested not in {model, f"{prov['id']}/{model}"}:
+                return i18n.pick_now(
+                    f"This generator is bound to {model}, not {requested}. Assign the matching generator or let a chat member call generate_video with model={requested}.",
+                    f"该生成成员绑定 {model}，不能冒充 {requested}。请分配匹配的工具成员，或让对话成员用 generate_video 的 model 参数选择所需工作流。"), False, []
+        else:
+            model, model_note = media.reconcile_model(prov, "video", str(cfg.get("video_model") or ""),
+                                                     when_empty="")
+            requested = str(args.get("model") or args.get("model_name") or "").strip()
+            if requested:
+                registered = [m for m in self.store.list_media_models()
+                              if m["provider_id"] == prov["id"] and m.get("enabled")
+                              and m.get("use") == "video" and requested in {m["id"], m["model_name"]}]
+                if not registered:
+                    return i18n.pick_now(
+                        f"Video model/workflow {requested} is not enabled in this provider's catalogue; nothing was generated.",
+                        f"视频模型/工作流 {requested} 未在该服务商配置并启用，本次未生成。"), False, []
+                model, model_note = registered[0]["model_name"], ""
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
             return i18n.pick_now("The prompt was empty, so nothing was generated.", "提示词是空的,没有生成。"), False, []
@@ -1218,13 +1750,13 @@ When it is not supplied, calls needing confirmation are always denied."""
         ref_images = _str_list(args.get("reference_images"))
         ref_videos = _str_list(args.get("reference_videos"))
         ref_audios = _str_list(args.get("reference_audios"))
-        if (ref_images or ref_videos or ref_audios) and prov["kind"] != video.ARK_KIND:
+        comfy_audio = prov["kind"] == video.COMFY_KIND and not ref_images and not ref_videos and len(ref_audios) <= 1
+        if (ref_images or ref_videos or ref_audios) and prov["kind"] != video.ARK_KIND and not comfy_audio:
             return i18n.pick_now(
                 f"\"{prov['name']}\" does not take reference pictures, video or audio, so nothing "
-                "was generated. Only Volcengine Ark (Doubao Seedance) accepts those — use "
+                "was generated. Ark accepts reference arrays; ComfyUI accepts at most one audio file and only if its workflow has an audio input. Use "
                 f"first_frame otherwise. Available here: {', '.join(k for k, v in (('first_frame', want_first), ('last_frame', want_last)) if v) or 'the prompt alone'}.",
-                f"「{prov['name']}」不接受参考图/参考视频/参考音频,没有生成。只有火山方舟(Doubao Seedance)"
-                "支持这些 —— 其他服务商请改用 first_frame。",
+                f"「{prov['name']}」不接受本次参考素材组合，未生成。方舟可接收参考数组；ComfyUI 最多接收一个音频，且工作流须有 audio 输入。图片请使用 first_frame。",
             ), False, []
         seconds, clamped = video.clamp_seconds(args.get("duration_seconds"), int(cfg["video_max_seconds"]), prov["kind"])
         pinned = False
@@ -1289,6 +1821,9 @@ When it is not supplied, calls needing confirmation are always denied."""
                 **assets,
             )
         elif prov["kind"] == video.COMFY_KIND:
+            ready, why = await self.comfy_runtime.ensure(prov, cfg)
+            if not ready:
+                return why, False, []
             wf = str(model or comfyui.DEFAULT_WORKFLOW).strip() or comfyui.DEFAULT_WORKFLOW
             uses = comfyui.wants(comfyui.workflow_of(wf))
             # What this graph can take is read **off the graph**, not assumed from the provider.
@@ -1421,6 +1956,10 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"(The service billed {points} points for it.)",
                 f"(这次生成消耗了 {points} 元点。)",
             ))
+        if model_note:
+            # Same rule as the drawing tool: a substitution is announced, never silent — the model
+            # the user configured is not the one that rendered this.
+            lines.append(i18n.pick_now(f"Note: {model_note}", f"注意:{model_note}"))
         usage = r.get("usage") if isinstance(r.get("usage"), dict) else None
         cost = (usage or {}).get("total_tokens")
         if cost:
@@ -1450,7 +1989,7 @@ When it is not supplied, calls needing confirmation are always denied."""
                 "user it is ready and where it is.",
                 "你看不到也听不到生成结果,不要描述里面的内容 —— 只要告诉用户已经生成好了、文件在哪里。",
             ))
-        return "\n".join(lines), True, [{"kind": "video", "name": r["name"], "bytes": r["bytes"], "seconds": seconds}]
+        return "\n".join(lines), True, [{"kind": "video", "name": r["name"], "path": str(Path(r["path"]).relative_to(workspace)), "bytes": r["bytes"], "seconds": measured.get("seconds", seconds)}]
 
     def _measure_clip(self, path: Path, ratio: str, seconds: float) -> dict:
         """What the clip actually is, plus a line for every way it differs from what was asked for.
@@ -1500,6 +2039,22 @@ When it is not supplied, calls needing confirmation are always denied."""
         # Same rule as the video tool: when the caller is a media member, *its* provider and model
         # outrank the group's setting, so "@Seedream" draws with Seedream.
         member = ctx.media or {}
+        selected = str(args.get("model_id") or "").strip()
+        if selected:
+            if member and selected != ctx.agent.get("model_id"):
+                return i18n.pick_now("A generating member must use its own bound model.",
+                                     "生成成员必须使用自己绑定的模型。"), False, []
+            target = next((target for a in self.store.group_members(ctx.group["id"])
+                           if a.get("model_id") == selected and (target := media.member_target(self.store, a))
+                           and target["use"] == "image"), None)
+            if not target:
+                return i18n.pick_now("That image model has no member in this group. Ask the host to invite it first.",
+                                     "本群没有这个绘图模型成员，请主持先将它拉入群。"), False, []
+            from .teamsetup import model_problem
+            problem = model_problem(self.store, target["model"])
+            if problem:
+                return problem, False, []
+            member = {"provider_id": target["provider"]["id"], "model": target["model"]["model_name"]}
         prov, why = imagegen.pick_provider(self.store, cfg, prefer=str(member.get("provider_id") or ""))
         if prov is None:
             return why, False, []
@@ -1517,11 +2072,34 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"「{size}」不是这个服务支持的尺寸,没有生成。可用:{', '.join(imagegen.SIZES)}。",
             ), False, []
         workspace = self.store.workspace_dir(ctx.group["id"])
-        model = str(member.get("model") or cfg["image_model"])
+        # A generating member's own model is what the user chose when they made that member, so it
+        # is passed through untouched. The group's setting is a different thing: it is chosen on a
+        # settings page from a list of candidates and, until this line existed, was never compared
+        # with what the provider on the other end actually serves — which is how `gpt-image-1` went
+        # out to MetaChat's media API and came back as an enum refusal, three times, in a turn that
+        # then had nothing to show. `reconcile_model` owns that comparison and says so when it
+        # substitutes, rather than drawing with a model nobody named.
+        if str(member.get("model") or "").strip():
+            model, model_note = str(member["model"]).strip(), ""
+        else:
+            # `when_empty=""`: an unset model is **refused below**, not guessed. Fifteen drawing models
+            # sit behind that one key, and picking one at random spends the user's points on a medium
+            # or a look they did not ask for.
+            model, model_note = media.reconcile_model(prov, "image", str(cfg["image_model"]),
+                                                     when_empty="")
+        if any(args.get(k) for k in ("reference_files", "reference_image", "images", "image", "first_frame")):
+            return i18n.pick_now("Use reference_images for actual image inputs; other reference fields are not forwarded.",
+                                 "实际参考图请填 reference_images；其他参考图字段不会传入生成器。"), False, []
+        references = []
+        if "reference_images" in args and args["reference_images"] not in (None, []):
+            try:
+                references = await asyncio.to_thread(imagegen.read_references, workspace, args["reference_images"])
+            except imagegen.ImageError as exc:
+                return str(exc), False, []
         if prov["kind"] == "metachat_media":
             # Fifteen models behind one key, and the request differs per model (which path, and
             # which parameters) — so an unset name is a request that would fail rather than draw.
-            if not model.strip():
+            if not model:
                 return i18n.pick_now(
                     "Drawing is set to MetaChat's media API, which serves many models, but none is "
                     "chosen — so nothing was drawn. Pick one under Permissions & control → Image "
@@ -1537,15 +2115,16 @@ When it is not supplied, calls needing confirmation are always denied."""
                 prov, payload,
                 max_bytes=max(1, int(cfg["image_max_mb"])) * 1024 * 1024,
                 deadline_s=float(cfg["image_timeout"]),
+                **({"reference_images": references} if references else {}),
             )
             path = imagegen.save(got["data"], workspace, prompt)
         except imagegen.ImageError as e:
             return str(e), False, []
         lines = [
             i18n.pick_now(
-                f"Drew a {size} image with {prov['name']} ({cfg['image_model']}): {path.name} "
+                f"Drew a {size} image with {prov['name']} ({model}): {path.name} "
                 f"({media.size_label(got['size'])}, took {got['seconds']:.0f}s).",
-                f"用 {prov['name']}({cfg['image_model']})画了一张 {size} 的图:{path.name}"
+                f"用 {prov['name']}({model})画了一张 {size} 的图:{path.name}"
                 f"({media.size_label(got['size'])},用了 {got['seconds']:.0f} 秒)。",
             ),
             i18n.pick_now(f"Saved in this group's workspace: {path}", f"已保存在本群工作目录:{path}"),
@@ -1556,7 +2135,18 @@ When it is not supplied, calls needing confirmation are always denied."""
                 "你看不到生成结果,不要描述画面内容 —— 只要告诉用户已经画好了、文件在哪里。",
             ),
         ]
-        return "\n".join(lines), True, [{"kind": "image", "name": path.name, "bytes": got["size"]}]
+        if model_note:
+            # The substitution is stated rather than hidden: the user has to hear which model drew
+            # it, because the setting they think is in force is not the one that ran.
+            lines.append(i18n.pick_now(f"Note: {model_note}", f"注意:{model_note}"))
+        artifact = {"kind": "image", "name": path.name, "path": str(path.relative_to(workspace)), "bytes": got["size"]}
+        if references:
+            artifact["reference_inputs"] = [{k: ref[k] for k in ("path", "bytes", "sha256")} for ref in references]
+            lines.append(i18n.pick_now("Reference images actually submitted: ", "实际传入的参考图：")
+                         + ", ".join(ref["path"] for ref in references))
+        if str(got.get("url") or "").startswith(("https://", "http://")):
+            artifact["source_url"] = got["url"]
+        return "\n".join(lines), True, [artifact]
 
     # ----------------------------------------------------------- teaching pictures
     # ----------------------------------------------------------- looking at the result
@@ -1575,7 +2165,7 @@ When it is not supplied, calls needing confirmation are always denied."""
             return False
 
     async def _review_picture(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
-        """Show one picture — or one frame of a video — to the model that can see, and say what it saw.
+        """Show one picture — or a frame of a video — to the model that can see, and say what it saw.
 
         Why this tool has to exist: the members that own the words (the writer, the storyboard artist,
         the proofreader) cannot see, and they said so, correctly, in a session that ran for twenty
@@ -1586,6 +2176,23 @@ When it is not supplied, calls needing confirmation are always denied."""
 
         A video is a picture too, at a moment: `at_seconds` picks the frame, which is how a claim like
         "the flow moves" gets looked at without watching the whole clip.
+
+        Three things here exist purely so that a group checking its own work does not spend its whole
+        turn waiting, and each of them was measured rather than assumed:
+
+        * `paths` — eight frames were eight model calls, which is eight times the wait for an answer
+          that fits in one. Pictures go in together (`vision.describe` takes a list) and come back as
+          one numbered set of notes;
+        * the answer is remembered (`attachments.look_key`) against the file's own bytes, the moment
+          filmed and the question asked — so the second member to look at the same still, and any
+          repeat of the same question, costs nothing, and the whole group reads one look instead of
+          each paying for its own;
+        * what is sent is downscaled to the size the vision endpoint would cut it to anyway
+          (`attachments.shrink_image`), because the bytes travel and the pixels are thrown away.
+
+        What is *not* cached is the judgement: a picture that has been changed is a different file
+        with a different key and gets a real look. `fresh` skips the memory for one call, which is
+        what a member wants when it needs to know what the picture looks like *now*.
         """
         if self.router is None or not self._can_review():
             # The reason, named — the same sentence the attachments path uses. "Nobody can look" on its
@@ -1597,85 +2204,240 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"The picture was not looked at: {why}",
                 f"这张图没有被看:{why}"), False, []
         workspace = self.store.workspace_dir(ctx.group["id"])
-        rel = str(args.get("path") or "").strip()
-        try:
-            target = assemble._local(workspace, rel, i18n.pick_now("No picture given.", "没有给图片。"))
-        except assemble.AssembleError as e:
-            return str(e), False, []
-        if not target.is_file():
+        rels = self._asked_paths(args)
+        if not rels:
             return i18n.pick_now(
-                f"There is no file at \"{rel}\" inside this group's workspace. Use the path an earlier "
-                "tool reported, or list the workspace first.",
-                f"本群工作目录里没有「{rel}」这个文件。请用前面工具报出来的路径,或先列一下工作目录。"), False, []
-
+                "No picture given: pass `path`, or `paths` for several at once.",
+                "没有给图片:传 `path`,或用 `paths` 一次给几个。"), False, []
+        if len(rels) > PICTURE_BATCH:
+            return i18n.pick_now(
+                f"{len(rels)} paths in one call, and the most this takes is {PICTURE_BATCH}. Split them.",
+                f"一次给了 {len(rels)} 个路径,最多 {PICTURE_BATCH} 个。请分几次。"), False, []
+        fresh = bool(args.get("fresh"))
+        ask = str(args.get("question") or "").strip()
         cfg = self.store.get_settings()
         limit = int(float(cfg.get("vision_max_mb") or 8) * 1024 * 1024)
-        cleanup: list[Path] = []
-        try:
-            got = await asyncio.to_thread(self._frame_of, target, args, limit, cleanup)
-        except (figure.FigureError, OSError) as e:
-            return i18n.pick_now(f"Could not read that file: {e}", f"读不到这个文件:{e}"), False, []
-        if got is None:
-            return i18n.pick_now(
-                f"\"{rel}\" is not a picture or a video this app can read.",
-                f"「{rel}」不是本程序能读的图片或视频。"), False, []
-        mime, data, what = got
-        if len(data) > limit:
-            return i18n.pick_now(
-                f"\"{rel}\" is bigger than the {cfg.get('vision_max_mb')} MB this app will send to a "
-                "model, so it was not looked at. Ask for a smaller picture or a single frame.",
-                f"「{rel}」超过了本程序允许发给模型的 {cfg.get('vision_max_mb')} MB,所以没有看。"
-                "请换一张更小的图,或只要一帧。"), False, []
-        ask = str(args.get("question") or "").strip()
-        prompt = i18n.pick_now(
-            "Describe what is actually in this picture, factually, for someone who cannot see it. "
-            "If a question is given below, answer it directly and say plainly where you are unsure. "
-            "Do not flatter it: name anything that looks wrong, flat, unfinished, anatomically "
-            "implausible or unlike the real thing.\n" + (f"Question: {ask}" if ask else ""),
-            "请如实描述这张图里实际有什么,写给一个看不见它的人。如果下面有问题,直接回答,"
-            "并在不确定的地方明说。**不要客气**:凡是看起来不对、平淡、没做完、解剖上说不通、"
-            "或不像真实影像的地方,都点出来。\n" + (f"要核的问题:{ask}" if ask else ""))
-        try:
-            seen = await vision.describe(self.store, self.router, [(mime, data)], prompt)
-        finally:
-            for p in cleanup:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
-        if not seen:
-            return vision.reason_missing(self.store, self.router), False, []
-        model = vision.pick(self.store, self.router.usable_models()) or {}
-        lines = [i18n.pick_now(
-            f"Looked at {what} with \"{model.get('display_name') or model.get('model_name') or '?'}\":",
-            f"用「{model.get('display_name') or model.get('model_name') or '?'}」看了{what}:")]
-        lines.append(seen)
-        lines.append(i18n.pick_now(
-            "This is what the model reported. Where it names a fault, fix that and look again — a "
-            "picture nobody has looked at is the one kind of error this app cannot catch for you.",
-            "以上是那个模型报回来的。它指出的问题,改完再看一次 —— 没人看过的图,是本程序替你发现不了的那类错。"))
-        return "\n".join(lines), True, []
 
-    def _frame_of(self, target: Path, args: dict, limit: int,
-                  cleanup: list[Path]) -> tuple[str, bytes, str] | None:
-        """`(mime, bytes, what)`: the file's own bytes for a picture, one extracted frame for a video.
+        known: list[dict] = []     # one entry per requested path, in the order asked for
+        todo: list[dict] = []      # the ones whose answer is not known yet
+        for rel in rels:
+            try:
+                target = assemble._local(workspace, rel, i18n.pick_now("No picture given.", "没有给图片。"))
+            except assemble.AssembleError as e:
+                return str(e), False, []
+            if not target.is_file():
+                return i18n.pick_now(
+                    f"There is no file at \"{rel}\" inside this group's workspace. Use the path an "
+                    "earlier tool reported, or list the workspace first.",
+                    f"本群工作目录里没有「{rel}」这个文件。请用前面工具报出来的路径,或先列一下工作目录。"), False, []
+            try:
+                at = await asyncio.to_thread(self._moment_of, target, args)
+            except (figure.FigureError, OSError) as e:
+                return i18n.pick_now(f"Could not read that file: {e}", f"读不到这个文件:{e}"), False, []
+            if at is None and target.suffix.lower() not in _STILL_SUFFIXES:
+                return i18n.pick_now(
+                    f"\"{rel}\" is not a picture or a video this app can read.",
+                    f"「{rel}」不是本程序能读的图片或视频。"), False, []
+            key = attachments.look_key(workspace, target, at_seconds=at, question=ask)
+            entry = None if fresh else attachments.cached_look(workspace, key)
+            item = {"rel": rel, "target": target, "at": at, "key": key, "entry": entry}
+            known.append(item)
+            if entry is None:
+                todo.append(item)
+
+        model = vision.pick(self.store, self.router.usable_models()) or {}
+        who = model.get("display_name") or model.get("model_name") or "?"
+        if todo:
+            cleanup: list[Path] = []
+            got = ""
+            try:
+                shots, label, failure = await self._load_pictures(workspace, todo, limit, cleanup)
+                if failure:
+                    return failure, False, []
+                got = await vision.describe(self.store, self.router, shots,
+                                            self._look_prompt(label, ask))
+                actual = self.store.get_model(getattr(got, "model_id", ""))
+                if actual:
+                    who = actual.get("display_name") or actual["model_name"]
+            except (figure.FigureError, OSError) as e:
+                return i18n.pick_now(f"Could not read that file: {e}", f"读不到这个文件:{e}"), False, []
+            finally:
+                # The extracted frames go, whatever happened: a review must not leave anything in the
+                # workspace or in /tmp that a later `assemble_video` could pick up as a shot.
+                for p in cleanup:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+            if not got:
+                return vision.reason_missing(self.store, self.router), False, []
+            # One answer covers the pictures that were sent; anything remembered is quoted as it was
+            # written down. The heading says which is which — a reader must never take an old look
+            # for a new one — and everything just looked at is written down for the rest of the group.
+            for item in todo:
+                attachments.remember_look(workspace, item["key"], {
+                    "text": got, "model": who, "question": ask,
+                    "at_seconds": item["at"], "at": time.time(),
+                })
+            bulk = got
+        else:
+            bulk = ""
+
+        lines: list[str] = []
+        if bulk:
+            lines.append(i18n.pick_now(
+                f"Looked at {self._what_of(known[0])} with \"{who}\":" if len(known) == 1 else
+                f"Looked at {len(known)} pictures in one pass with \"{who}\" — the answer below covers "
+                "all of them, in the order they were named:",
+                f"用「{who}」看了{self._what_of(known[0])}:" if len(known) == 1 else
+                f"用「{who}」一次看了 {len(known)} 张 —— 下面的回答按上面的顺序覆盖全部:"))
+            lines.append(bulk)
+        # Only the remembered ones are listed one by one: the fresh answer above already named its
+        # pictures. Each says *when* it was looked at, because the whole risk of a memory is reading
+        # an old look as a fresh one.
+        for item in known:
+            if item["entry"] is None:
+                continue
+            ago = _looked_when(item["entry"])
+            by = f" by \"{item['entry']['model']}\"" if item["entry"].get("model") else ""
+            zh_by = f"由「{item['entry']['model']}」" if item["entry"].get("model") else ""
+            lines.append(i18n.pick_now(
+                f"{self._what_of(item)} — already looked at{by} {ago}, so this is what was said then "
+                f"and no model call was made:\n{item['entry']['text']}",
+                f"{self._what_of(item)} —— {ago}{zh_by}已经看过,下面是当时说的话,这次没有再调用模型:\n"
+                f"{item['entry']['text']}"))
+        if bulk:
+            lines.append(i18n.pick_now(
+                "This is what the model reported. Where it names a fault, fix that and look again with "
+                "`fresh`, and treat the answer as a description rather than as proof. This look is "
+                "remembered for the whole group: the next member to ask the same question about the "
+                "same picture pays nothing for it.",
+                "以上是那个模型报回来的。它指出的问题,改完用 `fresh` 再看一次;并且把回答当**描述**读,"
+                "不要当证明。这次看的结果对整个群有效:下一个成员对同一张图问同一件事,不会再花时间。"))
+        return "\n".join(lines), True, self._shown(known, cfg)
+
+    @staticmethod
+    def _asked_paths(args: dict) -> list[str]:
+        """The paths this call is about: `paths` if given, else the single `path`. Order kept."""
+        many = args.get("paths")
+        if isinstance(many, (list, tuple)) and many:
+            return [str(p).strip() for p in many if str(p).strip()]
+        one = str(args.get("path") or "").strip()
+        return [one] if one else []
+
+    async def _load_pictures(self, workspace: Path, todo: list[dict], limit: int,
+                             cleanup: list[Path]) -> tuple[list[tuple[str, bytes]], str, str]:
+        """`(pictures, label, failure)`: the bytes to send, the numbered list naming them, and why not.
+
+        Downscaling happens here rather than in `vision`: the picture has to be cut to the size the
+        endpoint would use anyway *before* it is uploaded, and this is the only place that has both
+        the file and the model call.
+        """
+        shots: list[tuple[str, bytes]] = []
+        label: list[str] = []
+        for i, item in enumerate(todo, start=1):
+            got = await asyncio.to_thread(self._frame_of, item["target"], item["at"], cleanup)
+            if got is None:
+                return [], "", i18n.pick_now(
+                    f"\"{item['rel']}\" is not a picture or a video this app can read.",
+                    f"「{item['rel']}」不是本程序能读的图片或视频。")
+            mime, data = got
+            mime, data = await asyncio.to_thread(attachments.shrink_image, data, mime, limit)
+            if len(data) > limit:
+                return [], "", i18n.pick_now(
+                    f"\"{item['rel']}\" is bigger than the {limit // (1024 * 1024)} MB this app will "
+                    "send to a model, so it was not looked at. Ask for a smaller picture or a single "
+                    "frame.",
+                    f"「{item['rel']}」超过了本程序允许发给模型的 {limit // (1024 * 1024)} MB,所以没有看。"
+                    "请换一张更小的图,或只要一帧。")
+            shots.append((mime, data))
+            label.append(f"#{i} = {self._what_of(item)}")
+        return shots, ", ".join(label), ""
+
+    def _look_prompt(self, label: str, ask: str) -> str:
+        """What the vision model is asked, with the pictures numbered so its notes can be placed.
+
+        The label is the difference between "five frames looked at" and five notes a reader can act
+        on: without it the answer is prose about an unnamed picture, which is worse than no answer.
+        """
+        naming = i18n.pick_now("The pictures, in the order they are attached: " + label + "\n",
+                               "附上的图片,顺序如下:" + label + "\n")
+        return naming + i18n.pick_now(
+            "Describe what is actually in each picture, factually, for someone who cannot see it — "
+            "start each one with the name it was given above. If a question is given below, answer it "
+            "directly for each, and say plainly where you are unsure. Do not flatter them: name "
+            "anything that looks wrong, flat, unfinished, anatomically implausible or unlike the real "
+            "thing.\n" + (f"Question: {ask}" if ask else ""),
+            "请如实描述每一张图里实际有什么,写给一个看不见它的人 —— 每一段以上面给的名字开头。"
+            "如果下面有问题,逐张直接回答,并在不确定的地方明说。**不要客气**:凡是看起来不对、平淡、"
+            "没做完、解剖上说不通、或不像真实影像的地方,都点出来。\n" + (f"要核的问题:{ask}" if ask else ""))
+
+    def _what_of(self, item: dict) -> str:
+        """How this picture is named in the answer: a file, or a file at a moment."""
+        if item["at"] is None:
+            return i18n.pick_now(f"\"{item['target'].name}\"", f"《{item['target'].name}》")
+        return i18n.pick_now(
+            f"the frame at {item['at']:g}s of \"{item['target'].name}\"",
+            f"《{item['target'].name}》第 {item['at']:g} 秒那一帧")
+
+    def _shown(self, known: list[dict], cfg: dict) -> list[dict]:
+        """The files that travel back with the answer, so a person can look at the thing too.
+
+        A review that only produced a paragraph made the user take the model's word for a picture
+        that is sitting right there in the workspace. Putting the file in the message means the same
+        look a member got is one glance away for whoever is reading the chat — and for a clip, the
+        player is the honest answer to "what does it look like", better than any description of it.
+        """
+        out: list[dict] = []
+        for item in known:
+            target: Path = item["target"]
+            try:
+                size = target.stat().st_size
+            except OSError:
+                continue
+            kind = attachments.kind_of_name(target.name)
+            if kind not in attachments.VISUAL:
+                continue
+            # `where` says the name is a path inside the workspace, not a bare file name in one of
+            # the generator's folders — the chat fetches the two through different routes, and
+            # guessing from the name is how a review of `figures/shot.png` came back as a broken box.
+            entry = {"kind": kind, "name": item["rel"], "bytes": size, "where": "workspace"}
+            if kind == attachments.VIDEO:
+                try:
+                    entry["seconds"] = round(float(assemble.probe(target).get("seconds") or 0), 2)
+                except Exception:  # noqa: BLE001 — a clip that cannot be measured still shows
+                    entry["seconds"] = 0.0
+            out.append(entry)
+        return out
+
+    def _moment_of(self, target: Path, args: dict) -> float | None:
+        """Which second of a video to look at — the one asked for, or the middle. `None` for a still.
+
+        Split out from `_frame_of` because the moment is part of the cache key, and finding out
+        whether a look is already known must not cost an ffmpeg frame extraction first.
+        """
+        if target.suffix.lower() not in attachments.VIDEO_EXT:
+            return None
+        ok, why = ffmpeg.available()
+        if not ok:
+            raise figure.FigureError(why)
+        probe = assemble.probe(target)
+        at = args.get("at_seconds")
+        return float(probe.get("seconds") or 0) / 2 if at is None else max(0.0, float(at))
+
+    def _frame_of(self, target: Path, at: float | None,
+                  cleanup: list[Path]) -> tuple[str, bytes] | None:
+        """`(mime, bytes)`: the file's own bytes for a picture, one extracted frame for a video.
 
         Runs in a worker thread (`asyncio.to_thread`) because it may call ffmpeg, and a member's turn
         must not hold the event loop while a frame is decoded.
 
-        A video is a picture at a moment, and asking for one frame is how a claim like "the flow moves
-        down the vessel" gets looked at without watching the clip. The frame is written to a temporary
-        file, never into the group's workspace: a review must not leave anything behind that a later
-        `assemble_video` could pick up as a shot.
+        The frame is written to a temporary file, never into the group's workspace: a review must not
+        leave anything behind that a later `assemble_video` could pick up as a shot.
         """
         suffix = target.suffix.lower()
         if suffix in attachments.VIDEO_EXT:
-            ok, why = ffmpeg.available()
-            if not ok:
-                raise figure.FigureError(why)
-            probe = assemble.probe(target)
-            at = args.get("at_seconds")
-            at = float(probe.get("seconds") or 0) / 2 if at is None else max(0.0, float(at))
+            at = float(at or 0)
             fd, name = tempfile.mkstemp(prefix="ta-frame-", suffix=".png")
             os.close(fd)
             frame = Path(name)
@@ -1687,12 +2449,10 @@ When it is not supplied, calls needing confirmation are always denied."""
                 raise figure.FigureError(i18n.pick_now(
                     f"Could not take a frame from the video: {detail[-200:]}",
                     f"取不到视频里的画面:{detail[-200:]}"))
-            what = i18n.pick_now(f"the frame at {at:g}s of \"{target.name}\"",
-                                 f"《{target.name}》第 {at:g} 秒那一帧")
-            return "image/png", frame.read_bytes(), what
-        if suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+            return "image/png", frame.read_bytes()
+        if suffix in _STILL_SUFFIXES:
             mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else f"image/{suffix.lstrip('.')}"
-            return mime, target.read_bytes(), i18n.pick_now(f"\"{target.name}\"", f"《{target.name}》")
+            return mime, target.read_bytes()
         return None
 
     def _measure_sound(self, target: Path) -> tuple[float, bool]:
@@ -1766,7 +2526,6 @@ When it is not supplied, calls needing confirmation are always denied."""
             want = study.FRAMES
         n = max(4, min(12, want))
 
-        cleanup: list[Path] = []
         meta: dict = {}
         try:
             if url:
@@ -1797,7 +2556,7 @@ When it is not supplied, calls needing confirmation are always denied."""
             window = min(facts["seconds"] or study.MAX_SECONDS, study.MAX_SECONDS)
             shots = await asyncio.to_thread(study.cuts, src, max_seconds=window)
             pics = await asyncio.to_thread(study.frames, src, n, seconds=window)
-            said, speech_why = await asyncio.to_thread(study.speech, src)
+            said, speech_why = await asyncio.to_thread(study.speech, src, workspace)
         except (OSError, study.StudyError) as e:
             return i18n.pick_now(f"Could not read that video: {e}",
                                  f"读不了这个视频:{e}"), False, []
@@ -1808,9 +2567,6 @@ When it is not supplied, calls needing confirmation are always denied."""
 
         look = study.look_call(self.store, self.router)
         title = str(meta.get("title") or src.stem)
-        head = i18n.pick_now(
-            f"Reference: {title}" + (f" (from {meta['uploader']})" if meta.get("uploader") else ""),
-            f"参考片:{title}" + (f"(作者 {meta['uploader']})" if meta.get("uploader") else ""))
         brief = study.facts_text(facts, {"shots": shots, "read_seconds": window,
                                         "transcript": said, "speech_why": speech_why})
         if note:
@@ -1837,15 +2593,6 @@ When it is not supplied, calls needing confirmation are always denied."""
         except OSError as e:
             return i18n.pick_now(f"Studied it, but the brief could not be saved: {e}",
                                  f"研究完了,但规格存不下来:{e}"), False, []
-
-        # The knowledge base is what makes this a *team* understanding rather than one agent's memory.
-        # The same sync the app runs before a turn (attachments + workspace documents), called here so
-        # the brief is searchable *now* rather than from the next turn onward. Failure is not fatal: a
-        # document in the workspace is still usable without an index entry.
-        try:
-            await asyncio.to_thread(self.library.sync_group_material, gid, workspace)
-        except Exception as e:  # noqa: BLE001
-            print("could not add the reference brief to the group's library:", e)
 
         rel_doc = doc.relative_to(workspace)
         lines = [
@@ -1879,6 +2626,13 @@ When it is not supplied, calls needing confirmation are always denied."""
 
         A video is accepted here as well as an audio file: "does the narration match the picture's
         timing" and "what does the sound track actually say" are the same question for a clip.
+
+        Two things keep it quick, and both matter more here than for a picture: transcription is a
+        local model that takes its time (about 12 s to start up on this machine before it has read a
+        single word), and a film's sound track is minutes long. So the answer is **remembered**
+        against the file's bytes plus the window, and `start_seconds` / `seconds` hear only the part
+        that is being asked about — checking line 90 of a narration does not mean sitting through the
+        whole thing again.
         """
         workspace = self.store.workspace_dir(ctx.group["id"])
         rel = str(args.get("path") or "").strip()
@@ -1891,17 +2645,36 @@ When it is not supplied, calls needing confirmation are always denied."""
                 f"There is no file at \"{rel}\" inside this group's workspace.",
                 f"本群工作目录里没有「{rel}」这个文件。"), False, []
 
+        try:
+            start, window = _window_of(args)
+        except figure.FigureError as e:
+            return str(e), False, []
         cfg = self.store.get_settings()
         seconds, sound = await asyncio.to_thread(self._measure_sound, target)
+        window_note = ""
+        if window is not None or start:
+            window_note = i18n.pick_now(
+                f" Only {start:g}s–{start + window:g}s of it was listened to."
+                if window is not None else f" Only from {start:g}s was listened to.",
+                f"只听第 {start:g}–{start + window:g} 秒这一段。" if window is not None
+                else f"只听第 {start:g} 秒往后。")
         facts = i18n.pick_now(f"\"{target.name}\": {seconds:.1f}s of sound."
                               if sound else f"\"{target.name}\": {seconds:.1f}s, and no sound track in it.",
                               f"《{target.name}》:{seconds:.1f} 秒,有声音。"
-                              if sound else f"《{target.name}》:{seconds:.1f} 秒,里面没有音轨。")
+                              if sound else f"《{target.name}》:{seconds:.1f} 秒,里面没有音轨。") + window_note
         if not sound and seconds > 0:
             return (facts + "\n" + i18n.pick_now(
                 "There is nothing to hear in this file — it has no audio track at all. Anything said "
                 "about what it sounds like would be invented.",
                 "这个文件里没有可听的东西 —— 它根本没有音轨。任何关于它听起来怎样的说法都是编的。")), False, []
+
+        key = attachments.speech_key(workspace, target, start=start or None, seconds=window)
+        heard = attachments.cached_speech(workspace, key)
+        if heard:
+            ago = _looked_when({"at": attachments.speech_age(workspace, key)})
+            return (facts + "\n" + i18n.pick_now(
+                f"This machine already read it {ago}, so the transcriber was not run again:\n{heard}",
+                f"这段{ago}由这台机器读过了,没有再跑一次转写:\n{heard}")), True, self._heard_file(target, rel)
 
         command = attachments.transcriber(cfg)
         if not command:
@@ -1918,7 +2691,22 @@ When it is not supplied, calls needing confirmation are always denied."""
                    "请把这句话转告用户,并继续做不依赖声音的部分。"
                    if one else "可以拉一个转写器(例如 `uv tool install mlx-whisper`),装好后会被自动识别。"))), False, []
 
-        text, why = await asyncio.to_thread(attachments.transcribe_with_reason, target, cfg)
+        source = target
+        cleanup: list[Path] = []
+        if start or window is not None:
+            try:
+                source = await asyncio.to_thread(self._hear_window, target, start, window, cleanup)
+            except (figure.FigureError, OSError) as e:
+                return i18n.pick_now(f"Could not cut that part out of the file: {e}",
+                                     f"取不出这一段:{e}"), False, []
+        try:
+            text, why = await asyncio.to_thread(attachments.transcribe_with_reason, source, cfg)
+        finally:
+            for p in cleanup:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
         if not text:
             return (facts + "\n" + i18n.pick_now(
                 "The transcriber is installed but this recording was still not read"
@@ -1932,7 +2720,63 @@ When it is not supplied, calls needing confirmation are always denied."""
                 + "不要猜它说了什么。最常见的原因是**下载模型被挡住**(代理访问 huggingface.co 返回 502);"
                   "本程序会自己换镜像重试一次,若仍失败,手动把模型下一次,或把 `HF_ENDPOINT` "
                   "指到一个能用的地址,就能解决。")), False, []
-        return (facts + "\n" + i18n.pick_now("What is said in it:\n", "里面说的是:\n") + text), True, []
+        attachments.remember_speech(workspace, key, text)
+        return (facts + "\n" + i18n.pick_now("What is said in it:\n", "里面说的是:\n") + text), True, \
+            self._heard_file(target, rel)
+
+    def _hear_window(self, target: Path, start: float, window: float | None,
+                     cleanup: list[Path]) -> Path:
+        """A temporary mono 16 kHz WAV of just that part of the file, for the transcriber to read.
+
+        Cutting it first is not only about the whisper run: a decoder that has to work through ten
+        minutes of film to reach the line being checked also has to have all of it decoded, and the
+        answer that comes back is ten minutes long for a question about one sentence.
+
+        `-ss` goes **before** `-i` so the seek is by keyframe instead of decoding everything up to
+        that point — the difference between instantaneous and "as slow as playing it".
+        """
+        ok, why = ffmpeg.available()
+        if not ok:
+            raise figure.FigureError(why)
+        fd, name = tempfile.mkstemp(prefix="ta-hear-", suffix=".wav")
+        os.close(fd)
+        out = Path(name)
+        cleanup.append(out)
+        args = [ffmpeg.path(), "-hide_banner", "-loglevel", "error", "-y"]
+        if start > 0:
+            args += ["-ss", str(start)]
+        args += ["-i", str(target)]
+        if window is not None:
+            args += ["-t", str(window)]
+        args += ["-vn", "-ac", "1", "-ar", "16000", str(out)]
+        code, detail = ffmpeg.run(args, 120)
+        if code != 0 or not out.is_file():
+            raise figure.FigureError(i18n.pick_now(
+                f"Could not cut that part out of the file: {detail[-200:]}",
+                f"取不出这一段:{detail[-200:]}"))
+        return out
+
+    def _heard_file(self, target: Path, rel: str) -> list[dict]:
+        """The recording itself, back with the answer, so a person can play it too.
+
+        A member cannot hear and never will; the user can, and a transcript is a worse answer than
+        the file when the question is "does this voice sound right". Putting the file in the message
+        means the chat has a player in it rather than a description of a sound.
+        """
+        kind = attachments.kind_of_name(target.name)
+        if kind not in (attachments.AUDIO, attachments.VIDEO):
+            return []
+        try:
+            size = target.stat().st_size
+        except OSError:
+            return []
+        entry: dict = {"kind": kind, "name": rel, "bytes": size, "seconds": 0.0, "where": "workspace"}
+        if kind == attachments.VIDEO:
+            try:
+                entry["seconds"] = round(float(assemble.probe(target).get("seconds") or 0), 2)
+            except Exception:  # noqa: BLE001 — a clip that cannot be measured still plays
+                entry["seconds"] = 0.0
+        return [entry]
 
     async def _make_figure(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
         """Draw one teaching picture — from a real picture, a document's own figure, or a schematic.
@@ -2023,7 +2867,11 @@ When it is not supplied, calls needing confirmation are always denied."""
             return i18n.pick_now(f"Could not read the picture: {e}", f"读不到这张图:{e}"), False, []
 
         try:
-            out = figure.workspace_output(workspace, "figures", stem)
+            try:
+                folder, leaf = output_name_parts(stem, "figure", "figures")
+            except ValueError as error:
+                return str(error), False, []
+            out = figure.workspace_output(workspace, folder, leaf)
             await asyncio.to_thread(
                 figure.compose, source_path, out, (w, h),
                 heading=str(args.get("heading") or ""), caption=str(args.get("caption") or ""),
@@ -2066,9 +2914,39 @@ When it is not supplied, calls needing confirmation are always denied."""
                 "`{\"kind\": \"label\", \"at_part\": \"sac\"}`,或 `marks` 里当 `at` 用 —— "
                 "不要自己估位置。估出来的标注指的一定是别的地方。"))
         return "\n".join(lines), True, [{"kind": "image", "name": out.name,
+                                         "path": str(out.relative_to(workspace)),
                                          "bytes": out.stat().st_size}]
 
     # ----------------------------------------------------------- documents
+    @staticmethod
+    def _existing_body(workspace: Path, path: object, fmt: str) -> str:
+        """The text already in the file an `append` is adding to, or "" when there is none yet.
+
+        `.md` is read as the text it is. For the other three formats the body comes back through the
+        same extractor the app uses everywhere else — so an append to a .docx rebuilds it from
+        extracted text rather than from the original Markdown, and heading levels that only existed
+        as `#` markers can flatten. That is why the recipe in the tool's own description says to keep
+        a long document in `.md` when length is the reason for appending.
+        """
+        try:
+            dest = docwrite.resolve(workspace, str(path or ""), fmt)
+        except docwrite.DocError:
+            return ""      # the write itself reports a bad path; this is not the place to say it
+        if not dest.is_file() or dest.is_symlink():
+            return ""
+        try:
+            if fmt == "md":
+                # ⚠️ The whole file, **including its first `# title` line**. An earlier version
+                # dropped that line here to avoid printing the title twice — but an append carries no
+                # title (see `_write_document`), so dropping it deleted the document's title for good:
+                # measured on the first run of this feature, the file came back as `# 一、定义…` with
+                # no title at all. Duplication is impossible while `title` is empty on the append path,
+                # and a document whose title disappears is worse than a heading printed twice.
+                return dest.read_text(encoding="utf-8", errors="replace").strip()
+            return attachments.text_of_file(workspace, dest).strip()
+        except (OSError, UnicodeError):
+            return ""
+
     async def _write_document(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
         """Lay a finished draft out as a real file and hand it to the library.
 
@@ -2078,42 +2956,84 @@ When it is not supplied, calls needing confirmation are always denied."""
         by title straight away, instead of being handed 3500 characters of truncated text.
         """
         workspace = self.store.workspace_dir(ctx.group["id"])
+        # The format may be absent or spelled loosely; `kind_of` reads it off the path when it has to.
+        # `what` below indexes a table by it, so it must be the resolved value rather than the raw
+        # argument — an inferred format used to reach that lookup as `None` and raise a KeyError.
+        fmt = docwrite.kind_of(args.get("path"), args.get("format"))
+        mode = str(args.get("mode") or "replace").strip().lower()
+        title = args.get("title") or ""
+        appended_from = 0
         try:
+            body = str(args.get("body") or "")
+            if args.get("source_path"):
+                if body:
+                    return "Use body or source_path, not both / body 与 source_path 只能选一个。", False, []
+                source = assemble._local(workspace, str(args["source_path"]), "document source")
+                if source.suffix.lower() not in {".md", ".txt"} or source.stat().st_size > 2_000_000:
+                    return "Source must be a .md/.txt file under 2 MB / 源文件须为小于 2 MB 的 .md/.txt。", False, []
+                body = await asyncio.to_thread(source.read_text, encoding="utf-8")
+            if mode == "append":
+                earlier = await asyncio.to_thread(self._existing_body, workspace, args.get("path"), fmt)
+                if earlier:
+                    appended_from = len(earlier)
+                    # ⚠️ An append carries **no title**: `write` prints the title as the document's
+                    # first heading, and the same line printed again halfway down the file is not a
+                    # heading — it reads as a stray `# …` in the middle of the text.
+                    title, body = "", earlier.rstrip() + "\n\n" + body
             dest, count = await asyncio.to_thread(
-                docwrite.write, workspace, args.get("path"), args.get("format"),
-                args.get("title") or "", args.get("body") or "")
+                docwrite.write, workspace, args.get("path"), fmt, title, body)
         except docwrite.DocError as e:
             return str(e), False, []
         except Exception as e:  # noqa: BLE001 — a file that failed to write must read as a sentence
             return i18n.pick_now(f"Writing the file failed: {type(e).__name__}: {e}",
                                  f"写文件失败:{type(e).__name__}: {e}"), False, []
-        rel = dest.relative_to(Path(workspace))
+        # ⚠️ Resolve both sides before comparing. `docwrite.write` resolves the workspace internally
+        # (it has to, to refuse writing through a symlink), so its `dest` comes back canonical while
+        # this local variable may carry the spelling the settings were written with. Comparing the
+        # two raised `ValueError` on a workspace under a symlinked path — *after* the file had been
+        # written — and the generic handler below turned a successful write into "写文件失败", which
+        # made the member retry the same call (six times in one measured round) and the task fail.
+        rel = dest.relative_to(Path(workspace).resolve())
         size = dest.stat().st_size
-        try:
-            await asyncio.to_thread(self.library.sync_group_material, ctx.group["id"], workspace)
-        except Exception:  # noqa: BLE001 — indexing is a convenience; the file is the deliverable
-            pass
         what = {"docx": i18n.pick_now("a Word document", "一个 Word 文档"),
                 "pptx": i18n.pick_now("a slide deck", "一份幻灯片"),
                 "xlsx": i18n.pick_now("a workbook", "一个表格文件"),
-                "md": i18n.pick_now("a text file", "一个文本文件")}[str(args.get("format")).lower().lstrip(".")]
+                "md": i18n.pick_now("a text file", "一个文本文件")}[fmt]
         lines = [i18n.pick_now(
             f"Wrote {what} at {rel} ({media.size_label(size)}).",
             f"已写出{what}:{rel}({media.size_label(size)})。")]
-        if str(args.get("format")).lower().lstrip(".") in ("docx", "pptx", "xlsx"):
+        if fmt in {"md", "docx"}:
+            measured = docwrite.text_metrics(body)
+            lines.append(i18n.pick_now(
+                f"Measured body length (excluding Markdown headings and the References section): {measured['han_chars']} Chinese characters, {measured['nonspace_chars']} non-whitespace characters. Compare this with the requested length; do not estimate it.",
+                f"正文实测（去除 Markdown 标题与参考文献章节）：汉字 {measured['han_chars']} 个，非空白字符 {measured['nonspace_chars']} 个。请按用户要求核对字数，不要估算。"))
+        if fmt in ("docx", "pptx", "xlsx"):
             counted = {"docx": i18n.pick_now("blocks", "个段落/标题"),
                        "pptx": i18n.pick_now("content slides", "页内容页"),
-                       "xlsx": i18n.pick_now("sheets", "张工作表")}[str(args.get("format")).lower().lstrip(".")]
+                       "xlsx": i18n.pick_now("sheets", "张工作表")}[fmt]
             lines.append(i18n.pick_now(f"It holds {count} {counted}.", f"里面有 {count} {counted}。"))
         lines.append(i18n.pick_now(
-            f"It is in this group's workspace and now searchable in its library by title — hand the "
-            f"path to whoever checks it, and use `write_document` with the same name again to deliver "
-            f"a revision (that replaces this file).",
-            f"它在本群工作目录里,也已经可以用标题在知识库里搜到 —— 把路径交给验收的人;再交一稿就用"
-            f"`write_document` 写同一个文件名(会覆盖这一份)。"))
+            f"It sits in this group's workspace. Anyone who has to check it reads it back with "
+            f"`library_read` and this path (`{rel}`) — the file is not filed into a library, because "
+            f"a library is a shelf somebody chose to build. Delivering a revision means writing the "
+            f"same path again, which replaces it.",
+            f"它在本群工作目录里。要核对的人用 `library_read` 加这个路径(`{rel}`)就能读回全文 —— "
+            f"它不会进知识库,因为知识库是人自己挑出来的书架。交第二稿就用同一个路径再写一次,会覆盖这一份。"))
         lines.append(i18n.pick_now(
             "You cannot open the file, so do not describe its layout. Report the path, the size and "
             "what you put in it.", "你打不开这个文件,不要描述版面。只报路径、大小和里面放了什么。"))
+        if appended_from:
+            # The feedback that makes the long-document recipe work: without it the member cannot tell
+            # a finished file from one that still stops in the middle.
+            lines.append(i18n.pick_now(
+                f"This section was **appended**: the file already held {appended_from} characters, and "
+                "the body length above is the length of the whole document now. If it is still short "
+                "of what was asked for, write the next section with another `mode=append` call — "
+                "never rewrite the whole document in one call, because a reply that runs past the "
+                "output limit is dropped entirely and every section in it is lost.",
+                f"这一段是**接在**文件已有内容后面写的:调用前文件里已有 {appended_from} 字,上面那个"
+                "正文长度是**现在全文**的长度。如果离要求还差,就再用一次 `mode=append` 写下节 —— "
+                "绝不要把全文塞进一次调用,因为超出输出上限的回复会被整个丢掉,里面每一节都会丢。"))
         return "\n".join(lines), True, [{"kind": "file", "name": str(rel), "bytes": size, "seconds": 0.0}]
 
     # ----------------------------------------------------------- watching the process
@@ -2177,17 +3097,9 @@ When it is not supplied, calls needing confirmation are always denied."""
                 have = ", ".join(e.id for e in entries) or i18n.pick_now("none", "无")
                 return i18n.pick_now(f"There is no entry {entry_id}. The ledger holds: {have}",
                                      f"账本里没有 {entry_id} 这一条。现有的是:{have}"), False, []
-            extra = []
-            if entry.status == "verified" and not entry.verify:
-                # Not a refusal — a `verified` with nothing behind it is the one thing this ledger
-                # must not contain, so it is called out rather than silently accepted.
-                extra.append(i18n.pick_now(
-                    "Marked `verified` with no re-check recorded. Say what the re-run showed, or the "
-                    "mark means nothing.", "标了 `verified` 却没有记录复核结果。请补上重跑看到了什么,"
-                                          "否则这个标记没有意义。"))
             return await self._save_log(ctx, path, entries, workspace,
                                         [i18n.pick_now(f"Updated {entry.sentence()}",
-                                                       f"已更新 {entry.sentence()}")] + extra)
+                                                       f"已更新 {entry.sentence()}")])
         if action == "list":
             wanted = str(args.get("status_filter") or "").strip()
             # Default view is the unfinished business: what is open, and what was changed but never
@@ -2203,9 +3115,8 @@ When it is not supplied, calls needing confirmation are always denied."""
                                                f"     依据:{e.evidence[:200]}"))
                 if e.status == "fixed":
                     lines.append(i18n.pick_now(
-                        "     changed but never re-checked — run the same thing again, then `update` "
-                        "it to verified (or back to open).",
-                        "     改了但没复核过 —— 把同样的事再跑一次,再 `update` 成 verified(或退回 open)。"))
+                        "     changed but not re-checked: re-run the matching operation. The app verifies automatic entries; manual entries require explicit re-run evidence.",
+                        "     改了但未复核:重跑对应操作。自动条目由程序核验;人工条目需明确提供重跑证据。"))
             if not entries:
                 lines.append(i18n.pick_now(
                     "  (nothing yet — start with `action=scan`, then `report` what it shows.)",
@@ -2217,11 +3128,7 @@ When it is not supplied, calls needing confirmation are always denied."""
 
     async def _save_log(self, ctx: ToolContext, path: Path, entries: list, workspace: Path,
                         notes: list[str]) -> tuple[str, bool, list[dict]]:
-        """Write the ledger and put it in the group's library, exactly as a delivered document is.
-
-        Indexing is what makes the log part of the group's memory rather than a text file nobody
-        opens: the next round can `library_search` for a defect that was already written down.
-        """
+        """Write the group's ledger; unresolved feedback is injected directly by the orchestrator."""
         try:
             await asyncio.to_thread(proclog.write, path, entries, ctx.group.get("name") or "")
         except Exception as e:  # noqa: BLE001 — a failed write must read as a sentence
@@ -2229,10 +3136,6 @@ When it is not supplied, calls needing confirmation are always denied."""
                                  f"写流程日志失败:{type(e).__name__}: {e}"), False, []
         rel = path.relative_to(Path(workspace))
         size = path.stat().st_size
-        try:
-            await asyncio.to_thread(self.library.sync_group_material, ctx.group["id"], workspace)
-        except Exception:  # noqa: BLE001 — indexing is a convenience; the file is the record
-            pass
         notes.append(i18n.pick_now(f"The ledger is at {rel} ({media.size_label(size)}).",
                                    f"账本在 {rel}({media.size_label(size)})。"))
         return "\n".join(notes), True, [{"kind": "file", "name": str(rel), "bytes": size, "seconds": 0.0}]
@@ -2294,7 +3197,7 @@ When it is not supplied, calls needing confirmation are always denied."""
             pass   # a workspace that cannot be walked is reported by its (empty) file list
         missing: list[str] = []
         for t in tasks:
-            for name in proclog.FILE_IN_TEXT.findall(str(t.get("deliverable") or "")):
+            for name in proclog.FILE_IN_TEXT(t.get("deliverable")):
                 if name and name not in names and name not in missing:
                     missing.append(name)
         log = proclog.read(proclog.unit(workspace))
@@ -2373,8 +3276,11 @@ When it is not supplied, calls needing confirmation are always denied."""
             spec = animate.spec_of({"kind": args.get("kind"), **(args.get("params") or {})})
             seconds = max(2.0, min(float(args.get("seconds") or 5.0), animate.MAX_SECONDS))
             w, h, label = assemble.parse_size(str(args.get("size") or ""))
-            clip = figure.workspace_output(workspace, "anim", str(args.get("name") or spec["kind"]),
-                                           ".mp4")
+            try:
+                folder, leaf = output_name_parts(str(args.get("name") or ""), str(spec["kind"]), "anim")
+            except ValueError as error:
+                return str(error), False, []
+            clip = figure.workspace_output(workspace, folder, leaf, ".mp4")
             out = await animate.render(
                 clip, spec, size=(w, h), seconds=seconds,
                 heading=str(args.get("heading") or ""), credit=str(args.get("credit") or ""),
@@ -2421,9 +3327,63 @@ When it is not supplied, calls needing confirmation are always denied."""
             f"各部件在画面里的比例位置:{named}。`labels` 里的 `at` 请用它们,不要自己估 —— "
             "估出来的标注指的一定是别的地方。"))
         return "\n".join(lines), True, [{"kind": "video", "name": out["name"],
+                                          "path": str(clip.relative_to(workspace)),
                                           "bytes": size_bytes, "seconds": out["seconds"]}]
 
     # ----------------------------------------------------------- assembly
+    async def _make_music(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
+        """Compose one track with ACE-Step, then put it on the shelf.
+
+        Two things here are why this is a tool rather than a paragraph telling members to go and run
+        ComfyUI themselves:
+
+        * the file lands **on the music shelf**, not only in the workspace. The shelf is what the
+          choosing in `assemble_video` reads, so a track that only exists in the workspace is one the
+          film being made *right now* cannot be scored with — and that film is the one that just
+          asked for it;
+        * when it cannot run, the refusal names the weight file that is missing and where to get it.
+          A ComfyUI traceback tells a member nothing it can act on, and it will retry instead.
+        """
+        cfg = self.store.get_settings()
+        # Composing it lives in `musicwork` — the video zone asks for the same thing from a button,
+        # and a second copy of "find ComfyUI, check ACE-Step, build the graph, generate, shelve" is
+        # how the tool and the zone would end up disagreeing about which instance gets the job.
+        try:
+            made = await musicwork.compose(
+                self.store, self.comfy_runtime,
+                prompt=str(args.get("prompt") or ""),
+                workspace=self.store.workspace_dir(ctx.group["id"]),
+                seconds=float(args.get("seconds") or 0),
+                bpm=int(args.get("bpm") or 120),
+                language=str(args.get("language") or "en"),
+                seed=int(args.get("seed") or 0),
+                lyrics=str(args.get("lyrics") or ""),
+                name=str(args.get("name") or ""),
+                mood=str(args.get("mood") or "neutral"),
+                tags=_str_list(args.get("tags")),
+                timeout=float(cfg["music_timeout"]),
+                max_bytes=max(1, int(cfg["video_max_mb"])) * 1024 * 1024)
+        except musicwork.MusicError as e:
+            return str(e), False, []
+        path, length = made.path, made.seconds
+        size = (f"{made.bytes / 1024:.0f} KB" if made.bytes < 1024 * 1024
+                else f"{made.bytes / 1024 / 1024:.1f} MB")
+        shelf_line = (i18n.pick_now(f'It is on the shelf as "{made.name}" — score a film with '
+                                    f'`music: "{made.name}"`, or `music: "auto"` to let it choose.',
+                                    f'已上架为「{made.name}」——配乐时用 `music: "{made.name}"`,'
+                                    '或写 `music: "auto"` 让它自己挑。')
+                      if made.shelved else "")
+        return (" ".join(x for x in [
+            i18n.pick_now(
+                f"Composed {length:.1f}s of music with ACE-Step on this machine: {size}, in the "
+                f"workspace as {path.name}.",
+                f"在本机用 ACE-Step 作了一段 {length:.1f} 秒的音乐:{size},工作目录里的 {path.name}。"),
+            shelf_line, made.shelf_note.strip(),
+            i18n.pick_now("You cannot hear it — do not describe how it sounds.",
+                          "你听不到它 —— 不要描述它听起来怎么样。"), ] if x), True,
+            [{"kind": "file", "name": path.name,
+              "bytes": int(made.bytes), "seconds": round(length, 2)}])
+
     async def _assemble_video(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
         """Join the group's shots into one film, with narration and subtitles.
 
@@ -2468,10 +3428,12 @@ When it is not supplied, calls needing confirmation are always denied."""
                 fps=int(args.get("fps") or style["fps"] or assemble.DEFAULT_FPS),
                 voice=str(args.get("voice") or ""),
                 burn=str(args.get("subtitles") or "burn") != "off",
-                fit=str(args.get("fit") or "") or str(style["fit"] or assemble.DEFAULT_FIT),
+                fit=str(args.get("fit") or "") or str(style["fit"] or ""),
                 still=float(style["pace"]["still"] or assemble.STILL_SECONDS),
                 name=str(args.get("name") or ""),
                 style=style,
+                music=str(args.get("music") or ""),
+                music_mood=str(args.get("music_mood") or ""),
                 # Read straight from the setting rather than through `timeout_budget`: the budget
                 # belongs to the call site (`_dispatch` has already enforced it), and this is the
                 # deadline ffmpeg itself is held to.
@@ -2495,11 +3457,22 @@ When it is not supplied, calls needing confirmation are always denied."""
         # group that has just been told "every shot is a still" needs to know which lever to pull.
         drawn = out["animated"]
         real = sum(1 for e in out["plan"] if e["kind"] == "video")
+        # ⚠️ A still that drifts is **not** the same as a still that sits there, and the report has to
+        # say which is which. Before this it put both in 「静帧撑住的」, so a film whose every still
+        # had a push-in still read as "held still" — the number that is supposed to show the mise-en-
+        # scène improving would have shown nothing. `frozen` is the one that is a defect.
+        drifting = sum(1 for e in out["plan"] if e["kind"] == "image" and e.get("motion"))
+        frozen = out["shots"] - drawn - real - drifting
         lines.append(i18n.pick_now(
-            f"Shots that move: {drawn} drawn here, {real} from real footage"
-            + (f", {out['shots'] - drawn - real} held still." if out["shots"] > drawn + real else "."),
-            f"会动的镜头:{drawn} 个是本程序画的,{real} 个来自真实录像"
-            + (f",{out['shots'] - drawn - real} 个是静帧撑住的。" if out["shots"] > drawn + real else "。")))
+            f"Shots that move: {drawn} drawn here, {real} from real footage, {drifting} stills with a "
+            "push-in"
+            + (f", **{frozen} frozen**." if frozen > 0 else ".")
+            + (f" ⚠️ {frozen} shot(s) do not move at all — a viewer sees a slide show there. Give them "
+               "a \"motion\" push, or replace them with an \"anim\"." if frozen > 0 else ""),
+            f"会动的镜头:{drawn} 个是本程序画的,{real} 个来自真实录像,{drifting} 个静帧带推镜"
+            + (f",**{frozen} 个是定格的**。" if frozen > 0 else "。")
+            + (f" ⚠️ 有 {frozen} 个镜头一动不动,观众看到的是幻灯片:给它们加 motion 推镜,或者换成 anim 动画。"
+               if frozen > 0 else "")))
         lines.append(i18n.pick_now(
             f"Narration: {out['narrated']} shot(s). Words on screen: {out['subtitled']} shot(s), "
             + ("burned into the picture." if out["burned"] else "kept in the .srt only."),
@@ -2559,11 +3532,124 @@ When it is not supplied, calls needing confirmation are always denied."""
             "how long it is, and where the files are.",
             "你看不到也听不到它,不要描述里面发生了什么 —— 只说已经做好、多长、文件在哪。"))
         return "\n".join(lines), True, [
-            {"kind": "video", "name": out["name"], "bytes": out["bytes"], "seconds": out["seconds"]},
-            {"kind": "file", "name": Path(out["srt"]).name, "bytes": 0, "seconds": 0},
+            {"kind": "video", "name": out["name"], "path": str(Path(out["path"]).relative_to(workspace)),
+             "bytes": out["bytes"], "seconds": out["seconds"]},
+            {"kind": "file", "name": Path(out["srt"]).name, "path": str(Path(out["srt"]).relative_to(workspace)),
+             "bytes": Path(out["srt"]).stat().st_size, "seconds": 0},
         ]
 
     MEDIA_INDEX_TITLES = 24      # names listed when a search came back empty
+
+    async def _read_workspace_file(self, ctx: ToolContext, want: str, start: int = 0, limit: int = 3000) -> str | None:
+        """The text of a file in this group's own workspace, when that is what `want` names.
+
+        `None` means "this was not a workspace file", and the caller then says the library has no
+        such document — the two answers have to stay distinguishable, because they need different
+        fixes (search differently, versus write the file first).
+
+        Why this exists at all: everything a group produces is a file in its workspace, and nothing
+        of a group's own is filed into a library any more (a library is a shelf somebody chose to
+        build). So the member whose job is to *check* somebody else's deliverable — the acceptance
+        step of every plan — had no way to read it. The ledger recorded exactly that: "协调员看不到
+        工作目录里的 md 文件内容,无法独立核验文案交付物". Two spellings are accepted because two are
+        what members type: a path (`tasks/<plan>/<task>/科普短文.md`) and a bare name they just saw
+        (`科普短文.md`). For a bare name the newest match wins, so asking for a name twice in a row
+        gets the newer draft.
+        """
+        workspace = self.store.workspace_dir(ctx.group["id"]).resolve()
+        raw = str(want or "").strip()
+        # ⚠️ `removeprefix`, not `lstrip("./")`. `lstrip` strips *characters*, so an illegal
+        # `../a.md` came back as `a.md` — the path was reinterpreted instead of refused, which is the
+        # wrong way round for the one check that keeps a member inside its own workspace.
+        raw = raw.removeprefix("./")
+        if not raw or raw.startswith("/") or ".." in raw.split("/"):
+            return None
+        target: Path | None = None
+        direct = workspace / raw
+        if coderun.inside(workspace, direct) and direct.is_file() and not direct.is_symlink():
+            target = direct
+        elif "/" not in raw:
+            # A **bare name** may be searched for, because that is how a member refers to a file it
+            # just saw. A path may not: if `<task>/报告.md` is not there, answering with some *other*
+            # 报告.md from another task folder would be handing back a different deliverable while
+            # looking like it found the right one.
+            if any(ch in raw for ch in "*?[]"):
+                return None           # `rglob` would treat these as a pattern and match strangers
+            hits = await asyncio.to_thread(self._find_in_workspace, workspace, raw)
+            if not hits:
+                return None
+            target = max(hits, key=lambda p: p.stat().st_mtime)
+        if target is None:
+            return None
+        rel = target.relative_to(workspace)
+        kind = attachments.kind_of_name(target.name)
+        if kind != attachments.DOCUMENT:
+            # A picture or a clip has no text to hand back. Saying so — with its size — is better
+            # than an empty read, and the path is what the member actually needs to pass on.
+            return i18n.pick_now(
+                f"{rel} is in this group's workspace ({attachments.human_size(target.stat().st_size)}),"
+                f" but it is {kind}, not a document with text to read. Use the path itself.",
+                f"{rel} 在本群工作目录里({attachments.human_size(target.stat().st_size)}),"
+                f"但它是{kind},没有可读的正文。直接用这个路径。")
+        text = await asyncio.to_thread(attachments.text_of_file, workspace, target)
+        if not text.strip():
+            return i18n.pick_now(
+                f"{rel} is there ({attachments.human_size(target.stat().st_size)}) but no text could be "
+                "extracted from it on this machine.",
+                f"{rel} 在({attachments.human_size(target.stat().st_size)}),但这台机器没能从里面抽出正文。")
+        total = len(text)
+        start = min(max(0, start), total)
+        end = min(start + max(1, min(12000, limit)), total)
+        note = i18n.pick_now(f"\n(characters {start}–{end} of {total})",
+                            f"\n(字符范围 {start}–{end}，共 {total} 字符)")
+        if end < total:
+            note += i18n.pick_now(f" Continue with start={end}.", f" 继续读请用 start={end}。")
+        return i18n.pick_now(
+            f"{rel} (from this group's workspace, not a library)\n{text[start:end]}{note}",
+            f"{rel}(来自本群工作目录,不是知识库)\n{text[start:end]}{note}")
+
+    @staticmethod
+    def _workspace_listing(workspace: Path, query: str, offset: int, limit: int) -> dict:
+        rows, scanned, capped = [], 0, False
+        for directory, dirs, names in os.walk(workspace, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".")
+                             and d not in {"node_modules", "__pycache__"}
+                             and not (Path(directory) / d).is_symlink())
+            for name in sorted(names):
+                scanned += 1
+                if scanned > 10000:
+                    capped = True
+                    break
+                path = Path(directory) / name
+                rel = str(path.relative_to(workspace))
+                if name.startswith(".") or query.casefold() not in rel.casefold():
+                    continue
+                try:
+                    if path.is_symlink() or not path.is_file() or not coderun.inside(workspace, path):
+                        continue
+                    stat = path.stat()
+                    rows.append({"path": rel, "bytes": stat.st_size, "modified": stat.st_mtime})
+                except OSError:
+                    continue
+            if capped:
+                break
+        rows.sort(key=lambda r: (-r["modified"], r["path"]))
+        selected = rows[offset:offset + limit]
+        return {"files": selected, "matched": len(rows), "scan_capped": capped,
+                "next_offset": offset + limit if offset + limit < len(rows) else None}
+
+    @staticmethod
+    def _find_in_workspace(workspace: Path, name: str) -> list[Path]:
+        """Every file of this exact name in the workspace, newest-wins decided by the caller.
+
+        Its own function so the walk can run in a worker thread: `rglob` over a workspace with a
+        large deliverable directory is disk work, and doing it on the event loop stalls every
+        member's stream while one member looks up a filename.
+        """
+        return [p for p in workspace.rglob(name)
+                if p.is_file() and not p.is_symlink()
+                and coderun.inside(workspace, p)
+                and not any(part.startswith(".") for part in p.relative_to(workspace).parts)]
 
     def _library_index(self, group: dict) -> str:
         """What this group can search, named — appended to a search that found nothing.
@@ -2593,10 +3679,42 @@ When it is not supplied, calls needing confirmation are always denied."""
             "同一条查询**再搜一次(整句翻译不如混着写:「脑血管痉挛 angioplasty」),"
             "或者直接用 library_read 按标题打开上面某一份。")
 
-    async def _builtin(self, ctx: ToolContext, name: str, args: dict) -> tuple[str, bool]:
+    async def _builtin(self, ctx: ToolContext, name: str, args: dict,
+                       on_progress: Callable[[str], Awaitable[None] | None] | None = None) -> tuple[str, bool]:
         group, agent = ctx.group, ctx.agent
+        if name == "list_workspace_files":
+            root = self.store.workspace_dir(group["id"]).resolve()
+            listing = await asyncio.to_thread(self._workspace_listing, root, str(args.get("query") or "")[:200],
+                                             max(0, int(args.get("offset") or 0)),
+                                             max(1, min(100, int(args.get("limit") or 50))))
+            return json.dumps(listing, ensure_ascii=False), True
+        if name == "find_team_resources":
+            return json.dumps(recruitment.catalog(self.store, self.router, self.registry,
+                                                  self.store.get_group(group["id"]) or group,
+                                                  str(args.get("query") or "")[:500]), ensure_ascii=False), True
+        if name == "invite_team_resource":
+            if ctx.read_only:
+                return "Read-only channel rounds cannot recruit resources", False
+            try:
+                result = recruitment.invite(self.store, self.router, self.registry, group["id"], agent["id"],
+                                            str(args.get("ref") or ""), str(args.get("reason") or ""))
+                fresh = self.store.get_group(group["id"])
+                context = await self.context(fresh, agent, connect=False)
+                result["host_tools"] = sorted(context.tools)
+                result["roster"] = [{"id": m["id"], "name": m["name"],
+                                     "contract": recruitment.cooperation.contract(self.store, m)}
+                                    for m in self.store.group_members(group["id"])]
+                result["note"] = "This roster supersedes the earlier roster. Assign only actual available tools; tool execution permissions are unchanged."
+                return json.dumps(result, ensure_ascii=False), True
+            except ValueError as exc:
+                return str(exc), False
         if name == "current_time":
             return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %A (%z)"), True
+        if name == "search_literature":
+            if not self.store.get_settings()["external_calls_enabled"]:
+                return i18n.pick_now("External calls are disabled.", "外部调用已关闭。"), False
+            text, ok, _ = await self.literature.run(args)
+            return text, ok
         if name == "library_search":
             k = max(1, min(int(args.get("top_k") or self.store.get_settings()["library_top_k"]), 10))
             # The query vector is fetched here, on the async path, and handed to the synchronous
@@ -2616,16 +3734,43 @@ When it is not supplied, calls needing confirmation are always denied."""
                     + " " + self._library_index(group) + note, True
             return "\n\n".join(i18n.pick_now(f"[{h['title']} · passage {h['idx'] + 1}]\n{h['text'][:900]}", f"[《{h['title']}》第 {h['idx'] + 1} 段]\n{h['text'][:900]}") for h in hits) + note, True
         if name == "library_read":
+            start = max(0, int(args.get("start") or 0))
+            limit = max(1, min(12000, int(args.get("limit") or 3000)))
             doc = self.library.find_by_title(str(args["doc"]))
-            if not doc or not doc["enabled"]:
-                return i18n.pick_now(f"The library has no document called {args['doc']}.", f"资料库里没有《{args['doc']}》。") \
-                    + " " + self._library_index(group), False
-            allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
-            if allowed is not None and doc["id"] not in allowed:
-                return i18n.pick_now("This document is not enabled for this group.", "本群没有启用这份文档。"), False
-            r = await asyncio.to_thread(self.library.read, doc["id"], max(0, int(args.get("start") or 0)), 3000)
-            tail = i18n.pick_now(f"\n(read up to character {r['end']} of {r['total']}; pass start={r['end']} to carry on)", f"\n(已读到第 {r['end']} 字,共 {r['total']} 字;继续读请用 start={r['end']})") if r["end"] < r["total"] else ""
-            return i18n.pick_now(f"{doc['title']}\n{r['text']}{tail}", f"《{doc['title']}》\n{r['text']}{tail}"), True
+            if doc and not doc["enabled"]:
+                doc = None
+            if doc is not None:
+                allowed = self.library.scope_ids(group["ext"]["library"], group["id"])
+                if allowed is not None and doc["id"] not in allowed:
+                    return i18n.pick_now("This document is not enabled for this group.", "本群没有启用这份文档。"), False
+                r = await asyncio.to_thread(self.library.read, doc["id"], start, limit)
+                tail = i18n.pick_now(f"\n(read up to character {r['end']} of {r['total']}; pass start={r['end']} to carry on)", f"\n(已读到第 {r['end']} 字,共 {r['total']} 字;继续读请用 start={r['end']})") if r["end"] < r["total"] else ""
+                return i18n.pick_now(f"{doc['title']}\n{r['text']}{tail}", f"《{doc['title']}》\n{r['text']}{tail}"), True
+            # …and if it is not a library document, it may be a file in this group's own working
+            # directory — which is where *everything the group produces* lives. This fallback is the
+            # difference between a verification step that works and one that cannot exist: the
+            # ledger's own entry reads "协调员看不到工作目录里的 md 文件内容,无法独立核验文案交付物".
+            # Nothing of a group's own is filed into a library any more (that is the design), so
+            # without this the only way to check somebody's deliverable was to trust their summary.
+            found = await self._read_workspace_file(ctx, str(args["doc"]), start, limit)
+            if found is not None:
+                return found, True
+            raw = str(args["doc"]).strip().removeprefix("./")
+            if ("/" in raw and not raw.startswith("/") and ".." not in raw.split("/")
+                    and not any(ch in raw for ch in "*?[]")):
+                workspace = self.store.workspace_dir(group["id"]).resolve()
+                matches = await asyncio.to_thread(self._find_in_workspace, workspace, Path(raw).name)
+                candidates = [str(p.relative_to(workspace)) for p in matches[:5]]
+                note = i18n.pick_now(
+                    f"That exact workspace path does not exist: {raw}. No other file was read.",
+                    f"本群工作目录中不存在这个准确路径：{raw}。没有替换读取其他文件。")
+                if candidates:
+                    note += i18n.pick_now(
+                        " Same-name candidates below may be different versions. Confirm the upstream handoff, then read its exact path: ",
+                        " 以下同名候选可能属于不同版本，请对照上游交付记录确认后，再读取准确路径：") + json.dumps(candidates, ensure_ascii=False)
+                return note, False
+            return i18n.pick_now(f"The library has no document called {args['doc']}.", f"资料库里没有《{args['doc']}》。") \
+                + " " + self._library_index(group), False
         if name == "list_figures":
             doc = self.library.find_by_title(str(args.get("doc") or ""))
             if not doc or not doc["enabled"]:
@@ -2698,6 +3843,6 @@ When it is not supplied, calls needing confirmation are always denied."""
             limit = max(500, int(cfg["tool_output_limit"]))
             return await coderun.run(
                 str(args.get("language") or "python"), str(args.get("code") or ""),
-                cwd, workspace, max(1.0, float(cfg["code_timeout"])), limit,
+                cwd, workspace, max(1.0, float(cfg["code_timeout"])), limit, on_output=on_progress,
             )
         return i18n.pick_now(f"Built-in tool {name} is not implemented", f"未实现的内置工具 {name}"), False

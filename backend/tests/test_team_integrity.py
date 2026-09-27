@@ -336,3 +336,45 @@ async def test_channel_shutdown_waits_for_connection_cleanup(store, make_router)
     await entered.wait()
     await channel.shutdown()
     assert task.done() and cleaned.is_set()
+
+
+# ------------------------------------------------------- the roster's own order (2026-09-25)
+def test_the_host_leads_the_roster(store):
+    """`group_members.position` is the order every roster is built from — the queue a round walks,
+    the member list in the dock, the planner's roster. A host sitting last still *is* the host (the
+    code reads the column), but every list the user reads contradicts it; the live group that
+    prompted this had its host in last place while the user addressed it by name three times.
+
+    Both ways in are covered: the group being created with a host that is not the first id, and the
+    host being changed afterwards.
+    """
+    ids = [a["id"] for a in store.list_agents()][:3]
+    a, b, host = ids
+
+    g = store.create_group("T-host-first", host_agent_id=host, member_ids=[a, b, host])
+    assert store.member_ids(g["id"])[0] == host, "a new group's host does not lead it"
+
+    store.update_group(g["id"], {"host_agent_id": b})
+    order = store.member_ids(g["id"])
+    assert order[0] == b, "changing the host does not move it to the front"
+    assert sorted(order) == sorted([a, b, host]), "moving the host lost or duplicated a member"
+
+
+def test_removing_a_member_leaves_no_hole_in_the_order(store):
+    """`position` has to stay a real index. Measured: removing the second of four members left
+    `[0, 2, 3]`, which reads as an order with a gap in it and is a trap for anything that treats the
+    column as a position in a list."""
+    ids = [a["id"] for a in store.list_agents()][:4]
+    g = store.create_group("T-remove", host_agent_id=ids[0], member_ids=ids)
+
+    rows = lambda: store._q(  # noqa: SLF001 — the column is the claim, so it is read directly
+        "SELECT position FROM group_members WHERE group_id=? ORDER BY position", (g["id"],))
+
+    store.remove_member(g["id"], ids[1])
+    assert [r["position"] for r in rows()] == list(range(len(rows())))
+    assert ids[1] not in store.member_ids(g["id"])
+
+    # …and taking the host out clears the column in the same breath
+    store.remove_member(g["id"], ids[0])
+    assert store.get_group(g["id"])["host_agent_id"] is None
+    assert [r["position"] for r in rows()] == list(range(len(rows())))

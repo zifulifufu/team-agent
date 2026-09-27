@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import io
 import json
 import re
 import time
@@ -34,9 +36,11 @@ import urllib.parse
 from pathlib import Path
 
 import httpx
+from PIL import Image
 
 from . import i18n, media, net
 from .media import offline_reason
+from .provider_errors import quota_exhausted
 
 # The provider kinds this module can drive. A subset of `media.MEDIA_KINDS`: the video tool
 # must never pick an image provider, and the other way round. `metachat_media` is in both
@@ -73,6 +77,8 @@ MIN_DEADLINE = 5.0
 # A refusal is a sentence, not a document. The cap exists so an error body cannot be unbounded
 # either — the size of a *reply* is a different question from the size of an *image*.
 ERROR_BODY_CAP = 64 * 1024
+REFERENCE_COUNT = 4
+REFERENCE_BYTES = 20 * 1024 * 1024
 
 
 class ImageError(Exception):
@@ -130,6 +136,45 @@ def build_payload(prompt: str, *, model: str, size: str) -> dict:
     `response_format` is deliberately absent — see the module docstring."""
     return {"model": (model or DEFAULT_MODEL).strip(), "prompt": prompt.strip(),
             "n": 1, "size": size}
+
+
+def read_references(workspace: Path, paths: object) -> list[dict]:
+    """Read only explicitly selected workspace images; never publish files to a hosting service."""
+    if not isinstance(paths, list) or not 1 <= len(paths) <= REFERENCE_COUNT:
+        raise ImageError(i18n.pick_now("reference_images must contain 1–4 workspace image paths.",
+                                       "reference_images 必须包含 1–4 个本群图片路径。"))
+    root = workspace.resolve()
+    result, total = [], 0
+    formats = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
+    for value in paths:
+        if not isinstance(value, str) or not value.strip():
+            raise ImageError("reference_images: invalid image path")
+        path = (root / value).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ImageError(i18n.pick_now(f"Reference is not a file in this workspace: {value}",
+                                           f"参考图不是本群工作目录内的文件：{value}"))
+        try:
+            # Bound the read itself, not just stat(), which can race a writer.
+            with path.open("rb") as stream:
+                data = stream.read(REFERENCE_BYTES - total + 1)
+            total += len(data)
+            if total > REFERENCE_BYTES:
+                raise ImageError(i18n.pick_now("Reference images exceed the 20 MB total limit.",
+                                               "参考图合计超过 20 MB 上限。"))
+            with Image.open(io.BytesIO(data)) as picture:
+                mime = formats.get(picture.format)
+                if not mime or picture.width * picture.height > 40_000_000:
+                    raise ImageError(i18n.pick_now("Use PNG, JPEG or WebP references up to 40 megapixels each.",
+                                                   "参考图须为 PNG、JPEG 或 WebP，单张不超过 4000 万像素。"))
+                picture.verify()
+        except ImageError:
+            raise
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise ImageError(i18n.pick_now(f"Cannot read reference image {value}: {exc}",
+                                           f"无法读取参考图 {value}：{exc}")) from None
+        result.append({"path": str(path.relative_to(root)), "name": path.name, "mime": mime,
+                       "data": data, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    return result
 
 
 def metachat_payload(prompt: str, *, model: str, size: str) -> dict:
@@ -197,6 +242,8 @@ def explain(status: int, body: str) -> str:
             err = obj.get("error")
             if isinstance(err, dict):
                 detail = str(err.get("message") or "")
+            elif isinstance(err, str) and err:
+                detail = err
             else:
                 detail = str(obj.get("message") or "")
     except ValueError:
@@ -204,7 +251,11 @@ def explain(status: int, body: str) -> str:
     detail = re.sub(r"\s+", " ", detail)[:200]
     low = detail.lower()
 
-    if status in (401, 403):
+    if quota_exhausted(body):
+        hint = i18n.pick_now(
+            "the provider reports exhausted billing quota — waiting will not refill it; top up or select another configured provider",
+            "服务商账户额度不足——等待不会恢复；请补充额度或选择其他已配置服务商")
+    elif status in (401, 403):
         hint = i18n.pick_now("the key was refused — check the API key saved for this provider",
                              "密钥被拒绝——请检查这个服务商保存的 API key")
     elif status == 404 or "model" in low and ("not" in low or "unknown" in low):
@@ -341,7 +392,7 @@ async def fetch(url: str, *, max_bytes: int, client: httpx.AsyncClient | None = 
 
 
 async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s: float,
-                   client: httpx.AsyncClient | None = None) -> dict:
+                   client: httpx.AsyncClient | None = None, reference_images: list[dict] | None = None) -> dict:
     """One image, end to end: `{data, size, seconds, url}`. Raises ImageError with a reason.
 
     The payload and its length are separate keys on purpose: a single `bytes` key holding the
@@ -349,9 +400,13 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     comparison error far from its cause.
     """
     if provider.get("kind") == "metachat_media":
+        if reference_images:
+            raise ImageError(i18n.pick_now(
+                "This MetaChat media adapter has no local-image upload. Use an enabled OpenAI-compatible image member with /images/edits for workspace references. References were not discarded; no generation was submitted.",
+                "当前 MetaChat 媒体适配器尚未接入本地参考图上传。请由主持选择支持 /images/edits 的已启用 OpenAI 兼容绘图成员。参考图没有被丢弃，本次未提交生成。"))
         return await _metachat_generate(provider, payload, max_bytes=max_bytes,
                                         deadline_s=deadline_s, client=client)
-    url = media.api_url(provider["base_url"], "/v1/images/generations")
+    url = media.api_url(provider["base_url"], "/v1/images/edits" if reference_images else "/v1/images/generations")
     base = (provider.get("base_url") or "").strip()
     cap = max(ERROR_BODY_CAP, max_bytes * 2)      # base64 inflates by a third; the envelope is small
     own = client is None
@@ -359,8 +414,17 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     started = time.time()
     try:
         try:
-            async with c.stream("POST", url, json=payload,
-                                headers=media.auth_headers(provider.get("api_key") or ""),
+            # The documented edits endpoint takes multipart image bytes. No public upload or
+            # fallback to text-only generation: a rejected edit must stay a failed edit.
+            body = ({"data": {k: str(v) for k, v in payload.items()},
+                     "files": [("image" if len(reference_images) == 1 else "image[]",
+                                (ref["name"], ref["data"], ref["mime"])) for ref in reference_images]}
+                    if reference_images else {"json": payload})
+            headers = media.auth_headers(provider.get("api_key") or "")
+            if reference_images:
+                headers.pop("Content-Type", None)  # httpx supplies the multipart boundary
+            async with c.stream("POST", url, **body,
+                                headers=headers,
                                 timeout=max(5.0, deadline_s)) as resp:
                 status = resp.status_code
                 raw = await _read_capped(resp, cap if status < 300 else ERROR_BODY_CAP,
@@ -388,7 +452,7 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
         raise ImageError(i18n.pick_now(
             f"the image is larger than this group allows ({media.size_label(max_bytes)})",
             f"图片超过了本群允许的大小({media.size_label(max_bytes)})"))
-    return {"data": blob, "size": len(blob), "seconds": time.time() - started, "url": url}
+    return {"data": blob, "size": len(blob), "seconds": time.time() - started, "url": link}
 
 
 # -------------------------------------------------------------------- MetaChat's image job
@@ -545,14 +609,27 @@ async def probe(provider: dict, model: str, *, client: httpx.AsyncClient | None 
         finally:
             if own:
                 await c.aclose()
-        # Which model is chosen cannot be verified from here — that API publishes no list — so the
-        # sentence says only what was actually established.
-        return ok, detail if not ok else i18n.pick_now(
-            f"{detail} MetaChat's media API publishes no model list, so which model "
-            f"\"{(model or '').strip() or 'unset'}\" resolves to can only be checked by drawing one.",
-            f"{detail} MetaChat 的媒体接口不提供模型清单,所以「{(model or '').strip() or '未设置'}」"
-            "这个模型名只能靠实际画一张来验证。",
-        )
+        if not ok:
+            return False, detail
+        # This API publishes no list to read, but the ids it accepts are the ones this build ships
+        # (`media.BUILTIN_MEDIA_MODELS`) — that table is what gives every one of them its submit
+        # path. So a name outside it is *known* not to work, and saying so here is the difference
+        # between a settings page that warns and a round that spends three calls discovering it.
+        # `reconcile_model` is the same judgement the tool makes, so the two cannot disagree.
+        name = (model or "").strip()
+        picked, note = media.reconcile_model(provider, "image", name)
+        if note:
+            return True, f"{detail} {note}"
+        if not name:
+            return True, i18n.pick_now(
+                f"{detail} No model is chosen, so this build's first shipped one "
+                f"(\"{picked}\") will be used. Pick one under Permissions & control → Image generation.",
+                f"{detail} 没有选定模型,将使用本版本自带清单里的第一个「{picked}」。"
+                "可以在「权限与操控 → 绘画」里选一个。")
+        return True, i18n.pick_now(
+            f"{detail} \"{name}\" is one of the ids this build ships for that API, so it can be "
+            "sent as written.",
+            f"{detail}「{name}」是本版本为那个接口自带的 id 之一,可以照原样发出。")
     url = media.api_url(base, "/v1/models")
     own = client is None
     c = client or net.client(url, timeout=15.0)

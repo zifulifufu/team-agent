@@ -21,9 +21,16 @@ names and the nodes it uses. Saying "it works" without those would be the usual 
 answers all three questions and every failure names what is missing.
 
 `wan2.2-ti2v-5b` is the workflow we ship. It is the text-to-video graph of ComfyUI's own
-`video_wan2_2_5B_ti2v` template — 720p, 24 fps, soundless, roughly a minute of Mac GPU time for
-five seconds of footage — and it is here because it is the one measured end to end while this was
-written. Anything else is a **file** rather than a code change: one JSON per workflow in
+`video_wan2_2_5B_ti2v` template — 24 fps, soundless, and **expensive in minutes**: this docstring
+used to claim "roughly a minute of Mac GPU time for five seconds of footage", which is wrong by more
+than an order of magnitude. Measured on this machine 2026-09-26, from the tool records' own `ms`
+field: 5 s → **1647 s**, 6 s → **827 s**, 6 s → **807 s**, and 2 s → 127 s. The shipped graph is also
+16:9-only — it takes no `aspect_ratio` — so a 9:16 film gets letterboxed footage out of it.
+
+That is why `animate.make_animation` exists and why the planning prompt routes schematic work to it:
+it draws the same mechanisms here in **1.9 s** for 6 s of 1080×1920. Reach for diffusion when the
+shot needs photographic motion, not when it needs to *explain* something. Anything else is a
+**file** rather than a code change: one JSON per workflow in
 `<data dir>/workflows/`, carrying that graph in API format with `{{prompt}}`, `{{width}}` and the
 rest where our numbers go. That is what makes a lip-sync, digital-human or image-to-video graph
 something the user *has* instead of something they are owed — see "the user's own workflows" below
@@ -36,7 +43,6 @@ sending a number the instance will reject after the user has waited for it.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
@@ -114,6 +120,9 @@ WORKFLOWS: dict[str, dict] = {
         "long_side_max": 1280,
         "steps": 20,
         "cfg": 5.0,
+        # uni_pc diverges on Apple Silicon for 25+ frames at CFG 5. Euler was verified
+        # with the same prompt, seed and 848x480 dimensions; see ComfyUI issue #15921.
+        "sampler": "euler",
     },
 }
 
@@ -161,6 +170,129 @@ SETUP_WORKFLOWS: dict[str, dict] = {
         ),
     },
 }
+
+# ------------------------------------------------------------------ music (ACE-Step 1.5)
+#
+# The same bargain as the table above, for audio: the nodes are **ComfyUI's own**
+# (`comfy_extras/nodes_ace.py`), so what has to be installed is four weight files and nothing else.
+# That is worth stating because the obvious assumption is wrong — a music generator "must need a
+# custom node" — and the way to know is to ask the running instance, not the documentation. (This
+# machine had no ACE-Step node at all until it moved to 0.35, which is why `music_missing` asks
+# `object_info` rather than looking in a folder.)
+#
+# The graph below is ComfyUI's own `blueprints/Text to Audio (ACE-Step 1.5).json`, flattened out of
+# its subgraph form into the API format the instance accepts, plus the `SaveAudioMP3` the blueprint
+# leaves to whoever calls it. **Every widget value and every link was read off that blueprint**, and
+# the combo values were checked against the running instance (`timesignature` is a *string*,
+# `language` includes `zh`, `quality` is V0/128k/320k). The only things this adds are the words, the
+# length and the seed.
+MUSIC_DEFAULT_SECONDS = 60.0
+MUSIC_MAX_SECONDS = 300.0
+MUSIC_TURBO_STEPS = 8            # what the blueprint ships for the turbo checkpoint
+# Both text encoders are required — the blueprint loads them through one `DualCLIPLoader`, which is
+# why 7.8 GB of the 13.7 GB total is not optional. Addresses point at the mirror because
+# huggingface.co itself answers 502 from this machine while hf-mirror.com serves the same bytes.
+MUSIC_FILES: tuple[tuple[str, str, str, str], ...] = (
+    # (node class, input field, file, which of ComfyUI's model folders it goes in)
+    ("UNETLoader", "unet_name", "acestep_v1.5_turbo.safetensors", "diffusion_models"),
+    ("DualCLIPLoader", "clip_name1", "qwen_0.6b_ace15.safetensors", "text_encoders"),
+    ("DualCLIPLoader", "clip_name2", "qwen_4b_ace15.safetensors", "text_encoders"),
+    ("VAELoader", "vae_name", "ace_1.5_vae.safetensors", "vae"),
+)
+_MUSIC_MIRROR = ("https://hf-mirror.com/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/"
+                 "split_files")
+
+
+def music_supported(schemas: dict) -> bool:
+    """Whether this instance has the ACE-Step nodes at all. False means "your ComfyUI is too old",
+    which is a different sentence from "a file is missing\" — and the two have different fixes."""
+    return "TextEncodeAceStepAudio1.5" in (schemas or {})
+
+
+def music_missing(schemas: dict) -> list[str]:
+    """Which of the four weight files this instance cannot see.
+
+    Asked of the instance rather than of a folder: ComfyUI builds each loader's list from the
+    folders it was *started* with, so this answers "can it run" instead of "did I put a file
+    somewhere". `_choices` returns `[]` both for a missing file and for a node that does not exist,
+    which is why `music_supported` is asked first.
+    """
+    out: list[str] = []
+    for cls, field, name, _folder in MUSIC_FILES:
+        have = _choices(schemas, cls, field)
+        if not have or name not in have:
+            out.append(name)
+    return out
+
+
+def music_diagnosis(schemas: dict) -> str:
+    """Why music cannot be made yet, naming every file and where to get it.
+
+    A bare list of four file names is not an instruction, so each one carries its folder and its
+    address. The alternative to this paragraph is a tool that fails with a ComfyUI traceback.
+    """
+    if not music_supported(schemas):
+        return i18n.pick_now(
+            "This ComfyUI has no ACE-Step nodes, so it cannot make music. The nodes ship with "
+            "ComfyUI itself (`comfy_extras/nodes_ace.py`) — this instance predates them, so "
+            "updating ComfyUI is what fixes it.",
+            "这套 ComfyUI 里没有 ACE-Step 节点,做不了音乐。这些节点是 ComfyUI 自带的"
+            "(`comfy_extras/nodes_ace.py`)——这套实例比它们旧,升级 ComfyUI 即可。")
+    rows = {name: (cls, field, folder) for cls, field, name, folder in MUSIC_FILES}
+    lines = []
+    for name in music_missing(schemas):
+        _cls, _field, folder = rows[name]
+        lines.append(f"  · {name}\n    → ComfyUI/models/{folder}/\n    {_MUSIC_MIRROR}/"
+                     f"{folder}/{name}")
+    return i18n.pick_now(
+        "Music needs " + str(len(lines)) + " weight file(s) this ComfyUI cannot see yet; they go "
+        "in ComfyUI's own model folders:\n" + "\n".join(lines),
+        "做音乐还缺 " + str(len(lines)) + " 个权重文件,放进 ComfyUI 自己的模型目录即可:\n"
+        + "\n".join(lines))
+
+
+def music_graph(*, tags: str, lyrics: str = "", seconds: float = MUSIC_DEFAULT_SECONDS,
+                bpm: int = 120, language: str = "en", keyscale: str = "C major",
+                timesignature: str = "4", seed: int = 0, steps: int = MUSIC_TURBO_STEPS,
+                prefix: str = "ace-step") -> dict:
+    """ACE-Step 1.5 in API format, carrying this call's words, length and seed.
+
+    `bpm` defaults to 120 rather than 0: the node takes an int and the blueprint ships 190, so a
+    value that is legal and ordinary is the safe default — "let the model decide" is not something
+    this node was shown to support. `language` only matters when there are lyrics; instrumentals
+    ignore it.
+    """
+    return {
+        "105": {"class_type": "DualCLIPLoader",
+                "inputs": {"clip_name1": "qwen_0.6b_ace15.safetensors",
+                           "clip_name2": "qwen_4b_ace15.safetensors",
+                           "type": "ace", "device": "default"}},
+        "106": {"class_type": "VAELoader", "inputs": {"vae_name": "ace_1.5_vae.safetensors"}},
+        "104": {"class_type": "UNETLoader",
+                "inputs": {"unet_name": "acestep_v1.5_turbo.safetensors",
+                           "weight_dtype": "default"}},
+        "78": {"class_type": "ModelSamplingAuraFlow",
+               "inputs": {"model": ["104", 0], "shift": 3.0}},
+        "94": {"class_type": "TextEncodeAceStepAudio1.5",
+               "inputs": {"clip": ["105", 0], "tags": tags, "lyrics": lyrics, "seed": seed,
+                          "bpm": int(bpm), "duration": float(seconds),
+                          "timesignature": str(timesignature), "language": language,
+                          "keyscale": keyscale, "generate_audio_codes": True,
+                          "cfg_scale": 2.0, "temperature": 0.85, "top_p": 0.9, "top_k": 0,
+                          "min_p": 0.0}},
+        "47": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["94", 0]}},
+        "98": {"class_type": "EmptyAceStep1.5LatentAudio",
+               "inputs": {"seconds": float(seconds), "batch_size": 1}},
+        "3": {"class_type": "KSampler",
+              "inputs": {"model": ["78", 0], "positive": ["94", 0], "negative": ["47", 0],
+                         "latent_image": ["98", 0], "seed": seed, "steps": int(steps), "cfg": 1.0,
+                         "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+        "18": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["3", 0], "vae": ["106", 0]}},
+        # 320k rather than the node's default V0: this file becomes a music bed that gets mixed and
+        # re-encoded, and a bed that was already lossy once does not need a second pass at V0.
+        "9": {"class_type": "SaveAudioMP3",
+              "inputs": {"audio": ["18", 0], "filename_prefix": prefix, "quality": "320k"}},
+    }
 
 # ------------------------------------------------------- the user's own workflows, from files
 #
@@ -492,7 +624,7 @@ def graph(model: str, *, prompt: str, width: int, height: int, frames: int, seed
         "3": {"class_type": "KSampler",
               "inputs": {"model": ["48", 0], "positive": ["6", 0], "negative": ["7", 0],
                          "latent_image": ["55", 0], "seed": int(seed), "steps": int(w["steps"]),
-                         "cfg": float(w["cfg"]), "sampler_name": "uni_pc",
+                         "cfg": float(w["cfg"]), "sampler_name": w["sampler"],
                          "scheduler": "simple", "denoise": 1.0}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["39", 0]}},
         "57": {"class_type": "CreateVideo", "inputs": {"images": ["8", 0], "fps": float(w["fps"])}},
@@ -616,7 +748,7 @@ async def upload(prov: dict, data: bytes, filename: str, *, client: httpx.AsyncC
     # basename here: a path with a separator in it would be a directory the user did not ask for,
     # and `image_upload` checks the joined path stays under `input` and answers 400 if it does not.
     stem, dot, suffix = Path(filename).name.rpartition(".")
-    safe = f"{media.slug(stem, 40) or 'upload'}-{hashlib.sha1(data).hexdigest()[:16]}{dot}{suffix}"
+    safe = f"{media.slug(stem, 40) or 'upload'}-{hashlib.sha1(data, usedforsecurity=False).hexdigest()[:16]}{dot}{suffix}"
     try:
         r = await client.post(
             media.api_url(base, UPLOAD_ROUTE),
@@ -876,7 +1008,7 @@ async def probe(prov: dict, *, client: httpx.AsyncClient) -> tuple[bool, str]:
         info = await client.get(media.api_url(base, OBJECT_INFO_ROUTE),
                                 headers=_headers(prov), timeout=INTROSPECT_TIMEOUT)
     except httpx.HTTPError as e:
-        return True, i18n.pick_now(
+        return False, i18n.pick_now(
             f"ComfyUI {version} is up at {base}, but its node list could not be read "
             f"({type(e).__name__}), so it is unknown whether the workflow can run.",
             f"{base} 上的 ComfyUI {version} 是活的,但读不到节点清单({type(e).__name__}),"
@@ -886,8 +1018,8 @@ async def probe(prov: dict, *, client: httpx.AsyncClient) -> tuple[bool, str]:
         schemas = info.json()
     except ValueError:
         schemas = None
-    if not isinstance(schemas, dict) or not schemas:
-        return True, i18n.pick_now(
+    if info.status_code >= 400 or not isinstance(schemas, dict) or not schemas:
+        return False, i18n.pick_now(
             f"ComfyUI {version} is up at {base}, but /object_info returned nothing usable, so it "
             "is unknown whether the workflow can run.",
             f"{base} 上的 ComfyUI {version} 是活的,但 /object_info 没返回可用的东西,"
@@ -896,7 +1028,13 @@ async def probe(prov: dict, *, client: httpx.AsyncClient) -> tuple[bool, str]:
     # `n[0]`, not tuple unpacking: a `needs` entry may carry a download address as a fourth
     # item, and unpacking three is what turns that into "too many values to unpack" — at the
     # probe, which is the one place a user goes to find out what is wrong.
-    missing_nodes = [n[0] for n in w["needs"] if n[0] not in schemas]
+    if w.get("setup"):
+        required_nodes = {n[0] for n in w["needs"]}
+    else:
+        template = w.get("graph") or graph(name, prompt="probe", width=256, height=256,
+                                          frames=25, seed=1, prefix="probe")
+        required_nodes = {node["class_type"] for node in template.values()} | {n[0] for n in w["needs"]}
+    missing_nodes = sorted(required_nodes - schemas.keys())
     if missing_nodes:
         return False, i18n.pick_now(
             f"ComfyUI {version} is up, but it has no {'or'.join(missing_nodes)} node, which the "
@@ -920,6 +1058,8 @@ async def probe(prov: dict, *, client: httpx.AsyncClient) -> tuple[bool, str]:
             f"ComfyUI {version} is up and has the nodes, but it does not have {detail}{tail}{shipped}",
             f"ComfyUI {version} 是活的、节点也有,但它没有:\n{detail}\n{tail.strip('— ')}{shipped}",
         )
+    if w.get("setup"):
+        return False, setup_diagnosis(w, name)
     n = len(w["needs"])
     return True, i18n.pick_now(
         (f"ComfyUI {version} at {base} has the nodes and the {n} file(s) the \"{name}\" workflow "

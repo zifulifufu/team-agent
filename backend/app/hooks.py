@@ -295,6 +295,7 @@ class HookManager:
         self.hooks: dict[str, HookInfo] = {}
         self.errors: list[str] = []
         self._tasks: set[asyncio.Task] = set()
+        self._observer_tails: dict[tuple[str, str], asyncio.Task] = {}
 
     # ------------------------------------------------------------------ loading
     def load(self) -> None:
@@ -442,13 +443,26 @@ class HookManager:
         broken must not turn into "the group is slow"."""
         for hook in self._for(event, gid):
             try:
-                task = asyncio.ensure_future(self._observe(hook, event, gid, payload))
+                loop = asyncio.get_running_loop()
             except RuntimeError:      # no running loop (a tool call made from a plain thread)
                 return
+            key = (hook.id, gid)
+            task = loop.create_task(self._observe(hook, event, gid, dict(payload), self._observer_tails.get(key)))
+            self._observer_tails[key] = task
             self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
 
-    async def _observe(self, hook: HookInfo, event: str, gid: str, payload: dict) -> None:
+            def finished(done, key=key):
+                self._tasks.discard(done)
+                if self._observer_tails.get(key) is done:
+                    self._observer_tails.pop(key, None)
+            task.add_done_callback(finished)
+
+    async def _observe(self, hook: HookInfo, event: str, gid: str, payload: dict,
+                       previous: asyncio.Task | None = None) -> None:
+        # Background processes can start in a different order from their tasks.
+        # Preserve each observer's group event order without blocking other groups.
+        if previous is not None:
+            await asyncio.gather(previous, return_exceptions=True)
         t0 = time.time()
         answer, note = await self._run(hook, event, {**payload, "group_id": gid})
         hook.last = {"ok": not note, "note": note, "ms": int((time.time() - t0) * 1000), "at": time.time()}
@@ -463,8 +477,8 @@ class HookManager:
     async def gate_tool(self, gid: str, spec: dict, args: dict) -> tuple[str, dict]:
         """Ask the gates about one tool call. `(reason_to_block, args_after_the_hooks)`.
 
-        Runs after the user's own permission rules, so all a hook can do is object or change the
-        arguments — never grant. A hook returns only the fields it wants different; a later hook
+        Runs after explicit denials but before interactive approval, so the user approves the
+        final arguments. A hook returns only the fields it wants different; a later hook
         sees what an earlier one rewrote (the order is the hook ids, ascending).
         """
         for hook in self._for("pre_tool_use", gid):

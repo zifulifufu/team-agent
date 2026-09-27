@@ -230,6 +230,46 @@ def provider_bound(engine: str) -> bool:
 # here: two members may legitimately point at two different gateways, or at two models of one.
 SINGLE_ENGINES = frozenset({"workbuddy"})
 
+# Address + model pairs for the members that have no sign-in of their own: fill these two in, add the
+# service's key, and the engine runs on a model of the user's instead of needing the account its own
+# application signs in with. Measured against the live services on 2026-09-25 — a real call each, not
+# a reading of the docs — because the failure this list exists to prevent is a **display name in the
+# model field**: WorkBuddy lists this user's DeepSeek as "DeepSeek-V4 Flash", and the API answers
+# "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed …". A model name
+# is an API id; it is not what any desktop app chooses to call it.
+#
+# `models` is what the service's own `/models` answered (its declaration of what it serves);
+# `measured` is the subset that was actually called and answered. Both are here on purpose: the
+# first tells the user what exists, the second tells them what has been proven to work from here.
+MODEL_PRESETS: tuple[dict, ...] = (
+    {"id": "deepseek", "name": "DeepSeek", "name_zh": "DeepSeek(深度求索)",
+     "base_url": "https://api.deepseek.com/chat/completions",
+     "models": ["deepseek-flash", "deepseek-v4-pro"],
+     "measured": ["deepseek-flash", "deepseek-v4-pro"],
+     "where": "platform.deepseek.com → API Keys",
+     "where_zh": "platform.deepseek.com → API Keys"},
+    {"id": "moonshot", "name": "Kimi (Moonshot)", "name_zh": "Kimi(月之暗面)",
+     "base_url": "https://api.moonshot.cn/v1/chat/completions",
+     "models": ["kimi-k2.6", "kimi-k2.7-code"],
+     "measured": ["kimi-k2.6"],
+     "where": "platform.moonshot.cn → API Keys",
+     "where_zh": "platform.moonshot.cn → API Keys"},
+    {"id": "metachat", "name": "MetaChat gateway", "name_zh": "MetaChat 网关",
+     "base_url": "https://llm-api.mmchat.xyz/v1/chat/completions",
+     "models": ["deepseek-flash", "claude-opus-5-5", "gpt-6-astra", "grok-4.7", "glm-5.3"],
+     "measured": ["deepseek-flash"],
+     "where": "the key of your MetaChat account", "where_zh": "你 MetaChat 账号的密钥"},
+)
+
+# What the list above cannot cover: the user's own gateway or a local service. The address is theirs
+# to type and the model name is whatever that service calls it — there is nothing to verify from here.
+PRESET_VERIFIED = "2026-09-25"
+
+
+def model_presets() -> list[dict]:
+    """The measured address+model pairs, localized. Two fields of a dialog are filled from one pick."""
+    return [i18n.localize(dict(p)) for p in MODEL_PRESETS]
+
 
 def level_view(key: str) -> dict:
     """One permission level, labelled in the request language."""
@@ -425,6 +465,24 @@ and the key are not accepted at all because the provider already holds them."""
         # one. So there is nothing to validate — which is the point, because every field a gateway
         # asks for would be a question this user cannot answer and does not need to.
         #
+        # **One field it does accept: where the program is.** `localcmd.TOOLS` states the name
+        # (`omnivoice-infer`), and the install instruction puts it in a place of the user's own
+        # choosing — `cd <VoiceStudio clone> && uv sync` lands the console script in *that clone's*
+        # `.venv/bin`. No search finds that, so it has to be askable. Validated as an executable
+        # file, with no name restriction: the name filter on the branch above exists to stop a
+        # command-line engine being confused with WorkBuddy's, and it has no meaning here.
+        if "cli_path" in raw:
+            v = str(raw["cli_path"] or "").strip()
+            if v:
+                p = Path(v).expanduser()
+                if not p.is_file():
+                    raise ValueError(i18n.pick_now(
+                        f"That program was not found: {v}", f"找不到这个程序:{v}"))
+                if not os.access(p, os.X_OK):
+                    raise ValueError(i18n.pick_now(
+                        f"That file is not executable: {v}", f"这个文件不可执行:{v}"))
+                v = str(p.resolve())
+            out["cli_path"] = v
         # Two things are forced rather than accepted, because accepting them would be a promise
         # this kind does not keep: a working directory (the command always runs inside the group's
         # own workspace, so a path here would be silently ignored) and extra directories.
@@ -708,8 +766,13 @@ class StreamParser:
     optional incremental events. Unknown events are ignored; when no content can be parsed the
     caller falls back to the raw output."""
 
-    def __init__(self, on_delta: DeltaFn | None, on_tool: ToolFn | None):
+    def __init__(self, on_delta: DeltaFn | None, on_tool: ToolFn | None,
+                 on_reasoning: DeltaFn | None = None):
         self.on_delta, self.on_tool = on_delta, on_tool
+        # The engine's own working, when it streams any ("thinking" blocks): shown above the reply
+        # the same way a reasoning model's is, because what a member decided and why are two
+        # different things and only the first one is in the answer.
+        self.on_reasoning = on_reasoning
         self.res = ExtResult()
         self.final: str | None = None
         self.error: str = ""
@@ -765,9 +828,14 @@ class StreamParser:
         if not isinstance(e, dict):
             return
         d = e.get("delta") if e.get("type") == "content_block_delta" else None
-        if isinstance(d, dict) and d.get("type") == "text_delta" and isinstance(d.get("text"), str):
+        if not isinstance(d, dict):
+            return
+        if d.get("type") == "text_delta" and isinstance(d.get("text"), str):
             self._stream_buf += d["text"]
             await self._emit(d["text"])
+        elif d.get("type") == "thinking_delta" and isinstance(d.get("thinking"), str):
+            if self.on_reasoning:
+                await self.on_reasoning(d["thinking"])
 
     async def _assistant(self, ev: dict) -> None:
         if ev.get("parent_tool_use_id"):
@@ -783,6 +851,12 @@ class StreamParser:
             self._need_sep = True
         if isinstance(content, list):
             for b in content:
+                if isinstance(b, dict) and b.get("type") == "thinking" and self.on_reasoning:
+                    # With no incremental events (partial off, or unsupported), the whole block
+                    # arrives at once — same field, different spelling from the delta above.
+                    thought = b.get("thinking")
+                    if isinstance(thought, str) and thought:
+                        await self.on_reasoning(thought)
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     args = b.get("input") if isinstance(b.get("input"), dict) else {}
                     entry = {"name": str(b.get("name") or i18n.pick_now("Tool", "工具")), "args": {k: _short(v) for k, v in list(args.items())[:4]},
@@ -1059,11 +1133,40 @@ class ExternalRunner:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    def engine_path(self, engine: str) -> str:
+        """The location this app has been **told** for this engine's program, if any member knows it.
+
+        A local tool is one program on this machine, and where it lives is a fact about the machine
+        rather than about a member — but the field that records it lives on a member (that is where
+        the user types it, in that member's settings). So the earliest member that has one answers
+        for the whole engine.
+
+        This is what stops two things from being wrong:
+
+        * the **engine list still saying "not ready"** after the user has pointed at the program on
+          one member — the row is about the engine, and the engine can run;
+        * a **second member of the same engine failing** while the first one works. Two members of
+          one engine share one binary; asking the same question twice and answering `not found` once
+          would be the app inventing a distinction that does not exist.
+
+        Still only a fallback: a member's own value wins (`localcmd.exe_for`), because that is the
+        one the user set for that member on purpose.
+        """
+        for a in sorted(self.store.list_agents() if self.store else [],
+                        key=lambda x: x.get("created_at") or 0):
+            if str(a.get("engine") or "") == engine:
+                got = str((a.get("engine_cfg") or {}).get("cli_path") or "").strip()
+                if got:
+                    return got
+        return ""
+
     def describe(self, engine: str = "workbuddy", cli_path: str = "") -> dict:
         if kind_of(engine) == localcmd.KIND:
             # Nothing to look up the way a launcher is looked up: the tool's own `probe` answers
             # this, and it answers it better (which runtime is missing, not just "not found").
-            info = localcmd.probe(engine)
+            # `cli_path` goes with it — for a local tool that field is "where I put this program",
+            # and without it a probe can only report a name that is not on PATH.
+            info = localcmd.probe(engine, cli_path=cli_path or self.engine_path(engine))
             return {"found": info["found"], "path": info["path"], "via": localcmd.KIND,
                     "hint": info["hint"], "signin": False}
         if kind_of(engine) == "http":
@@ -1227,8 +1330,8 @@ class ExternalRunner:
 
     async def _run_cli(self, lc: Launcher, cfg: dict, system: str, prompt: str, cwd: str,
                        on_delta: DeltaFn | None, on_tool: ToolFn | None,
-                       session_id: str) -> ExtResult:
-        parser = StreamParser(on_delta, on_tool)
+                       session_id: str, on_reasoning: DeltaFn | None = None) -> ExtResult:
+        parser = StreamParser(on_delta, on_tool, on_reasoning)
         rc, stderr = await self._exec(
             [*lc.argv, *build_args(cfg, system, session_id)], stdin_text=prompt, cwd=cwd,
             env=build_env(cfg, lc), timeout=int(cfg["timeout"]), on_line=parser.feed,
@@ -1247,7 +1350,8 @@ class ExternalRunner:
         return out
 
     async def run(self, agent: dict, *, system: str, prompt: str,
-                  on_delta: DeltaFn | None = None, on_tool: ToolFn | None = None) -> ExtResult:
+                  on_delta: DeltaFn | None = None, on_tool: ToolFn | None = None,
+                  on_reasoning: DeltaFn | None = None) -> ExtResult:
         engine = str(agent.get("engine") or "workbuddy")
         cfg = {**DEFAULT_CFG, **(agent.get("engine_cfg") or {})}
         # Whichever kind this is, the key that is actually used is resolved here: what the member
@@ -1282,7 +1386,7 @@ class ExternalRunner:
         native = bool(cfg.get("native"))
         resume = self.saved_session(agent) if native else ""
         try:
-            out = await self._run_cli(lc, cfg, system, prompt, cwd, on_delta, on_tool, resume)
+            out = await self._run_cli(lc, cfg, system, prompt, cwd, on_delta, on_tool, resume, on_reasoning)
         except ExternalError:
             if not resume:
                 raise
@@ -1291,7 +1395,7 @@ class ExternalRunner:
             # pattern-match an error message, forget it and run once without it — one extra launch
             # in a case that has already failed.
             self.forget_session(agent)
-            out = await self._run_cli(lc, cfg, system, prompt, cwd, on_delta, on_tool, "")
+            out = await self._run_cli(lc, cfg, system, prompt, cwd, on_delta, on_tool, "", on_reasoning)
         if native and out.session_id:
             self.remember_session(agent, out.session_id)
         return out
@@ -1350,7 +1454,7 @@ network). A chat gateway: ask its /models endpoint, and with live=True send one 
             # Its own probe, and a better one: it names the runtime or the package that is missing
             # and the command that installs it, where the launcher lookup below could only ever say
             # "not found" — or, worse, find WorkBuddy's bundled command line and call it found.
-            info = localcmd.probe(engine)
+            info = localcmd.probe(engine, cli_path=cfg["cli_path"] or self.engine_path(engine))
             return {**info, "version": info["version"], "live": None}
         lc = find_launcher(cfg["cli_path"])
         info = self.describe(engine, cfg["cli_path"])

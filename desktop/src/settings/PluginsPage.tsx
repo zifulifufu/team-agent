@@ -1,10 +1,11 @@
+import { CapabilityBinding, CapabilityFilter, useCapabilityGroup } from "./CapabilityWorkspace";
 import { useCallback, useEffect, useState } from "react";
-import { AppWindow, Code2, RefreshCw, Trash2 } from "lucide-react";
+import { Code2, RefreshCw, Trash2 } from "lucide-react";
 import { api, type PluginInfo } from "../api";
 import { Modal, useConfirm } from "../ui";
 import { Callout, GithubMark, SourceBadge, Spin } from "../components/ExtBits";
 import { RepoDiscoverModal } from "../components/RepoDiscover";
-import ImportFromApps from "../components/ImportFromApps";
+import type { PageProps } from "./SettingsModal";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import "../styles/ext.css";
@@ -22,9 +23,9 @@ def register(registry):
         lambda args: "Hello, " + str(args.get("name", "friend")),   # takes the arguments, returns text
     )`;
 
-export default function PluginsPage() {
+export default function PluginsPage({ onTab }: PageProps) {
   const { t } = useI18n();
-  const { groups } = useData();
+  const { groups, reloadGroups } = useData();
   const confirm = useConfirm();
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
   const [dataDir, setDataDir] = useState("");
@@ -33,7 +34,9 @@ export default function PluginsPage() {
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [viewing, setViewing] = useState<PluginInfo | null>(null);
   const [discover, setDiscover] = useState(false);
-  const [fromApps, setFromApps] = useState(false);
+  const group = useCapabilityGroup();
+  const [q, setQ] = useState("");
+  const [attachedOnly, setAttachedOnly] = useState(false);
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -73,12 +76,13 @@ export default function PluginsPage() {
     if (!(await confirm(t('Delete the file {file} of the plugin "{name}"? {extra}', { file: p.file, name: p.name || p.id, extra }), { okText: t("Delete") }))) return;
     try {
       await api.delPlugin(p.id);
-      await load();
+      await Promise.all([load(), reloadGroups()]);
     } catch (e) {
       setRowErr((r) => ({ ...r, [p.id]: (e as Error).message }));
     }
   };
 
+  const shown = (plugins ?? []).filter((p) => `${p.name} ${p.id} ${p.description}`.toLowerCase().includes(q.toLowerCase()) && (!group || !attachedOnly || group.ext.plugins.includes(p.id)));
   const dir = dataDir ? `${dataDir}/plugins/` : t("data directory/plugins/");
   return (
     <div className="sp">
@@ -86,33 +90,16 @@ export default function PluginsPage() {
         <h2 className="sp-title">{t("Plugins")}</h2>
         <div className="sp-head-actions">
           <button className="btn" onClick={reload} disabled={reloading}>{reloading ? <><Spin /> {t("Reloading…")}</> : <><RefreshCw size={14} /> {t("Reload")}</>}</button>
-          <button className="btn" onClick={() => setFromApps(true)}><AppWindow size={14} /> {t("From another app")}</button>
           <button className="btn" onClick={() => setDiscover(true)}><GithubMark size={14} /> {t("Find a plugin on GitHub")}</button>
         </div>
       </div>
-      <p className="sp-desc">{t("A plugin adds new tools to your members in Python (check the weather, call an internal API…). It is not the same thing as an MCP server: a plugin runs inside this app's own process, while MCP is a separate local process or a remote service.")}</p>
-
-      <Callout tone="info" title={t("Plugins from other AI apps cannot be installed here — but MCP servers and skills can")}>
-        {t("A plugin here is a Python file that adds tools, so no other application produces one: a ChatGPT GPT is a prompt with actions behind a login, and a Cursor or VS Code extension is TypeScript against a different host. What does travel is the MCP standard (Claude Desktop, Claude Code, Codex, Cursor, Windsurf, Cline, Roo, Continue, Zed…) and Claude-style skills. Both can be read straight out of those applications' own configuration.")}{" "}
-        <button className="link" onClick={() => setFromApps(true)}>{t("Import from another app")}</button>
-      </Callout>
-
-      <Callout tone="warn" title={t("A plugin is not sandboxed")}>
-        {t("A plugin is Python code running inside this app's process, with no sandbox, and it can reach your files and your network. Install only the ones you have read and trust.")}
-      </Callout>
-
-      <details className="ext-details" style={{ marginBottom: 6 }}>
-        <summary>{t("Write a plugin yourself")}</summary>
-        <p className="muted small" style={{ margin: "6px 0 0", lineHeight: 1.7 }}>
-          {t("Put a")} <code>.py</code> {t("file in")} <code>{dir}</code>{t(", then click Reload. The file needs a")} <code>register(registry)</code> {t("function that registers its tools with")} <code>registry.register(name, description, parameters, function)</code>{t("; the PLUGIN metadata is optional.")}
-        </p>
-        <pre className="ext-src ext-sample" tabIndex={0} aria-label={t("Minimal plugin example")}>{SAMPLE}</pre>
-      </details>
-
+      <p className="sp-desc">{t("Plugins add callable tools inside Team Agent. Install or reload a plugin, then attach it to the group that needs its tools.")}</p>
+      <p className="muted small">{t("Importing from another app?")} <button className="link" onClick={() => onTab("skills")}>{t("Skills")}</button> · <button className="link" onClick={() => onTab("mcp")}>{t("MCP servers")}</button></p>
       <div className="sec">{t("Loaded plugins")}{plugins && <span className="count-badge-plain">{plugins.length}</span>}</div>
       {note && <div className={note.ok ? "ok-text" : "err"} style={{ marginBottom: 8 }}>{note.text}</div>}
       {err && <div className="ext-errbox"><div className="err">{t("Could not read the plugins:")} {err}</div><button className="btn small" onClick={() => void load()}>{t("Retry")}</button></div>}
       {!plugins && !err && <div className="empty"><Spin /> {t("Loading…")}</div>}
+      {plugins && <CapabilityFilter query={q} onQuery={setQ} attachedOnly={attachedOnly} onAttachedOnly={setAttachedOnly} total={plugins.length} shown={shown.length} />}
       {plugins && (
         <div className="card flush">
           {plugins.length === 0 && (
@@ -121,7 +108,8 @@ export default function PluginsPage() {
               {t("or drop a .py file in as described under Write a plugin yourself, then click Reload.")}
             </div>
           )}
-          {plugins.map((p) => {
+          {plugins.length > 0 && shown.length === 0 && <div className="empty">{t("No matching capabilities")}</div>}
+          {shown.map((p) => {
             const usedIn = groups.filter((g) => g.ext?.plugins?.includes(p.id)).map((g) => g.name);
             return (
               <div key={p.id} className={"ext-item" + (p.error ? " err-state" : "")}>
@@ -130,6 +118,7 @@ export default function PluginsPage() {
                     <div className="mr-name">
                       {p.name || p.id}
                       <code>{p.id}</code>
+                      <span className={"tag " + (p.error ? "warn" : "on")}>{p.error ? t("Needs configuration") : t("Loaded")}</span>
                       {p.version && <span className="tag">v{p.version}</span>}
                       {p.source && <SourceBadge repo={p.source.repo} path={p.source.path} />}
                     </div>
@@ -142,7 +131,8 @@ export default function PluginsPage() {
                         {p.tools.map((t) => <span key={t} className="ext-tool-chip">{t}</span>)}
                       </div>
                     )}
-                    <div className="ext-item-sub">{usedIn.length ? t("Enabled in these groups: {names}", { names: usedIn.join(", ") }) : t("No group has it enabled yet")}</div>
+                    <div className="ext-item-sub">{usedIn.length ? t("Attached to these groups: {names}", { names: usedIn.join(", ") }) : t("Not attached to any group yet")}</div>
+                    <CapabilityBinding key={group?.id} kind="plugins" id={p.id} name={p.name || p.id} problem={p.error ? t("Needs configuration") : ""} />
                     {rowErr[p.id] && <div className="ext-errline">{rowErr[p.id]}</div>}
                   </div>
                   <div className="ext-item-actions">
@@ -156,19 +146,21 @@ export default function PluginsPage() {
         </div>
       )}
 
-      <p className="muted small" style={{ marginTop: 12, lineHeight: 1.7 }}>
-        {t("A plugin is only called by members once it is enabled in a group: tick it under Extensions, in the panel on the right of a chat.")}
-      </p>
+      <details className="ext-details"><summary>{t("Installation and development notes")}</summary>
+      <Callout tone="warn" title={t("A plugin is not sandboxed")}>
+        {t("A plugin is Python code running inside this app's process, with no sandbox, and it can reach your files and your network. Install only the ones you have read and trust.")}
+      </Callout>
 
+      <details className="ext-details" style={{ marginBottom: 6 }}>
+        <summary>{t("Write a plugin yourself")}</summary>
+        <p className="muted small" style={{ margin: "6px 0 0", lineHeight: 1.7 }}>
+          {t("Put a")} <code>.py</code> {t("file in")} <code>{dir}</code>{t(", then click Reload. The file needs a")} <code>register(registry)</code> {t("function that registers its tools with")} <code>registry.register(name, description, parameters, function)</code>{t("; the PLUGIN metadata is optional.")}
+        </p>
+        <pre className="ext-src ext-sample" tabIndex={0} aria-label={t("Minimal plugin example")}>{SAMPLE}</pre>
+      </details>
+
+      </details>
       {viewing && <SourceModal plugin={viewing} onClose={() => setViewing(null)} />}
-      {fromApps && (
-        <ImportFromApps kind="mcp" onClose={() => setFromApps(false)}
-                        onDone={async (added) => {
-                          setFromApps(false);
-                          await load();
-                          setNote({ ok: true, text: t("Imported {n} item(s) from another app. They are disabled until you enable them.", { n: added }) });
-                        }} />
-      )}
       {discover && <RepoDiscoverModal kind="plugin" onClose={() => setDiscover(false)} onInstalled={() => { void load(); }} />}
     </div>
   );

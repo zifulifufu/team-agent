@@ -344,7 +344,9 @@ async def test_plugin_not_enabled_in_group_is_unavailable(store, make_router):
 
 async def test_tool_rounds_are_capped_and_can_be_disabled(store, make_router):
     fake = FakeLLM(default=lambda m: "还要查" + call("current_time"))
-    orch, g = setup(store, make_router, fake, tool_rounds=2)
+    # Budget failures now trigger the separate process reviewer. This test counts
+    # foreground tool turns; background review behavior is tested separately.
+    orch, g = setup(store, make_router, fake, tool_rounds=2, process_review=False)
     c = Collector()
     await orch.handle_user_message(g["id"], "@Copywriter 一直查", c)
     assert len(fake.calls) == 3 and c.ends()                                 # 1 call + 2 tool rounds, then it is forced to wrap up
@@ -488,9 +490,12 @@ async def test_global_prompt_group_prompt_and_group_skills_reach_system_prompt(s
     store.update_group(g["id"], {"prompt": "本群项目:{{group_name}};成员 {{members}}", "ext": {"skills": ["头脑风暴规则"]}})
     await orch.handle_user_message(g["id"], "@Copywriter hi", Collector())
     s = fake.calls[0][1][0]["content"]
-    assert s.startswith("你是「Copywriter」。今天 20") and "群名 Product launch group" in s
+    # ⚠️ 群名**从库里读**,不写死。种子那个演示群的名字长于项目名上限时会被启动规则改短
+    # (`names.shorten_stored`),把「Product launch group」抄进断言里,一条本来就对的测试会因为改名而红。
+    gname = store.get_group(g["id"])["name"]
+    assert s.startswith("你是「Copywriter」。今天 20") and f"群名 {gname}" in s
     assert "[Additional requirements]" in s and "回答不超过 100 字" in s and "这句不该出现" not in s
-    assert "[Group prompt]\n本群项目:Product launch group;成员 Aide, Copywriter, Storyboard, Proofreader" in s
+    assert f"[Group prompt]\n本群项目:{gname};成员 Aide, Copywriter, Storyboard, Proofreader" in s
     assert "[Group rule: Brainstorming rules]" in s and "[Skill: Office writing conventions]" in s   # group skills + the member own skills
     assert "{{" not in s
 
@@ -555,3 +560,71 @@ def test_the_consolidation_budget_is_a_setting_and_each_task_keeps_a_share(store
     assert tiny.count("第") >= 4
 
     assert store.get_settings()["integration_budget"] == 14000  # the old constant, as the default
+
+
+# --------------------------------------------- 点名群主 = 让它安排团队(2026-09-25)
+async def test_addressing_the_host_still_splits_the_work(store, make_router):
+    """⚠️ **@群主是在让它干活,不是「别分工」。**
+
+    实测(用户 2026-09-25):他在群里写「@主持 看看这个问题怎么做」,又写「后面的事情谁做@主持」——
+    两句都因为「有人被点名」而**跳过分工**,于是那一轮退回接力:群主在聊天里点几个名字,谁也没拿到
+    任务板,做完的事在左栏那一行显示成「还没有任务」。他报的「已经执行过任务,却显示没有任务」
+    就是这个。
+
+    两半都要守住,所以成对断言:
+      * 点名**群主** → 仍然分工(他会输出计划,群里出现任务板);
+      * 点名**别人**  → 照旧不分工(用户指定了要谁做,不该把所有人拉进一个计划)。
+    """
+    fake = FakeLLM(default=plan_script())
+    orch, g = setup(store, make_router, fake)
+    c = Collector()
+    await orch.handle_user_message(g["id"], "@Aide 看看这个问题怎么做", c)
+    await orch.drain()
+    board = [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"]
+    assert len(board) == 1, "点名群主之后应当仍然分工:" + str([m["sender_name"] for m in c.ends()])
+    assert [m["sender_name"] for m in c.ends()] == ["Aide", "Copywriter", "Proofreader", "Aide"], \
+        "而且群主只在开头说一次(他的这一回合被分工回合用掉了,不该再说一遍)"
+
+    # 另一半:点名**别人**仍然是一轮接力,不该凭空生成计划。
+    # ⚠️ 先把上一半留下的任务板删掉 —— `setup()` 每次返回的都是**第一个**群(不是新建的那个),
+    # 不删的话这里读到的是上面那一轮的计划,而它会「证明」一个不存在的 bug。
+    store._x("DELETE FROM messages WHERE group_id=? AND sender_type='plan'", (g["id"],))
+    c2 = Collector()
+    await orch.handle_user_message(g["id"], "@Copywriter 写一段通知初稿", c2)
+    await orch.drain()
+    assert [m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan"] == [], \
+        "点名别人时不该分工:" + str([m["sender_name"] for m in c2.ends()])
+
+
+async def test_a_project_without_a_board_says_what_it_last_did(store, make_router):
+    """没有任务板的那一行,不能写「还没有任务」—— 要说它最近做了什么。
+
+    ⚠️ 这就是用户报的那条:一个跑过一轮、出过图出过 30 秒视频的项目,左栏写着「还没有任务」,
+    因为**任务板只在「没点名别人」的那一轮里才生成**。
+
+    ⚠️ 三条边界一起钉住:
+      ①没跑过的群仍然是空的(前端照旧显示「还没有任务」);
+      ②整条都是工具调用的发言**不算**摘要(实测有一个群里唯一一条成员发言就是 120 个裸标记,
+        拿它当摘要就是给用户看一堆记号);
+      ③这不是任务板 —— `board` 必须是空串,前端据此不显示完成数与状态词。
+    """
+    from app import planner
+
+    orch, g = setup(store, make_router, FakeLLM(default="好的"))
+
+    # ① 一次都没跑过:仍然是空的
+    assert orch.toolhub  # 只是让夹具建好;下面直接从库里读
+    store._x("DELETE FROM messages WHERE group_id=?", (g["id"],))
+    assert planner.said_headline(store.latest_said(g["id"])) is None
+
+    # ② 整条都是工具调用 → 跳过它,继续往前找
+    store.add_message(g["id"], "agent", "Copywriter", "Copywriter",
+                      '<tool_call>{"name": "library_search", "arguments": {}}</tool_call>')
+    store.add_message(g["id"], "agent", "Aide", "Aide",
+                      "我来安排:先写初稿,再让审校过一遍。后面还有一段细节。")
+    said = store.latest_said(g["id"])
+    assert said and said["owner"] == "Aide" and said["text"].startswith("我来安排"), said
+
+    head = planner.said_headline(said)
+    assert head["board"] == "" and head["total"] == 0, "它不是任务板"
+    assert head["title"] == "我来安排:先写初稿,再让审校过一遍。", "只取第一句:" + head["title"]

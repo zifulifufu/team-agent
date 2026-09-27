@@ -14,7 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from .api_ext import Ctx, build_router
 from .api_external import build_external_router
 from .api_gallery import build_gallery_router
+from .api_video_zone import build_video_zone_router
 from .api_channels import build_channels
 from .api_hooks import build_hooks_router
 from .api_import import build_import_router
@@ -40,24 +41,30 @@ from .hooks import HookManager, ensure_example_hooks
 from .library import Library
 from .local_models import native_machine
 from .mcp_client import McpManager
+from . import media
+from . import names
 from .memory import MemoryService
 from . import templates
+from . import teamsetup
 from . import i18n
 from . import images
 from . import import_sources
 from . import layouts
+from . import music
+from . import toolcall
 from . import voices
 from . import net
 from .obsidian import ObsidianSync
 from .orchestrator import Orchestrator
+from . import planner
 from . import presets
 from .presets import DEFAULT_SETTINGS, PRESETS
 from .prompting import PromptBuilder
-from .router import ModelRouter
+from .router import ModelRouter, has_credentials
 from .stats import compute_stats
 from .store import Store
 from .toolhub import ToolHub
-from .tools import build_registry, ensure_example_skills, merge_builtin_skill_copies
+from .tools import build_registry, ensure_example_skills, merge_builtin_skill_copies, list_skills, skill_names
 from .updater import Updater, backfill_notice_languages, drop_stale_check_snapshot
 
 
@@ -111,13 +118,21 @@ class AgentPatch(BaseModel):
 
 
 class GroupIn(BaseModel):
-    name: str
+    # ⚠️ `name` 可以为空:空了就由**服务端**从 `task`(用户敲的那句话)里取关键词来命名。
+    # 命名规则住在 `names.py` 一处(用户 2026-09-25:「限制 8 个字以内,系统自动使用最核心的
+    # 关键词命名」);前端自己算一个名字再传过来,就等于把这条规则抄成了两份。
+    name: str = ""
+    #: What the user typed. Only read when `name` is empty.
+    task: str = ""
     member_ids: list[str] = []
     host_agent_id: str | None = None
     ext: dict | None = None
     prompt: str = ""
     # A directory the user picked for this group; empty = the app manages one under the data dir.
     workspace: str = ""
+    # Staged members are materialized only when the user confirms the reviewed lineup.
+    lineup: list[dict[str, str]] = []
+    host_ref: str = ""
 
 
 class GroupPatch(BaseModel):
@@ -133,6 +148,16 @@ class GroupPatch(BaseModel):
 
 class MemberIn(BaseModel):
     agent_id: str
+
+
+class CapabilityBinding(BaseModel):
+    kind: Literal["skills", "plugins", "mcp"]
+    ref: str
+    attached: bool
+
+
+class ForwardIn(BaseModel):
+    to_group_id: str
 
 
 class MessageIn(BaseModel):
@@ -172,6 +197,7 @@ def public_provider(p: dict) -> dict:
     key = p.get("api_key") or ""
     out = {k: v for k, v in p.items() if k != "api_key"}
     out["has_key"] = bool(key)
+    out["credentials_ready"] = has_credentials(p)
     out["key_hint"] = ("…" + key[-4:]) if len(key) >= 8 else (i18n.pick_now("set", "已设置") if key else "")
     return out
 
@@ -233,6 +259,23 @@ def ensure_loopback_no_proxy() -> None:
     os.environ["NO_PROXY"] = os.environ["no_proxy"] = merged
 
 
+def _visible_message(m: dict) -> dict:
+    """One stored message as the chat should show it.
+
+    ⚠️ The tool protocol is stripped **on the way out**, not only on the way in. A round whose call
+    arrived with no tags around it (see `toolcall._bare_spans`) was stored with that JSON in the
+    body, and every row already in someone's database was written before the parser learned the
+    shape — so cleaning only at write time leaves those bubbles unreadable forever, which is exactly
+    what the user was looking at (「成员发表的内容没有格式,看起来很乱」). Nothing is rewritten here:
+    this is a view, the raw rows still hold what the member actually sent, and `/export` reads the
+    store rather than this function.
+    """
+    if m.get("sender_type") != "agent" or not m.get("content"):
+        return m
+    shown = toolcall.strip_hidden(str(m["content"]))
+    return m if shown == m["content"] else {**m, "content": shown}
+
+
 def create_app(
     data_dir: Path | str | None = None,
     completion_fn: Callable[..., Awaitable[Any]] | None = None,
@@ -272,13 +315,16 @@ def create_app(
     # workspace the user picked themselves are skipped — see `coderun.ensure_workspaces`.
     coderun.ensure_workspaces(store.data_dir, store.get_settings(),
                               [(g["id"], g.get("workspace") or "") for g in store.list_groups()])
-    # …and every group's own knowledge base, for the groups made before that existed: a group is a
-    # workspace, and its own material has to have somewhere to live from the start.
-    store.ensure_group_kbs()
     # …and the process engineer, in every group. A watcher that has to be added by hand to each new
     # group is a watcher that is missing from the groups where something went wrong; the setting is
     # what makes it optional, and the groups that already have it are left alone.
     templates.keep_process_engineer(store)
+    # …and the names that an older build built out of the first fourteen characters of the task
+    # ("我需要做一个未破裂颅内动脉瘤" — the keyword is in there, the prefix is not the point). Only
+    # names longer than the cap are touched, and only by the one rule in `names.py`. Changed names
+    # are printed: rewriting something the user reads every day is not a silent operation.
+    for _old, _new in names.shorten_stored(store):
+        print(f"shortened a project name: {_old!r} -> {_new!r}")
     router = ModelRouter(store, completion_fn)
     registry = build_registry(store.data_dir / "plugins")
     mcp = McpManager()
@@ -293,6 +339,10 @@ def create_app(
     # Cloned voices: a folder per voice holding a reference recording and its transcript. Read at
     # startup so a `voice:<name>` in a film's settings is checked long before the film is timed.
     voices.use_folder(store.data_dir / "voices")
+    # The music shelf: audio files a film can be scored with, each with an optional sidecar saying
+    # what it is. Read at startup for the same reason as the other three — a broken sidecar is then
+    # a fact you can see, instead of a track that silently carries no metadata.
+    music.use_folder(store.data_dir / music.FOLDER_NAME)
     memory = MemoryService(store, router)
     # Hooks: the user's own code at six fixed points. Written once by the example below, off
     # until switched on, and every run goes through a subprocess (see app/hooks.py).
@@ -464,7 +514,7 @@ def create_app(
               "integration_budget": (2000, 200000),
               # video: the cap is the group's, not any one model's — H3 stops at 15s and Seedance 2.5
               # runs to 30, and `video.clamp_seconds` narrows each request to its own provider.
-              "video_short_edge": (128, 2048), "video_max_seconds": (1, 30), "video_timeout": (30, 7200), "video_max_mb": (1, 4096),
+              "video_short_edge": (128, 2048), "video_max_seconds": (1, 30), "video_timeout": (30, 7200), "music_timeout": (60, 7200), "video_max_mb": (1, 4096),
               # assembling: local ffmpeg work, so the floor is a real render and the ceiling is an
               # unusually long film rather than a service's patience
               "assemble_timeout": (60, 7200),
@@ -556,7 +606,8 @@ def create_app(
             pp = presets.localize_provider(public_provider(p), lang)
             # The rows carry their provider's name too, so the same rule applies to them.
             def _named(m: dict) -> dict:
-                return {**m, "provider_name": presets.provider_name_view(p["id"], m.get("provider_name") or "", lang)}
+                return {**m, "provider_name": presets.provider_name_view(p["id"], m.get("provider_name") or "", lang),
+                        "setup_required": p["kind"] == "comfyui" and m["model_name"] in comfyui.SETUP_WORKFLOWS}
             pp["models"] = [_named(m) for m in models if m["provider_id"] == p["id"]]
             pp["media_models"] = [_named(m) for m in media_models.values() if m["provider_id"] == p["id"]]
             out.append(pp)
@@ -784,7 +835,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
             check_agent_name(patch["name"], aid)
         if cur.get("engine") and patch.get("model_id"):
             raise HTTPException(400, i18n.pick_now("External agents do not use model routing, so they cannot take a model", "外部智能体不使用模型路由,不能指定模型"))
-        if cur.get("origin") == "model" and "model_id" in patch and patch["model_id"] != cur["model_id"]:
+        if cur.get("origin") in ("model", "media") and "model_id" in patch and patch["model_id"] != cur["model_id"]:
             raise HTTPException(400, i18n.pick_now("A model member *is* that model, so its model cannot be changed; to change it, remove the member from the group and add a different model", "模型成员就是这个模型本身,不能换模型;想换的话把它移出群、再拉入另一个模型"))
         return store.update_agent(aid, patch)  # type: ignore[return-value]
 
@@ -813,18 +864,41 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         return str(p)
 
     def group_out(g: dict | None) -> dict | None:
-        """A group plus where its workspace actually is.
+        """A group plus where its workspace actually is — and what it is doing.
 
         The stored value is what the user picked, which is usually empty — "the app manages one".
         A page that showed that empty value would look like the group has no workspace at all, so
         the resolved directory is sent alongside it.
+
+        `folder` is that directory as the sidebar shows it: the **shortest name that identifies it**,
+        which is the folder's own name when the user chose it and the *group's* name when the app
+        manages it — an app-managed folder is named after the group's id, and `a54f9f874a82` tells
+        nobody anything. `mine` says whether the user picked it, because that is exactly what decides
+        whether the folder may be renamed (see `/folder/rename`).
+
+        `task` is the newest task board's headline, read here rather than per project by the client:
+        the sidebar asks this about every project at once, and one extra query per row would be one
+        round trip per row.
         """
         v = templates.group_view(g)
-        if v:
-            try:
-                v["workspace_path"] = str(store.workspace_path(v["id"]))
-            except (OSError, ValueError):
-                v["workspace_path"] = ""
+        if not v:
+            return v
+        try:
+            path = store.workspace_path(v["id"])
+            v["workspace_path"] = str(path)
+            v["folder"] = {
+                "name": path.name if str(v.get("workspace") or "").strip() else str(v.get("name") or path.name),
+                "path": str(path),
+                "mine": bool(str(v.get("workspace") or "").strip()),
+            }
+        except (OSError, ValueError):
+            v["workspace_path"] = ""
+            v["folder"] = {"name": "", "path": "", "mine": False}
+        # ⚠️ 没有任务板时**不能写「还没有任务」**:用户 2026-09-25 报的就是这个 —— 一个跑过一轮、
+        # 出过图出过 30 秒视频的项目,那一行写着「还没有任务」。退回来说「它最近做了什么」。
+        # (没有任务板的原因可能是那一轮被 `@别人` 点名了,也可能是老版本跑出来的接力轮。)
+        v["task"] = planner.headline(store.latest_plan(v["id"])) or \
+            planner.said_headline(store.latest_said(v["id"]))
         return v
 
     @app.get("/api/groups")
@@ -837,14 +911,26 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
 
     @app.post("/api/groups")
     async def create_group(body: GroupIn) -> dict:
+        workspace = check_workspace(body.workspace)
+        if body.lineup:
+            if body.member_ids or body.host_agent_id:
+                raise HTTPException(400, "Use either lineup or member_ids, not both")
+            try:
+                teamsetup.validate(store, router, body.lineup, body.host_ref)
+                actual = teamsetup.materialize(store, body.lineup)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from None
+            body.member_ids = list(dict.fromkeys(actual.values()))
+            body.host_agent_id = actual[body.host_ref]
         known = {a["id"] for a in store.list_agents()}
         if any(i not in known for i in [*body.member_ids, *([body.host_agent_id] if body.host_agent_id else [])]):
             raise HTTPException(400, i18n.pick_now("A member or the host does not exist", "成员或群主不存在"))
         check_host(body.host_agent_id)
         if body.host_agent_id and body.host_agent_id not in body.member_ids:
             raise HTTPException(400, i18n.pick_now("The host must be a member of this group", "群主必须是本群成员"))
-        workspace = check_workspace(body.workspace)
-        created = store.create_group(body.name, body.host_agent_id, body.member_ids, body.ext, body.prompt,
+        name = (body.name or "").strip() or names.short_name(body.task) or i18n.pick_now(
+            "New project", "新项目")
+        created = store.create_group(name, body.host_agent_id, body.member_ids, body.ext, body.prompt,
                                      workspace)
         # The workspace is made with the group, not when someone first runs code: a group that has
         # a workspace only sometimes is a group where "put the file in your workspace" is a
@@ -861,11 +947,17 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         host = store.get_agent(host_id) if host_id else None
         if host_id and not host:
             raise HTTPException(400, i18n.pick_now("The host does not exist", "群主不存在"))
-        if host and host.get("origin") == "media":
-            raise HTTPException(400, i18n.pick_now("A media generator cannot host a group; choose a conversational member.",
-                                                  "绘画或视频生成成员不能当群主,请选择对话成员。"))
-        if host and host.get("engine"):
-            raise HTTPException(400, i18n.pick_now("An external agent cannot be the host (the host splits the work, so it has to be a model member)", "外部智能体不能当群主(群主负责分工,需要是模型成员)"))
+        # Who may take the chair is decided in one place (`media.may_host`), and this asks it. The
+        # two refusals used to be spelled out here as well, which is how a generator got a different
+        # answer from the API than from the orchestrator's own host-picking.
+        if host and not media.may_host(host):
+            if host.get("engine"):
+                raise HTTPException(400, i18n.pick_now(
+                    "An external agent cannot host a group (the host splits the work, so it has to be a model member)",
+                    "外部智能体不能当群主(群主负责分工,需要是模型成员)"))
+            raise HTTPException(400, i18n.pick_now(
+                "A media generator cannot host a group; choose a conversational member.",
+                "绘画或视频生成成员不能当群主,请选择对话成员。"))
 
     @app.patch("/api/groups/{gid}")
     async def patch_group(gid: str, body: GroupPatch) -> dict:
@@ -901,6 +993,37 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
                 print("could not create the group workspace:", e)
         return group_out(updated)
 
+    @app.patch("/api/groups/{gid}/capability-binding")
+    async def bind_capability(gid: str, body: CapabilityBinding) -> dict:
+        group = need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        require_idle(gid)
+        # No await between reading and updating: concurrent UI clicks cannot replace a stale
+        # whole list. Attaching does not enable or start a server, load code, or run a task.
+        ref = body.ref
+        aliases = [ref]
+        if body.kind == "skills":
+            skill = next((s for s in list_skills(store.data_dir / "skills")
+                          if ref in skill_names(s.name)), None)
+            if skill:
+                ref, aliases = skill.name, skill_names(skill.name)
+            exists = skill is not None
+        elif body.kind == "plugins":
+            exists = ref in registry.plugins
+        else:
+            exists = any(s["id"] == ref for s in store.list_mcp())
+        if body.attached and not exists:
+            raise HTTPException(404, i18n.pick_now("Capability not found", "这项能力尚未安装或已删除"))
+        refs = []
+        for existing in group["ext"].get(body.kind, []):
+            if existing in aliases:
+                if body.attached and ref not in refs:
+                    refs.append(ref)
+            else:
+                refs.append(existing)
+        if body.attached and ref not in refs:
+            refs.append(ref)
+        return group_out(store.update_group(gid, {"ext": {body.kind: refs}}))
+
     @app.delete("/api/groups/{gid}")
     async def del_group(gid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
@@ -926,7 +1049,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     @app.get("/api/groups/{gid}/messages")
     async def messages(gid: str) -> list[dict]:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
-        return store.list_messages(gid)
+        return [_visible_message(m) for m in store.list_messages(gid)]
 
     @app.delete("/api/groups/{gid}/messages")
     async def clear_messages(gid: str) -> dict:
@@ -969,6 +1092,38 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
         task.add_done_callback(_done)
         return {"ok": True}
 
+    @app.post("/api/groups/{gid}/messages/{mid}/forward")
+    async def forward_message(gid: str, mid: str, body: ForwardIn) -> dict:
+        """Hand one member's reply to another group, as a message from you.
+
+        It goes through **the same path as a typed message** (that is what calling `send_message`
+        here means) rather than writing a row straight into the target group: a forwarded message is
+        something you asked that group to work on, so its members have to be told about it, and the
+        only way a group is told anything is that endpoint. Writing the row directly would leave a
+        message that no member ever sees.
+
+        The text travels with a header naming where it came from — a member in the receiving group has
+        no way to know otherwise, and an unattributed quote reads as something the user wrote. What
+        does **not** travel is the attachments: a file lives in the workspace of the group it was
+        added to, so a forwarded message that mentioned one would point at nothing.
+        """
+        source = need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
+        target = need(store.get_group(body.to_group_id), i18n.pick_now("Target group", "目标群"))
+        if str(target["id"]) == str(source["id"]):
+            raise HTTPException(400, i18n.pick_now(
+                "That is the group it is already in — quote it there instead.",
+                "这就是它所在的群 —— 在本群里引用它就行。"))
+        row = need(store.get_message(mid), i18n.pick_now("Message", "消息"))
+        if str(row.get("group_id") or "") != str(source["id"]):
+            raise HTTPException(404, i18n.pick_now("That message is not in this group",
+                                                   "这条消息不在这个群里"))
+        who = str(row.get("sender_name") or "")
+        text = i18n.pick_now(
+            f"[Forwarded from \"{source['name']}\" — {who}]\n\n{row.get('content') or ''}",
+            f"【转发】来自本机「{source['name']}」群里的 {who}:\n\n{row.get('content') or ''}")
+        await send_message(str(target["id"]), MessageIn(text=text))
+        return {"ok": True, "group_id": target["id"], "group_name": target["name"]}
+
     @app.get("/api/groups/{gid}/status")
     async def group_status(gid: str) -> dict:
         need(store.get_group(gid), i18n.pick_now("Group chat", "群聊"))
@@ -1001,6 +1156,9 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
 
     _ctx = Ctx(store, router, orch, registry, mcp, library, memory, toolhub, prompts, updater, approvals, obsidian)
     app.include_router(build_router(_ctx))
+    # The video zone: the parts a person drives directly (composing music, and later scenes and
+    # motion). Its routes call the same composers the tools do rather than a second copy of them.
+    app.include_router(build_video_zone_router(_ctx))
     # Kept reachable for the same reason `store`/`router`/`orch` are above: a long-running job's
     # state lives on it, and a test that wants to see the state of a run has nowhere else to look.
     app.state.ctx = _ctx

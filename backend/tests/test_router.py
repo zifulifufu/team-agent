@@ -156,6 +156,46 @@ async def test_empty_reply_counts_as_failure(store, make_router):
     assert r.model_id == "ollama/qwen2.5:7b"
 
 
+async def test_private_tool_markup_triggers_fallback_instead_of_fake_success(store, make_router):
+    """⚠️ The fixture is **pure** private XML — no JSON head anywhere.
+
+    2026-09-26: the fixture used to be `{"name": "library_read"> <parameter name="doc">x.md…`, because
+    the parser could not run that and the router's check reads exactly "what could not be run". That
+    shape now parses into a real call (see
+    `test_a_call_written_in_two_dialects_at_once_now_runs`), so it stopped being evidence of a broken
+    reply: the call works, nothing was lost, and there is nothing to hand to another model. What has
+    to reach the router is the reply it can do nothing with, so the fixture is the vendor's own XML
+    with no readable arguments at all.
+    """
+    key_deepseek(store)
+    fake = FakeLLM({'deepseek/': '<minimax:tool_call><invoke name="library_read">'
+                                 '<parameter name="doc">x.md</parameter></invoke></minimax:tool_call>'},
+                   default='Recovered')
+    result = await make_router(fake).complete([{'role': 'user', 'content': 'Synthetic task'}],
+        tools=[{'type': 'function', 'function': {'name': 'library_read', 'parameters': {'type': 'object'}}}])
+    assert result.model_id == 'ollama/qwen2.5:7b'
+    assert result.attempts[0].status == 'failed'
+    assert 'protocol' in result.attempts[0].detail or '协议' in result.attempts[0].detail
+
+
+async def test_quoted_private_tool_markup_is_not_mistaken_for_a_tool_attempt(store, make_router):
+    key_deepseek(store)
+    text = 'Example:\n```xml\n<minimax:tool_call>...</minimax:tool_call>\n```'
+    result = await make_router(FakeLLM(default=text)).complete([{'role': 'user', 'content': 'Explain this format'}],
+        tools=[{'type': 'function', 'function': {'name': 'library_read', 'parameters': {'type': 'object'}}}])
+    assert result.model_id == 'deepseek/deepseek-flash' and result.text == text
+
+
+async def test_private_markup_inside_document_arguments_is_preserved(store, make_router):
+    import json
+    key_deepseek(store)
+    text = '<tool_call>' + json.dumps({'name': 'write_document', 'arguments': {
+        'path': 'example.md', 'body': 'Example <minimax:tool_call><parameter name="x">1</parameter></minimax:tool_call>'}}) + '</tool_call>'
+    result = await make_router(FakeLLM(default=text)).complete([{'role': 'user', 'content': 'Save this example'}],
+        tools=[{'type': 'function', 'function': {'name': 'write_document', 'parameters': {'type': 'object'}}}])
+    assert result.model_id == 'deepseek/deepseek-flash' and result.text == text
+
+
 async def test_disabled_model_and_provider_are_skipped(store, make_router):
     key_deepseek(store)
     store.update_model("deepseek/deepseek-flash", {"enabled": False})
@@ -197,6 +237,128 @@ def test_retry_after_only_for_short_rate_limits():
     assert retry_after(RuntimeError("HTTP 429 too many requests")) == pytest.approx(1.8)
     assert retry_after(RuntimeError("rate limit, try again after 60 seconds")) is None       # too long to wait: fall back instead
     assert retry_after(RuntimeError("connection reset")) is None
+
+
+async def test_billing_quota_is_not_retried_across_models_of_same_account(store, make_router):
+    from app.router import retry_after, classify_failure, _short
+    key_deepseek(store)
+    extra = store.add_model("deepseek", "second", "Second model")
+    store.update_settings({"route_chain": ["deepseek/deepseek-flash", extra["id"]]})
+    error = RuntimeError("429 You exceeded your current API quota. Please purchase the API points.")
+    fake = FakeLLM({"deepseek/": error}, default="local result")
+    router = make_router(fake)
+    result = await router.complete([{"role": "user", "content": "hello"}])
+    assert result.model_id == "ollama/qwen2.5:7b"
+    assert sum(m.startswith("deepseek/") for m, _ in fake.calls) == 1
+    assert any(a.reason == "quota" for a in result.attempts)
+    assert retry_after(error) is None and classify_failure(error) == "bad"
+    assert "waiting will not refill" in _short(error)
+    assert all(m["provider_id"] != "deepseek" for m in router.usable_models())
+
+
+@pytest.mark.parametrize('restricted', [False, True])
+async def test_remote_account_concurrency_is_bounded_without_serializing_every_group(store, make_router, restricted):
+    import asyncio
+    from tests.conftest import chunk
+    key_deepseek(store)
+    active = peak = 0
+
+    async def completion(**kw):
+        async def stream():
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(0.02)
+                yield chunk("ok")
+            finally:
+                active -= 1
+        return stream()
+    router = make_router(completion)
+    if restricted:
+        router._provider_serial.add('deepseek')
+    results = await asyncio.gather(*(router.complete([{"role": "user", "content": str(i)}],
+                                                      only="deepseek/deepseek-flash") for i in range(7)))
+    assert len(results) == 7 and peak == (1 if restricted else 3) and active == 0
+    assert router._provider_active['deepseek'] == 0
+
+
+async def test_learned_rpm_clears_window_before_retrying(store, make_router, monkeypatch):
+    import app.router as rt
+    key_deepseek(store)
+    waited = []
+
+    async def fake_sleep(seconds):
+        waited.append(seconds)
+    monkeypatch.setattr(rt.asyncio, "sleep", fake_sleep)
+    count = 0
+
+    def first_limited(messages):
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise KIMI_429
+        return "recovered"
+    router = make_router(FakeLLM({"deepseek/": first_limited}))
+    result = await router.complete([{"role": "user", "content": "hello"}], only="deepseek/deepseek-flash")
+    assert result.text == "recovered" and count == 2
+    assert any(59 < s <= 60 for s in waited)
+    assert router._provider_interval["deepseek"] == pytest.approx(20.3)
+    assert 'deepseek' in router._provider_serial
+
+
+async def test_cancelled_provider_call_releases_its_concurrency_slot(store, make_router):
+    import asyncio
+    from tests.conftest import chunk
+    key_deepseek(store)
+    entered = asyncio.Event()
+    async def completion(**kw):
+        async def stream():
+            entered.set()
+            await asyncio.Event().wait()
+            yield chunk('unreachable')
+        return stream()
+    router = make_router(completion)
+    call = asyncio.create_task(router.complete([{'role': 'user', 'content': 'synthetic'}],
+                                              only='deepseek/deepseek-flash'))
+    await entered.wait()
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert router._provider_active['deepseek'] == 0
+
+
+async def test_learned_concurrency_limit_drains_existing_calls_before_starting_more(store, make_router, monkeypatch):
+    import asyncio
+    key_deepseek(store)
+    router = make_router(FakeLLM())
+    all_started, failed, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = 0
+    async def stream(*args):
+        nonlocal calls
+        calls += 1
+        number = calls
+        if calls == 3:
+            all_started.set()
+        if number <= 3:
+            await all_started.wait()
+            if number == 1:
+                failed.set()
+                raise RuntimeError('organization concurrency limit: 1')
+            await release.wait()
+        else:
+            assert router._provider_active['deepseek'] == 1
+        return 'ok'
+    monkeypatch.setattr(router, '_stream_one', stream)
+    provider, model = store.get_provider('deepseek'), store.get_model('deepseek/deepseek-flash')
+    tasks = [asyncio.create_task(router._provider_stream(provider, model)) for _ in range(6)]
+    await asyncio.wait_for(failed.wait(), 1)
+    await asyncio.sleep(0)
+    assert calls == 3 and 'deepseek' in router._provider_serial
+    release.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert sum(isinstance(r, RuntimeError) for r in results) == 1
+    assert router._provider_active['deepseek'] == 0 and calls == 6
 
 
 async def test_rate_limit_is_retried_once_then_succeeds(store, make_router, monkeypatch):

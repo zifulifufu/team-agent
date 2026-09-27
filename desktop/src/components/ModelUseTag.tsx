@@ -21,9 +21,7 @@ export default function ModelUseTag({ use }: { use?: ModelUse }) {
 
   const title = use === "responses"
     ? t("This model answers on OpenAI's Responses API rather than /chat/completions, so a member cannot be pointed at it here")
-    : t("Not a chat model: a member cannot be pointed at it. Use it under Permissions & control → {where}.", {
-        where: use === "image" ? t("Image generation") : t("Video generation"),
-      });
+    : t("Joins the group as a tool. Members assign work and review the returned files.");
 
   return <span className="tag mp-use" title={title}>{label}</span>;
 }

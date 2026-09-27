@@ -79,7 +79,7 @@ export default function HooksPage() {
     }
   };
 
-  if (hooks === null) return <div className="sp"><p className="sp-desc">{t("Loading…")}</p></div>;
+  if (hooks === null) return <div className="sp">{err ? <div className="ext-errbox"><p className="err" role="alert">{err}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div> : <p className="sp-desc">{t("Loading…")}</p>}</div>;
 
   return (
     <div className="sp">
@@ -115,7 +115,8 @@ export default function HooksPage() {
             <span className={"chip" + (kindOf(h.kind).warn ? " warn" : "")} title={t(kindOf(h.kind).title)}>
               {t(kindOf(h.kind).label)}
             </span>
-            <Switch checked={h.enabled} label={t("Enable {name}", { name: h.name || h.id })}
+            <span className={"tag " + (h.enabled ? "on" : "")}>{h.enabled ? t("Enabled") : t("Disabled")}</span>
+            <Switch checked={h.enabled} disabled={!!busy || !!h.error} label={t("Enable {name}", { name: h.name || h.id })}
                     onChange={(v) => void act(h.id, () => api.patchHook(h.id, { enabled: v }))} />
           </div>
 
@@ -132,19 +133,7 @@ export default function HooksPage() {
             )}
           </div>
 
-          {/* Which groups a hook may see is part of "what can it do", so it sits next to the switch
-              rather than behind a dialog. */}
-          <div className="hook-groups">
-            <span className="muted small">{h.groups.length === 0 ? t("Applies to every group") : t("Only these groups")}</span>
-            {groups.length > 0 && (
-              <select multiple className="hook-groups-pick" aria-label={t("Groups this hook applies to")}
-                      value={h.groups}
-                      onChange={(e) => void act(h.id, () => api.patchHook(h.id, { groups: Array.from(e.target.selectedOptions, (o) => o.value) }))}>
-                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
-            )}
-          </div>
-
+          <HookScope hook={h} groups={groups} busy={!!busy} onSave={(selected) => act(h.id, () => api.patchHook(h.id, { groups: selected }))} />
           {h.error && <div className="err small">{h.error}</div>}
 
           <div className="hook-foot">
@@ -155,14 +144,10 @@ export default function HooksPage() {
               </span>
             ) : <span className="muted small">{t("Never run yet")}</span>}
             <span style={{ flex: 1 }} />
-            <button className="btn small" disabled={busy === h.id || !!h.error}
-                    title={h.error ? t("Fix the hook first") : ""}
-                    onClick={() => void act(h.id, async () => {
-                      const r = await api.testHook(h.id, { event: h.events[0], group_id: groups[0]?.id });
-                      if (!r.ok) throw new Error(r.note || t("It did not answer"));
-                    })}>
-              {busy === h.id ? <LoaderCircle size={13} className="spin" /> : <Play size={13} />} {t("Run once")}
-            </button>
+            <HookTest hook={h} groups={groups} busy={!!busy} run={(event, group_id) => act(h.id, async () => {
+              const r = await api.testHook(h.id, { event, group_id });
+              if (!r.ok) throw new Error(r.note || t("It did not answer"));
+            })} />
             <button className="btn small" onClick={() => void act(h.id, async () => setSource(await api.hookSource(h.id)))}>
               <FileCode2 size={13} /> {t("View code")}
             </button>
@@ -207,4 +192,37 @@ export default function HooksPage() {
       </Callout>
     </div>
   );
+}
+
+function HookScope({ hook, groups, busy, onSave }: { hook: HookEntry; groups: { id: string; name: string }[]; busy: boolean; onSave: (ids: string[]) => Promise<void> }) {
+  const { t } = useI18n();
+  const [all, setAll] = useState(hook.groups.length === 0);
+  const [selected, setSelected] = useState(hook.groups);
+  useEffect(() => { setAll(hook.groups.length === 0); setSelected(hook.groups); }, [hook.groups]);
+  const dirty = all ? hook.groups.length !== 0 : hook.groups.length === 0 || [...selected].sort().join() !== [...hook.groups].sort().join();
+  return <div className="cap-readiness">
+    <b>{t("Scope")}: {hook.groups.length ? t("Only these groups") : t("Applies to every group")}</b>
+    <div className="cap-filter">
+      <select aria-label={t("Scope for {name}", { name: hook.name })} value={all ? "all" : "selected"} disabled={busy} onChange={(e) => setAll(e.target.value === "all")}>
+        <option value="all">{t("All groups")}</option><option value="selected">{t("Selected groups")}</option>
+      </select>
+      {!all && groups.map((g) => <label className="cap-check" key={g.id}><input type="checkbox" disabled={busy} checked={selected.includes(g.id)} onChange={(e) => setSelected((ids) => e.target.checked ? [...ids, g.id] : ids.filter((id) => id !== g.id))} />{g.name}</label>)}
+      {dirty && <button className="btn small" disabled={busy || (!all && !selected.length)} onClick={() => void onSave(all ? [] : selected)}>{t("Save scope")}</button>}
+    </div>
+    {!all && !selected.length && <span className="err small">{t("Choose at least one group, or explicitly select All groups. No scope change has been saved.")}</span>}
+  </div>;
+}
+
+function HookTest({ hook, groups, busy, run }: { hook: HookEntry; groups: { id: string; name: string }[]; busy: boolean; run: (event: string, group: string) => Promise<void> }) {
+  const { t } = useI18n();
+  const allowed = groups.filter((g) => !hook.groups.length || hook.groups.includes(g.id));
+  const [groupId, setGroupId] = useState("");
+  const [event, setEvent] = useState("");
+  const target = allowed.find((g) => g.id === groupId)?.id || allowed[0]?.id || "";
+  const trigger = hook.events.includes(event) ? event : hook.events[0] || "";
+  return <>
+    <select aria-label={t("Test group for {name}", { name: hook.name })} disabled={busy} value={target} onChange={(e) => setGroupId(e.target.value)}>{!allowed.length && <option value="">{t("No available group")}</option>}{allowed.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>
+    <select aria-label={t("Test event for {name}", { name: hook.name })} disabled={busy} value={trigger} onChange={(e) => setEvent(e.target.value)}>{hook.events.map((e) => <option key={e} value={e}>{e}</option>)}</select>
+    <button className="btn small" disabled={busy || !!hook.error || !target || !trigger} onClick={() => void run(trigger, target)}><Play size={13} />{t("Run once")}</button>
+  </>;
 }

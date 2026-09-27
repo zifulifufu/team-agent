@@ -177,31 +177,70 @@ def resolve(workspace: Path, path: str, fmt: str) -> Path:
     return root / rel
 
 
+_WORD_INLINE = re.compile(r"(`+).*?\1|(?<![\\*])\*\*(?=\S)((?:(?!\*\*|`).)+?)(?<=\S)\*\*(?!\*)")
+
+
+def _word_text(paragraph, text: str) -> None:
+    """Render paired Markdown strong emphasis without changing the source words.
+
+    Code spans, escaped markers and incomplete emphasis remain literal. This is
+    intentionally the same small Markdown subset as the document block parser.
+    """
+    cursor = 0
+    for match in _WORD_INLINE.finditer(text):
+        paragraph.add_run(text[cursor:match.start()])
+        if match.group(2) is not None:
+            paragraph.add_run(match.group(2)).bold = True
+        else:
+            paragraph.add_run(match.group(0))
+        cursor = match.end()
+    paragraph.add_run(text[cursor:])
+
+
 def _docx(dest: Path, title: str, nodes: list[tuple[str, Any]]) -> int:
     from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     from docx.shared import Pt
     doc = Document()
+    # Real fields are recalculated by Word/LibreOffice after pagination. Static
+    # numbers would silently repeat "1" on every page of a long group report.
+    footer = doc.sections[0].footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for instruction in ("PAGE", "NUMPAGES"):
+        if instruction == "NUMPAGES":
+            footer.add_run(" / ")
+        field = OxmlElement("w:fldSimple")
+        field.set(qn("w:instr"), instruction)
+        field.set(qn("w:dirty"), "true")
+        footer._p.append(field)
+    update = OxmlElement("w:updateFields")
+    update.set(qn("w:val"), "true")
+    doc.settings.element.append(update)
     if title:
-        doc.add_heading(title, level=0)
+        _word_text(doc.add_heading(level=0), title)
     for node in nodes:
         kind = node[0]
         if kind == "h":
-            doc.add_heading(node[2], level=min(int(node[1]), 4))
+            _word_text(doc.add_heading(level=min(int(node[1]), 4)), node[2])
         elif kind == "li":
             style = "List Number" if node[2] else "List Bullet"
             try:
-                doc.add_paragraph(node[1], style=style)
+                para = doc.add_paragraph(style=style)
             except KeyError:                       # a template without the list styles
-                doc.add_paragraph(("• " if not node[2] else "- ") + node[1])
+                para = doc.add_paragraph("• " if not node[2] else "- ")
+            _word_text(para, node[1])
         elif kind == "table":
             rows = node[1]
             table = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
             table.style = "Table Grid"
             for y, row in enumerate(rows):
                 for x, cell in enumerate(row):
-                    table.cell(y, x).text = cell
+                    _word_text(table.cell(y, x).paragraphs[0], cell)
         else:
-            para = doc.add_paragraph(node[1])
+            para = doc.add_paragraph()
+            _word_text(para, node[1])
             para.paragraph_format.space_after = Pt(6)
     doc.save(str(dest))
     return len(nodes)
@@ -281,9 +320,35 @@ def _xlsx(dest: Path, title: str, nodes: list[tuple[str, Any]]) -> int:
     return len(seen)
 
 
+# The format is `format`, or failing that the path's own suffix. Both are spelled loosely in the
+# wild: a member writes `format: "markdown"`, or omits `format` entirely and names the file
+# `科普短文.md`. Refusing either would be refusing the delegation over vocabulary — measured: a
+# `write_document` call with a correct `.md` path and no `format` was rejected as "missing required
+# argument" and the member's whole delivery had to be redone.
+_ALIASES = {"markdown": "md", "text": "md", "txt": "md", "plain": "md",
+            "word": "docx", "doc": "docx", "document": "docx",
+            "powerpoint": "pptx", "ppt": "pptx", "slides": "pptx", "slide": "pptx",
+            "excel": "xlsx", "xls": "xlsx", "sheet": "xlsx", "workbook": "xlsx"}
+
+
+def kind_of(path: object, fmt: object = "") -> str:
+    """Which writer to use, preferring what was asked for and falling back to the path's suffix.
+
+    Returns the caller's own word when neither is recognised, so `write` below can refuse with the
+    readable message that names what it received — the refusal belongs in one place.
+    """
+    want = str(fmt or "").strip().lower().lstrip(".")
+    want = _ALIASES.get(want, want)
+    if want in KINDS:
+        return want
+    suffix = Path(str(path or "")).suffix.lower().lstrip(".")
+    suffix = _ALIASES.get(suffix, suffix)
+    return suffix if suffix in KINDS else want
+
+
 def write(workspace: Path, path: str, fmt: str, title: str, body: str) -> tuple[Path, int]:
     """Write one file and say how much of it there is. Raises `DocError` with a readable reason."""
-    fmt = str(fmt or "").strip().lower().lstrip(".")
+    fmt = kind_of(path, fmt)
     if fmt not in KINDS:
         raise DocError(i18n.pick_now(f"format must be one of {', '.join(KINDS)}; got \"{fmt}\".",
                                      f"format 只能是 {', '.join(KINDS)} 之一;收到的是「{fmt}」。"))
@@ -295,12 +360,28 @@ def write(workspace: Path, path: str, fmt: str, title: str, body: str) -> tuple[
     dest = resolve(workspace, path, fmt)
     nodes = parse(body)
     title = str(title or "").strip()
+    same_heading = bool(title and nodes and nodes[0] == ("h", 1, title))
     if fmt == "md":
-        text = (f"# {title}\n\n" if title else "") + str(body or "").rstrip() + "\n"
+        text = (f"# {title}\n\n" if title and not same_heading else "") + str(body or "").rstrip() + "\n"
         dest.write_text(text, encoding="utf-8")
         return dest, len(nodes)
     if not nodes and not title:
         raise DocError(i18n.pick_now("Nothing to write: the body is empty.",
                                      "没有内容可写:正文是空的。"))
+    if fmt == "docx" and same_heading:
+        nodes = nodes[1:]
     count = {"docx": _docx, "pptx": _pptx, "xlsx": _xlsx}[fmt](dest, title, nodes)
     return dest, count
+
+
+def text_metrics(body: str) -> dict[str, int]:
+    """Reproducible text counts, excluding Markdown headings and references.
+
+    These are measurements, not an inference that a requested length was met.
+    Citations within the prose remain; the reference section is excluded only
+    when the document has a recognizable reference heading.
+    """
+    main = re.split(r"(?im)^\s{0,3}#{1,6}\s*(?:参考文献|引用文献|references|bibliography)\s*[:：]?\s*$", str(body), maxsplit=1)[0]
+    main = re.sub(r"(?m)^\s{0,3}#{1,6}\s+.*$", "", main)
+    return {"han_chars": len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", main)),
+            "nonspace_chars": len(re.sub(r"\s", "", main))}

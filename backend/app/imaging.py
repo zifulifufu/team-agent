@@ -374,8 +374,7 @@ def paint_stream(img, pts: Sequence[tuple[float, float]], width: "float | Sequen
 
 # --------------------------------------------------------------------- the aneurysm
 def dome_polygon(center: tuple[float, float], rx: float, ry: float, *,
-                 neck: float = 0.42, wobble: float = 0.055, n: int = 160,
-                 dome_from: float = -0.15) -> list[tuple[float, float]]:
+                 neck: float = 0.42, wobble: float = 0.055, n: int = 160) -> list[tuple[float, float]]:
     """An aneurysm as an irregular dome on a neck, instead of a perfect ellipse hanging off a pipe.
 
     Two things were wrong with the ellipse. A berry aneurysm is not round — it is a lobulated dome
@@ -386,7 +385,6 @@ def dome_polygon(center: tuple[float, float], rx: float, ry: float, *,
     cx, cy = center
     out: list[tuple[float, float]] = []
     for i in range(n + 1):
-        a = math.pi * (dome_from + (1.0 - dome_from) * i / n)          # pi..2pi-ish sweep over the top
         ang = math.pi + math.pi * (i / n)
         w = 1.0 + wobble * (math.sin(3.0 * ang + 0.7) + 0.6 * math.sin(5.0 * ang + 2.1))
         # The lower part of the sweep narrows into the neck instead of closing the circle.

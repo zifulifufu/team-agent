@@ -29,7 +29,24 @@
 .decl-text { min-width: 0; overflow-wrap: anywhere; }
 .bubble.under-decl { border-top-left-radius: 5px; border-top-right-radius: 5px; }
 
+/* ---- 成员的思路:推理模型的思考过程、外部引擎写下的计划 ---- */
+/* A left rule rather than a box: it sits above the reply as a note on how the reply was reached,
+   and must not read as a second message. Open while it arrives, folded once the answer is there. */
+.think { margin: 0 0 7px; padding-left: 10px; border-left: 2px solid var(--border-strong); }
+.think.live { border-left-color: var(--primary); }
+.think-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 1px 0; font-size: 12px; color: var(--text-3); text-align: left; }
+.think-head:hover { color: var(--text-2); }
+.think-head > svg:first-child { flex: none; }
+.think-head > svg:last-child { margin-left: auto; flex: none; }
+.think-title { font-weight: 500; }
+.think-hint { font-size: 11px; opacity: 0; }
+.think-head:hover .think-hint { opacity: 1; }
+.think-body { margin: 4px 0 2px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+
 /* ---- 工具调用胶囊 ---- */
+/* The line answers "what is it doing": a verb for the action, then the argument that matters (the
+   command, the file, the query). The verb is muted, the object is not — "bash" told the user
+   nothing, "npx remotion render out/..." does. */
 .tool-pills { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: 7px; }
 .tool-pill { max-width: 100%; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-sub); font-size: 12px; overflow: hidden; }
 .tool-pill.running { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); animation: ta-pulse 1.4s ease-in-out infinite; }
@@ -37,27 +54,32 @@
 .tp-ico.waiting { color: #c98a00; }
 .tool-pill.denied,
 .tool-pill.failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-.tool-pill.open { border-radius: 12px; width: min(100%, 460px); }
+.tool-pill.open { border-radius: 12px; width: min(100%, 560px); }
 @keyframes ta-pulse { 0%, 100% { background: var(--bg-sub); } 50% { background: var(--primary-soft); } }
-.tool-pill-head { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 8px; max-width: 100%; width: 100%; text-align: left; color: var(--text-2); }
+.tool-pill-head { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; max-width: 100%; width: 100%; text-align: left; color: var(--text-2); }
 .tool-pill-head:hover { color: var(--text); }
 .tp-ico.ok { color: var(--ok); }
 .tp-ico.failed { color: var(--danger); }
 .tp-ico.running { color: var(--primary); }
 .tp-wrench { color: var(--text-3); flex: none; }
-.tp-name { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tp-name { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+.tp-arg { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
 .tp-src { font-size: 10px; line-height: 14px; padding: 0 5px; border-radius: 4px; background: var(--hover); color: var(--text-2); flex: none; }
 .tp-ms { color: var(--text-3); font-variant-numeric: tabular-nums; flex: none; }
 .tool-pill-head > svg:last-child { margin-left: auto; color: var(--text-3); flex: none; }
 .tool-pill-body { padding: 4px 12px 10px; border-top: 1px solid var(--border); background: var(--card); }
 .tp-sec { font-size: 11px; color: var(--text-3); margin: 8px 0 3px; }
-.tp-empty { color: var(--text-3); font-size: 12px; }
+.tp-empty { color: var(--text-3); font-size: 12px; display: flex; align-items: center; gap: 5px; }
 .tp-args { margin: 0; display: flex; flex-direction: column; gap: 2px; }
 .tp-args > div { display: flex; gap: 8px; align-items: baseline; }
 .tp-args dt { color: var(--text-2); flex: none; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; }
 .tp-args dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
 .tp-pre { margin: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11.5px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; color: var(--text); }
 .tp-pre.failed { color: var(--danger); }
+/* Still arriving: a shorter window than a finished result, and a coloured edge to say so. It
+   follows the newest line by itself (see ToolPill) — this is the one place in the app that is
+   allowed to move under the reader's eyes, because "what is it doing right now" is the question. */
+.tp-pre.live { max-height: 132px; border-left: 2px solid var(--primary); }
 
 /* ---- 任务板卡片 ---- */
 .plan-card {
@@ -74,6 +96,20 @@
 .plan-pill.failed { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .plan-pill.stopped { background: var(--hover); color: var(--text-3); }
 .plan-count { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* ⚠️ "N 项未派单" sits next to the progress on purpose: a board where part of the request was never
+   handed to anyone still reads "8/8 executed", and that reads as success at a glance. Warning
+   colours rather than muted, because this is the number that means work went missing. */
+.plan-dropped-n { font-size: 12px; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* The tasks themselves. Not numbered and not rows of the plan: they were never assigned, so they sit
+   below the consolidation row, visibly outside it. */
+.plan-dropped { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.55;
+  color: var(--text-2); background: color-mix(in srgb, var(--danger) 7%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--danger) 30%, transparent); }
+.plan-dropped-head { display: flex; align-items: center; gap: 6px; font-weight: 600;
+  color: var(--danger); margin-bottom: 4px; }
+.plan-dropped ul { margin: 0; padding-left: 18px; }
+.plan-dropped li { margin: 0 0 2px; word-break: break-word; }
 .plan-bar { height: 5px; border-radius: 3px; background: var(--hover); margin: 9px 0 10px; overflow: hidden; }
 .plan-bar i { display: block; height: 100%; border-radius: 3px; background: var(--primary); transition: width 0.35s ease; }
 .plan-bar i.failed { background: var(--danger); }
@@ -130,76 +166,18 @@
    than a third column: as a column it shared its headings with the left sidebar, where the same
    words are the app-wide pages, and the two showed up side by side. One entrance, from the button
    in the chat header. */
-.gp-back { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.28); display: flex; align-items: center; justify-content: center; z-index: 40; }
-.gp { width: min(560px, 94vw); max-height: 82vh; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.gp-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 0 14px; flex: none; }
-.gp-head b { font-weight: 600; }
-.gp-head .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gp-tabs { display: flex; gap: 2px; margin: 10px 12px 6px; padding: 3px; border-radius: 9px; background: var(--hover); flex: none; }
-.gp-tabs button { flex: 1; padding: 5px 0; border-radius: 7px; color: var(--text-2); font-size: 13px; }
-.gp-tabs button:hover:not(.on) { color: var(--text); }
-.gp-tabs button.on { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow-sm); }
-.gp-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.gp-pane[hidden] { display: none; }
-.gp-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 2px 12px 18px 14px; }
-.gp-sec { display: flex; align-items: center; gap: 6px; margin: 16px 0 6px; font-size: 13px; font-weight: 600; }
-.gp-sub { margin: 10px 0 4px; font-size: 11.5px; color: var(--text-3); }
-.gp-note { font-size: 12px; line-height: 1.6; color: var(--text-3); margin: 2px 0 6px; }
-.gp-note.warn { color: var(--warn); }
-.gp-none { font-size: 12px; color: var(--text-3); padding: 4px 0 6px; }
-.gp-err { margin: 6px 0; font-size: 12.5px; overflow-wrap: anywhere; }
-.gp-status { margin: 8px 0 0; font-size: 11.5px; color: var(--text-3); min-height: 16px; }
-.gp-block { padding-bottom: 2px; }
-.gp-block + .gp-block { border-top: 1px solid var(--border); margin-top: 6px; }
 .count-badge-lite { font-size: 11px; font-weight: 500; background: var(--hover); border-radius: 9px; padding: 0 7px; color: var(--text-2); }
 
-.gp-check { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); margin-bottom: 5px; cursor: pointer; }
-.gp-check:hover:not(.off) { border-color: var(--border-strong); }
-.gp-check.on { border-color: color-mix(in srgb, var(--primary) 60%, var(--border)); background: var(--primary-soft); }
-.gp-check.off { opacity: 0.6; cursor: not-allowed; }
-.gp-check input { width: auto; margin: 3px 0 0; flex: none; accent-color: var(--primary); }
-.gp-check-body { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
-.gp-check-body b { font-weight: 500; overflow-wrap: anywhere; }
-.gp-check-body small { flex-basis: 100%; font-size: 11.5px; line-height: 1.5; color: var(--text-3); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.gp-check-body small.danger-text { -webkit-line-clamp: 4; }
-.gp-inline-meta { font-size: 11.5px; color: var(--text-3); display: inline-flex; align-items: center; }
-.gp-inline-meta .dot { margin-right: 4px; }
-.gp-seg { display: flex; width: 100%; margin: 4px 0 8px; }
-.gp-seg button { flex: 1; justify-content: center; }
-.gp-doclist { margin-top: 2px; }
-.gp-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.gp-sw-title { font-weight: 500; }
-.gp-select select { padding: 6px 8px; }
-.gp-problems { display: flex; gap: 6px; padding: 7px 10px; margin: 2px 0 6px; border-radius: 9px; background: var(--warn-bg); color: var(--warn); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.gp-problems > svg { flex: none; margin-top: 3px; }
-.gp-tool { display: flex; flex-direction: column; padding: 4px 0; border-bottom: 1px solid var(--border); }
-.gp-tool:last-child { border-bottom: 0; }
-.gp-tool code { align-self: flex-start; font-size: 11.5px; overflow-wrap: anywhere; }
-.gp-tool span { font-size: 11.5px; color: var(--text-3); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.gp-foot { display: flex; gap: 6px; align-items: flex-start; margin-top: 18px; padding: 8px 10px; border-radius: 9px; background: var(--warn-bg); color: var(--warn); font-size: 12px; line-height: 1.6; }
-.gp-foot > svg { flex: none; margin-top: 3px; }
 
-.gp-textarea { min-height: 120px; font-size: 13px; line-height: 1.6; resize: vertical; }
-.gp-prompt-bar { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.gp-vars { display: flex; flex-wrap: wrap; gap: 5px; }
-.gp-var { font: 11.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; padding: 1px 7px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text-2); }
-.gp-var:hover { border-color: var(--primary); color: var(--text); background: var(--primary-soft); }
-.gp-plist { display: flex; flex-direction: column; gap: 6px; }
-.gp-pitem { padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
-.gp-pitem-head { display: flex; align-items: center; gap: 6px; }
-.gp-pitem-head b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.gp-pitem-body { font-size: 12px; color: var(--text-3); line-height: 1.55; margin: 3px 0 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.gp-pitem-act { display: flex; gap: 6px; }
-.gp-viewer { display: flex; gap: 8px; align-items: center; }
-.gp-viewer select { flex: 1; }
-.gp-pv-meta { font-size: 12px; color: var(--text-3); margin-bottom: 8px; }
-.gp-pv { margin: 0; max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.65 ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--bg-sub); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 
 /* ---- 首页:群聊模板 ---- */
 .tpl-section { margin-top: 34px; }
 .tpl-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
 .tpl-title .muted { font-weight: 400; margin-left: 6px; }
 .tpl-err { margin-bottom: 8px; }
+/* Shown only when the lineup or the folder above has actually been set — the rest of the time the
+   templates stand alone and this line would be noise. */
+.tpl-note { font-size: 12px; color: var(--text-3); margin: -4px 0 8px; }
 .tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .tpl-card { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
 .tpl-card:hover:not(:disabled) { border-color: var(--primary); background: var(--primary-soft); }
@@ -215,9 +193,45 @@
   .gp { width: 280px; }
   .plan-state em { display: none; }
 }
-.gp-problem-note { margin-top: 3px; font-size: 11.5px; opacity: 0.85; }
 
 /* 面板标题栏的「+ 添加」小菜单 */
+
+/* ---- 被「看过/听过」的那份东西本身(MessageLook) ---- */
+/* A review result carries the file it looked at: the picture, the clip or the recording appears in
+   the trace, so the person reading can judge it directly instead of reading a description of it. */
+.msg-look { margin: 0; display: inline-flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.msg-look img, .msg-look video { max-width: min(420px, 100%); max-height: 420px; border-radius: 10px; border: 1px solid var(--border); display: block; }
+.msg-look video { background: #000; width: 100%; }
+.msg-look audio { width: min(420px, 100%); height: 34px; }
+.msg-look figcaption { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); overflow-wrap: anywhere; }
+.tool-pill-files .msg-look { margin: 0; }
+
+/* ---- 一条发言上的功能键:复制 / 评价 / 转发 / 朗读 / 引用 ---- */
+/* Always present rather than hover-only: the point of the request was that the keys be *there*.
+   Quiet by default so a long transcript does not turn into a wall of chips, and a judgement already
+   given keeps its thumb lit — a rating you cannot see is one you will give twice. */
+.msg-acts { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; margin-top: 5px; position: relative; }
+.msg-acts .act { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 7px;
+  font-size: 11.5px; color: var(--text-3); background: none; opacity: 0.72; }
+.msg-acts .act:hover:not(:disabled) { background: var(--hover); color: var(--text); opacity: 1; }
+.msg-acts .act:disabled { opacity: 0.4; }
+.msg-acts .act.on { color: var(--primary); background: var(--primary-soft); opacity: 1; }
+.msg-acts .act.on.up { color: var(--ok); }
+.msg-acts .act.on.down { color: var(--danger); }
+.msg-acts .act span { white-space: nowrap; }
+/* 「评价」的附注与「转发」的目标群都锚在这一行下面,不留白也不遮住正文。 */
+.act-note { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; flex: 1 1 100%; }
+.act-note input { flex: 1 1 220px; max-width: 420px; padding: 4px 8px; font-size: 12px; border-radius: 8px; }
+.act-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 2px; padding: 6px 8px; flex: 1 1 100%;
+  max-width: 460px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.act-list-head { font-size: 11.5px; color: var(--text-3); margin-bottom: 2px; }
+.act-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; border-radius: 7px; text-align: left; }
+.act-row:hover { background: var(--hover); }
+.act-row b { font-size: 12.5px; font-weight: 600; }
+.act-said { margin-left: 6px; }
+
+/* 导出菜单(聊天头部的「导出」)。⚠️ 它和刚删掉的群设置面板共用 `gp-` 前缀,删面板时差点把它
+   一起删了 —— 前缀相同不等于同一件事,删样式前要按**类名**核一遍还有谁在用。 */
 .gp-addmenu { position: relative; }
 .gp-addmenu-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; min-width: 210px; max-width: 280px; max-height: 320px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column; }
 .gp-addmenu-pop button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 10px; border-radius: 7px; text-align: left; width: 100%; }

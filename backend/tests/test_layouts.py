@@ -228,8 +228,13 @@ def test_a_fade_really_darkens_the_ends_of_a_shot(tmp_path):
     def render_with(kind: str) -> str:
         style = json.loads(json.dumps(layouts.style("default")))
         style["transition"] = {"kind": kind, "seconds": 0.5}
+        # `unify=False`: this measures the **transition**, and the style pass legitimately changes
+        # how bright the frame is — a 4:3 still in a 9:16 film used to be blown up behind a blurred
+        # copy of itself and is now framed whole at its own size, which is most of the frame's
+        # brightness. Placement has its own tests (`tests/test_visual.py`); mixing the two would make
+        # this test fail for a reason that has nothing to do with fades.
         out = __import__("asyncio").run(assemble.render(root, shots, size="480x854", style=style,
-                                                       name="tr-" + kind, timeout=300))
+                                                       name="tr-" + kind, timeout=300, unify=False))
         return out["path"]
 
     cut, fade = render_with("cut"), render_with("fade")

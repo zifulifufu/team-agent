@@ -379,14 +379,14 @@ def test_the_whatsapp_secrets_go_through_the_keychain_like_the_other_keys(tmp_pa
     st.update_settings({"whatsapp_app_secret": APP_SECRET, "whatsapp_token": TOKEN,
                         "whatsapp_verify_token": VERIFY_TOKEN})
     row = st._one("SELECT value FROM settings WHERE key='whatsapp_app_secret'")
-    assert json.loads(row["value"]) == "keychain:whatsapp:app-secret"
-    assert kc.items["whatsapp:app-secret"] == APP_SECRET
-    assert kc.items["whatsapp:access-token"] == TOKEN
-    assert kc.items["whatsapp:verify-token"] == VERIFY_TOKEN
+    assert json.loads(row["value"]) == "keychain:" + st._secret_ref("whatsapp", "app-secret")
+    assert kc.items[st._secret_ref("whatsapp", "app-secret")] == APP_SECRET
+    assert kc.items[st._secret_ref("whatsapp", "access-token")] == TOKEN
+    assert kc.items[st._secret_ref("whatsapp", "verify-token")] == VERIFY_TOKEN
     assert st.get_settings()["whatsapp_app_secret"] == APP_SECRET, "resolved back for the app"
     # clearing it must remove the keychain entry too, not leave a stale secret behind
     st.update_settings({"whatsapp_app_secret": ""})
-    assert "whatsapp:app-secret" not in kc.items
+    assert st._secret_ref("whatsapp", "app-secret") not in kc.items
 
 
 def test_the_public_host_is_accepted_but_other_hosts_are_not(tmp_path):

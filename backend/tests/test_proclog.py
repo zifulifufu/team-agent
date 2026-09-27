@@ -143,8 +143,11 @@ def test_scan_names_a_promised_file_that_is_not_there():
         "files": [], "file_count": 0, "missing": ["报告.docx"],
         "system_notes": [], "log": {},
     })
-    # The name of the file, not its path: the same suffix list `orchestrator._FILE_IN_PLAN` reads out
-    # of a `deliverable`, so the two agree on what "it promised a file" means.
+    # The name of the file, not its path: `planner.named_files` is the one reader of a `deliverable`,
+    # so the ledger and the executor agree by construction on what "it promised a file" means. They
+    # did not before: this module had a 12-extension list and the executor had a 27-extension one,
+    # and the 15 extensions only the executor knew about were audio and video — the work this group
+    # does — so a missing `旁白.wav` never reached the ledger's count.
     assert "报告.docx" in text
     assert "write_document(failed)" in text
     assert "T1" in text
@@ -198,9 +201,11 @@ def test_the_tool_scans_reports_and_lists_inside_the_group_workspace(store, make
         "note": "交付判定改成看文件"}))
     assert moved.ok and proclog.read(ledger)[0].status == "fixed"
 
-    # …and it is in the group's library, so the next round can find it by title.
-    synced = orch.library.sync_group_material(g["id"], workspace)
-    assert synced["documents"] >= 1, synced
+    # …and the ledger stays a file in the group's workspace. It used to be handed to the group's own
+    # knowledge base as well; nothing enters a library by itself any more, so what is asserted here is
+    # that the record is where it was written and readable.
+    assert store.list_docs() == []
+    assert "任务判成功但文件不存在" in ledger.read_text(encoding="utf-8")
 
 
 def test_the_tool_refuses_a_defect_it_cannot_evidence(store, make_router):

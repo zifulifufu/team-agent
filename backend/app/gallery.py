@@ -810,11 +810,48 @@ file needs no restart."""
 
 
 # --------------------------------------------------------------------- catalog
+def _user_team_rows(store: Store) -> list[dict]:
+    """Teams saved from groups the user ran, as gallery entries.
+
+    They appear here as well as on the home screen because the two lists are the same promise: a
+    template saved once has to be findable wherever templates are. Newest first (the store's order),
+    which is also why they are put before the built-in teams rather than sorted in with them.
+    """
+    rows = []
+    for t in store.list_group_templates():
+        rows.append({
+            "id": f"team:{t['id']}", "kind": "team",
+            "name": t["name"], "name_zh": t.get("name_zh") or t["name"],
+            "summary": t.get("desc") or "", "summary_zh": t.get("desc_zh") or t.get("desc") or "",
+            "icon": _ICONS["team"],
+            "tags": [f"{len(t.get('members') or [])} members"], "tags_zh": [f"{len(t.get('members') or [])} 位成员"],
+            "source": "user", "home": True,
+            "preview": {"members": [{"name": n, "name_zh": "", "avatar": _member_avatar(n),
+                                     "role": "", "role_zh": ""} for n in (t.get("members") or [])],
+                        "host": t.get("host") or "",
+                        "skills": list(t.get("skills") or []),
+                        "prompt": _clip(t.get("prompt") or "", 200)},
+            "def": {"members": list(t.get("members") or []), "host": t.get("host") or "",
+                    "skills": list(t.get("skills") or []), "prompt": t.get("prompt") or "",
+                    "name": t["name"]},
+            "from_group": t.get("from_group") or "",
+        })
+    return rows
+
+
+def _member_avatar(name: str) -> str:
+    """The avatar a saved template's member would get, from the built-in definitions when known."""
+    entry = builtin_for(name) or {}
+    return str(entry.get("avatar") or "🤖")
+
+
 def _all_items(store: Store) -> list[dict]:
+    # Saved teams first, then the built-ins and the custom JSON files, each kind sorted by name.
+    mine = _user_team_rows(store)
     rows = _builtin_rows() + _load_custom(store).items
     order = {k: i for i, k in enumerate(KINDS)}
     rows.sort(key=lambda r: (order.get(r["kind"], 9), r["name"]))
-    return rows
+    return mine + rows
 
 
 def _states(store: Store) -> dict:

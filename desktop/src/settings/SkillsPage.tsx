@@ -1,3 +1,4 @@
+import { CapabilityBinding, CapabilityFilter, useCapabilityGroup } from "./CapabilityWorkspace";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppWindow, FileText, Pencil, Plus, RefreshCw, Trash2, Users, User } from "lucide-react";
 import { api, type Skill } from "../api";
@@ -36,6 +37,8 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
   const [updating, setUpdating] = useState<string | null>(null);
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
   const [q, setQ] = useState("");
+  const [attachedOnly, setAttachedOnly] = useState(false);
+  const group = useCapabilityGroup();
 
   const load = useCallback(async () => {
     try {
@@ -64,7 +67,7 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
 
   // Kept in the order the backend sent, so the sections come out in the intended order and the
   // headings cannot disagree with the sorting.
-  const matching = (skills ?? []).filter((s) => matchesSkill(s, q));
+  const matching = (skills ?? []).filter((s) => matchesSkill(s, q) && (!group || !attachedOnly || group.ext.skills.includes(s.name)));
   const sections = groupByCategory(matching);
 
   const check = async () => {
@@ -131,26 +134,12 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
           <button className="btn primary" onClick={() => setEditing("new")}><Plus size={15} /> {t("New skill")}</button>
         </div>
       </div>
-      <p className="sp-desc">
-        {t("A skill is a plain-text description written for a model to read (how to write a formal notice, how to run a review meeting…). It never runs code. A member skill is ticked for one member; a group rule is attached to the whole group and everyone follows it.")}{onTab && <> {t("Want one ready-made?")}<button className="link" onClick={() => onTab("gallery")}>{t("Open the template gallery")}</button>{t("and import it in one click.")}</>}
-      </p>
+      <p className="sp-desc">{t("Skills are instructions members read. Attach them to a group here, or assign them to an individual member in the member editor. Executing their steps still requires tools.")}{onTab && <> <button className="link" onClick={() => onTab("gallery")}>{t("Template gallery")}</button></>}</p>
       {checkMsg && <div className={checkMsg.ok ? "ok-text" : "err"} style={{ marginBottom: 10 }}>{checkMsg.text}</div>}
       {loadErr && <div className="ext-errbox"><div className="err">{t("Could not read the skills:")} {loadErr}</div><button className="btn small" onClick={() => void load()}>{t("Retry")}</button></div>}
 
       {!skills && !loadErr && <div className="empty"><Spin /> {t("Loading…")}</div>}
-      {skills && skills.length > 0 && (
-        <div className="sp-search">
-          <input className="pm-text" value={q} onChange={(e) => setQ(e.target.value)}
-                 placeholder={t("Search skills by name or description")}
-                 aria-label={t("Search skills")} />
-          {q && (
-            <span className="muted small">
-              {t("{n} of {total} shown", { n: matching.length, total: skills.length })}
-              <button className="link" onClick={() => setQ("")}>{t("Clear")}</button>
-            </span>
-          )}
-        </div>
-      )}
+      {skills && <CapabilityFilter query={q} onQuery={setQ} attachedOnly={attachedOnly} onAttachedOnly={setAttachedOnly} total={skills.length} shown={matching.length} />}
       {skills && (
         <div className="card flush">
           {skills.length === 0 && (
@@ -201,6 +190,7 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
                             ? t("Not used yet")
                             : [u.agents.length ? t("Members: {names}", { names: u.agents.join(", ") }) : "", u.groups.length ? t("Groups: {names}", { names: u.groups.join(", ") }) : ""].filter(Boolean).join(" · ")}
                         </div>
+                        <CapabilityBinding key={group?.id} kind="skills" id={s.name} name={s.name} />
                         {rowErr[s.name] && <div className="ext-errline">{rowErr[s.name]}</div>}
                       </div>
                       <div className="ext-item-actions">
@@ -220,10 +210,6 @@ export default function SkillsPage({ onTab }: { onTab?: (t: SettingsTab) => void
           ))}
         </div>
       )}
-
-      <p className="muted small" style={{ marginTop: 12, lineHeight: 1.7 }}>
-        {t("A member skill is ticked while editing a member on the Members page. A group rule (and a member skill too) is attached to a group under Extensions, in the panel on the right of a chat.")}
-      </p>
 
       {editing && (
         <SkillDialog

@@ -4,8 +4,8 @@ import {
   ChevronLeft, ChevronRight, CircleAlert, CircleCheck, FileCode, FileJson, FileSpreadsheet, FileText, FileType,
   FolderInput, Layers, Link2, LoaderCircle, Pencil, Search, Sparkles, StickyNote, Trash2, Upload, X,
 } from "lucide-react";
-import { api, relTime, type Collection, type KnowledgeBase, type LibraryDoc, type LibraryHit, type VectorState } from "../api";
-import { CollectionSection, KbSection } from "../components/KnowledgeBases";
+import { api, relTime, type Collection, type KnowledgeBase, type LibraryDoc, type LibraryHit, type LibraryPage as LibPage, type LibraryVocabulary, type VectorState } from "../api";
+import { CollectionSection, KbSection, categoryWord as categoryWordOf, originWord as originWordOf } from "../components/KnowledgeBases";
 import { Modal, Switch, useConfirm } from "../ui";
 import "../styles/know.css";
 import { tr, useI18n } from "../i18n";
@@ -90,6 +90,10 @@ function KindIcon({ kind }: { kind: string }) {
 }
 const kindLabel = (k: string) => (k === "note" ? tr("Note") : k.toUpperCase());
 
+/** The word for one document's origin. Same vocabulary as the shelf's, same single definition. */
+const originWord = (o: string) => originWordOf(o, tr);
+const categoryWord = (c: string) => categoryWordOf(c, tr);
+
 interface UpItem {
   key: number;
   name: string;
@@ -97,6 +101,31 @@ interface UpItem {
   msg?: string;
 }
 let upSeq = 1;
+
+/** A stable empty list: `page?.docs ?? []` would be a new array on every render, and the semantic
+ *  search effect keys on it. */
+const NO_DOCS: LibraryDoc[] = [];
+
+/** The page control. Two of them — above and below a list of 200 rows, because having to scroll back
+ *  to the top to turn the page is its own kind of "hard to find things". */
+function LibPager({ from, to, total, page, pages, busy, onPage }: {
+  from: number; to: number; total: number; page: number; pages: number; busy: boolean;
+  onPage: (p: number) => void;
+}) {
+  const { t } = useI18n();
+  if (total === 0) return null;
+  return (
+    <div className="kn-pager">
+      <span className="kn-pager-count">{t("{from}–{to} of {n}", { from, to, n: total })}</span>
+      <span className="grow" />
+      <button className="btn small" disabled={page <= 0 || busy} onClick={() => onPage(0)}>{t("First page")}</button>
+      <button className="btn small" disabled={page <= 0 || busy} onClick={() => onPage(page - 1)}>{t("Previous page")}</button>
+      <span className="kn-pager-page">{t("Page {n} of {total}", { n: page + 1, total: pages })}</span>
+      <button className="btn small" disabled={page >= pages - 1 || busy} onClick={() => onPage(page + 1)}>{t("Next page")}</button>
+      <button className="btn small" disabled={page >= pages - 1 || busy} onClick={() => onPage(pages - 1)}>{t("Last page")}</button>
+    </div>
+  );
+}
 
 // --------------------------------------------------------------------- page
 /** Where new material goes: the knowledge base on screen, else everything the group can reach. */
@@ -118,13 +147,29 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
   const confirm = useConfirm();
   const { reloadGroups, groups } = useData();
   const group = groups.find((g) => g.id === groupId) ?? null;
-  const [docs, setDocs] = useState<LibraryDoc[]>([]);
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [cols, setCols] = useState<Collection[]>([]);
+  // The words the library's two labels are written in, served by the backend so the closed origin
+  // vocabulary has exactly one definition (`library.ORIGINS`). Fetched once, on mount.
+  const [vocab, setVocab] = useState<LibraryVocabulary | null>(null);
   // Which knowledge base the document list is narrowed to (null = everything in scope)
   const [kbFilter, setKbFilter] = useState<string | null>(null);
   const [shelfOpen, setShelfOpen] = useState(true);
-  const [total, setTotal] = useState(0);
+  // ---- The list is a page of a classified library, not the whole thing
+  //
+  // 6,160 documents arrive from one directory import, and both halves of that were broken: the
+  // response carried every row and the table rendered every row. So the page asks for a window of
+  // documents, and the classification (origin / kind / knowledge base) is what makes "6,160" a
+  // number you can act on rather than a wall you scroll.
+  const [page, setPage] = useState<LibPage | null>(null);
+  const [titleQ, setTitleQ] = useState("");
+  const [titleQd, setTitleQd] = useState("");     // what is actually asked for, 250ms behind the box
+  const [originF, setOriginF] = useState("");
+  const [kindF, setKindF] = useState("");
+  const [catF, setCatF] = useState("");
+  const [groupBy, setGroupBy] = useState<"" | "origin" | "kind" | "kb" | "category">("");
+  const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(50);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState("");
   const [rowErr, setRowErr] = useState("");
@@ -148,16 +193,24 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
 
   const load = useCallback(async () => {
     try {
-      const r = await api.library(scope);
-      setDocs(r.docs);
-      setTotal(r.total_chars);
+      const r = await api.library({ group: groupId, kb: kbFilter ?? undefined }, {
+        q: titleQd, origin: originF, kind: kindF, category: catF, groupBy, offset, limit,
+      });
+      setPage(r);
       setLoadErr("");
     } catch (e) {
       setLoadErr((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [groupId, kbFilter]);
+  }, [groupId, kbFilter, titleQd, originF, kindF, catF, groupBy, offset, limit]);
+
+  // The box types immediately, the request goes out 250ms later: a filter is a substring match over
+  // thousands of rows, and one request per keystroke is a request per keystroke.
+  useEffect(() => {
+    const id = window.setTimeout(() => setTitleQd(titleQ.trim()), 250);
+    return () => window.clearTimeout(id);
+  }, [titleQ]);
 
   // Knowledge bases and collections are managed here too; `load` refreshes the documents, this
   // refreshes the shelves. Together they keep the counts and the list in step.
@@ -168,6 +221,7 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
 
   useEffect(() => { void load(); }, [load]);
   useEffect(loadShelf, [loadShelf]);
+  useEffect(() => { api.libraryVocabulary().then(setVocab).catch(() => undefined); }, []);
   const reloadAll = useCallback(() => { void load(); loadShelf(); }, [load, loadShelf]);
   useEffect(() => () => window.clearTimeout(openTimer.current), []);
 
@@ -228,12 +282,14 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
       }
     }, 300);
     return () => { alive = false; window.clearTimeout(t); };
-  }, [q, docs]);
+    // `page` rather than `docs`: this re-runs after a row is enabled/disabled or a document is
+    // deleted, and `docs` is a fresh array on every render when there is no page yet.
+  }, [q, page]);
 
   // ---- Row actions
   const toggle = async (d: LibraryDoc, enabled: boolean) => {
     setRowErr("");
-    setDocs((l) => l.map((x) => (x.id === d.id ? { ...x, enabled } : x)));
+    setPage((p) => (p ? { ...p, docs: p.docs.map((x) => (x.id === d.id ? { ...x, enabled } : x)) } : p));
     try {
       await api.patchDoc(d.id, { enabled });
     } catch (e) {
@@ -273,8 +329,38 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
   const open = (d: { id: string; title: string }, query = "") => setReading({ id: d.id, title: d.title, q: query });
 
   const scope: LibScope = { group: groupId, kb: kbFilter ?? undefined };
-  const empty = !loading && !loadErr && docs.length === 0 && kbs.length === 0;
+  const docs = page?.docs ?? NO_DOCS;
+  const total = page?.total_chars ?? 0;
+  const totalDocs = page?.total ?? 0;
+  // The classification of the whole scope, biggest class first — the chip rows are read as a
+  // description of the library ("6,029 imported, 114 fetched"), so the order must not be by token.
+  const classes = (counts: Record<string, number> | undefined) =>
+    Object.entries(counts ?? {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const byOrigin = classes(page?.origins);
+  const byKind = classes(page?.kinds);
+  const byCat = classes(page?.categories);
+  const empty = !loading && !loadErr && docs.length === 0 && kbs.length === 0 && !titleQ && !originF && !kindF && !catF;
+  const filtered = Boolean(titleQ.trim() || originF || kindF || catF);
   const kbById = new Map(kbs.map((k) => [k.id, k]));
+  /** One class in the classification view: its label, from the same three vocabularies the rows use. */
+  const classLabel = (id: string) => {
+    if (groupBy === "kb") return kbById.get(id)?.name ?? t("Unknown knowledge base");
+    if (groupBy === "origin") return id ? originWord(id) : t("Unknown");
+    if (groupBy === "category") return categoryWord(id);
+    return kindLabel(id);
+  };
+  /** Open a class as a filtered list: the classification view is a way in, not a dead end. */
+  const openClass = (id: string) => {
+    if (groupBy === "kb") setKbFilter(id || null);
+    else if (groupBy === "origin") setOriginF(id);
+    else if (groupBy === "category") setCatF(id);
+    else setKindF(id);
+    setGroupBy("");
+    setOffset(0);
+  };
+  // Any change of filter goes back to page one: staying on page 12 of a different list shows an
+  // empty table and reads as "the filter found nothing".
+  useEffect(() => { setOffset(0); }, [groupId, kbFilter, titleQd, originF, kindF, catF, groupBy, limit]);
   const dropZone = (
     <div className={"kn-drop" + (drag ? " over" : "") + (empty ? " big" : "")}>
       <Upload size={empty ? 26 : 18} strokeWidth={1.6} />
@@ -285,6 +371,62 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
       {!drag && (
         <button className="btn small" onClick={() => fileInput.current?.click()}>{t("Choose files")}</button>
       )}
+    </div>
+  );
+
+  /** One document row. A function rather than a component because it needs the whole page's state
+   *  (the rename box, the toggle, the delete confirmation) and both views render the same rows. */
+  const docRow = (d: LibraryDoc) => (
+    <div key={d.id} className={"kn-doc-row" + (d.enabled ? "" : " off")} role="row">
+      <span className="kn-doc-ico" title={kindLabel(d.kind)}><KindIcon kind={d.kind} /></span>
+      <div className="kn-doc-main">
+        {renaming === d.id ? (
+          <input
+            className="kn-rename"
+            autoFocus
+            value={renameText}
+            aria-label={t("Document title")}
+            onChange={(e) => setRenameText(e.target.value)}
+            onBlur={() => void commitRename(d)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") { setRenameText(d.title); setRenaming(null); }
+            }}
+          />
+        ) : (
+          <button
+            className="kn-doc-title"
+            title={t("Click to read, double-click to rename")}
+            onClick={() => {
+              window.clearTimeout(openTimer.current);
+              openTimer.current = window.setTimeout(() => open(d), 230);
+            }}
+            onDoubleClick={() => startRename(d)}
+          >
+            {d.title}
+          </button>
+        )}
+        <div className="kn-doc-sub">
+          <span className="tag">{kindLabel(d.kind)}</span>
+          {/* Where this one document came from. It sits beside the base's name rather than being
+              folded into it because a base can hold several — which is exactly what the base's own
+              `mixed` label is reporting. */}
+          <span className="tag" title={t("Where this document came from")}>{originWord(d.origin)}</span>
+          {d.category && <span className="tag cat" title={t("What this material is for")}>{categoryWord(d.category)}</span>}
+          <span className={"tag" + (kbById.get(d.kb_id)?.group_id ? "" : " shared")} title={t("Knowledge base")}>
+            {kbById.get(d.kb_id)?.name ?? t("Unknown knowledge base")}
+          </span>
+          <span className="kn-doc-file">{d.filename ? d.filename : t("Manual note")}</span>
+          {!d.enabled && <span className="tag warn">{t("Disabled — not searched")}</span>}
+        </div>
+      </div>
+      <span className="kn-col-size kn-num">{t("{chars} chars · {chunks} chunks", { chars: d.chars.toLocaleString(), chunks: d.chunks })}</span>
+      <span className="kn-col-time kn-num muted">{relTime(d.created_at)}</span>
+      <span className="kn-col-sw"><Switch checked={d.enabled} onChange={(v) => void toggle(d, v)} label={t("Enable \"{title}\"", { title: d.title })} /></span>
+      <span className="kn-doc-ops">
+        <button className="icon-btn tiny" aria-label={t("Rename \"{title}\"", { title: d.title })} title={t("Rename")} onClick={() => startRename(d)}><Pencil size={14} /></button>
+        <button className="icon-btn tiny kn-del" aria-label={t("Delete \"{title}\"", { title: d.title })} title={t("Delete")} onClick={() => void remove(d)}><Trash2 size={14} /></button>
+      </span>
     </div>
   );
 
@@ -342,7 +484,7 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
           </button>
           {shelfOpen && (
             <>
-              <KbSection kbs={kbs} groupId={groupId} active={kbFilter} onOpen={setKbFilter} onChanged={reloadAll} />
+              <KbSection kbs={kbs} groupId={groupId} active={kbFilter} onOpen={setKbFilter} onChanged={reloadAll} vocab={vocab} />
               <div className="kn-shelf-sub">{t("Collections")}</div>
               <CollectionSection cols={cols} kbs={kbs} onChanged={reloadAll} />
             </>
@@ -399,10 +541,151 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
           </div>
         )}
 
-        {docs.length > 0 && (
+        {page && (totalDocs > 0 || filtered) && (
           <>
+            <div className="kn-toolbar kn-lib-bar">
+              <label className="search-box kn-filter">
+                <Search size={15} />
+                <input
+                  value={titleQ}
+                  onChange={(e) => setTitleQ(e.target.value)}
+                  placeholder={t("Filter by title or file name")}
+                  aria-label={t("Filter by title or file name")}
+                />
+                {titleQ && (
+                  <button className="icon-btn tiny" aria-label={t("Clear the filter")} title={t("Clear")} onClick={() => setTitleQ("")}><X size={13} /></button>
+                )}
+              </label>
+              <span className="kn-stats">
+                {t("{n} documents", { n: totalDocs })}{filtered ? t(" (filtered)") : ""} · {fmtChars(total)}
+              </span>
+              <span className="grow" />
+              <label className="kn-groupby">
+                <span>{t("Arrange")}</span>
+                <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as typeof groupBy)} aria-label={t("Arrange the documents")}>
+                  <option value="">{t("One list, one page at a time")}</option>
+                  <option value="origin">{t("Grouped by source")}</option>
+                  <option value="kind">{t("Grouped by type")}</option>
+                  <option value="category">{t("Grouped by what it is for")}</option>
+                  <option value="kb">{t("Grouped by knowledge base")}</option>
+                </select>
+              </label>
+              <label className="kn-groupby">
+                <span>{t("Per page")}</span>
+                <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} aria-label={t("Documents per page")}>
+                  {[25, 50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
+            </div>
+
+            {/* The classification. A chip is a filter and a count at once, so the shape of the
+                library is readable without opening anything. */}
+            {byOrigin.length > 1 && (
+              <div className="kn-chips" role="group" aria-label={t("By source")}>
+                <span className="kn-chips-label">{t("Source")}</span>
+                <button className={"kn-chip" + (!originF ? " on" : "")} onClick={() => setOriginF("")}>
+                  {t("All")} <em>{totalDocs}</em>
+                </button>
+                {byOrigin.map(([id, n]) => (
+                  <button key={id} className={"kn-chip" + (originF === id ? " on" : "")}
+                          aria-pressed={originF === id}
+                          onClick={() => setOriginF(originF === id ? "" : id)}>
+                    {id ? originWord(id) : t("Unknown")} <em>{n}</em>
+                  </button>
+                ))}
+              </div>
+            )}
+            {byKind.length > 1 && (
+              <div className="kn-chips" role="group" aria-label={t("By type")}>
+                <span className="kn-chips-label">{t("Type")}</span>
+                <button className={"kn-chip" + (!kindF ? " on" : "")} onClick={() => setKindF("")}>
+                  {t("All")} <em>{totalDocs}</em>
+                </button>
+                {byKind.map(([id, n]) => (
+                  <button key={id} className={"kn-chip" + (kindF === id ? " on" : "")}
+                          aria-pressed={kindF === id}
+                          onClick={() => setKindF(kindF === id ? "" : id)}>
+                    {kindLabel(id)} <em>{n}</em>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* What the material is *for*. Only fetched skill material carries one — its own name
+                says it — so this row is the difference between "114 notes off a platform" and
+                "28 about camera work, 27 about ads, 10 about storyboards". */}
+            {byCat.length > 1 && (
+              <div className="kn-chips" role="group" aria-label={t("By what it is for")}>
+                <span className="kn-chips-label">{t("For")}</span>
+                <button className={"kn-chip" + (!catF ? " on" : "")} onClick={() => setCatF("")}>
+                  {t("All")} <em>{totalDocs}</em>
+                </button>
+                {byCat.map(([id, n]) => (
+                  <button key={id || "__none"} className={"kn-chip" + (catF === id ? " on" : "")}
+                          aria-pressed={catF === id}
+                          onClick={() => setCatF(catF === id ? "" : id)}>
+                    {categoryWord(id)} <em>{n}</em>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {rowErr && <div className="err kn-block">{rowErr}</div>}
+
+            {docs.length === 0 && !loading && (
+              <div className="empty kn-none">{t("Nothing matches those filters.")} <button className="link" onClick={() => { setTitleQ(""); setOriginF(""); setKindF(""); setCatF(""); }}>{t("Clear them")}</button></div>
+            )}
+
+            {page.groups ? (
+              // The classification view: each class shows its count and its first few documents,
+              // and "show all N" turns into the filtered list above. Nothing is ever expanded whole.
+              <div className="kn-classes">
+                {page.groups.map((g) => (
+                  <section key={g.id || "__none"} className="kn-class">
+                    <div className="kn-class-head">
+                      <b>{classLabel(g.id)}</b>
+                      <span className="muted small">{t("{n} documents", { n: g.count })}</span>
+                      <span className="grow" />
+                      <button className="btn small" onClick={() => openClass(g.id)}>{t("Show all {n}", { n: g.count })}</button>
+                    </div>
+                    <div className="kn-docs" role="table" aria-label={t("{name}: documents", { name: classLabel(g.id) })}>
+                      {g.docs.map(docRow)}
+                    </div>
+                    {g.count > g.docs.length && (
+                      <button className="link kn-class-more" onClick={() => openClass(g.id)}>
+                        {t("{n} more in this class", { n: g.count - g.docs.length })}
+                      </button>
+                    )}
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <>
+                <LibPager from={totalDocs ? offset + 1 : 0} to={offset + docs.length} total={totalDocs}
+                          page={Math.floor(offset / limit)} pages={Math.max(1, Math.ceil(totalDocs / limit))}
+                          busy={loading} onPage={(p) => setOffset(p * limit)} />
+                <div className="kn-docs" role="table" aria-label={t("Document list")}>
+                  <div className="kn-doc-row kn-doc-th" role="row">
+                    <span />
+                    <span>{t("Title")}</span>
+                    <span className="kn-col-size">{t("Chars · chunks")}</span>
+                    <span className="kn-col-time">{t("Added")}</span>
+                    <span className="kn-col-sw">{t("On")}</span>
+                    <span />
+                  </div>
+                  {docs.map(docRow)}
+                </div>
+                <LibPager from={totalDocs ? offset + 1 : 0} to={offset + docs.length} total={totalDocs}
+                          page={Math.floor(offset / limit)} pages={Math.max(1, Math.ceil(totalDocs / limit))}
+                          busy={loading} onPage={(p) => setOffset(p * limit)} />
+              </>
+            )}
+
             <div className="kn-toolbar">
-              <div className="kn-stats">{t("{n} documents", { n: docs.length })} · {fmtChars(total)}</div>
+              <div className="kn-stats">
+                <b>{t("Try it")}</b>{" "}
+                {t("type a keyword and see the snippets a member would get — this is the search itself, not a filter of this list")}
+              </div>
               <label className="search-box kn-search">
                 <Search size={15} />
                 <input
@@ -445,66 +728,6 @@ export default function LibraryPage({ groupId, onBack }: { groupId?: string; onB
                 ))}
               </section>
             )}
-
-            {rowErr && <div className="err kn-block">{rowErr}</div>}
-            <div className="kn-docs" role="table" aria-label={t("Document list")}>
-              <div className="kn-doc-row kn-doc-th" role="row">
-                <span />
-                <span>{t("Title")}</span>
-                <span className="kn-col-size">{t("Chars · chunks")}</span>
-                <span className="kn-col-time">{t("Added")}</span>
-                <span className="kn-col-sw">{t("On")}</span>
-                <span />
-              </div>
-              {docs.map((d) => (
-                <div key={d.id} className={"kn-doc-row" + (d.enabled ? "" : " off")} role="row">
-                  <span className="kn-doc-ico" title={kindLabel(d.kind)}><KindIcon kind={d.kind} /></span>
-                  <div className="kn-doc-main">
-                    {renaming === d.id ? (
-                      <input
-                        className="kn-rename"
-                        autoFocus
-                        value={renameText}
-                        aria-label={t("Document title")}
-                        onChange={(e) => setRenameText(e.target.value)}
-                        onBlur={() => void commitRename(d)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          if (e.key === "Escape") { setRenameText(d.title); setRenaming(null); }
-                        }}
-                      />
-                    ) : (
-                      <button
-                        className="kn-doc-title"
-                        title={t("Click to read, double-click to rename")}
-                        onClick={() => {
-                          window.clearTimeout(openTimer.current);
-                          openTimer.current = window.setTimeout(() => open(d), 230);
-                        }}
-                        onDoubleClick={() => startRename(d)}
-                      >
-                        {d.title}
-                      </button>
-                    )}
-                    <div className="kn-doc-sub">
-                      <span className="tag">{kindLabel(d.kind)}</span>
-                      <span className={"tag" + (kbById.get(d.kb_id)?.group_id ? "" : " shared")} title={t("Knowledge base")}>
-                        {kbById.get(d.kb_id)?.name ?? t("Unknown knowledge base")}
-                      </span>
-                      <span className="kn-doc-file">{d.filename ? d.filename : t("Manual note")}</span>
-                      {!d.enabled && <span className="tag warn">{t("Disabled — not searched")}</span>}
-                    </div>
-                  </div>
-                  <span className="kn-col-size kn-num">{t("{chars} chars · {chunks} chunks", { chars: d.chars.toLocaleString(), chunks: d.chunks })}</span>
-                  <span className="kn-col-time kn-num muted">{relTime(d.created_at)}</span>
-                  <span className="kn-col-sw"><Switch checked={d.enabled} onChange={(v) => void toggle(d, v)} label={t("Enable \"{title}\"", { title: d.title })} /></span>
-                  <span className="kn-doc-ops">
-                    <button className="icon-btn tiny" aria-label={t("Rename \"{title}\"", { title: d.title })} title={t("Rename")} onClick={() => startRename(d)}><Pencil size={14} /></button>
-                    <button className="icon-btn tiny kn-del" aria-label={t("Delete \"{title}\"", { title: d.title })} title={t("Delete")} onClick={() => void remove(d)}><Trash2 size={14} /></button>
-                  </span>
-                </div>
-              ))}
-            </div>
           </>
         )}
       </div>

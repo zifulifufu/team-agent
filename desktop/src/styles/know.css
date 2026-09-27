@@ -203,6 +203,23 @@ textarea.kn-mono[rows="9"] { resize: vertical; overflow: auto; min-height: 0; }
 .kn-add-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .kn-add-row .kn-rename { flex: 1; min-width: 0; }
 
+/* The heading a knowledge base is filed under, as a row in the same grid as the bases themselves —
+   so the columns below it stay aligned with the header above. It spans the grid rather than sitting
+   outside it, which is what keeps a long list scannable: heading, bases, heading, bases. */
+.kn-doc-row.kn-grp { grid-template-columns: 36px minmax(0, 1fr); column-gap: 10px; padding: 8px 14px;
+                     background: var(--bg-sub); border-top: 1px solid var(--border); }
+.kn-grp-toggle { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+                 border-radius: 6px; color: var(--text-2); }
+.kn-grp-toggle:hover { background: var(--hover); color: var(--text); }
+.kn-grp-name { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.kn-grp-note { grid-column: 2; }
+/* A badge you can press: the heading and the origin are both editable, and a control that looks like
+   a label is the only version of this that does not need a second column. */
+.tag.kn-tag-btn { border: 1px dashed transparent; cursor: pointer; }
+.tag.kn-tag-btn:hover { border-color: var(--line, var(--border)); color: var(--text); }
+.kn-label-in { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 4px; height: 18px;
+               width: 132px; border: 1px solid var(--primary); background: var(--card); }
+
 /* Searching by meaning: one line per fact, and the commands printed in full when something is
    missing. `.kn-vec-line` wraps rather than clips — the fetch command for the weights is long. */
 .kn-vec-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 4px 0; font-size: 12.5px; }
@@ -212,3 +229,52 @@ textarea.kn-mono[rows="9"] { resize: vertical; overflow: auto; min-height: 0; }
 .kn-vec-actions:empty { display: none; }
 .kn-vec-field { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
 .kn-vec-field > span:first-child { min-width: 170px; color: var(--text-2); }
+
+/* ---- 一份有几千篇的资料库:分页、分类、筛选 ---- */
+/* The list is one page of a classified library. 6,160 documents arrived from a single directory
+   import; rendering every row made the page unreadable, and there was no way to ask "what is in
+   here" other than scrolling. */
+.kn-lib-bar { flex-wrap: wrap; margin-top: 18px; }
+.kn-filter { width: 300px; max-width: 100%; }
+.kn-groupby { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.kn-groupby select { padding: 5px 8px; font-size: 12.5px; }
+/* One row per dimension: the count on every chip is what makes the shape of the library readable
+   without opening anything. */
+.kn-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.kn-chips-label { font-size: 11.5px; color: var(--text-3); flex: none; min-width: 34px; }
+.kn-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); font-size: 12px; color: var(--text-2); }
+.kn-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.kn-chip.on { border-color: var(--primary); background: var(--primary-soft); color: var(--text); font-weight: 500; }
+.kn-chip em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--text-3); font-size: 11px; }
+.kn-chip.on em { color: var(--text-2); }
+.kn-none { display: flex; align-items: center; gap: 6px; justify-content: center; }
+
+.kn-pager { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
+.kn-pager-count, .kn-pager-page { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.kn-pager-page { padding: 0 4px; }
+
+/* The classification view: each class is a section showing its size and a few documents. */
+.kn-classes { display: flex; flex-direction: column; gap: 14px; }
+.kn-class-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.kn-class-head b { font-size: 13.5px; }
+.kn-class-more { margin: 4px 0 0 2px; }
+/* 「用处」那一枚标签:和「来源」并排,但颜色不同 —— 一个是它从哪来,一个是它能干什么。 */
+.kn-doc-sub .tag.cat { background: var(--primary-soft); color: var(--ok); }
+
+/* ---- 反馈体系:用户对每条回答的评价 ---- */
+.fb-page { display: flex; flex-direction: column; }
+.fb-bar { display: flex; align-items: center; gap: 10px; margin: 8px 0 14px; }
+.fb-totals { display: inline-flex; align-items: center; gap: 6px; }
+.chip.ok { color: var(--ok); }
+.chip.bad { color: var(--danger); }
+.fb-members { display: flex; flex-direction: column; gap: 14px; }
+.fb-member { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--card); }
+.fb-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fb-head b { font-size: 13.5px; }
+.fb-note { display: flex; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
+.fb-thumb { flex: none; margin-top: 2px; }
+.fb-thumb.ok { color: var(--ok); }
+.fb-thumb.bad { color: var(--danger); }
+.fb-said { font-size: 12.5px; }
+.fb-source { margin-top: 3px; font-size: 11.5px; color: var(--text-3); border-left: 2px solid var(--border);
+  padding-left: 8px; max-height: 62px; overflow: hidden; }

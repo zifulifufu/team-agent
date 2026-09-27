@@ -1,0 +1,44 @@
+.cap-workspace { width: min(1120px, 100%); margin: 0 auto; padding: 26px 30px 48px; box-sizing: border-box; }
+.cap-workspace > .sp { padding: 0; max-width: none; width: 100%; }
+.cap-intro { margin-bottom: 18px; }
+.cap-eyebrow { font-size: 12px; font-weight: 650; color: var(--text-2); letter-spacing: .06em; }
+.cap-intro > p { font-size: 14px; margin: 9px 0 12px; }
+.cap-guide { font-size: 12px; color: var(--text-2); }
+.cap-guide summary { cursor: pointer; width: fit-content; }
+.cap-guide p { line-height: 1.7; }
+.cap-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.cap-flow button { text-align: left; display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: inherit; cursor: pointer; }
+.cap-flow button[aria-current] { border-color: var(--primary); }
+.cap-flow b { color: var(--text); }
+.cap-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 24px; line-height: 1.6; }
+.cap-scope label { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 600; }
+.cap-scope select { max-width: 320px; width: auto; }
+.cap-scope label > span { white-space: nowrap; }
+.cap-scope > span { flex: 1; min-width: 210px; }
+.cap-binding { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.cap-binding .err { flex-basis: 100%; }
+.cap-filter { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 14px 0; }
+.cap-filter > input { flex: 1; min-width: 180px; }
+.cap-check { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.cap-check input { width: auto; }
+.cap-workspace .sp-head { flex-wrap: wrap; gap: 12px; }
+.cap-workspace .sp-head-actions { flex-wrap: wrap; }
+.cap-workspace .sp-desc { line-height: 1.75; }
+.cap-workspace .ext-item-actions { flex-wrap: wrap; justify-content: flex-end; }
+.cap-workspace .ext-item-desc { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.cap-engine-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.cap-engine-grid .card { margin: 0; min-width: 0; padding: 16px; }
+.cap-engine-grid h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; font-size: 14px; }
+.cap-engine-grid p { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.cap-engine-grid .ext-item-actions { justify-content: flex-start; margin-top: 12px; }
+.cap-readiness { padding: 14px; border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; font-size: 12px; line-height: 1.8; }
+.cap-readiness b { display: block; margin-bottom: 4px; }
+.cap-workspace .chan-tabs { flex-wrap: wrap; }
+.cap-workspace .hook-foot { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .cap-workspace { padding: 20px 16px 40px; }
+  .cap-flow, .cap-engine-grid { grid-template-columns: 1fr; }
+  .cap-scope label { flex-wrap: wrap; }
+  .cap-scope select { max-width: 100%; }
+  .cap-workspace .model-row { flex-wrap: wrap; }
+}

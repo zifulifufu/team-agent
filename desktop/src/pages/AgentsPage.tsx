@@ -20,8 +20,10 @@ export default function AgentsPage({ onSettings }: { onSettings: (tab: SettingsT
   const [sel, setSel] = useState<string | "new" | null>(null);
   const [fromApps, setFromApps] = useState(false);
   const [flash, setFlash] = useState("");
+  const [section, setSection] = useState<"members" | "tools">("members");
+  const visible = agents.filter((a) => !!a.is_tool === (section === "tools"));
   const creating = sel === "new";
-  const cur = creating ? null : agents.find((a) => a.id === sel) ?? (sel === null ? agents[0] : null) ?? null;
+  const cur = creating ? null : visible.find((a) => a.id === sel) ?? visible[0] ?? null;
 
   return (
     <div className="page-cols">
@@ -31,11 +33,14 @@ export default function AgentsPage({ onSettings }: { onSettings: (tab: SettingsT
           <button className="btn small" onClick={() => setFromApps(true)} title={t("Read the expert packages another AI application has on this machine")}>
             <GraduationCap size={14} /> {t("Import experts")}
           </button>
-          <button className="btn small" onClick={() => setSel("new")}><Plus size={14} /> {t("New")}</button>
+          <button className="btn small" onClick={() => { setSection("members"); setSel("new"); }}><Plus size={14} /> {t("New")}</button>
         </div>
         {flash && <div className="ok-text small" style={{ padding: "6px 10px" }}>{flash}</div>}
+        <div className="roster-tabs" role="tablist" aria-label={t("Members and tools")}>
+          {(["members", "tools"] as const).map((kind) => <button key={kind} role="tab" aria-selected={section === kind} onClick={() => { setSection(kind); setSel(null); }}>{t(kind === "tools" ? "Tools" : "Members")}</button>)}
+        </div>
         <div className="page-list-body">
-          {agents.map((a) => (
+          {visible.map((a) => (
             <button key={a.id} className={"list-item" + (!creating && cur?.id === a.id ? " on" : "")} onClick={() => setSel(a.id)}>
               <span className="avatar sm">{a.avatar}</span>
               <span className="li-main">
@@ -73,7 +78,7 @@ export default function AgentsPage({ onSettings }: { onSettings: (tab: SettingsT
 
 function AgentForm({ agent, onDone, onSettings }: { agent: Agent | null; onDone: (id?: string) => Promise<void>; onSettings: (tab: SettingsTab) => void }) {
   const { t } = useI18n();
-  const { models } = useData();
+  const { models, providers } = useData();
   const confirm = useConfirm();
   const [f, setF] = useState<Partial<Agent>>(agent ?? BLANK);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -187,9 +192,13 @@ function AgentForm({ agent, onDone, onSettings }: { agent: Agent | null; onDone:
           {(f.tags?.length ?? 0) > 5 && <div className="ag-help warn">{t("{n} selected — too many makes strengths meaningless; keep the 4-5 that matter most.", { n: f.tags!.length })}</div>}
           <div className="ag-help">{t("The host assigns tasks by these strengths, and they pick the best model when none is pinned. Strength tags are inferred from the model family and name — they are not benchmark results.")}</div>
         </div>
-        {agent?.engine ? (
+      {agent?.origin === "media" ? (
+          <div className="field"><span>{t("Image and video tools")}</span><b>{providers.flatMap((p) => p.media_models ?? []).find((m) => m.id === f.model_id)?.display_name || f.model_id}</b>
+            <div className="ag-help">{t("Members assign work with @ or the task board. Results return to the assigning member for review.")}</div>
+          </div>
+        ) : agent?.engine ? (
           <div className="field">
-            <span>{t("External agent")}</span>
+            <span>{t(agent.is_tool ? "Local execution tool" : "External agent")}</span>
             <div className="ag-reco">
               {t("Replies come from the command-line engine it ships with, not through this app's model routing, so there is no model to pick here.")}
               {t("Permission level, working folder and hand-off are configured separately below.")}

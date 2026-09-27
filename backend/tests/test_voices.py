@@ -179,3 +179,18 @@ def test_missing_engine_is_named_with_the_command_that_installs_it(monkeypatch):
     monkeypatch.setattr(voices, "binary", lambda *_a, **_k: "")
     said = voices.reason_missing("omnivoice")
     assert "omnivoice-infer" in said and "uv sync" in said
+
+
+def test_qwen3tts_speaks_the_same_flags_the_tool_side_uses():
+    """旁白侧给 Qwen3-TTS 拼出来的命令行,必须和它自己那个入口对得上。
+
+    Qwen's installed CLI accepts hyphens; OmniVoice accepts underscores.
+    """
+    row = {"engine": "qwen3tts", "path": "/tmp/ref.wav", "ref_text": "参考原话", "language": "Chinese"}
+    argv = voices.argv_for(row, "念这句", pathlib.Path("/tmp/out.wav"))
+    assert argv[0] == "qwen-tts-say", argv
+    assert argv[1:3] == ["--text", "念这句"], argv
+    assert "--output" in argv and "/tmp/out.wav" in argv, argv
+    assert "--ref-audio" in argv and "/tmp/ref.wav" in argv, argv
+    assert "--ref-text" in argv and "参考原话" in argv, argv
+    assert "--language" in argv and "Chinese" in argv, argv

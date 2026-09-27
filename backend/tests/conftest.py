@@ -38,8 +38,13 @@ def has(text: str, marker: tuple[str, ...]) -> bool:
     return any(m in text for m in marker)
 
 
-def chunk(text: str):
-    return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
+def chunk(text: str, reasoning: str | None = None):
+    """One streamed delta. `reasoning` puts text in the field a reasoning model uses for its working
+    (it arrives with an empty `content`), which is what the live "thinking" view is fed from."""
+    delta = SimpleNamespace(content=text)
+    if reasoning is not None:
+        delta.reasoning_content = reasoning
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
 
 
 class FakeLLM:
@@ -48,6 +53,7 @@ class FakeLLM:
     script maps {litellm model string prefix: behaviour}, where a behaviour is:
     a string -> streamed back as-is; an Exception instance -> raised;
     ("partial_then_fail", text) -> emits one chunk then fails;
+    ("reasoning", working, answer) -> streams `working` in the reasoning field, then the answer;
     callable(messages) -> returns a string.
     """
 
@@ -73,6 +79,13 @@ class FakeLLM:
             if isinstance(behavior, tuple) and behavior[0] == "partial_then_fail":
                 yield chunk(behavior[1])
                 raise ConnectionError("stream broke")
+            if isinstance(behavior, tuple) and behavior[0] == "reasoning":
+                working, answer = behavior[1], behavior[2]
+                for i in range(0, len(working), 3):
+                    yield chunk("", working[i : i + 3])
+                for i in range(0, len(answer), 3):
+                    yield chunk(answer[i : i + 3])
+                return
             text = behavior
             for i in range(0, len(text), 3):
                 yield chunk(text[i : i + 3])

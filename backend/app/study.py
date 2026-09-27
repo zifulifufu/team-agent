@@ -213,11 +213,27 @@ def frames(path: Path, n: int = FRAMES, *, max_seconds: float = MAX_SECONDS,
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
-def speech(path: Path) -> tuple[str, str]:
+def speech(path: Path, workspace: Path | None = None) -> tuple[str, str]:
     """What the audio says, and why not when it cannot be read. Never guessed: a transcript that was
-    not produced has to say so, or the spec invents narration the reference never had."""
+    not produced has to say so, or the spec invents narration the reference never had.
+
+    With a `workspace`, the reading is remembered next to the file (`attachments.speech_key`), which
+    matters here more than anywhere else: transcribing a reference is the slowest single step of
+    studying it, and studying the same reference twice — once to see the format, again after a
+    question about it — used to pay for it twice. Nothing is remembered when it failed: a machine
+    that installs a transcriber later must not be held to a failure it has since fixed.
+    """
     from . import attachments
-    return attachments.transcribe_with_reason(path)
+    if workspace is None:
+        return attachments.transcribe_with_reason(path)
+    key = attachments.speech_key(workspace, path)
+    remembered = attachments.cached_speech(workspace, key)
+    if remembered:
+        return remembered, ""
+    text, why = attachments.transcribe_with_reason(path)
+    if text:
+        attachments.remember_speech(workspace, key, text)
+    return text, why
 
 
 # ------------------------------------------------------------------ saying it to a model

@@ -1,5 +1,5 @@
 import { useEffect, type ComponentType } from "react";
-import { ArrowLeft, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Compass, Cpu, Database, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Package, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Compass, Cpu, Database, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Package, Server, ShieldCheck, SlidersHorizontal, ThumbsUp } from "lucide-react";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import ProvidersPage from "./ProvidersPage";
@@ -12,6 +12,7 @@ import GeneralPage from "./GeneralPage";
 import PermissionsPage from "./PermissionsPage";
 import DataPage from "./DataPage";
 import StatsPage from "./StatsPage";
+import FeedbackPage from "./FeedbackPage";
 import DepsPage from "./DepsPage";
 import AboutPage from "./AboutPage";
 import LibraryPage from "../pages/LibraryPage";
@@ -21,7 +22,8 @@ import PromptsPage from "../pages/PromptsPage";
 export type SettingsTab =
   | "providers" | "routing" | "local"
   | "skills" | "plugins" | "mcp" | "hooks" | "external" | "channels" | "gallery" | "prompts" | "library" | "memory"
-  | "general" | "permissions" | "discover" | "version" | "appearance" | "data" | "stats" | "deps" | "about";
+  | "general" | "permissions" | "discover" | "version" | "appearance" | "data" | "stats" | "deps" | "about"
+  | "feedback";
 
 /** Each settings page may take an `onTab` so it can jump to another settings tab. */
 export interface PageProps {
@@ -73,6 +75,7 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
       { id: "version", label: "Software update", icon: Package, page: VersionPage },
       { id: "data", label: "Data", icon: Database, page: DataPage },
       { id: "stats", label: "Usage stats", icon: BarChart3, page: StatsPage },
+      { id: "feedback", label: "Feedback", icon: ThumbsUp, page: FeedbackPage },
       { id: "deps", label: "Dependencies", icon: Cpu, page: DepsPage },
       { id: "about", label: "About", icon: Info, page: AboutPage },
     ],

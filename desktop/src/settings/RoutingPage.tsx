@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Plus, RefreshCw, X } from "lucide-react";
 import { api, modelLabel, type RoutePreview } from "../api";
 import { useData } from "../data";
-import { useI18n } from "../i18n";
+import { pick, useI18n } from "../i18n";
 import { Switch } from "../ui";
 import { useSettingsSaver } from "./rows";
 import { HealthDot, ModelSelect } from "../components/Health";
@@ -45,9 +45,19 @@ export default function RoutingPage() {
   return (
     <div className="sp">
       <h2 className="sp-title">{t("Routing & fallback")}</h2>
-      <p className="sp-desc">{t("Every member reply tries the models below in order: on failure (auth / network / timeout / rate limit / empty reply) it moves on to the next one, and the end of the chain always keeps a local model as a fallback. A member with its own model goes to the front of the chain; a member without a fixed model picks one by its role strengths first, then falls back to the chain below.")}</p>
+      <p className="sp-desc">{pick("A member tries its chosen model first. Automatic task matching ranks fallback models by the current task and recent availability; otherwise the manual priority chain is used.", "成员优先使用指定模型。开启能力匹配后，失败时按当前任务和近期可用状态选择替补；关闭时使用手动优先级链。")}</p>
 
       <div className="card">
+        <div className="setting-row">
+          <div><div className="sr-title">{pick("Match fallback models to the task", "按任务能力自动切换模型")}</div>
+            <div className="sr-desc">{pick("May use other enabled, configured models outside the manual chain. Keeps disabled models off and respects cloud and vision permissions.", "可选择手动链以外已启用、已配置的模型；按任务能力匹配，跳过近期故障，遵守外呼和云端视觉权限。")}</div></div>
+          <Switch checked={settings.route_auto_match} label={pick("Automatic task matching", "按任务自动匹配")} onChange={(v) => set({ route_auto_match: v })} />
+        </div>
+        <div className="setting-row">
+          <div><div className="sr-title">{pick("Let the host recruit resources", "允许主持人按需拉入成员和工具")}</div>
+            <div className="sr-desc">{pick("The host can add registered members, experts, local tools, plugins and MCP servers when a specific capability is missing. Every addition records its purpose; installation and execution permissions stay separate.", "发现能力缺口时，可拉入已登记成员、专家、本地工具、插件和MCP，并记录职责。不会自动安装或启用停用资源，实际执行仍遵守工具权限。")}</div></div>
+          <Switch checked={settings.host_auto_recruit} label={pick("Host recruitment", "主持人自动补齐团队")} onChange={(v) => set({ host_auto_recruit: v })} />
+        </div>
         <div className="setting-row">
           <div>
             <div className="sr-title">{t("Allow cloud models (external calls)")}</div>

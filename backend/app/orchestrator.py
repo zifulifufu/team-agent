@@ -27,20 +27,21 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from . import external, planner, scoring, vision
+from . import external, planner, scoring, vision, cooperation, teamrec, strengths
 from . import attachments as attachments_lib
-from . import coderun, imagegen, localcmd, media, proclog, video
+from . import coderun, comfyui, imagegen, localcmd, media, proclog, video
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
-from .library import Library, watch_workspace
+from .library import Library
 from .mcp_client import McpManager
 from .memory import MemoryService
 from .presets import twin_name
 from .prompting import PromptBuilder
-from .router import AllRoutesFailed, ModelRouter
+from .router import AllRoutesFailed, ModelRouter, redact
 from .store import Store, new_id
-from .toolcall import TagFilter, format_result, parse_tool_calls, strip_hidden, tools_prompt
-from .toolhub import ToolHub
+from .toolcall import (TagFilter, format_result, parse_failure, parse_tool_calls, strip_hidden,
+                       tools_prompt)
+from .toolhub import ToolHub, planning_tools
 from .tools import ToolRegistry
 from . import templates
 from . import tools
@@ -54,6 +55,23 @@ Emit = Callable[[dict], Awaitable[None]]
 # identical to the original, while frame count and re-render count drop by an order of magnitude.
 DELTA_BATCH_CHARS = 24
 DELTA_BATCH_SECONDS = 0.06
+
+# Live output of a running tool call. A program that prints as it works would otherwise be shown as
+# "something is running" for minutes. Two numbers, for the same reason the deltas above have two: a
+# chatty program (a build log, `pip install`, an npm script) emits thousands of short lines, and one
+# WebSocket frame per line is a re-render per line. Keep the last LIVE_OUTPUT_CHARS characters — a
+# terminal tail is what tells the user what is happening now; the beginning of the output is in the
+# finished result anyway.
+LIVE_OUTPUT_CHARS = 600
+LIVE_OUTPUT_SECONDS = 0.6
+
+# The reasoning stream (see `router.complete(on_reasoning=…)`). Coarser than the answer text: it
+# arrives as one long unbroken run, and a reader follows it in paragraphs, not characters. Only the
+# tail is stored in the message — a reasoning model can emit tens of thousands of characters, and
+# this is a record of how the answer was reached, not a transcript of the model's inner monologue.
+THINK_BATCH_CHARS = 60
+THINK_BATCH_SECONDS = 0.25
+THINK_STORE_CHARS = 4000
 
 # an @ preceded by alphanumerics (an address like me@x.com) is not a mention; @all followed
 # by letters (@Allen) is not one either
@@ -140,7 +158,7 @@ def mentions_all(text: str) -> bool:
     return bool(_ALL_RE.search(text))
 
 
-def _strip_mentions(text: str, members: list[dict], speaker_id: str) -> str:
+def _strip_mentions(text: str, members: list[dict]) -> str:
     """The sentence with every member's name taken out.
 
     For a generating member the sentence is the instruction, and a name inside it is not harmless:
@@ -198,6 +216,20 @@ def _clean_prompt(text: str) -> str:
     return s.strip()
 
 
+def _tool_instruction(text: str, members: list[dict], agent: dict) -> str:
+    """Separate multiple @tool assignments in one reply before executing either one."""
+    matches = [(match.start(), match.end(), m["id"]) for m in members
+               for name in _member_names(m) for match in _mention_re(name).finditer(text)]
+    matches.sort()
+    own = next((x for x in matches if x[2] == agent["id"]), None)
+    if own:
+        end = next((s for s, _, aid in matches if s >= own[1] and aid != agent["id"]), len(text))
+        segment = text[own[1]:end].strip(" \n\t:：,，;；")
+        if segment:
+            return segment
+    return _strip_mentions(text, members)
+
+
 # The optional last line of a generation-prompt answer: what the writer could not establish from the
 # material and therefore left out of the picture. Both spellings are accepted because the writer is
 # told to answer in the language of the conversation, which need not be the language of this program.
@@ -206,10 +238,15 @@ _UNGROUNDED_RE = re.compile(r"^[ \t]*(?:未确证|未证实|未能确证|Ungroun
 _NOTHING_RE = re.compile(r"^(?:无|没有|none|nothing|n/?a)[。.!\s]*$", re.I)
 
 # A file name inside a task's `deliverable` — what that task promised to hand over. Read by
-# `_task_shortfall` to catch "the deliverable was never written". The suffix list is what this app can
-# actually produce, so a deliverable written as "报告" is prose, not a missing file.
-_FILE_IN_PLAN = re.compile(r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff .()（）\-]*\."
-                           r"(?:docx|pptx|xlsx|csv|pdf|md|txt|srt|png|jpe?g|mp4|mov|webm)\b", re.I)
+# `_task_shortfall` to catch "the deliverable was never written".
+#
+# ⚠️⚠️ This used to be a **27-extension list of its own**, and it was the riskiest copy of that
+# judgement in the app: it did not merely word an error, it decided **whether delivery was verified
+# at all** (`_execute_plan` skips the whole check when nothing here matches). So a deliverable named
+# `out/animation.json`, `notes.tex` or `video/字幕轨.html` — none of them in the list — was accepted
+# as `done` with nothing on disk, and the run had no way to notice. `planner.named_files` is the one
+# place that answers this; ask it, do not restate it.
+_FILE_IN_PLAN = planner.named_files
 
 
 def split_ungrounded(answer: str) -> tuple[str, str]:
@@ -236,6 +273,72 @@ PLAN_FALLBACK = ("The work is split — see the task board.", "已做好分工,�
 def plan_fallback() -> str:
     """The stand-in line for a host turn that only produced a plan."""
     return i18n.pick_now(*PLAN_FALLBACK)
+
+
+def _bad_task_id(why: str) -> str:
+    """The task id a rejection names, if it names one ("任务 t6: …" / "Task t6: …")."""
+    m = re.search(r"(?:任务|Task)\s+(t\d+)\b", why or "")
+    return m.group(1) if m else ""
+
+
+def _plan_excerpt(raw: str, limit: int = 500, focus: str = "") -> str:
+    """What the model actually sent, appended to a rejection notice.
+
+    The notice used to say only *why* the plan was refused ("任务 t1 缺少 instruction") and the raw
+    text was not kept anywhere: the chat stores the message with its `<plan>` block already stripped,
+    so the one artefact that would explain the failure was gone by the time anybody looked. Reading
+    the plan back is how a reader sees whether the model used another key, nested the tasks, or
+    simply stopped mid-object — three different repairs for one sentence of complaint.
+
+    ⚠️ `focus` is the task the rejection is *about*, and without it the excerpt is useless in the one
+    case it is needed most: a plan long enough to hit `limit` is cut at the top of the file, so a
+    complaint about `t6` arrives next to the JSON for `t1`–`t3`. Measured 2026-09-26 on the video
+    group: two rounds were rejected over `t6` and neither the user nor the repairing model could see
+    what `t6` said. When a task id is given, that task's own JSON is shown instead of the head.
+    """
+    text = " ".join((raw or "").split())
+    block = ""
+    low = text.lower()
+    if "<plan>" in low:
+        start = low.index("<plan>")
+        end = low.find("</plan>", start)
+        block = text[start:end + 7] if end >= 0 else text[start:]
+    shown = block or text
+    if not shown:
+        return ""
+    if focus:
+        # Match through a space-stripped copy, then cut on that same copy: the JSON the model sent is
+        # pretty-printed, and `"id": "t6"` versus `"id":"t6"` must both find the task.
+        compact = shown.replace(" ", "")
+        at = compact.find(f'"id":"{focus}"')
+        if at >= 0:
+            head = compact.rfind("{", 0, at)
+            depth, i, quoted, esc = 0, head, False, False
+            while i < len(compact):
+                ch = compact[i]
+                if quoted:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        quoted = False
+                elif ch == '"':
+                    quoted = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            # The one task object, so the reader sees every field the validator looked at, plus the
+            # overall goal — which is what makes a broken task's intent still legible.
+            goal = compact.split('"goal":"', 1)[-1].split('","', 1)[0][:180] if '"goal":"' in compact else ""
+            shown = f"[{focus}] {compact[head:i + 1]}" + (f"\n(goal: {goal})" if goal else "")
+    if len(shown) > limit:
+        shown = shown[:limit] + "…"
+    return i18n.pick_now(f"\nWhat it sent: {shown}", f"\n它发出来的是:{shown}")
 
 
 @dataclass
@@ -272,6 +375,36 @@ class RunState:
     tool_failures: dict[str, int] = field(default_factory=dict)
     # Titles of the tasks still unfinished when the plan ended.
     unfinished: list[str] = field(default_factory=list)
+    # Why the last turn that failed did so, in the words of the piece that failed. A turn that
+    # returns nothing knows a specific reason — a local tool with an empty project folder, an
+    # external agent whose settings do not comply, every model in the chain out of quota — and that
+    # reason used to be thrown away by its caller: `_execute_plan` wrote "the model call failed" over
+    # all of them, which is not only less useful, it can be false (no model was involved). Set by the
+    # failure paths, cleared at the start of every turn and read once by the plan's task loop.
+    last_error: str = ""
+    round_id: str = ""
+    process_feedback: str = ""
+    process_ids: list[str] = field(default_factory=list)
+    process_used: bool = False
+    observations: list[dict] = field(default_factory=list)
+
+
+def _file_label(entry: dict) -> str:
+    """A file an artifact entry names — the one spelling, in the one place.
+
+    Two copies of this existed and they were not the same: `_task_shortfall` read
+    `path or rel or name or ""`, while the assignment two functions below read `path or rel or
+    name` — so an artifact entry carrying none of the three raised `KeyError` out of the task loop,
+    taking the whole round with it. `synthesize_speech` is the entry that has `name` but no `path`;
+    anything storing `name` under another key would have crashed there.
+    """
+    return str(entry.get("path") or entry.get("rel") or entry.get("name") or "")
+
+
+def _delivery_tools(message: dict) -> list[dict]:
+    """Keep successful work and review failures visible across a delivery-only retry."""
+    meta = message.get("meta") or {}
+    return [*(meta.get("delivery_previous_tools") or []), *(meta.get("tools") or [])]
 
 
 @dataclass
@@ -318,9 +451,11 @@ class Orchestrator:
         # orchestrator without one; the channel layer reads it from here.
         self.hooks = hooks
         self._locks: dict[str, asyncio.Lock] = {}
+        self._pending_inputs: dict[str, list[dict]] = {}
         # All entry points (desktop and chat channels) share this lifecycle registry.
         self.tasks: dict[str, set[asyncio.Task]] = {}
         self._bg: set[asyncio.Task] = set()
+        self._process_locks: dict[str, asyncio.Lock] = {}
         # Optional callback `(group_id, final_text)` run once per finished round, for
         # channels that only push (a group robot cannot be answered, so it receives what
         # the group produced rather than a reply to a question). Set by main.py; absent in
@@ -712,6 +847,7 @@ class Orchestrator:
         finally:
             active.discard(current)
             if not any(not t.done() for t in active):
+                self._pending_inputs.pop(gid, None)
                 await emit({"type": "idle"})
 
     async def _handle_user_message(self, gid: str, text: str, emit: Emit,
@@ -725,44 +861,65 @@ class Orchestrator:
             return
         user_msg = self.store.add_message(gid, "user", "user", sender_name, text,
                                           meta={"files": files} if files else None)
+        pending = self._pending_inputs.setdefault(gid, [])
+        pending.append({"id": user_msg["id"], "text": text, "files": list(files or []),
+                        "read_only": read_only})
         await emit({"type": "message", "message": user_msg})
-        # `add_message` and the broadcast stay outside the lock so the sender sees their own message
-        # immediately — which means another message can land while this round waits for the group
-        # lock. That later round reads both (the history is the whole group) and answers both, so this
-        # one stands down: answering as well would answer the same question twice, and whichever round
-        # grabbed the lock first would be replying to the *other* message's text.
+        # Coalesce consecutive queued inputs, including their files and references. Keep
+        # network/read-only inputs separate from local ones so a local follow-up cannot
+        # silently grant execution rights to a queued channel request.
         async with self._lock(gid):
             group = self.store.get_group(gid) or group
-            if self.store.has_later_user_message(gid, user_msg["id"]):
+            index = next((i for i, item in enumerate(pending) if item["id"] == user_msg["id"]), -1)
+            if index < 0:
                 return
-            run = RunState(gid, text, read_only=read_only)
+            if index + 1 < len(pending) and pending[index + 1]["read_only"] == read_only:
+                return
+            start = index
+            while start > 0 and pending[start - 1]["read_only"] == read_only:
+                start -= 1
+            batch = pending[start:index + 1]
+            del pending[start:index + 1]
+            text = "\n\n".join(item["text"] for item in batch if item["text"])
+            files = list({f["id"]: f for item in batch for f in item["files"] if f.get("id")}.values())
+            run = RunState(gid, text, read_only=read_only, round_id=user_msg["id"])
+            if self.store.get_settings()["process_autolog"]:
+                try:
+                    run.process_feedback, run.process_ids = proclog.feedback(
+                        proclog.read(proclog.unit(self.store.workspace_dir(gid))))
+                except OSError as e:
+                    print("the process feedback could not be read:", e)
             # Later user messages may be queued while this round is executing. Freeze
             # its input so workers cannot switch to the next round's request mid-plan.
-            run.history = self.store.list_messages(gid, int(self.store.get_settings()["history_limit"]))
+            queued_ids = {item["id"] for item in pending}
+            run.history = [m for m in self.store.list_messages(gid, int(self.store.get_settings()["history_limit"]))
+                           if m["id"] not in queued_ids]
             run.files = list(files or [])
             workspace = self.workspace(gid)
-            # This group's own material, brought up to date *before* anybody reads it: what has been
-            # extracted from its attachments, and the documents sitting in its workspace
-            # (`Library.sync_group_material`). Runs here rather than on a timer because the question
-            # is "does this conversation see what the group has now" — a file written a minute ago by
-            # a member, or a document just added, is exactly what must not be missing from the search
-            # this turn will make.
-            self._sync_group_material(group, workspace)
+            # Nothing of this group's own is copied into a knowledge base here any more. A round used
+            # to start by bringing the group's own material up to date — the text read out of its
+            # attachments, plus the documents in its workspace — and the reason it is gone is written
+            # out above `Library.workspace_kb`: a library is a shelf somebody chose to build, and the
+            # search a round makes is over what they put on it. The group's own files are still read
+            # directly, through the working directory and the attachments.
             run.refs_block = self._refs_block(group, text, workspace)
             self._notify("round.start", gid, group,
                          {"sender": sender_name, "chars": len(text),
                           "read_only": read_only, "files": len(files or [])})
-            await self._run_turns(group, text, emit, run)
-            self._after_run(group, run)
+            try:
+                await self._run_turns(group, text, emit, run)
+                self._after_run(group, run)
+            finally:
+                # Keep measured failures even if a later operation is cancelled or raises.
+                fresh = self._process_record(group, run)
             # The process engineer's first half: what the round measured about *itself*, written into
             # the group's ledger. Inside the group lock because it is a write to the group's own
             # workspace, and silent because the watcher does not speak (see `_process_record`).
-            fresh = self._process_record(group, run)
         await self._announce(gid, run)
         if fresh:
             # …and its second half, outside the lock and off the critical path: a model outside the
-            # group is asked for the cause and the fix of the entries that are new. This is the only
-            # part that costs anything, and it only runs when the round actually produced a defect.
+            # group is asked for the cause and the fix of unresolved entries missing a review. This is the only
+            # part that costs anything; each pass is bounded and never delays group work.
             self._spawn(self._process_review(group, fresh))
         self._notify("round.end", gid, group, {
             "sender": sender_name, "entries": len(run.steps),
@@ -770,25 +927,6 @@ class Orchestrator:
             "agents": [s.get("agent") for s in run.steps],
             "answer_chars": len(run.final_text or ""),
         })
-
-    def _sync_group_material(self, group: dict, workspace: Any) -> None:
-        """Keep this group's own knowledge base level with what the group has (see `Library`).
-
-        The scope switch decides whether there is a knowledge base to keep at all; how far the
-        workspace half goes is the user's own call, decided in one place (`library.watch_workspace`).
-        The switch sits beside the knowledge-base scope on purpose: "which knowledge bases does this
-        group search" and "where does its own material come from" are the same question twice.
-        """
-        if ((group.get("ext") or {}).get("library") or {}).get("mode") == "off":
-            return
-        try:
-            out = self.library.sync_group_material(gid=group["id"], workspace=Path(workspace),
-                                                   with_files=watch_workspace(group))
-        except Exception as e:  # noqa: BLE001 — housekeeping must never cost the turn itself
-            self._notify("library.sync", group["id"], group, {"ok": False, "error": type(e).__name__})
-            return
-        if out["added"] or out["updated"]:
-            self._notify("library.sync", group["id"], group, {"ok": True, **out})
 
     def workspace(self, gid: str) -> Any:
         """The group's workspace, created if it is somehow missing.
@@ -828,10 +966,10 @@ class Orchestrator:
         if not getattr(task, "dir", ""):
             return ""
         return i18n.pick_now(
-            f"\n\n[Your folder] `{task.dir}/` inside the group workspace. Put anything you produce "
-            "there, and mention the paths in your answer so the others can pick them up.",
-            f"\n\n【你的交付目录】群工作目录下的 `{task.dir}/`。你产出的文件放这里,并在回答里写明路径,"
-            "方便其他人接手。")
+            f"\n\n[Your folder] `{task.dir}/` inside the group workspace. Use it for intermediate files "
+            "and outputs without an assigned path. When the deliverable specifies a path, that path takes precedence; do not move it into this folder. Report actual paths so others can reuse them.",
+            f"\n\n【你的交付目录】群工作目录下的 `{task.dir}/`。中间文件及未指定路径的产物放这里。"
+            "交付要求已指定路径时，以指定路径为准，不要改放到此目录。回答写明真实路径，方便其他人接手。")
 
     def _notify(self, event: str, gid: str, group: dict, payload: dict) -> None:
         """Tell the observers about a round. A no-op when no hook is switched on, so the hot path
@@ -856,21 +994,13 @@ class Orchestrator:
 
     # ------------------------------------------------------------- the process engineer (hidden)
     def _process_record(self, group: dict, run: RunState) -> list[str]:
-        """Write down what this round did wrong — no chat message, no model call, just the ledger.
+        """Merge measured defects and matching re-run evidence into this group's ledger.
 
-        The process engineer is a **hidden** member: it never takes a turn, is never addressed and
-        never says anything in the group. What it leaves behind is this file. Everything a program
-        can decide alone is recorded here, because a rule can be checked and an opinion cannot: the
-        round that just ran is *measured* (a task marked done whose file is not on disk, a task whose
-        every tool call failed, a plan that had to be abandoned, a call that failed twice), and those
-        measurements become entries.
-
-        ⚠️ Returns only the ids of the entries that are **new**. The ones that were merely seen again
-        bumped their counter instead — which is what keeps this file from turning into the same
-        sentence forty times, and only the new ones are worth a model-written second pass.
+        Called under the group lock, including when a round is cancelled. Returns unresolved
+        entries still needing a review, so a previously unavailable reviewer can be retried.
         """
         cfg = self.store.get_settings()
-        if not (cfg["process_autolog"] and run.defects):
+        if not cfg["process_autolog"]:
             return []
         workspace = self.store.workspace_dir(group["id"])
         path = proclog.unit(workspace)
@@ -879,38 +1009,45 @@ class Orchestrator:
         except OSError as e:
             print("the process log could not be read:", e)
             return []
-        fresh: list[str] = []
-        bumped = False
+        run.defects += proclog.auto_round_defects(tool_loops=run.tool_failures)
+        failed: set[str] = set()
         for d in run.defects:
-            before = len(entries)
-            entry = proclog.report(
+            key = str(d.get("key") or "")
+            if key in failed:
+                continue
+            failed.add(key)
+            proclog.report(
                 entries, title=str(d.get("title") or ""), symptom=str(d.get("symptom") or ""),
-                evidence=str(d.get("evidence") or ""), severity=str(d.get("severity") or "minor"),
+                evidence=f"round={run.round_id}; {d.get('evidence') or ''}", severity=str(d.get("severity") or "minor"),
                 stage=str(d.get("stage") or "other"), hint=str(d.get("hint") or ""),
-                key=str(d.get("key") or ""), by="auto")
-            if len(entries) > before:
-                fresh.append(entry.id)
-            else:
-                bumped = True
-        if not (fresh or bumped):
+                key=key, by="auto", check=d.get("check"))
+        if not entries:
             return []
+        proclog.settle(entries, run.observations, failed,
+                       run.process_ids if run.process_used else [], run.round_id)
         try:
             proclog.write(path, entries, group.get("name") or "")
         except OSError as e:
             print("the process log could not be written:", e)
             return []
-        # No library sync here on purpose: this runs on *every* round, and the round's own start
-        # already walks the workspace (`_sync_group_material`), so the entry is searchable from the
-        # next round on without paying for a second walk of a directory that may hold gigabytes.
-        return fresh
+        # No library sync here, and none anywhere else in this class: the ledger stays a file in the
+        # group's workspace, which is where it is written and where anybody can read it. (It used to
+        # be handed to the group's own knowledge base as well; nothing enters a library by itself any
+        # more — see the note above `Library.workspace_kb`.)
+        # An unavailable reviewer or incomplete answer is retried on the next group round.
+        return [e.id for e in entries if e.status == "open" and (not e.cause or not e.fix)][:8]
 
     async def _process_review(self, group: dict, ids: list[str]) -> None:
+        async with self._process_locks.setdefault(group["id"], asyncio.Lock()):
+            await self._process_review_once(group, ids)
+
+    async def _process_review_once(self, group: dict, ids: list[str]) -> None:
         """The half a program cannot do: ask a model *why*, and write the answer into the ledger.
 
         Silent by design — the watcher does not speak, so this pass writes `cause` and `fix` onto the
         entries and nothing else. Three limits keep it honest and affordable:
 
-          * it runs only when **new** entries appeared, so a round with nothing wrong costs nothing;
+          * it reviews only unresolved entries missing a cause or correction;
           * the model is chosen the way a grading judge is (`scoring.pick_judge`): never one of the
             group's own members, local first;
           * `proclog.apply_review` only fills fields that are **empty** — a cause somebody wrote is
@@ -925,7 +1062,7 @@ class Orchestrator:
         except OSError:
             return
         wanted = set(ids)
-        todo = [e for e in entries if e.id in wanted and e.status == "open"]
+        todo = [e for e in entries if e.id in wanted and e.status == "open" and (not e.cause or not e.fix)][:8]
         if not todo:
             return
         model = ""
@@ -933,7 +1070,23 @@ class Orchestrator:
             model = scoring.pick_judge(self.store, self.router, group)
         except Exception:  # noqa: BLE001 — no model to ask is not an error, it is a skipped pass
             model = ""
+        async def commit(raw: str, state: str, note: str = "") -> None:
+            # The model ran outside the group lock. Merge into the CURRENT ledger, not its snapshot.
+            async with self._lock(group["id"]):
+                current = proclog.read(path)
+                allowed = {e.id for e in todo}
+                proclog.apply_review(current, raw, allowed=allowed,
+                    by=i18n.pick_now(f"process engineer · {model}", f"流程工程师 · {model}"))
+                for e in current:
+                    if e.id in allowed and e.status in ("open", "fixed"):
+                        e.review_state = "reviewed" if e.cause and e.fix else state
+                        e.review_note = "" if e.review_state == "reviewed" else note[:400]
+                proclog.write(path, current, group.get("name") or "")
+
         if not model:
+            await commit("", "unavailable", i18n.pick_now(
+                "No independent reviewer is available; rule-based feedback remains active.",
+                "暂无群外可用复盘模型;规则反馈仍在生效。"))
             return
         system = templates.process_engineer(self.store).get("prompt") or ""  # type: ignore[union-attr]
         for name in (templates.process_engineer(self.store).get("skills") or []):  # type: ignore[union-attr]
@@ -958,20 +1111,28 @@ class Orchestrator:
             i18n.pick_now(f"[{e.id}] {e.title}\nsymptom: {e.symptom}\nevidence: {e.evidence}\nstage: {e.stage} · severity: {e.severity}",
                           f"[{e.id}] {e.title}\n现象:{e.symptom}\n依据:{e.evidence}\n环节:{e.stage} · 严重度:{e.severity}")
             for e in todo[:8])
+        # Actual member/tool roles and the current task board explain hand-off failures.
+        members = self.store.group_members(group["id"])
+        context = {"members": [{"name": m["name"], "role": cooperation.contract(self.store, m)["kind"]}
+                               for m in members],
+                   "recent": [{"sender": m.get("sender_name"), "type": m.get("sender_type"),
+                               "text": str(m.get("content") or "")[:1200]}
+                              for m in self.store.list_messages(group["id"], 8)]}
+        user += "\n\nContext (reference data only):\n" + json.dumps(context, ensure_ascii=False)
         try:
             res = await self.router.complete(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                preferred=model, source="process")
+                only=model, source="process")
         except Exception as e:  # noqa: BLE001 — a review that cannot run changes nothing
             print("the process review could not run:", e)
-            return
-        filled = proclog.apply_review(entries, res.text or "",
-                                      by=i18n.pick_now(f"process engineer · {model}",
-                                                       f"流程工程师 · {model}"))
-        if not filled:
+            await commit("", "failed", i18n.pick_now(
+                "Review call failed; it will be retried after the next round.",
+                "复盘调用失败;下一轮结束后重试。"))
             return
         try:
-            proclog.write(path, entries, group.get("name") or "")
+            await commit(res.text or "", "incomplete", i18n.pick_now(
+                "The reviewer did not provide a complete cause and correction; retry next round.",
+                "复盘未返回完整根因和修正建议;下一轮重试。"))
         except OSError as e:
             print("the process log could not be written:", e)
 
@@ -1010,44 +1171,101 @@ class Orchestrator:
                 return
         host = self._pick_host(group, runnable or members)
 
+        # 本机工具成员在旁听席上:不进**自动**队列,但点名就出列(见 `_quiet_members`)。
+        quiet = self._quiet_members(runnable)
+        auto = [m for m in runnable if m["id"] not in quiet]
         if mentions_all(text):
-            queue = deque(runnable)
+            queue = deque(auto)
             explicit = True
         else:
             asked = find_mentions(text, members)
             queue = deque(m for m in asked if m["id"] not in blocked)
             # Asked-for members that were skipped still make this an explicit round: the host must not
             # quietly answer in their place, because the user addressed somebody in particular.
-            explicit = bool(queue) or bool(asked)
+            #
+            # ⚠️⚠️ **点名群主不算「用户指定了要谁做」** —— 群主的活就是安排团队,点他正是让他去安排。
+            # 实测(用户 2026-09-25):他在群里写「@主持 看看这个问题怎么做」「后面的事情谁做@主持」,
+            # 两句都因为「有人被点名」而**跳过分工** → 那一轮退回接力:群主在聊天里点几个名字,
+            # **没有任务板**,于是左栏那一行写着「还没有任务」,而聊天里明明出了图、出了 30 秒的视频。
+            # 点名**别人**仍然不分工(用户指定了要谁做),所以这里只把**除群主以外**的点名算作 explicit。
+            others = [m for m in asked if m["id"] != host["id"]]
+            explicit = bool(others)
         hops = 0
+        # Keep the actual handoff separate from chat history. A tool's result cannot @mention
+        # its caller, so the scheduler owns the return trip (including failed executions).
+        assignments: dict[str, dict] = {}
+        receipts: dict[str, list[str]] = {}
+        dispatched: set[tuple[str, str, str]] = set()
+
+        def handoff(reply: str, sender: dict) -> None:
+            queued = {m["id"] for m in queue}
+            for member in find_mentions(reply, members, exclude_id=sender["id"]):
+                aid = member["id"]
+                if aid in blocked or aid in queued:
+                    continue
+                if aid in quiet:
+                    signature = (sender["id"], aid, reply.strip())
+                    if signature in dispatched:
+                        continue
+                    dispatched.add(signature)
+                    assignments[aid] = {"caller": sender, "instruction": _tool_instruction(reply, members, member)}
+                queue.append(member)
+                queued.add(aid)
 
         mode = group["ext"]["plan"] if group["ext"]["plan"] != "inherit" else cfg["plan_mode"]
         # Planning is the host's job, and only a member that can hold a conversation can do it — an
         # external agent has its own tools, and a generating member has no judgement to add.
         if (not explicit and mode != "off" and len(members) >= 2 and int(cfg["plan_max_tasks"]) >= 2
-                and not host.get("engine") and (host.get("origin") or "") != media.MEDIA_ORIGIN):
+                and media.may_host(host)):
             hops = 1
             out = await self._planning_turn(group, members, host, text, mode, emit, run)
             if out is None:
                 return
+            # ⚠️ 群主这一回合**已经被分工回合用掉了**。用户点名群主时他本来就在队列里,不去掉就会在
+            # 计划之后再讲一遍(群里出现两条群主发言:一条开场、一条重复)。
+            queue = deque(m for m in queue if m["id"] != host["id"])
             if out is not True:  # True = execution followed the plan; otherwise out is the owner's ordinary reply and hands off
                 run.final_text = out.text
-                for m in find_mentions(out.text, members, exclude_id=host["id"]):
-                    queue.append(m)
+                handoff(out.text, host)
             else:
                 return
         elif not queue and not explicit:
             queue.append(host)
 
-        max_hops = int(cfg["max_hops"])
+        # How many turns one message may cause. The setting is the user's number, but it is floored at
+        # one full round of the roster, because a cap smaller than the group cannot fit a round at all:
+        # measured on a real fourteen-member group at the old default of 8, the members at the end of
+        # the list were paused *every* round — "reached the limit of 8 turns, so WorkBuddy, 小助 was
+        # paused" — and the steps they owned could never be reached, however many messages were sent.
+        # A limit that makes a round impossible is not a limit, it is a truncation. The round can still
+        # be stopped by hand (`POST /api/groups/{gid}/stop`), so nothing is taken away from the user.
+        max_hops = max(int(cfg["max_hops"]), len(members) + 1)
         while queue and hops < max_hops:
             agent = queue.popleft()
             hops += 1
-            out = await self._agent_turn(group, agent, members, emit, run)
+            assignment = assignments.pop(agent["id"], None)
+            returned = receipts.pop(agent["id"], [])
+            extra = assignment["instruction"] if assignment else None
+            if returned:
+                extra = i18n.pick_now(
+                    "[Executor returns] Resume the work you assigned. Check these results and actual file paths, then finish or hand off the next distinct task. Report failures accurately; do not repeat the same generation or @mention completed tools in a summary.\n",
+                    "【工具交回】继续处理你派出的任务。核对以下结果和实际文件路径,然后交付或派出下一项不同的任务。如实处理失败;不要重复同一次生成,总结时不要再 @ 已完成的工具。\n") + "\n".join(returned)
+            run.last_error = ""
+            out = await self._agent_turn(group, agent, members, emit, run, extra_user=extra)
+            if assignment:
+                caller = assignment["caller"]
+                calls = ((out.message.get("meta") or {}).get("tools") or []) if out else []
+                files = [f for call in calls if call.get("status") == "ok" for f in call.get("files", [])]
+                result = {"member": agent["name"], "result": out.text if out else run.last_error or "Execution failed",
+                          "files": files, "tools": [{"name": c.get("name"), "status": c.get("status")} for c in calls]}
+                receipts.setdefault(caller["id"], []).append(json.dumps(result, ensure_ascii=False))
+                if caller["id"] not in {a["id"] for a in queue}:
+                    queue.append(caller)
             if out is None:
                 continue
             run.final_text = out.text
-            queued = {a["id"] for a in queue}
+            if agent["id"] in quiet:
+                continue  # tool output and echoed instructions are never a new delegation
             if agent.get("engine") and not (agent.get("engine_cfg") or {}).get("handoff", True):
                 continue   # this external agent is configured not to hand off: the @ in its reply is just text
             if (agent.get("origin") or "") == media.MEDIA_ORIGIN:
@@ -1055,10 +1273,7 @@ class Orchestrator:
                 # it "said" was written by this app, not by a model that read the group — so an `@`
                 # in it would not be an act of delegation at all.
                 continue
-            for m in find_mentions(out.text, members, exclude_id=agent["id"]):
-                if m["id"] not in queued:
-                    queue.append(m)
-                    queued.add(m["id"])
+            handoff(out.text, agent)
         if queue:
             names = i18n.pick_now(", ", "、").join(a["name"] for a in queue)
             await self._system(
@@ -1071,6 +1286,22 @@ class Orchestrator:
                 exhausted=True, open_tasks=list(run.unfinished), tool_loops=run.tool_failures)
 
     # ------------------------------------------------------------- who can run
+    @staticmethod
+    def _quiet_members(members: list[dict]) -> set[str]:
+        """本机工具成员:**在群里,但不主动发言**。
+
+        用户 2026-09-25 的原话:「工具可以不发言,作为旁听,但是群员可以随时调用这些工具的」。
+        这不是 bug 修补,是设计:一个渲染器/合成器没有话要说,它只产出文件 —— 让它进对话队列,
+        就等于每轮请一个只会交文件的成员讲一段话,而它十条里有九条在报「我跑不起来」
+        (实测:Remotion/HyperFrames/video-shotcraft 环境没配好时**每轮必败**,其中一次跑了 306 秒)。
+
+        ⚠️ 「不主动」不等于「叫不动」,所以这只是把 **自动队列** 里的它拿掉:
+          * 消息里 **@它** → 照常跑(用户点了名);
+          * 主持把它**排进任务板** → 照常跑(`_execute_plan` 只看 `blocked`,不看这个);
+          * 名册、@ 候选、成员栏 → 照旧看得见。
+        """
+        return {m["id"] for m in members if cooperation.is_listener(m)}
+
     def _blocked_members(self, members: list[dict], cfg: dict) -> dict[str, str]:
         """Members that cannot take a turn at all, with the reason — measured before the round.
 
@@ -1098,41 +1329,156 @@ class Orchestrator:
                                              f"外部智能体设置不合规:{e}")
         return out
 
-    def _task_shortfall(self, task: "planner.PlanTask", message: dict, workspace: Path) -> str:
-        """Why this task delivered nothing, or "" when it did.
+    @staticmethod
+    def _pending_reviews(task: "planner.PlanTask", message: dict, workspace: Path) -> list[str]:
+        pending = []
+        calls = _delivery_tools(message)
+        root = workspace.resolve()
+        def paths(call):
+            args = call.get("args") or {}
+            raw = args.get("paths") or [args.get("path")]
+            return [p for p in raw if isinstance(p, str) and p] if isinstance(raw, list) else []
+        for review in sorted(set(planner.REVIEW_TOOLS).intersection(task.tools)):
+            latest = {}
+            for call in calls:
+                if call.get("name") == review:
+                    args = call.get("args") or {}
+                    key = json.dumps(args.get("paths") or args.get("path") or "", ensure_ascii=False, sort_keys=True)
+                    latest[key] = call
+            checked = {(root / p).resolve() for c in latest.values() if c.get("status") == "ok" for p in paths(c)}
+            extensions = ({".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm"}
+                          if review == "review_picture" else {".wav", ".mp3", ".m4a", ".mp4", ".mov", ".webm"})
+            produced = {(root / str(f.get("path") or f.get("rel") or f.get("name") or "")).resolve()
+                        for c in calls if c.get("status") == "ok" and c.get("name") in {
+                            "generate_image", "generate_video", "assemble_video", "make_figure", "make_animation", "synthesize_speech"}
+                        for f in (c.get("files") or []) if isinstance(f, dict)}
+            produced = {p for p in produced if p.is_relative_to(root) and p.is_file() and p.suffix.lower() in extensions}
+            def blocks(call):
+                if call.get("status") == "ok":
+                    return False
+                # A typo naming a nonexistent extra file is not a failed review
+                # of the delivered media. Keep its trace, but only disregard it
+                # once ALL actual media outputs have successful review receipts.
+                raw = paths(call)
+                typo = (call.get("status") == "failed" and raw and produced and produced <= checked
+                        and all("/" in p and not Path(p).is_absolute() and ".." not in Path(p).parts
+                                and (root / p).resolve().is_relative_to(root) and not (root / p).exists() for p in raw))
+                return not typo
+            if not latest or any(blocks(c) for c in latest.values()):
+                pending.append(review)
+        return pending
 
-        A reply is not a delivery. Two shapes used to pass as a finished task and be handed
-        downstream: a turn whose **every** tool call failed (a member that could not draw, render or
-        write has produced a paragraph saying so), and a task whose `deliverable` names a file while
-        the turn made **no successful tool call at all** — nothing can have written that file, so it
-        does not exist. If some call succeeded the file name is not second-guessed: a member may
-        deliver `报告-v2.docx` while the plan said `报告.docx`, and failing that would be worse than
-        the thing this check is for.
+    def _task_shortfall(self, task: "planner.PlanTask", message: dict, workspace: Path, *, check_reviews: bool = True) -> str:
+        """Require reported, nonempty workspace files of the promised types and counts.
+
+        Renaming is allowed (report-v2.docx can satisfy report.docx); a successful search
+        cannot satisfy a promised video, and an empty file is not a delivery.
         """
-        calls = [c for c in ((message.get("meta") or {}).get("tools") or []) if c.get("status") != "running"]
+        interrupted = (message.get("meta") or {}).get("execution_error")
+        if interrupted:
+            return str(interrupted)
+        # ⚠️ A message the program has already stamped as undelivered must not be re-judged from its
+        # own text: `_stamp_failure` quotes the missing file's name, and the engine branch below
+        # reads file names **out of the content** — so the verdict would end up arguing for the
+        # claim it was written to contradict.
+        verdict = (message.get("meta") or {}).get("delivery_verdict")
+        if verdict:
+            return str(verdict)
+        calls = [c for c in _delivery_tools(message) if c.get("status") != "running"]
         ok = [c for c in calls if c.get("status") == "ok"]
-        named = [n for n in _FILE_IN_PLAN.findall(str(task.deliverable or "")) if n]
-        if named and not ok:
+        # Rendering proves that bytes exist, not that the requested review ran.
+        # A failed visual/audio check must not release a dependent assembly task.
+        pending = self._pending_reviews(task, message, workspace) if check_reviews else []
+        if pending:
             return i18n.pick_now(
-                f"the deliverable ({', '.join(named[:3])}) was never written — the turn made no "
-                "successful tool call, so no file can exist", 
-                f"交付物({', '.join(named[:3])})没有落盘 —— 这一轮没有任何一次成功的工具调用,文件不可能存在")
+                f"required verification {pending[0]} did not succeed; generated media still needs review.",
+                f"要求的验收 {pending[0]} 未成功，生成的媒体仍待核验。")
+        named = _FILE_IN_PLAN(task.deliverable)
+        if named:
+            from collections import Counter
+            reported = [_file_label(f) for call in ok for f in call.get("files", []) if isinstance(f, dict)]
+            if (message.get("meta") or {}).get("engine") and not (message.get("meta") or {}).get("denied"):
+                reported += _FILE_IN_PLAN(message.get("content"))
+            actual: set[Path] = set()
+            root = workspace.resolve()
+            for name in reported:
+                if not name:
+                    continue
+                candidates = [workspace / name]
+                if "/" not in name and "\\" not in name:
+                    candidates += list(workspace.rglob(name))
+                for path in candidates:
+                    try:
+                        real = path.resolve()
+                        if real.is_relative_to(root) and real.is_file() and real.stat().st_size > 0:
+                            actual.add(real)
+                    except OSError:
+                        continue
+            expected = Counter(Path(n).suffix.lower() for n in named)
+            available = Counter(p.suffix.lower() for p in actual)
+            if any(available[k] < count for k, count in expected.items()):
+                return i18n.pick_now(
+                    f"the deliverable ({', '.join(named[:3])}) was never written: its reported files are missing, empty or of the wrong type. A successful search or a text reply is not a file delivery.",
+                    f"交付物({', '.join(named[:3])})没有落盘:本次报告的文件不存在、为空或类型/数量不符。搜索成功或聊天回复不能代替文件交付。")
         if calls and not ok:
             why = ", ".join(f"{c.get('name')}({c.get('status')})" for c in calls[:4])
             return i18n.pick_now(f"every tool call failed: {why}", f"工具调用全都失败了:{why}")
         return ""
 
+    async def _stamp_failure(self, message: dict, reason: str, emit: Emit) -> str:
+        """Put the program's verdict **onto the claim**, and store it there.
+
+        A task that did not deliver leaves its member's prose in the transcript, and that prose is
+        confident, detailed and wrong:
+
+            ## t1 真实交付：视觉规范 v2.3 已落盘
+            **交付物**：`tasks/f4feec93da49/分镜表v2/视觉规范-v2.3.md`
+
+        Measured 2026-09-26 (group 介入术式科): the file did not exist — the member had made **zero
+        tool calls**, twice — and the host, planning the next round, read exactly that paragraph and
+        built on a file that was never written. The task board *said* `t1 [failed]`; the host still did
+        it, because the claim and the verdict lived in different messages and only the claim read like
+        an answer. So the verdict is attached to the claim: prefixed (so a history clip cannot lose
+        it), stored (so the next round's planning reads it), and emitted (so the user sees both).
+
+        Idempotent through `meta.delivery_verdict`, not through the text — a message is judged once,
+        but a retry re-reads it, and matching on a translated sentence would be a trap.
+        """
+        meta = dict(message.get("meta") or {})
+        if meta.get("delivery_verdict"):
+            return message.get("content") or ""
+        calls = _delivery_tools(message)
+        head = i18n.pick_now(
+            f"⚠️ Verified by the program: **this task did NOT deliver.** {reason}\n"
+            f"(Tool calls this turn: {len(calls)}. Anything below that says a file was written, read or "
+            "verified is **unverified** — do not use it as an existing artefact.)\n\n",
+            f"⚠️ 程序核验:**本任务未交付** —— {reason}\n"
+            f"(本回合工具调用 {len(calls)} 次。下面正文里任何「已落盘 / 已读完 / 已核验」都**未经工具证实**,"
+            "**不得当作既成事实引用**。)\n\n")
+        stamped = head + (message.get("content") or "")
+        meta["delivery_verdict"] = reason[:400]
+        try:
+            fixed = self.store.update_message(message["id"], content=stamped, meta=meta)
+        except Exception:  # noqa: BLE001 — a stamp that cannot be stored still travels this round
+            return stamped
+        message["content"] = stamped
+        message["meta"] = meta
+        if fixed:
+            await emit({"type": "message_end", "message": fixed})
+        return stamped
+
     @staticmethod
     def _pick_host(group: dict, members: list[dict]) -> dict:
         """The owner must be a member that can hold a conversation: an external agent does not
         delegate through the <plan> protocol, and a generating member has nothing to decide — so
-        neither should be handed the job of deciding what the others do."""
-        def plain(m: dict) -> bool:
-            return not m.get("engine") and (m.get("origin") or "") != media.MEDIA_ORIGIN
+        neither should be handed the job of deciding what the others do.
 
+        The rule itself is `media.may_host`, asked rather than restated: the API refuses to *give*
+        one of them the chair, and a second copy here would be free to drift away from that answer.
+        """
         host = next((m for m in members if m["id"] == group.get("host_agent_id")), None)
-        if host is None or not plain(host):
-            host = next((m for m in members if plain(m)), host or members[0])
+        if host is None or not media.may_host(host):
+            host = next((m for m in members if media.may_host(m)), host or members[0])
         return host
 
     # ------------------------------------------------------------------- plan
@@ -1146,18 +1492,66 @@ class Orchestrator:
             past = "\n".join(f"- {m['content']}" for m in acts)
         instruction = planner.planning_instruction(int(cfg["plan_max_tasks"]), mode, past,
                                                    planner.owner_list(members))
+        capabilities: dict[str, set[str]] = {}
+        capability_lines = []
+        host_execution_tools: set[str] = set()
+        for member in members:
+            context = await self.toolhub.context(group, member, connect=False, read_only=run.read_only)
+            capabilities[member["id"]] = set(context.tools)
+            if member["id"] == host["id"]:
+                _, deferred = planning_tools(context.tools)
+                host_execution_tools = set(deferred)
+            worker = cooperation.contract(self.store, member)
+            if worker["kind"] == "local_tool":
+                capabilities[member["id"]] = set(worker["tools"]) if not run.read_only and cfg["external_agents_enabled"] else set()
+                detail = ", ".join(worker["tools"]) + "; " + worker["summary"] + " " + worker["preparation"]
+            elif member.get("engine"):
+                detail = i18n.pick_now("external engine: its own tools only, not these app tools",
+                                        "外部引擎:只能使用自身工具,不能直接调用本程序的内置工具")
+            else:
+                detail = ", ".join(sorted(context.tools)) or i18n.pick_now("no available tools", "无可用工具")
+            capability_lines.append(f"- {member['name']}: {detail}")
+        capability_text = "\n".join(capability_lines)
+        instruction += "\n" + i18n.pick_now("Executable capabilities:\n", "实际可执行能力:\n") + capability_text
+        if cfg.get("host_auto_recruit") and not run.read_only:
+            instruction += i18n.pick_now(
+                "\nIf a required skill or tool is missing, use find_team_resources and invite_team_resource before writing the plan. Recruit only for a specific gap, reuse existing members, and name each new member's input, job and acceptance check. Do not recruit duplicate roles or treat installed tools as already tested. The returned roster supersedes this snapshot.",
+                "\n缺少能力或工具时，先用find_team_resources查找、invite_team_resource拉入，再给出分工。只针对具体缺口补人，复用已有成员；写明新增成员的输入、职责和验收。不要重复拉同类角色，不把已配置当已验证。工具返回的新名册优先于本段旧快照。")
+        instruction += i18n.pick_now(
+            "\nFor a generating member, assign one image or one clip per task and put tool parameters in arguments (prompt, seconds, aspect_ratio, first_frame, size, reference_images). Image references must be explicit workspace paths in reference_images and require an OpenAI-compatible image editing endpoint; the MetaChat media adapter does not upload local references. Multi-shot production and final assembly belong to a chat member with the corresponding tools. Reuse actual upstream file paths; do not invent a public URL for a local file.",
+            "\n生成成员每个任务只生成一张图或一个片段,工具参数写进 arguments(prompt、seconds、aspect_ratio、first_frame、size、reference_images)。绘图参考图须在 reference_images 中明确填写本群路径，需 OpenAI 兼容图片编辑接口；MetaChat 媒体适配器尚未上传本地参考图。多镜头批量制作和成片装配交给具备相应工具的对话成员。接力使用上游实际文件路径,不得把本地文件假装成公网地址。")
+        # Snapshot before the turn: the point is whether *this* turn's tools broke, not how many
+        # times some member failed earlier in the round.
+        failures_before = sum(run.tool_failures.values())
         out = await self._agent_turn(
             group, host, members, emit, run, extra_user=instruction,
+            extra_meta={"phase": "planning"},
             empty_fallback=plan_fallback(),
         )
         if out is None:
             return None
+        if cfg.get("host_auto_recruit"):
+            group.update(self.store.get_group(group["id"]) or {})
+            members[:] = self.store.group_members(group["id"])
+            for member in members:
+                context = await self.toolhub.context(group, member, connect=False, read_only=run.read_only)
+                worker = cooperation.contract(self.store, member)
+                capabilities[member["id"]] = (set(worker["tools"]) if worker["kind"] == "local_tool"
+                    and not run.read_only and cfg["external_agents_enabled"] else set(context.tools))
+            capability_text = "\n".join(f"- {m['name']}: {', '.join(sorted(capabilities[m['id']]))}" for m in members)
+        # A host turn whose tool calls were all rejected is not a decision to answer — it is a
+        # damaged turn. Measured: the host opened four calls, none closed its tag, the parser read
+        # them as one malformed call, and the host then wrote a paragraph saying so ("工具调用格式
+        # 出问题,我重新发一次") and stopped mid-thought. It had been about to lay out the work and
+        # never got there. Asking once for just the plan recovers the round; without this the round
+        # ended after a single message that produced nothing, and the user had to prod by hand —
+        # which is exactly what "the flow does not run" looked like from outside.
+        damaged = sum(run.tool_failures.values()) > failures_before
         # The owner already connected MCP this round; unknown tool names in the plan are simply
         # ignored rather than treated as an error. The same restriction the members' own tool lists
         # get: on a read-only round the host must not plan work that needs run_code or another exec
         # tool, or it would hand out tasks whose tool has already been withheld.
-        known = {t["name"] for t in (await self.toolhub.context(group, host, connect=False,
-                                                               read_only=run.read_only)).specs()}
+        known = set().union(*capabilities.values())
 
         def parse_and_build(raw: str) -> tuple["planner.Plan | None", str]:
             """(plan, why-it-failed). Both halves of "the plan did not run": JSON that does not parse,
@@ -1169,7 +1563,7 @@ class Orchestrator:
             if obj is None:
                 return None, i18n.pick_now("there was no plan", "没有给出计划")
             try:
-                return planner.build_plan(obj, members, int(cfg["plan_max_tasks"]), known), ""
+                return planner.build_plan(obj, members, int(cfg["plan_max_tasks"]), known, capabilities), ""
             except planner.PlanError as e:
                 return None, str(e)
 
@@ -1178,7 +1572,19 @@ class Orchestrator:
             await self._execute_plan(group, members, host, plan, run, emit)
             return True
         missing = i18n.pick_now("there was no plan", "没有给出计划")
-        if why == missing and mode != "on":
+        if why == missing and mode != "on" and any(
+            c.get("name") in host_execution_tools
+            for c in (out.message.get("meta") or {}).get("tools", [])
+        ):
+            # Auto mode also serves ordinary one-step requests. Production calls
+            # were deferred, not refused by the user: end planning explicitly
+            # and give that single step one normal execution turn.
+            return await self._agent_turn(group, host, members, emit, run,
+                extra_user=i18n.pick_now(
+                    "Planning is over. No team plan was chosen. Execute the user's original single-step request now using the available tools, then report the actual result. Do not output a plan.",
+                    "规划已结束，本次没有采用团队计划。现在执行用户原始的单步请求，调用实际工具后报告真实结果，不再输出计划。"),
+                extra_meta={"phase": "execution"}, empty_fallback=plan_fallback())
+        if why == missing and mode != "on" and not damaged:
             # The host decided to answer on its own, which is allowed in every mode but "always split".
             return out
         # One hidden retry before giving up, because this is the commonest way a task dies before it
@@ -1187,7 +1593,8 @@ class Orchestrator:
         # and the chat shows only "the plan was malformed". Live evidence on this machine: an
         # asked-for 报告.docx ended as a single chat message with an empty workspace. The retry costs
         # one short call and the model has already done the thinking.
-        fixed = await self._repair_plan(host, members, why)
+        fixed = await self._repair_plan(host, members, why, original=out.raw, request=text,
+                                        capabilities=capability_text, failed_model=out.message.get("model_id") or "")
         if fixed:
             plan, why2 = parse_and_build(fixed)
             if plan is not None:
@@ -1201,11 +1608,37 @@ class Orchestrator:
         if why == missing:
             if mode == "on":
                 await self._system(group["id"], i18n.pick_now("This group is set to always split the work, but the host produced no plan; treating its reply as an ordinary answer.", "本群设为「总是先分工」,但群主没有给出计划,已按普通回复处理。"), emit)
+            elif damaged:
+                # Nothing was delegated and nothing was produced, so silence here is the worst
+                # option: from the chat it looks like the group simply refused to work. The reason
+                # is a fact this round measured, not a guess, and the fix is usually one word from
+                # the user — so it is said out loud, next to what it cost.
+                await self._system(group["id"], i18n.pick_now(
+                    f"{host['name']} tried to look things up before splitting the work, but its tool "
+                    "calls failed (see the calls above), so no plan came out of this turn and nothing "
+                    "was assigned. Send the message again to give it another turn; if the same tool "
+                    "keeps failing, fix that tool first.",
+                    f"{host['name']} 这一轮先查了资料想再分工,但它的工具调用失败了(见上面那几次调用),"
+                    "所以没给出计划、也没有派活。再发一条消息让它重来一次;"
+                    "如果同一个工具反复失败,请先修好那个工具。"), emit)
+                run.defects += proclog.auto_round_defects(
+                    invalid_plan=i18n.pick_now(
+                        "the host's tools failed before it could split the work, so the round ended "
+                        "with nothing assigned",
+                        "群主在分工之前工具就失败了,于是这一轮什么都没派出去"),
+                    tool_loops=run.tool_failures)
             return out
         malformed = "JSON" in why or "no tasks array" in why or "tasks 数组" in why or "没有给出计划" in why
+        # ⚠️ 这一句里「已改用普通接力模式」是**不准确的**:计划被拒时 queue 里没有别人、host 也已被移出,
+        # 于是这一轮**什么都没派出去**(2026-09-26 实测:视频群连丢两轮,群里只剩这一条系统提示)。
+        # 后半句把真实代价说出来,否则用户以为团队在普通模式下干活。
         await self._plan_failed(group["id"], out, i18n.pick_now(
-            f"The host's plan was {'malformed' if malformed else 'not valid'} ({why}); falling back to ordinary turn-taking.",
-            f"群主的分工计划{'格式不对' if malformed else '不合规'}({why}),已改用普通接力模式。"), emit)
+            f"The host's plan was {'malformed' if malformed else 'not valid'} ({why}); falling back to "
+            "ordinary turn-taking, in which nobody was assigned this round — send the message again to "
+            "give the host another turn.",
+            f"群主的分工计划{'格式不对' if malformed else '不合规'}({why}),已改用普通接力模式。"
+            "本轮实际没有派出去任何任务,再发一条消息让群主重排。")
+            + _plan_excerpt(out.raw, focus=_bad_task_id(why)), emit)
         # The process log wants this one: a plan nobody could use means the round fell back to plain
         # turn-taking, which is the commonest way a request ends with nothing to show for it. The
         # reason travels with it, because "malformed" and "named a member who is not here" need
@@ -1213,7 +1646,8 @@ class Orchestrator:
         run.defects += proclog.auto_round_defects(invalid_plan=why)
         return out
 
-    async def _repair_plan(self, host: dict, members: list[dict], why: str) -> str:
+    async def _repair_plan(self, host: dict, members: list[dict], why: str, *, original: str = "",
+                           request: str = "", capabilities: str = "", failed_model: str = "") -> str:
         """One hidden retry for a plan that did not parse.
 
         Deliberately not a normal turn: nothing is emitted, so a repair that works leaves the chat
@@ -1232,17 +1666,39 @@ class Orchestrator:
                 + i18n.pick_now(
                     "Answer with the plan again, and nothing else: a JSON object inside <plan>...</plan>, "
                     "with a \"tasks\" array. No explanation, no apology, no prose repetition. Keep the "
-                    "same assignment.",
+                    "same requested outcome, correcting incompatible assignments.",
                     "请只重新输出计划:把 JSON 对象放在 <plan>…</plan> 里,并带 \"tasks\" 数组。"
-                    "不要解释、不要道歉、不要用文字复述。分工保持不变。")
+                    "不要解释、不要道歉、不要用文字复述。保留交付目标,纠正不合适的分工。")
                 + "\n"
                 + i18n.pick_now(f"Members you may assign to (owner must be one of these, exactly as written): "
                                 f"{planner.owner_list(members)}",
                                 f"可以指派的成员(owner 必须原样写成下面之一):{planner.owner_list(members)}"))
+        user += (f"\nOriginal request / 原始需求:\n{request[:6000]}\n"
+                 f"Original plan / 待修复计划:\n{original[:20000]}\n"
+                 f"Capabilities / 可执行能力:\n{capabilities}\n"
+                 "Preserve the requested deliverables. Correct any incompatible assignment. / "
+                 "保留原始交付目标,修正能力不匹配的分工。")
+        user += ("\nExact schema / 严格结构: <plan>{\"goal\":\"...\",\"conventions\":\"...\","
+                 "\"tasks\":[{\"id\":\"t1\",\"owner\":\"EXACT MEMBER NAME\",\"title\":\"...\","
+                 "\"instruction\":\"...\",\"needs\":[],\"strengths\":[],\"tools\":[],"
+                 "\"deliverable\":\"result.md\",\"arguments\":{}}]}</plan>\n"
+                 f"At most / 最多 {int(self.store.get_settings()['plan_max_tasks'])} tasks. "
+                 "Use owner, never assignee/agent. Dependencies are success-only; no conditional standby "
+                 "tasks or when/condition/on_failure/fallback_for fields. Generator tasks need an explicit "
+                 "arguments.prompt. / 负责人字段必须为owner；依赖仅表示上游成功，不支持条件备用；"
+                 "生成任务须明确arguments.prompt。")
+        preferred = host.get("model_id")
+        options = {}
+        if failed_model and self.store.get_settings().get("route_auto_match"):
+            alternatives = [m["id"] for m in self.router.rank_by_tags(["reasoning", "tool-use"], 8)
+                            if m["id"] != failed_model]
+            if alternatives:
+                preferred = alternatives[0]
+                options["allowed_ids"] = alternatives
         try:
             res = await self.router.complete(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                preferred=host.get("model_id"), tags=host.get("tags"), source="plan")
+                preferred=preferred, tags=["reasoning", "tool-use"], source="plan", max_tokens=8192, **options)
         except Exception:  # noqa: BLE001 — a repair that cannot run leaves the old behaviour in place
             return ""
         return res.text or ""
@@ -1251,6 +1707,7 @@ class Orchestrator:
         self, group: dict, members: list[dict], host: dict, plan: planner.Plan, run: RunState, emit: Emit
     ) -> None:
         gid = group["id"]
+        plan.integration = {"status": "pending", "message_id": "", "error": ""}
         pm = self.store.add_message(gid, "plan", None, i18n.pick_now("Task board", "任务板"), planner.summarize(plan), meta=plan.to_meta())
         plan.message_id = pm["id"]
         await emit({"type": "message", "message": pm})
@@ -1265,11 +1722,27 @@ class Orchestrator:
 
         try:
             for i, task in enumerate(plan.tasks, 1):
-                blocked_by = [n for n in task.needs if plan.by_id(n).status != "done"]
+                if task.status == "skipped" and task.error:
+                    await push()  # unavailable verification does not stop unrelated production
+                    continue
+                blocked_by = [n for n in task.needs if plan.by_id(n) is None or plan.by_id(n).status != "done"]
                 if blocked_by:
+                    # Name *what* is missing, not only which task IDs failed to produce it. The
+                    # ledger's own words for why a 180-second film never existed: "装配任务被建成
+                    # 最下游的串行节点,只有全部素材齐备才启动;素材不全时它既不产出部分成片,也不留下
+                    # 『缺哪几段』的中间记录,成片因此彻底不存在" — and the same for the acceptance
+                    # note, so nothing in the round said what was missing. The board is where that
+                    # record has to be, because it is the only artefact every round leaves behind.
+                    gone = []
+                    for n in blocked_by:
+                        up = plan.by_id(n)
+                        what = f"（缺 {up.deliverable}）" if up and up.deliverable else ""
+                        gone.append(f"{n} {up.title}{what}" if up else n)
                     task.status = "skipped"
-                    task.error = i18n.pick_now(f"Upstream tasks did not finish: {', '.join(blocked_by)}",
-                                               f"上游任务未完成:{'、'.join(blocked_by)}")
+                    task.error = i18n.pick_now(
+                        "Upstream tasks did not finish, so this one has nothing to work from: "
+                        + "; ".join(gone),
+                        "上游任务没完成,这一步没有可用的输入:" + "; ".join(gone))
                     await push()
                     continue
                 agent = by_id.get(task.owner_id)
@@ -1292,26 +1765,147 @@ class Orchestrator:
                     group, agent, members, emit, run,
                     extra_user=planner.task_prompt(plan, task, outputs, i) + self._task_dir_note(task),
                     exclude_plan_id=plan.message_id,
-                    extra_meta={"plan_id": plan.message_id, "task_id": task.id, "task_title": task.title},
+                    extra_meta={"plan_id": plan.message_id, "task_id": task.id, "task_title": task.title,
+                                "routing_tags": task.strengths,
+                                "task_instruction": task.instruction,
+                                "arguments": task.arguments,
+                                "input_files": [f for n in task.needs if plan.by_id(n)
+                                                for f in plan.by_id(n).artifacts]},
                 )
                 if out is None:
-                    task.status, task.error = "failed", i18n.pick_now("the model call failed", "模型调用失败")
+                    # The reason the piece that failed actually gave, not a generic one. A local tool
+                    # refuses with a sentence its own table states ("it renders a Remotion project,
+                    # and there is nothing like that in its folder yet"), an external agent with what
+                    # its settings are missing — and the board used to overwrite every one of them
+                    # with the same fixed line, so a user could see that a task had failed and never
+                    # learn the one thing that would fix it. The generic wording is the fallback for
+                    # the cases where nothing recorded a reason at all (a turn that was cancelled).
+                    task.status = "failed"
+                    task.error = run.last_error or i18n.pick_now("the model call failed", "模型调用失败")
                 else:
                     reason = self._task_shortfall(task, out.message, workspace)
+                    denied = any(c.get("status") == "denied"
+                                 for c in ((out.message.get("meta") or {}).get("tools") or []))
+                    if (reason and not denied and not (out.message.get("meta") or {}).get("execution_error")
+                            and agent.get("origin") != media.MEDIA_ORIGIN
+                            and _FILE_IN_PLAN(task.deliverable)):
+                        review_only = bool(self._pending_reviews(task, out.message, workspace)) and not self._task_shortfall(
+                            task, out.message, workspace, check_reviews=False)
+                        # The deliverable names a file and the file is not there. Almost always the
+                        # same shape: the member wrote the script / the report / the caption into the
+                        # chat instead of calling the tool that writes it. One day's ledger carries
+                        # it three times — 科普脚本.md, 中秋散文（配图）.docx, 中秋细节核查.md — and
+                        # each time the task failed and everything downstream was skipped, so a
+                        # 180-second film became a paragraph explaining why there is no film.
+                        #
+                        # So: one narrow second turn, asked for the file and nothing else. It is the
+                        # same bargain as the plan repair above — the thinking is already done, and a
+                        # delivery recovered is worth far more than an accurate failure notice.
+                        # Bounded to one, and skipped entirely when the user *refused* a tool call (a
+                        # `denied` call means the retry would only raise the same prompt again).
+                        nudge = i18n.pick_now(
+                            f"\n\n⚠️ The delivery {task.deliverable} did not pass verification: {reason}. Writing "
+                            "the content in the chat does not count: this task is finished only when "
+                            "the file is in the group's working directory. Call the tool that writes "
+                            "it now (`write_document` for a document, a deck, a workbook or a text "
+                            "file) with the content you already produced, then answer with the file's "
+                            "path in one line. Do not repeat the content.",
+                            f"\n\n⚠️ 交付物 {task.deliverable} 未通过核验:{reason}。把内容写在聊天里不算交付 —— "
+                            "只有当文件真的落在本群工作目录里,这项任务才算完成。"
+                            "现在就用你已经写好的内容调用写文件的工具(`write_document` 可写文档、"
+                            "演示、表格或文本文件),然后用一行回答给出文件路径。不要重复内容。")
+                        if review_only:
+                            nudge = i18n.pick_now(
+                                "\n\nThe promised files already exist. Only required verification is missing: "
+                                + reason + ". Inspect the existing outputs using the required review tools. "
+                                "Do not regenerate, reassemble or synthesize anything. Keep actual paths and report unresolved defects.",
+                                "\n\n承诺的文件已真实落盘，只缺必需的验收：" + reason
+                                + "。使用要求的验收工具检查已有产物，禁止重新生成、装配或合成。沿用真实路径，如实记录仍未解决的问题。")
+                        # ⚠️⚠️ A member that called **no tools at all** must be told so in words. It
+                        # cannot be left to infer it from an empty evidence list, and it must not be
+                        # handed its own paragraph back as something to build on. Measured 2026-09-26
+                        # (group 介入术式科, member Project manager): two turns in a row wrote 「hyperframes
+                        # 入口 SKILL.md 已读完」 and 「本轮仅一次 write_document（.md）把视觉规范 v2.3 八节
+                        # 内容写进交付路径」 with `meta.tools == []` — nothing was ever read or written —
+                        # and the retry fed that same paragraph back labelled 「沿用，不要重新检索」, which
+                        # reinforced the claim instead of correcting it.
+                        calls_before = _delivery_tools(out.message)
+                        silent = not calls_before and not (out.message.get("meta") or {}).get("tools")
+                        if silent:
+                            nudge += i18n.pick_now(
+                                "\n\n⚠️⚠️ Verified by the program: **you made no tool calls at all this "
+                                "turn.** The tool log for your previous answer is empty, so every "
+                                "sentence of it that says something was read, searched or written is "
+                                "false — you only wrote those words. Answering in prose again will fail "
+                                "exactly the same way. **Call the tool first, then quote what it "
+                                "returned.**",
+                                "\n\n⚠️⚠️ 程序核验:**你上一轮一次工具调用都没有发生** —— 你上一条回答的工具记录是"
+                                "空的,所以那里面任何「已读完 / 已检索 / 已落盘 / 已调用」都不是事实,你只是写了"
+                                "那些话。再用文字回答一次会以完全同样的方式失败。"
+                                "**先调用工具,再引用它返回的结果。**")
+                        # ⚠️ The label matters as much as the content: 「沿用，不要重新检索」 is an
+                        # instruction, and giving it for a turn that produced nothing tells the member
+                        # to keep its unverified prose.
+                        previous = (i18n.pick_now(
+                                        "\n\nPrevious attempt / your last answer (⚠️ nothing was "
+                                        "written to disk — it is material to be written out, not a "
+                                        "finished deliverable):\n",
+                                        "\n\n上次正文（⚠️ 未落盘,不能当作已完成,只能当素材重新落盘）:\n")
+                                    if silent else
+                                    i18n.pick_now(
+                                        "\n\nPrevious attempt / material already prepared "
+                                        "(reuse it, do not search again):\n",
+                                        "\n\n上次已整理内容（沿用,不要重新检索）:\n"))
+                        again = await self._agent_turn(
+                            group, agent, members, emit, run,
+                            extra_user=planner.task_prompt(plan, task, outputs, i)
+                                       + self._task_dir_note(task) + nudge + previous
+                                       + out.raw[-24000:]
+                                       + "\n\nPrevious tool evidence / 上次工具执行证据（只补缺口，复用已有文件，不重复生成）:\n"
+                                       + json.dumps([{"name": c.get("name"), "status": c.get("status"),
+                                                      "preview": str(c.get("preview") or "")[:800],
+                                                      "files": c.get("files") or []}
+                                                     for c in _delivery_tools(out.message)], ensure_ascii=False),
+                            exclude_plan_id=plan.message_id,
+                            extra_meta={"plan_id": plan.message_id, "task_id": task.id,
+                                        "routing_tags": task.strengths, "task_instruction": task.instruction,
+                                        "task_title": task.title, "retry": "verification" if review_only else "delivery",
+                                        "delivery_previous_message_id": out.message["id"],
+                                        "delivery_previous_tools": _delivery_tools(out.message)},
+                        )
+                        if again is not None:
+                            reason2 = self._task_shortfall(task, again.message, workspace)
+                            # ⚠️ `out = again` in **both** branches. The board's `error` and the
+                            # message it is attached to have to come from the same attempt, or the
+                            # user reads a reason written by the retry next to the first turn's
+                            # output — and the ledger's tool-call evidence then describes a turn that
+                            # is not the one being judged.
+                            reason = reason2 or ""
+                            out = again
+                    # Files from an interrupted/failed node remain discoverable,
+                    # but cannot satisfy a downstream dependency until verified.
+                    task.artifacts = [f for c in _delivery_tools(out.message)
+                                      if c.get("status") == "ok" for f in (c.get("files") or [])]
+                    task.files = [_file_label(f) for f in task.artifacts]
+                    # The host/judge needs the partial result and its defects too.
+                    # Dependency checks still prevent failed work being consumed.
                     if reason:
                         # A reply is not a delivery. Until the audit that produced this rule, a task
                         # counted as done the moment its owner spoke — so a turn whose every tool call
                         # failed, or one that was supposed to write a file and wrote none, was handed
                         # downstream and reported to the user as finished.
+                        #
+                        # ⚠️ and the text that travels must be the **stamped** one: the unmarked
+                        # paragraph is what the host re-planned on top of, one round later.
+                        outputs[task.id] = await self._stamp_failure(out.message, reason, emit)
                         task.status, task.error = "failed", reason
                         task.message_id = out.message["id"]
                     else:
-                        task.status, task.message_id = "done", out.message["id"]
                         outputs[task.id] = out.text
-                        task.files = [f["name"] for c in ((out.message.get("meta") or {}).get("tools") or [])
-                                      if c.get("status") == "ok" for f in (c.get("files") or [])]
+                        task.status, task.message_id = "done", out.message["id"]
                 await push()
             plan.status = "integrating"
+            plan.integration = {"status": "running", "message_id": "", "error": ""}
             await push()
             final = await self._agent_turn(
                 group, host, members, emit, run,
@@ -1323,9 +1917,18 @@ class Orchestrator:
                 exclude_plan_id=plan.message_id,
                 extra_meta={"plan_id": plan.message_id, "task_id": "final", "task_title": i18n.pick_now("Consolidate", "整合")},
             )
-            plan.status = "done" if final is not None and all(t.status == "done" for t in plan.tasks) else "failed"
+            final_task = planner.PlanTask("final", host["name"], host["id"],
+                                          i18n.pick_now("Consolidate", "整合"), plan.goal)
+            final_error = (self._task_shortfall(final_task, final.message, workspace) if final is not None
+                           else run.last_error or i18n.pick_now("the model call failed", "模型调用失败"))
+            plan.integration = {"status": "failed" if final_error else "done", "error": final_error,
+                                "message_id": final.message["id"] if final is not None else ""}
+            plan.status = "done" if not final_error and not plan.dropped and all(t.status == "done" for t in plan.tasks) else "failed"
             if final is not None:
                 run.final_text = final.text
+            if final_error:
+                await self._system(gid, i18n.pick_now(f"Consolidation did not finish: {final_error}",
+                                                     f"最终整合未完成:{final_error}"), emit)
             await push()
             # Grade the hand-offs only after the answer exists: the user gets the result first, and
             # a judge that is slow, unreachable or nonsensical can add a note but can never change
@@ -1339,17 +1942,9 @@ class Orchestrator:
                 note = scoring.summarize_card(plan.scorecard)
                 if note:
                     await self._system(gid, note, emit)
-            # Hand the round's measured outcome to the process engineer: each task with what it
-            # promised, what it actually produced, and what is on disk. Done here, once, from the
-            # settled task board rather than per task inside the loop — a status that is still
-            # changing (a skip that becomes a failure) would be recorded twice in two versions.
-            run.unfinished = [f"{t.id} {t.title}" for t in plan.tasks if t.status != "done"]
-            files = {p.name for p in workspace.rglob("*") if p.is_file()} if workspace.is_dir() else set()
-            for t in plan.tasks:
-                msg = self.store.get_message(t.message_id) if t.message_id else None
-                calls = ((msg or {}).get("meta") or {}).get("tools") or []
-                run.defects += proclog.auto_task_defects(t.to_dict(), list(calls), files)
         except asyncio.CancelledError:
+            if plan.integration.get("status") == "running":
+                plan.integration["status"] = "stopped"
             if plan.status not in ("done", "failed"):
                 plan.status = "stopped"
             for t in plan.tasks:
@@ -1365,6 +1960,8 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001  —— an error part-way through delegation: mark the task board as failed
 # instead of showing "in progress" forever
             plan.status = "failed"
+            if plan.integration.get("status") == "running":
+                plan.integration.update(status="failed", error=str(e))
             for t in plan.tasks:
                 if t.status in ("running", "pending"):
                     t.status, t.error = "failed", t.error or i18n.pick_now("the plan failed while running", "分工执行出错")
@@ -1373,6 +1970,37 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 pass
             await self._system(gid, i18n.pick_now(f"The plan failed while running: {e}", f"分工执行出错:{e}"), emit)
+        finally:
+            run.unfinished = [f"{t.id} {t.title}" for t in plan.tasks if t.status != "done"]
+            if plan.integration:
+                integration = plan.integration
+                if integration["status"] != "done":
+                    run.unfinished.append(i18n.pick_now("Final consolidation", "最终整合"))
+                if integration["status"] in ("done", "failed"):
+                    run.observations.append({"check": "plan:integration", "ok": integration["status"] == "done",
+                                             "evidence": str(integration)})
+                    final_msg = self.store.get_message(integration["message_id"]) if integration.get("message_id") else None
+                    snapshot = {"id": "final", "title": i18n.pick_now("Consolidate", "整合"),
+                                "owner": host["name"], "owner_id": host["id"], "instruction": plan.goal,
+                                **integration}
+                    run.defects += proclog.auto_task_defects(snapshot, ((final_msg or {}).get("meta") or {}).get("tools") or [], set())
+            for task in plan.tasks:
+                # A user stopping pending work is not evidence of a broken hand-off.
+                if task.status not in ("done", "failed", "skipped") or (plan.status == "stopped" and task.status == "skipped"):
+                    continue
+                msg = self.store.get_message(task.message_id) if task.message_id else None
+                calls = ((msg or {}).get("meta") or {}).get("tools") or []
+                shortfall = self._task_shortfall(task, msg or {}, workspace)
+                ok = task.status == "done" and msg is not None and not shortfall
+                snapshot = task.to_dict()
+                if task.status == "done" and shortfall:
+                    snapshot.update(status="failed", error=shortfall)
+                # Use this task's validated delivery, never unrelated/stale workspace filenames.
+                files = set(proclog.FILE_IN_TEXT(task.deliverable)) if ok else set()
+                run.defects += proclog.auto_task_defects(snapshot, list(calls), files)
+                run.observations.append({"check": proclog.task_check(snapshot), "ok": ok,
+                    "evidence": f"task={task.id} {task.title}; message={task.message_id}; "
+                                f"deliverable={task.deliverable}; files={task.files}; status={task.status}"})
 
     # -------------------------------------------------------------- one turn
     async def _agent_turn(
@@ -1388,6 +2016,24 @@ class Orchestrator:
             run.history.append(out.message)
         for step in run.steps[start:]:
             step.update({k: v for k, v in (extra_meta or {}).items() if k in ("plan_id", "task_id")})
+        calls = ((out.message.get("meta") or {}).get("tools") or []) if out else []
+        for call in calls:
+            sig = call.get("process_signature")
+            check = {"kind": "tool", "scope": sig} if sig else {}
+            if call.get("status") == "failed":
+                run.defects.append({"key": f"tool-failed:{agent['id']}:{call.get('name')}:{sig or ''}",
+                    "title": i18n.pick_now(f"Tool failed: {agent['name']} / {call.get('name')}",
+                                            f"工具执行失败:{agent['name']} / {call.get('name')}"),
+                    "symptom": str(call.get("preview") or "")[:500],
+                    "evidence": f"message={out.message['id']}; {call.get('name')}: failed; {call.get('preview', '')}",
+                    "stage": "tool", "severity": "major", "check": check,
+                    "hint": i18n.pick_now("The assigning member must fix the input or dependency before retrying, and inspect the actual output.",
+                                           "派工成员先修正输入或依赖再重试,并检查实际产出。")})
+            if check:
+                run.observations.append({"check": check, "ok": call.get("status") == "ok",
+                    "evidence": f"message={out.message['id']}; {call.get('name')}: {call.get('status')}"})
+        if out is None and run.last_error:
+            run.defects += proclog.auto_round_defects(member_blocked={agent["name"]: run.last_error})
         return out
 
     async def _agent_turn_impl(
@@ -1397,9 +2043,21 @@ class Orchestrator:
     ) -> TurnOut | None:
         cfg = self.store.get_settings()
         mid = new_id()
+        # Cleared per turn: a reason left over from an earlier member would be attributed to this one.
+        run.last_error = ""
         base = {"id": mid, "group_id": group["id"], "sender_type": "agent",
                 "sender_id": agent["id"], "sender_name": agent["name"]}
         await emit({"type": "message_start", "message": {**base, "content": "", "meta": extra_meta or {}}})
+        if run.read_only and (agent.get("engine") or agent.get("origin") == media.MEDIA_ORIGIN):
+            # External engines have their own tools and media members bypass the conversational
+            # tool list. Enforce the channel boundary before entering either execution path.
+            run.last_error = i18n.pick_now(
+                f"{agent['name']} cannot run in a read-only chat-channel round. Start this task in the local app.",
+                f"「{agent['name']}」不能在聊天通道触发的只读回合中执行。请在本地应用中发起此任务。")
+            await emit({"type": "message_discard", "message_id": mid})
+            await self._system(group["id"], run.last_error, emit)
+            run.steps.append({"agent": agent["name"], "ok": False, "tools": []})
+            return None
         # A member that is a generator takes a different road again: it has no conversation and no
         # tools to pick from, only the one call it exists to make. Both branches are decided by the
         # member's own row rather than by anything the caller passed, so no path into this function
@@ -1430,6 +2088,12 @@ class Orchestrator:
         trace: list[dict] = []
         attempts: list[dict] = []
         res = None
+        route_tags = strengths.clean_tags((extra_meta or {}).get("routing_tags") or [])
+        if cfg.get("route_auto_match") and not route_tags:
+            task_text = str((extra_meta or {}).get("task_instruction") or run.user_text)
+            route_tags = (["reasoning", "tool-use"] if (extra_meta or {}).get("phase") == "planning"
+                          else teamrec.task_tags(task_text))
+        route_tags = route_tags or agent.get("tags") or []
         filt = TagFilter()
 
         pending: list[str] = []
@@ -1457,30 +2121,106 @@ class Orchestrator:
             if pending_len >= DELTA_BATCH_CHARS or time.monotonic() - last_emit >= DELTA_BATCH_SECONDS:
                 await flush_delta()
 
+        # The model's own working, when it is a reasoning model: shown above the answer and kept in
+        # the message, because "how it got there" is most of what a user needs to judge the answer.
+        # Batched coarser than the answer text (it arrives in a long unbroken run and is read, not
+        # watched character by character).
+        think_pending: list[str] = []
+        think_all: list[str] = []
+        think_len = 0
+        think_last = time.monotonic()
+
+        async def flush_thinking() -> None:
+            nonlocal think_len, think_last
+            if not think_pending:
+                return
+            text = "".join(think_pending)
+            think_pending.clear()
+            think_len = 0
+            think_last = time.monotonic()
+            await emit({"type": "thinking", "message_id": mid, "text": text})
+
+        async def on_reasoning(d: str) -> None:
+            nonlocal think_len
+            think_pending.append(d)
+            think_all.append(d)
+            think_len += len(d)
+            if think_len >= THINK_BATCH_CHARS or time.monotonic() - think_last >= THINK_BATCH_SECONDS:
+                await flush_thinking()
+
         async def on_reset() -> None:
-            nonlocal filt, pending_len, last_emit
+            nonlocal filt, pending_len, last_emit, think_len
             pending.clear()   # reset clears the screen immediately, so buffered content need not be sent again
             pending_len = 0
             filt = TagFilter()
+            # The reasoning belongs to the attempt that just failed, so it goes with it — leaving it
+            # on screen would attribute one model's working to the model that actually answered.
+            think_pending.clear()
+            think_all.clear()
+            think_len = 0
             await emit({"type": "reset", "message_id": mid})
+            await emit({"type": "thinking", "message_id": mid, "text": ""})
             earlier = "\n\n".join(visible_parts)
             if earlier:  # content already shown to the user in earlier rounds has to be added back
                 await emit({"type": "delta", "message_id": mid, "text": earlier + "\n\n"})
             last_emit = time.monotonic()
 
+        async def preserve_interrupted(reason: str) -> TurnOut | None:
+            """Keep completed tool evidence even if the next model request fails."""
+            run.last_error = redact(reason)
+            if not trace:
+                await emit({"type": "message_discard", "message_id": mid})
+                return None
+            kept = [dict(t) for t in trace]
+            for entry in kept:
+                if entry.get("status") == "running":
+                    entry.update(status="failed", preview=i18n.pick_now(
+                        "Interrupted; outcome is unknown. Check existing files before retrying.",
+                        "执行中断，结果未知；重试前先检查已有文件。"))
+            content = i18n.pick_now(
+                "Execution interrupted. Completed tool results and files are retained below; the task is not complete and still needs verification.\n",
+                "执行中断。已执行的工具结果和文件保留如下；任务尚未完成，仍须核验。\n") + run.last_error
+            saved = self.store.add_message(
+                group["id"], "agent", agent["id"], agent["name"], content,
+                model_id=res.model_id if res else None,
+                meta={"attempts": attempts, **(extra_meta or {}), "tools": kept,
+                      "execution_error": run.last_error, "interrupted": True}, mid=mid)
+            await emit({"type": "message_end", "message": saved})
+            return TurnOut(content, content, saved)
+
         try:
             ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
+            if (extra_meta or {}).get("phase") == "planning":
+                # A planner must not execute its own future tasks. In production
+                # it wrote a complete manuscript, then overwrote it when task 1
+                # executed again. Keep inspection available, production deferred.
+                ctx.tools, _ = planning_tools(ctx.tools)
+            if (extra_meta or {}).get("retry") == "delivery":
+                # The retry exists to deliver the work already done. Repeating
+                # broad searches consumes the same budget and loses the same file.
+                ctx.tools = {name: spec for name, spec in ctx.tools.items()
+                             if name not in {"search_literature", "library_search", "memory_search", "list_figures"}}
+            if (extra_meta or {}).get("retry") == "verification":
+                ctx.tools = {name: spec for name, spec in ctx.tools.items()
+                             if name in {"review_picture", "review_audio", "library_read", "list_workspace_files", "write_document"}}
             for p in ctx.problems:
                 if p not in run.warned:
                     run.warned.add(p)
                     await self._system(group["id"], p, emit)
             rounds = int(cfg["tool_rounds"]) if ctx.tools else 0
+            # The tool names this member may actually call, for the parser's "was that a call?"
+            # test. A model that sends its call with no `<tool_call>` tags around it (measured
+            # 2026-09-25: a whole `write_document` with a storyboard in its body) is only
+            # recognisable by shape, and shape alone would also match JSON that someone merely
+            # quoted — the list is what separates them.
+            known_tools = {t["name"] for t in ctx.specs()}
             memory_block = ""
             if cfg["memory_enabled"] and group["ext"]["memory"]:
                 memory_block = self.memory.block(
                     self.memory.recall(group["id"], agent["id"], run.user_text + " " + (extra_user or "")[:300])
                 )
-            extra_system = run.refs_block
+            extra_system = "\n\n".join(s for s in (run.refs_block, run.process_feedback) if s)
+            run.process_used = run.process_used or bool(run.process_feedback)
             # The inject side of the hooks: extra lines for this prompt only. Added here rather
             # than to the conversation so it reads as context, and add-only so a hook can never
             # take the group's own rules out of the prompt.
@@ -1499,36 +2239,70 @@ class Orchestrator:
             )
 
             for rnd in range(rounds + 1):
+                if rounds and rnd == rounds and (extra_meta or {}).get("phase") == "planning":
+                    messages.append({"role": "user", "content": i18n.pick_now(
+                        "[Planning preparation finished] No further tools can run in this planning turn. If the request requires execution, output the strict <plan> JSON now using the available evidence. Put remaining investigation and production into assigned tasks; do not stop at a list of suggestions. Do not write or generate deliverables during planning.",
+                        "【规划准备结束】本次规划不能再调用工具。需求需要执行时，现在依据已有证据输出严格的 <plan> JSON，将剩余调查和制作分配给成员；不能只列建议就结束。规划阶段不要写文件或生成交付物。")})
+                elif rounds and rnd == rounds - 1 and (extra_meta or {}).get("phase") == "planning":
+                    messages.append({"role": "user", "content": i18n.pick_now(
+                        "[Last planning tool round] Finish essential inspection or recruitment, then output the <plan> JSON. Delegate further investigation to the team. This is still planning: do not write or generate deliverables.",
+                        "【最后一轮规划工具】完成必要的检查或补齐成员，然后输出 <plan> JSON；后续调查交给团队。当前仍是规划阶段，不要写文件或生成交付物。")})
+                elif rounds and rnd == rounds:
+                    messages.append({"role": "user", "content": i18n.pick_now(
+                        "[Tool budget exhausted] No further tool calls can run in this turn. Summarize the evidence already obtained, give real source/file references, and state missing deliverables. Do not claim an unexecuted write or generation succeeded.",
+                        "【工具额度已用完】本回合不能再执行工具调用。请汇总已经取得的证据，给出真实来源/文件路径，并说明尚未完成的交付物。不要再调用工具，不得声称尚未执行的写文件或生成已经成功。")})
+                elif rounds and rnd == rounds - 1:
+                    messages.append({"role": "user", "content": i18n.pick_now(
+                        "[Last tool round] This is the last opportunity to execute tools. If your task requires files, write the deliverable now with the evidence already collected; label gaps honestly instead of starting another broad search.",
+                        "【最后一轮工具】这是本回合最后一次执行工具的机会。任务要求交付文件时，请现在把已取得的材料写成交付文件；缺口如实注明，不要继续泛泛检索。")})
                 filt = TagFilter()
                 if rnd and visible_parts:
                     await flush_delta()   # flush to disk before switching segments, so buffered text from the previous round cannot
 # end up after the separator
                     await emit({"type": "delta", "message_id": mid, "text": "\n\n"})
                 res = await self.router.complete(
-                    messages, preferred=agent["model_id"], tags=agent.get("tags"),
-                    on_delta=on_delta, on_reset=on_reset,
+                    messages, preferred=agent["model_id"], tags=route_tags,
+                    on_delta=on_delta, on_reset=on_reset, on_reasoning=on_reasoning,
+                    **({"tools": [{"type": "function", "function": {
+                        "name": spec["name"], "description": spec.get("description", ""),
+                        "parameters": spec.get("parameters") or {"type": "object", "properties": {}},
+                    }} for spec in ctx.specs()], "tool_choice": "required" if (extra_meta or {}).get("retry") in {"delivery", "verification"} and rnd == 0 else "auto"} if rnd < rounds else {}),
                 )
                 await flush_delta()   # wrap up: send the last incomplete batch of deltas, then handle a trailing tag
+                await flush_thinking()
                 tail = filt.flush()
                 if tail:
                     await emit({"type": "delta", "message_id": mid, "text": tail})
                 raws.append(res.text)
                 attempts += [a.to_dict() for a in res.attempts]
-                visible, calls = parse_tool_calls(res.text)
-                visible = strip_hidden(visible)
+                visible, calls = parse_tool_calls(res.text, known=known_tools)
+                visible = strip_hidden(visible, known_tools)
                 if visible:
                     visible_parts.append(visible)
+                if calls and rounds and rnd >= rounds:
+                    notice = i18n.pick_now(
+                        "Tool budget exhausted; these requested calls were not executed: ",
+                        "工具额度已用完，以下调用未执行：") + ", ".join(c.name for c in calls)
+                    visible_parts.append(notice)
+                    await emit({"type": "delta", "message_id": mid, "text": "\n\n" + notice})
+                    for call in calls:
+                        entry = {"name": call.name, "args": _short_args(call.arguments),
+                                 "status": "failed", "preview": notice, "ms": 0}
+                        trace.append(entry)
+                        await emit({"type": "tool", "message_id": mid, "index": len(trace) - 1, "call": dict(entry)})
                 if not calls or rnd >= rounds:
                     break
                 results = []
                 for call in calls:
-                    entry = {"name": call.name or i18n.pick_now("(malformed)", "(格式错误)"), "args": _short_args(call.arguments), "status": "running"}
+                    entry = {"name": call.name or i18n.pick_now("(malformed)", "(格式错误)"), "args": _short_args(call.arguments), "status": "running",
+                             "process_signature": proclog.signature([agent["id"], call.name, call.arguments])}
                     trace.append(entry)
                     idx = len(trace) - 1
                     await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
 
                     async def approve(spec: dict, args: dict, entry: dict = entry, idx: int = idx) -> bool:
                         entry["status"] = "waiting"   # the bubble shows "waiting for your confirmation"
+                        entry["args"] = _short_args(args)
                         await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
                         allowed = await self.approvals.ask(group=group, message_id=mid, agent=agent, spec=spec, args=args, emit=emit)
                         entry["status"] = "running"
@@ -1538,10 +2312,35 @@ class Orchestrator:
 
                     denied = False
                     if call.error:
-                        text, ok, ms, files = call.error, False, 0, []
+                        # `parse_failure` rather than `call.error`: the member is shown what it
+                        # actually sent, so a retry has something to correct. See the docstring —
+                        # this round's seven repeated failures were one member guessing at a reason.
+                        text, ok, ms, files = parse_failure(call), False, 0, []
                     else:
-                        oc = await self.toolhub.call(ctx, call.name, call.arguments, approve)
+                        # What the call is doing *while* it does it: `run_code` streams its output
+                        # (`entry["live"]`), everything else has nothing to say mid-flight and
+                        # simply never calls it. Coalesced on a timer, because the point is to show
+                        # the newest lines, not to send one frame per line of a build log.
+                        live: dict[str, float] = {"at": 0.0}
+                        tail = ""
+
+                        async def on_progress(chunk: str, entry: dict = entry, idx: int = idx,
+                                              live: dict = live) -> None:
+                            nonlocal tail
+                            tail = (tail + chunk)[-LIVE_OUTPUT_CHARS:]
+                            entry["live"] = tail
+                            now = time.monotonic()
+                            if now - live["at"] < LIVE_OUTPUT_SECONDS:
+                                return
+                            live["at"] = now
+                            await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
+
+                        oc = await self.toolhub.call(ctx, call.name, call.arguments, approve, on_progress)
                         text, ok, ms, denied, files = oc.text, oc.ok, oc.ms, oc.denied, oc.files
+                        if oc.effective_args is not None:
+                            entry["args"] = _short_args(oc.effective_args)
+                            entry["process_signature"] = proclog.signature([agent["id"], call.name, oc.effective_args])
+                    entry.pop("live", None)     # the finished call shows its result, not its tail
                     entry.update(status="denied" if denied else "ok" if ok else "failed", ms=ms, preview=text[:300])
                     if not ok and not denied:
                         # Counted for the process log: the same call failing twice in one round is a
@@ -1551,6 +2350,14 @@ class Orchestrator:
                     if files:
                         entry["files"] = files      # what the call produced, so the bubble can offer it
                     await emit({"type": "tool", "message_id": mid, "index": len(trace) - 1, "call": dict(entry)})
+                    if ok and call.name == "invite_team_resource":
+                        group.update(self.store.get_group(group["id"]) or {})
+                        members[:] = self.store.group_members(group["id"])
+                        ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
+                        if (extra_meta or {}).get("phase") == "planning":
+                            ctx.tools, _ = planning_tools(ctx.tools)
+                        known_tools = set(ctx.tools)
+                        await emit({"type": "group_updated", "group": group})
                     results.append(format_result(call.name or "error", ok, text, int(cfg["tool_output_limit"])))
                 messages.append({"role": "assistant", "content": res.text})
                 messages.append({"role": "user", "content": "\n\n".join(results) + i18n.pick_now("\n\nCarry on based on the tool results.", "\n\n请基于工具结果继续。")})
@@ -1571,20 +2378,22 @@ class Orchestrator:
                     f" 另有 {len(unchained)} 个模型可用,但都不在「优先级链」里——链是「允许被调用的名单」"
                     f"({names}{more})。到 「设置 → 路由与回退 → 优先级链」里加一个即可。",
                 )
-            await emit({"type": "message_discard", "message_id": mid})
+            attempts.extend(a.to_dict() for a in e.attempts)
+            interrupted = await preserve_interrupted(i18n.pick_now(
+                f"No model is available: {detail}", f"所有模型均不可用:{detail}"))
             await self._system(
                 group["id"], i18n.pick_now(f"{agent['name']} cannot reply right now: no model is available ({detail}).{hint}", f"「{agent['name']}」暂时无法回复,所有模型均不可用({detail})。{hint}") + self._repeat_failure_note(group["id"], agent), emit
             )
             run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
-            return None
+            return interrupted
         except asyncio.CancelledError:
-            await emit({"type": "message_discard", "message_id": mid})
+            await preserve_interrupted(i18n.pick_now("Execution was cancelled.", "执行已中止。"))
             raise
         except Exception as e:  # noqa: BLE001
-            await emit({"type": "message_discard", "message_id": mid})
+            interrupted = await preserve_interrupted(str(e))
             await self._system(group["id"], i18n.pick_now(f"{agent['name']} failed while replying: {e}", f"「{agent['name']}」发言出错:{e}"), emit)
             run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
-            return None
+            return interrupted
 
         assert res is not None
         content = "\n\n".join(visible_parts).strip()
@@ -1600,9 +2409,19 @@ class Orchestrator:
                 await self._system(group["id"], reason, emit)
                 run.steps.append({"agent": agent["name"], "ok": False, "tools": [t["name"] for t in trace]})
                 return None
-        meta = {"attempts": attempts, **(extra_meta or {})}
+        meta = {"attempts": attempts, **(extra_meta or {}), "routing_tags": route_tags,
+                "routing_auto": bool(cfg.get("route_auto_match"))}
         if trace:
             meta["tools"] = trace
+        elif any("tool_call" in raw or '"arguments"' in raw for raw in raws):
+            meta["tool_protocol_diagnostic"] = "\n\n".join(raws)[-2400:]
+        thinking_text = "".join(think_all).strip()
+        if thinking_text:
+            # Kept with the reply so the working behind an answer can be read again later — that is
+            # the difference between a reply that can be checked and one that has to be trusted.
+            # Only the tail: a reasoning model can produce tens of thousands of characters, and this
+            # is a record of how the answer was reached, not a transcript of an inner monologue.
+            meta["thinking"] = thinking_text[-THINK_STORE_CHARS:] if len(thinking_text) > THINK_STORE_CHARS else thinking_text
         try:
             saved = self.store.add_message(
                 group["id"], "agent", agent["id"], agent["name"], content,
@@ -1654,10 +2473,17 @@ class Orchestrator:
 
         async def fail(msg: str) -> None:
             await emit({"type": "message_discard", "message_id": mid})
+            # The specific reason is kept for the caller. A local tool refuses for a reason its own
+            # table states ("it renders a Remotion project, and there is nothing like that in its
+            # folder yet"), and the task board used to overwrite it with "the model call failed" —
+            # which is not only less useful, it is false: no model was involved.
+            run.last_error = msg
             await self._system(gid, msg + self._repeat_failure_note(gid, agent), emit)
             run.steps.append({"agent": name, "ok": False, "tools": []})
             return None
 
+        if run.read_only:
+            return await fail(i18n.pick_now("This is a read-only round; local execution tools cannot run.", "本轮只读,不能运行本地执行工具。"))
         if not cfg["external_agents_enabled"]:
             return await fail(i18n.pick_now(
                 f"{name} is a local tool member, and the switch that lets outside programs run for "
@@ -1669,11 +2495,28 @@ class Orchestrator:
         # The instruction is what the triggering message said. Only some tools put it anywhere (a
         # speech synthesizer speaks it); for the rest it is what the member reports back, and the
         # run is the project sitting in its folder.
-        instruction = str(extra_user or run.user_text or "").strip()
+        metadata = extra_meta or {}
+        args = metadata.get("arguments") or {}
+        if row.get("voice_engine") and metadata.get("task_id") and not str(args.get("text") or "").strip():
+            return await fail(i18n.pick_now(
+                "Speech task has no arguments.text. A chat member must prepare the exact narration and pass ref_audio for cloning before this tool can run. Task instructions are not narration.",
+                "配音任务缺少 arguments.text。请由对话成员先整理逐字旁白，克隆时同时传 ref_audio，再交给工具执行。任务说明不能作为朗读内容。"))
+        source = metadata.get("task_instruction") or extra_user \
+            or self._summoning_line(group, members, agent, run.history) or run.user_text or ""
+        instruction = args["text"] if isinstance(args.get("text"), str) and args["text"].strip() else _tool_instruction(str(source), members, agent)
         try:
             timeout = int((agent.get("engine_cfg") or {}).get("timeout") or localcmd.DEFAULT_TIMEOUT)
         except (TypeError, ValueError):
             timeout = localcmd.DEFAULT_TIMEOUT
+        # Where the program is, if the user had to say. A local tool is normally installed by a
+        # package manager and found by name, but one whose own instruction is "clone it and run
+        # `uv sync`" ends up in that clone's virtualenv, on nobody's `PATH` — and then this field is
+        # the only thing that can find it (`localcmd.exe_for` says why, and the probe uses the same
+        # value, so what the settings page reported is the program this starts).
+        # The member's own value wins; failing that, whatever this app was told on the engine's
+        # behalf — one program serves every member of one engine (`ExternalRunner.engine_path`).
+        exe = (str((agent.get("engine_cfg") or {}).get("cli_path") or "").strip()
+               or self.external.engine_path(engine))
 
         # A tool that renders *a project* and has none is told so before the machine spends three
         # minutes starting a browser. `probe` already knows the sentence; it is not re-written here.
@@ -1687,10 +2530,13 @@ class Orchestrator:
                     f"({folder}),所以没有执行。放进去之后再让它跑一次。"))
 
         entry = {"name": f"local:{engine}", "status": "running",
-                 "args": {"instruction": instruction[:200]}, "files": []}
+                 "args": {"instruction": instruction[:200]}, "files": [],
+                 "process_signature": proclog.signature([agent["id"], engine, instruction, args])}
         await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
         try:
-            got = await localcmd.run(engine, workspace=ws, instruction=instruction, timeout=timeout)
+            got = await localcmd.run(engine, workspace=ws, instruction=instruction, timeout=timeout,
+                                     cli_path=exe, ref_audio=str(args.get("ref_audio") or ""),
+                                     ref_text=str(args.get("ref_text") or ""))
         except localcmd.LocalToolError as e:
             entry["status"] = "failed"
             await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
@@ -1703,7 +2549,7 @@ class Orchestrator:
             raise
 
         files = [{"kind": localcmd.artifact_kind(f["name"]), "name": f["name"], "bytes": f["bytes"],
-                  "rel": f["rel"]} for f in got["files"]]
+                  "rel": f["rel"], "path": f["rel"]} for f in got["files"]]
         entry.update(status="ok" if got["ok"] else "failed", ms=int(got["seconds"] * 1000),
                      preview=got["text"][-300:], files=files)
         await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
@@ -1782,6 +2628,8 @@ class Orchestrator:
             await emit({"type": "message_discard", "message_id": mid})
             # Every failure path that goes through here gets the same tail: a member that keeps
             # failing is told how many times, and that taking it out of the group is allowed.
+            # The reason itself is kept for the caller too — see `RunState.last_error`.
+            run.last_error = msg
             await self._system(gid, msg + self._repeat_failure_note(gid, agent), emit)
             run.steps.append({"agent": name, "ok": False, "tools": []})
             return None
@@ -1802,7 +2650,8 @@ class Orchestrator:
             memory_block = self.memory.block(
                 self.memory.recall(gid, agent["id"], run.user_text + " " + (extra_user or "")[:300])
             )
-        extra_system = run.refs_block
+        extra_system = "\n\n".join(s for s in (run.refs_block, run.process_feedback) if s)
+        run.process_used = run.process_used or bool(run.process_feedback)
         # An external agent is a member too, so the same injections apply: a group's house style
         # or today's date must not depend on which kind of member is answering.
         if self.hooks:
@@ -1860,8 +2709,36 @@ class Orchestrator:
             trace[idx] = entry
             await emit({"type": "tool", "message_id": mid, "index": idx, "call": dict(entry)})
 
+        # The engine's own working, when it streams any (a "thinking" block). Same treatment as a
+        # reasoning model's: shown above the reply, stored with the message, cleared on a failure —
+        # the engines write their plan out before acting on it, and that plan is what explains the
+        # tool calls that follow.
+        think_pending: list[str] = []
+        think_all: list[str] = []
+        think_len = 0
+        think_last = time.monotonic()
+
+        async def flush_thinking() -> None:
+            nonlocal think_len, think_last
+            if not think_pending:
+                return
+            text = "".join(think_pending)
+            think_pending.clear()
+            think_len = 0
+            think_last = time.monotonic()
+            await emit({"type": "thinking", "message_id": mid, "text": text})
+
+        async def on_reasoning(text: str) -> None:
+            nonlocal think_len
+            think_pending.append(text)
+            think_all.append(text)
+            think_len += len(text)
+            if think_len >= THINK_BATCH_CHARS or time.monotonic() - think_last >= THINK_BATCH_SECONDS:
+                await flush_thinking()
+
         try:
-            res = await self.external.run(agent, system=system, prompt=prompt, on_delta=on_delta, on_tool=on_tool)
+            res = await self.external.run(agent, system=system, prompt=prompt, on_delta=on_delta,
+                                          on_tool=on_tool, on_reasoning=on_reasoning)
         except ExternalError as e:
             return await fail(i18n.pick_now(f"{name} could not reply: {e}", f"「{name}」没能回复:{e}"))
         except asyncio.CancelledError:
@@ -1871,6 +2748,7 @@ class Orchestrator:
             return await fail(i18n.pick_now(f"{name} failed while replying: {e}", f"「{name}」发言出错:{e}"))
 
         await flush_ext_delta()   # wrap up: send the last incomplete batch of deltas
+        await flush_thinking()
         content = res.text.strip() or empty_fallback or i18n.pick_now("(no reply content)", "(没有回复内容)")
         if self.hooks:
             reason, content = await self.hooks.gate_reply(
@@ -1878,6 +2756,9 @@ class Orchestrator:
             if reason:
                 return await fail(reason)
         meta: dict = {"engine": agent["engine"], "level": ecfg["level"], **(extra_meta or {})}
+        thinking_text = "".join(think_all).strip()
+        if thinking_text:
+            meta["thinking"] = thinking_text[-THINK_STORE_CHARS:] if len(thinking_text) > THINK_STORE_CHARS else thinking_text
         info = {k: v for k, v in (("cost_usd", res.cost_usd), ("duration_ms", res.duration_ms),
                                   ("num_turns", res.num_turns), ("model", res.model)) if v not in (None, "")}
         if info:
@@ -1936,6 +2817,8 @@ class Orchestrator:
             await emit({"type": "message_discard", "message_id": mid})
             # Every failure path that goes through here gets the same tail: a member that keeps
             # failing is told how many times, and that taking it out of the group is allowed.
+            # The reason itself is kept for the caller too — see `RunState.last_error`.
+            run.last_error = msg
             await self._system(gid, msg + self._repeat_failure_note(gid, agent), emit)
             run.steps.append({"agent": name, "ok": False, "tools": []})
             return None
@@ -1976,7 +2859,7 @@ class Orchestrator:
         # one doing the summoning, the sentence that summoned it is the instruction.
         source = (extra_user or "").strip() or self._summoning_line(group, members, agent, run.history) \
             or (run.user_text or "").strip()
-        instruction = _strip_mentions(source, members, agent["id"])
+        instruction = _strip_mentions(source, members)
         if not instruction:
             return await fail(i18n.pick_now(
                 f"\"{name}\" had nothing to work from: address it with what you want, in the same "
@@ -1986,12 +2869,13 @@ class Orchestrator:
 
         # References first: the writer is told what the generator will receive, so it can name the
         # material by position (@图片1) instead of describing pictures it has never seen.
-        args: dict = {}
-        if use == "video":
-            args.update(self._media_refs(group, run))
-        prompt, note = await self._media_prompt(group, members, run, instruction,
-                                                use=use, target=target, refs=args, agent=agent)
-        args["prompt"] = prompt
+        args = self._media_arguments(group, run, target, instruction, extra_meta or {})
+        if str(args.get("prompt") or "").strip():
+            note = i18n.pick_now("Used the task's explicit generation prompt.", "使用任务中明确提供的生成提示词。")
+        else:
+            prompt, note = await self._media_prompt(group, members, run, instruction,
+                                                    use=use, target=target, refs=args, agent=agent)
+            args["prompt"] = prompt
 
         ctx = await self.toolhub.context(group, agent, read_only=run.read_only)
         for p in ctx.problems:
@@ -1999,10 +2883,12 @@ class Orchestrator:
                 run.warned.add(p)
                 await self._system(gid, p, emit)
 
-        entry: dict = {"name": tool, "args": _short_args(args), "status": "running"}
+        entry: dict = {"name": tool, "args": _short_args(args), "status": "running",
+                       "process_signature": proclog.signature([agent["id"], tool, args])}
 
         async def approve(s: dict, a: dict) -> bool:
             entry["status"] = "waiting"          # the pill shows "waiting for your confirmation"
+            entry["args"] = _short_args(a)
             await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
             allowed = await self.approvals.ask(group=group, message_id=mid, agent=agent, spec=s, args=a, emit=emit)
             entry["status"] = "running"
@@ -2012,6 +2898,9 @@ class Orchestrator:
 
         await emit({"type": "tool", "message_id": mid, "index": 0, "call": dict(entry)})
         oc = await self.toolhub.call(ctx, tool, args, approve)
+        if oc.effective_args is not None:
+            entry["args"] = _short_args(oc.effective_args)
+            entry["process_signature"] = proclog.signature([agent["id"], tool, oc.effective_args])
         entry.update(status="denied" if oc.denied else "ok" if oc.ok else "failed", ms=oc.ms,
                      preview=oc.text[:300])
         if not oc.ok and not oc.denied:
@@ -2436,11 +3325,6 @@ class Orchestrator:
                 f"(Not established from the material, so left out of the picture: {ungrounded})",
                 f"(没能从材料确证、因此没有写进画面的:{ungrounded})"))
         return "\n".join(lines)
-        if ungrounded:
-            lines.append(i18n.pick_now(
-                f"(Not established from the material, so left out of the picture: {ungrounded})",
-                f"(没能从材料确证、因此没有写进画面的:{ungrounded})"))
-        return "\n".join(lines)
 
     @staticmethod
     def _refs_inventory(refs: dict) -> str:
@@ -2465,6 +3349,59 @@ class Orchestrator:
             "Nothing — only your prompt. You cannot see any of the material the user may have "
             "attached; do not describe it.",
             "没有别的 —— 只有你写的提示词。用户可能附上的素材你看不到,不要描述它们。")
+
+    def _media_arguments(self, group: dict, run: RunState, target: dict,
+                         instruction: str, meta: dict) -> dict:
+        """Carry actual parameters and dependency files into a generator's single call."""
+        use, prov = target["use"], target["provider"]
+        allowed = {"prompt", "duration_seconds", "aspect_ratio", "first_frame", "last_frame",
+                   "reference_images", "reference_videos", "reference_audios", "seed", "generate_audio"} \
+            if use == "video" else {"prompt", "size", "model_id", "reference_images", "reference_files",
+                                    "reference_image", "images", "image", "first_frame"}
+        supplied = dict(meta.get("arguments") or {})
+        if "seconds" in supplied and "duration_seconds" not in supplied:
+            supplied["duration_seconds"] = supplied.pop("seconds")
+        args = {k: v for k, v in supplied.items() if k in allowed}
+        if use != "video":
+            # Direct image requests may use the files attached to that request. In a team
+            # plan the host selects references explicitly: another task's pictures or a
+            # user's portrait must not silently become an anatomical drawing's input.
+            if "reference_images" not in args and not meta.get("plan_id"):
+                attached = self._media_refs(group, run).get("reference_images")
+                if attached:
+                    args["reference_images"] = attached
+            return args
+        seconds = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:秒|seconds?\b|s\b)", instruction, re.I)
+        ratio = re.search(r"\b(16:9|9:16|1:1|4:3|3:4|21:9)\b", instruction)
+        if seconds:
+            args.setdefault("duration_seconds", float(seconds[1]))
+        if ratio:
+            args.setdefault("aspect_ratio", ratio[1])
+        refs = self._media_refs(group, run)
+        inputs = [f for f in meta.get("input_files", []) if isinstance(f, dict)]
+        images = [str(f.get("path") or f.get("rel") or f.get("name") or "") for f in inputs
+                  if f.get("kind") in ("image", "figure")
+                  or Path(str(f.get("name") or "")).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")]
+        if images:
+            refs.setdefault("reference_images", []).extend(images)
+        if prov["kind"] == video.ARK_KIND:
+            for key, values in refs.items():
+                args.setdefault(key, values)
+        elif prov["kind"] == video.META_KIND:
+            # Hosted I2V needs the original provider URL, never a made-up URL for our disk.
+            first = str(args.get("first_frame") or "")
+            candidates = [f for f in inputs if f.get("source_url")
+                          and (not first or first in (f.get("path"), f.get("name"), f.get("rel")))]
+            if candidates:
+                args["first_frame"] = candidates[0]["source_url"]
+            elif not first and refs.get("reference_images"):
+                args["first_frame"] = refs["reference_images"][0]
+        else:
+            takes_image = prov["kind"] != comfyui.KIND or "image" in comfyui.wants(
+                comfyui.workflow_of(target["model"]["model_name"]))
+            if takes_image and refs.get("reference_images"):
+                args.setdefault("first_frame", refs["reference_images"][0])
+        return args
 
     def _media_refs(self, group: dict, run: RunState) -> dict:
         """The files on the user's message, as the reference arrays Ark takes.
@@ -2498,6 +3435,11 @@ class Orchestrator:
     async def _plan_failed(self, gid: str, out: "TurnOut", note: str, emit: Emit) -> None:
         """When the plan could not be executed, rewrite the owner's message that only says
 "delegation is ready, see the task board", so it does not contradict the system note below."""
+        # Preserve enough of the failed protocol to debug it after hidden plan
+        # tags are stripped from the chat. This is draft data, never executable.
+        meta = {**(out.message.get("meta") or {}), "plan_error": note,
+                "plan_draft": out.raw[:40000]}
+        self.store.update_message(out.message["id"], meta=meta)
         if out.text in PLAN_FALLBACK:
             try:
                 fixed = self.store.update_message(out.message["id"], content=i18n.pick_now("(the plan did not take effect — see the system notice below)", "(分工计划没能生效,见下方系统提示)"))

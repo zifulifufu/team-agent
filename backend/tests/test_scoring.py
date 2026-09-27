@@ -207,6 +207,22 @@ async def test_a_broken_judge_falls_back_and_writes_no_lessons(store, make_route
     assert "could not" not in scoring.summarize_card(card)   # the note explains, it does not alarm
 
 
+async def test_abridged_handoff_is_not_a_truncated_file_or_a_rework_lesson(store, make_router):
+    orch, group, fake = wire(store, make_router, reply(t1={
+        "delivered": None, "usable": None, "reason": "The excerpt omits the content needed for quality review"}))
+    plan = make_plan()
+    plan.tasks[0].files = ["tasks/synthetic/report.md"]
+    store.update_settings({"score_excerpt_chars": 100})
+    card = await scoring.score_round(store, orch.router, group, plan, {"t1": ENOUGH * 100}, [])
+    assert card["tasks"][0]["mechanical"]["delivered"]
+    assert not card["tasks"][0]["judged"] and card["summary"]["rework"] == 0
+    assert not card["lessons"] and not store.list_memories("group", group["id"], "lesson")
+    prompt = json.dumps([m for _, msgs in fake.calls for m in msgs], ensure_ascii=False)
+    assert "recorded_tool_files" in prompt and "tasks/synthetic/report.md" in prompt
+    assert "return null" in prompt and "not the full files" in prompt
+    assert "insufficient" in scoring.summarize_card(card) or "证据不足" in scoring.summarize_card(card)
+
+
 async def test_no_eligible_judge_falls_back_rather_than_guessing(store, make_router, monkeypatch):
     """When every usable model is a member of the group, there is nobody left to grade it — and the
     answer is to say so, not to let the group mark its own homework."""

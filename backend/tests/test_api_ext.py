@@ -672,3 +672,143 @@ def test_the_service_templates_are_shaped_for_how_they_actually_authenticate(cli
         assert tpl[name]["command"] == "npx"
         assert "mcp-remote" in tpl[name]["args"], name
         assert "OAuth" in tpl[name]["note"], name
+
+
+# ------------------------------------------------- a library with thousands of documents
+def _filled_library(client, n=12, names=("报告", "会议纪要", "预算表")):
+    """A library big enough for paging to mean something: `n` notes, named in a repeating pattern."""
+    g = gid(client)
+    made = []
+    for i in range(n):
+        made.append(client.post("/api/library/note", json={
+            "title": f"{names[i % len(names)]}-{i:02d}",
+            "content": f"第 {i} 篇的内容,用来测分页。",
+            "group_id": g,
+        }).json())
+    return g, made
+
+
+def test_the_document_list_is_a_page_and_not_the_whole_library(client):
+    """A real library is thousands of documents: 6160 on this machine came from one directory
+    import. Sending every row and rendering every row made the page slow to arrive and impossible
+    to read, so the list is a page with a `total` beside it."""
+    _filled_library(client, 12)
+
+    first = client.get("/api/library", params={"limit": 5}).json()
+    assert first["count"] == 5 and first["total"] == 12 and len(first["docs"]) == 5
+    assert first["offset"] == 0 and first["limit"] == 5
+
+    second = client.get("/api/library", params={"limit": 5, "offset": 5}).json()
+    assert second["count"] == 5 and second["total"] == 12
+    # No overlap, no gap: the two pages together are five distinct documents each time.
+    assert not ({d["id"] for d in first["docs"]} & {d["id"] for d in second["docs"]})
+
+    # The last page is short, and asking past the end is empty rather than an error.
+    assert len(client.get("/api/library", params={"limit": 5, "offset": 10}).json()["docs"]) == 2
+    assert client.get("/api/library", params={"limit": 5, "offset": 99}).json()["count"] == 0
+    # A silly limit is clamped instead of being obeyed (500 rows is already more than a screenful).
+    assert client.get("/api/library", params={"limit": 99999}).json()["limit"] == 500
+
+
+def test_the_list_can_be_narrowed_by_title_origin_and_kind(client):
+    g, made = _filled_library(client, 12)
+
+    by_title = client.get("/api/library", params={"q": "预算"}).json()
+    assert by_title["total"] == 4 and all("预算" in d["title"] for d in by_title["docs"])
+
+    # A single document can be named exactly — the pattern above gives 会议纪要 every third note.
+    by_file = client.get("/api/library", params={"q": "会议纪要-04"}).json()
+    assert [d["title"] for d in by_file["docs"]] == ["会议纪要-04"]
+
+    # The counts that come back with the facets describe the whole scope, never the filtered view:
+    # they are how the user picks a class, so hiding 8 of 12 behind a query would be misleading.
+    assert by_title["kinds"].get("note") == 12
+    assert set(by_title["origins"]) <= {"", "import", "capture", "upload", "link", "attachment", "workspace", "written"}
+
+    by_kind = client.get("/api/library", params={"kind": "note"}).json()
+    assert by_kind["total"] == 12
+    assert client.get("/api/library", params={"kind": "pdf"}).json()["total"] == 0
+
+
+def test_the_classification_itself_can_be_asked_for(client):
+    """`group_by` is the classification view: each class with its own count and its first few
+    documents, biggest class first. It is what makes "6,160 documents" readable at a glance."""
+    _filled_library(client, 12)
+
+    grouped = client.get("/api/library", params={"group_by": "kind", "per_group": 3}).json()
+    assert grouped["docs"] == [] and grouped["count"] == 0
+    assert grouped["total"] == 12
+    assert grouped["groups"] and grouped["groups"][0]["id"] == "note"
+    assert grouped["groups"][0]["count"] == 12
+    assert len(grouped["groups"][0]["docs"]) == 3, "a class shows a few, not all of them"
+
+    # The filter applies inside the classification, so "the classes of what I searched for" works.
+    narrowed = client.get("/api/library", params={"group_by": "kind", "q": "预算"}).json()
+    assert narrowed["total"] == 4 and narrowed["groups"][0]["count"] == 4
+
+    # Unknown dimension: fall back to the plain list rather than answering with nothing.
+    plain = client.get("/api/library", params={"group_by": "nonsense", "limit": 3}).json()
+    assert len(plain["docs"]) == 3 and "groups" not in plain
+
+
+# ------------------------------------------------- the file a review looked at, shown not downloaded
+def test_a_workspace_file_can_be_served_inline_so_the_chat_can_show_it(client):
+    """`review_picture` hands back the file it looked at so a person can see it too, and the browser
+    only renders an `<img>` or `<video>` when it is told what the file *is*. The type comes off the
+    bytes, never the name — a workspace file must not be able to claim to be something it is not.
+    """
+    from PIL import Image
+    import io
+
+    ws = Path(client.data) / "workspaces" / gid(client)
+    (ws / "figures").mkdir(parents=True, exist_ok=True)
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (200, 60, 60)).save(buf, format="PNG")
+    (ws / "figures" / "shot.png").write_bytes(buf.getvalue())
+    # A file that says it is a picture and is not: the bytes decide, so it is not served as one.
+    (ws / "lies.png").write_bytes(b"not a picture at all")
+
+    plain = client.get(f"/api/groups/{gid(client)}/workspace/file", params={"path": "figures/shot.png"})
+    assert plain.status_code == 200 and plain.headers["content-type"].startswith("application/octet-stream")
+    assert "attachment" in plain.headers["content-disposition"]
+
+    shown = client.get(f"/api/groups/{gid(client)}/workspace/file",
+                       params={"path": "figures/shot.png", "inline": 1})
+    assert shown.status_code == 200 and shown.headers["content-type"] == "image/png"
+    assert "inline" in shown.headers["content-disposition"] and shown.content == buf.getvalue()
+
+    liar = client.get(f"/api/groups/{gid(client)}/workspace/file",
+                      params={"path": "lies.png", "inline": 1})
+    assert liar.status_code == 200
+    assert liar.headers["content-type"].startswith("application/octet-stream"), "the name does not decide"
+
+    # …and the workspace boundary still holds with the new flag on.
+    out = client.get(f"/api/groups/{gid(client)}/workspace/file",
+                     params={"path": "../../../../etc/hosts", "inline": 1})
+    assert out.status_code == 404
+
+
+def test_the_outputs_panel_does_not_list_the_apps_own_scratch(client):
+    """`.assemble/` holds the per-shot parts of a film, and the panel was listing all of them.
+
+    Measured 2026-09-26 on the video group: the workspace held 141 files, of which more than a
+    hundred were `s0NN.mp4` parts and `-sub.png` subtitle plates. `assemble.SCRATCH` says of itself
+    "intermediates; the leading dot keeps them out of every scan", and `list_workspace_files` honours
+    that — but the 成果 panel named three scratch directories and missed this one, so the finished
+    film and the documents were buried among the parts.
+    """
+    from app.api_ext import workspace_files
+
+    ws = Path(client.data) / "workspaces" / gid(client)
+    (ws / "video").mkdir(parents=True, exist_ok=True)
+    (ws / "video" / "成片.mp4").write_bytes(b"x")
+    (ws / ".assemble").mkdir(exist_ok=True)
+    (ws / ".assemble" / "s001.mp4").write_bytes(b"x")
+    (ws / ".assemble" / "s001-sub.png").write_bytes(b"x")
+    (ws / "tasks").mkdir(exist_ok=True)
+    (ws / ".DS_Store").write_bytes(b"x")
+
+    shown = {f["path"] for f in workspace_files(ws)}
+    assert "video/成片.mp4" in shown
+    assert not any(p.startswith(".assemble") for p in shown), sorted(shown)
+    assert ".DS_Store" not in shown, sorted(shown)

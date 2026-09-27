@@ -56,7 +56,7 @@ function Field({ field, groups, saving, onSave }: {
   if (field.kind === "group") {
     return (
       <Row title={field.label} desc={field.desc}>
-        <select className="ext-plan-select" value={String(field.value ?? "")} aria-label={field.label}
+        <select className="ext-plan-select" value={String(field.value ?? "")} disabled={saving} aria-label={field.label}
                 onChange={(e) => onSave({ [field.key]: e.target.value })}>
           <option value="">{t("None")}</option>
           {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
@@ -142,6 +142,7 @@ export default function ChannelsPage() {
     try {
       const got = (await api.channels()).channels;
       setList(got);
+      setErr("");
       setOpen((cur) => cur || got[0]?.id || "");
     } catch (e) {
       setErr((e as Error).message);
@@ -160,8 +161,8 @@ export default function ChannelsPage() {
     setSaving(true);
     try {
       const r = await api.setChannel(current.id, patch);
-      if (!r.ready && r.missing.length) setErr(r.missing.join(" · "));
       await load();
+      if (!r.ready && r.missing.length) setErr(r.missing.join(" · "));
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -187,7 +188,7 @@ export default function ChannelsPage() {
     }
   };
 
-  if (!list) return <div className="empty big">{err || t("Loading…")}</div>;
+  if (!list) return <div className="empty big">{err || t("Loading…")}{err && <button className="btn" onClick={() => void load()}>{t("Retry")}</button>}</div>;
 
   return (
     <div className="sp">
@@ -201,11 +202,11 @@ export default function ChannelsPage() {
         {list.map((c) => {
           const Icon = TRANSPORT_ICON[c.transport] ?? Webhook;
           return (
-            <button key={c.id} role="tab" aria-selected={c.id === open}
+            <button key={c.id} role="tab" disabled={saving || !!busy} aria-selected={c.id === open}
                     className={"chan-tab" + (c.id === open ? " on" : "")}
                     onClick={() => { setOpen(c.id); setChecked(null); setErr(""); }}>
               <span className="chan-emoji" aria-hidden>{c.avatar}</span>
-              <span className="chan-name">{c.name}</span>
+              <span className="chan-name">{c.name}</span><span className="small">{!c.settings.enabled ? t("Disabled") : c.ready ? t("Configured") : t("Needs configuration")}</span>
               <span className={"chan-dot" + (c.settings.enabled && c.ready ? " on" : c.settings.enabled ? " warn" : "")}>
                 {c.settings.enabled && c.ready ? <CheckCircle2 size={11} aria-hidden />
                   : c.settings.enabled ? <AlertTriangle size={11} aria-hidden /> : <Icon size={11} aria-hidden />}
@@ -216,7 +217,7 @@ export default function ChannelsPage() {
       </div>
 
       {current && (
-        <>
+        <div key={current.id}>
           <p className="sp-desc">
             {current.summary}
             {current.direction === "out" && ` ${t("This one only pushes: nobody can talk to the group through it.")}`}
@@ -226,24 +227,25 @@ export default function ChannelsPage() {
           {checked?.ok === false && <div className="err" role="alert">{checked.text}</div>}
           {checked?.ok && <div className="ext-box ok" role="status"><CheckCircle2 size={15} /><div>{checked.text}</div></div>}
 
-          {current.setup.length > 0 && (
-            <>
-              <div className="sec">{t("What you do on the platform's side")}</div>
-              <div className="card flush">
-                {current.setup.map((step, i) => (
-                  <div key={i} className="setting-row pad">
-                    <div className="sr-title">{i + 1}. {step}</div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+          <div className="cap-readiness">
+            <b>{!current.settings.enabled ? t("Disabled") : current.ready ? t("Configured") : t("Needs configuration")}</b>
+            <div>{current.ready ? t("Everything this channel needs is filled in") : current.missing.join(" · ")}</div>
+            {current.direction !== "out" && <p className="muted">{t("A round started from outside may only use read-only tools: it can search the library and your memory, but it can never run code or write files. Nobody is sitting at this machine to approve anything.")}</p>}
+          </div>
+          {current.setup.length > 0 && <details className="ext-details"><summary>{t("What you do on the platform's side")}</summary><ol>{current.setup.map((step, i) => <li key={i}>{step}</li>)}</ol></details>}
 
           <div className="sec">{t("Configuration")}</div>
           <div className="card flush">
-            {current.fields.map((f) => (
+            {current.fields.filter((f) => f.kind !== "group" && f.kind !== "switch").map((f) => (
               <Field key={f.key} field={f} groups={groups} saving={saving} onSave={save} />
             ))}
+          </div>
+
+          {current.fields.some((f) => f.kind === "group") && <><div className="sec">{t("Bind a group")}</div><div className="card flush">
+            {current.fields.filter((f) => f.kind === "group").map((f) => <Field key={f.key} field={f} groups={groups} saving={saving} onSave={save} />)}
+          </div></>}
+          <div className="sec">{t("Enable channel")}</div><div className="card flush">
+            {current.fields.filter((f) => f.kind === "switch").map((f) => <Field key={f.key} field={f} groups={groups} saving={saving} onSave={save} />)}
           </div>
 
           {current.needs_public_url && (
@@ -264,38 +266,25 @@ export default function ChannelsPage() {
           <div className="card flush">
             <Row title={t("Check the connection")}
                  desc={t("Reads what the platform reports about its own configuration: a couple of requests, and nothing is sent to anybody.")}>
-              <button className="btn small" type="button" disabled={!!busy} onClick={() => void run("probe")}>
+              <button className="btn small" type="button" disabled={!!busy || saving} onClick={() => void run("probe")}>
                 <RefreshCw size={12} className={busy === "probe" ? "spin" : ""} /> {t("Check now")}
               </button>
             </Row>
             <Row title={t("Send a test message")}
                  desc={t("The only honest test: it really does send one, into the room or to the first allowlisted sender.")}>
-              <button className="btn small" type="button" disabled={!!busy} onClick={() => void run("test")}>
+              <button className="btn small" type="button" disabled={!!busy || saving} onClick={() => void run("test")}>
                 <Send size={12} className={busy === "test" ? "spin" : ""} /> {t("Send test")}
               </button>
             </Row>
             {current.transport === "poll" && (
               <Row title={t("Restart the poller")}
                    desc={t("This app fetches messages from the platform itself; restarting re-reads the configuration right away instead of within a few seconds.")}>
-                <button className="btn small" type="button" disabled={!!busy} onClick={() => void run("reconnect")}>
+                <button className="btn small" type="button" disabled={!!busy || saving} onClick={() => void run("reconnect")}>
                   <RefreshCw size={12} className={busy === "reconnect" ? "spin" : ""} /> {t("Reconnect")}
                   {current.counters.poller ? ` · ${current.counters.poller}` : ""}
                 </button>
               </Row>
             )}
-          </div>
-
-          <div className="sec">{t("What is still missing")}</div>
-          <div className="card flush">
-            {current.ready ? (
-              <div className="setting-row pad">
-                <div className="sr-title"><CheckCircle2 size={13} aria-hidden /> {t("Everything this channel needs is filled in")}</div>
-              </div>
-            ) : current.missing.map((what, i) => (
-              <div key={i} className="setting-row pad">
-                <div className="sr-title"><AlertTriangle size={13} aria-hidden /> {what}</div>
-              </div>
-            ))}
           </div>
 
           <div className="sec">{t("Recent activity")}</div>
@@ -321,10 +310,7 @@ export default function ChannelsPage() {
             </Row>
           </div>
 
-          <p className="sp-desc">
-            <AlertTriangle size={13} aria-hidden /> {t("A round started from outside may only use read-only tools: it can search the library and your memory, but it can never run code or write files. Nobody is sitting at this machine to approve anything.")}
-          </p>
-        </>
+        </div>
       )}
     </div>
   );

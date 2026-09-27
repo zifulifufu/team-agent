@@ -147,8 +147,9 @@ def test_an_uploaded_file_lands_in_the_group_workspace_and_can_be_served_back(tm
     app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="好"))
     with TestClient(app, base_url="http://127.0.0.1") as c:
         gid = c.post("/api/groups", json={"name": "群", "member_ids": []}).json()["id"]
+        uploaded = xlsx_bytes()  # A second XLSX encodes a different ZIP timestamp.
         r = c.post(f"/api/groups/{gid}/attachments", params={"filename": "指标表.xlsx"},
-                   content=xlsx_bytes(), headers=OCTET)
+                   content=uploaded, headers=OCTET)
         assert r.status_code == 200
         row = r.json()
         assert row["kind"] == "document" and row["rel_path"].startswith("uploads/")
@@ -160,7 +161,7 @@ def test_an_uploaded_file_lands_in_the_group_workspace_and_can_be_served_back(tm
         assert [f["path"] for f in listed] == [row["rel_path"]]
 
         got = c.get(row["url"])
-        assert got.status_code == 200 and got.content == xlsx_bytes()
+        assert got.status_code == 200 and got.content == uploaded
         assert "attachment" in got.headers["content-disposition"]
 
         assert c.get("/api/groups/nowhere/attachments").status_code == 404
@@ -785,3 +786,45 @@ def test_a_transcriber_that_exits_zero_without_writing_is_not_heard_as_silence(s
     monkeypatch.setenv("HF_ENDPOINT", "https://my-own-mirror.example")
     attachments.transcribe_with_reason(tmp_path / "a.m4a", store.get_settings())
     assert calls == ["https://my-own-mirror.example"]
+
+
+# --------------------------------------------------- 读一个工作目录文件的正文（成果栏要用）
+def test_the_outputs_panel_can_read_a_file_it_shows(store, make_router):
+    """`GET /api/groups/{gid}/workspace/text` —— 成果栏「点一条就在这里看」靠的就是它。
+
+    三条主张,全是这一路真会踩的:
+    1. **文本文件给的是它的字符** —— markdown 要能拿来渲染,所以换行和标记都不能被吃掉;
+    2. **没有文字的文件要**明着**拒绝**(415),而不是回一个空字符串 —— 空字符串在界面上长得像
+       「这个文件是空的」,而事实是「这个文件不是文本」,两句话不一样;
+    3. **路径不许爬出去**:它和别的读盘接口一样只能在工作目录里取文件。
+    """
+    import os
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    d = os.path.join(store.data_dir, "api")
+    app = create_app(d, token="")
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        g = c.post("/api/groups", json={"name": "T-读正文", "member_ids": []}).json()
+        root = Path(c.get(f"/api/groups/{g['id']}/workspace").json()["path"])
+        (root / "notes").mkdir(parents=True, exist_ok=True)
+        (root / "notes" / "报告.md").write_text("# 标题\n\n第一段。\n", encoding="utf-8")
+        (root / "blob.bin").write_bytes(b"\x00\x01\x02\xff\xfe")
+
+        got = c.get(f"/api/groups/{g['id']}/workspace/text", params={"path": "notes/报告.md"})
+        assert got.status_code == 200, got.text
+        body = got.json()
+        assert body["text"] == "# 标题\n\n第一段。\n" and body["truncated"] is False
+        assert body["extracted"] is False        # 文本文件是原样给,不是「抽出来」的
+
+        # 没有文字的文件:说得清是哪种「没有」
+        bad = c.get(f"/api/groups/{g['id']}/workspace/text", params={"path": "blob.bin"})
+        assert bad.status_code == 415, bad.text
+
+        # 爬出工作目录 / 不存在的文件
+        for outside in ("../报告.md", "/etc/hosts", "../../etc/hosts"):
+            r = c.get(f"/api/groups/{g['id']}/workspace/text", params={"path": outside})
+            assert r.status_code in (404, 415), (outside, r.status_code)

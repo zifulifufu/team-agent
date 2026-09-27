@@ -240,11 +240,16 @@ def test_studying_a_local_reference_leaves_a_brief_the_whole_group_can_search(st
     # with the brief, not that the test pinned one translation.
     assert study.RIGHTS_NOTE_ZH in body or study.RIGHTS_NOTE_EN in body, \
         "the reuse line travels with the brief"
-    # The knowledge base is the difference between one agent knowing and the group knowing.
-    hits = [d for d in st.list_docs() if "参考风格" in str(d.get("title") or d.get("filename") or "")]
-    assert hits, [d.get("title") for d in st.list_docs()]
-    assert any("ref" in str(d.get("filename") or "") or "参考风格" in str(d.get("title") or "")
-               for d in hits)
+    # ⚠️ **这里刻意不再断言「brief 自动进了群知识库」。** 曾经有一条自动同步:每轮发言前把工作目录里的
+    # 文档收进本群知识库(`Library.sync_group_material`,由 `watch_workspace` 开关控制),它在
+    # 2026-09-25 被**有意删掉**了 —— 项目材料不再自动进库(显式上传/attach 仍然进)。这条测试当时没跟着
+    # 改,于是长期是红的,而**一条长期红的测试比没有测试更糟**:它让人以为每一次新改动都弄坏了它
+    # (这一次它就差点被算到当天的改动头上,是靠逐个模块回退才摘清的)。
+    # 现在断言的是**实际行为**:brief 实实在在落在工作目录里,并且**没有**被自动收进知识库。
+    assert (ws / "参考风格-ref.md").is_file(), "brief 落在工作目录里"
+    assert not [d for d in st.list_docs()
+                if "参考风格" in str(d.get("title") or d.get("filename") or "")], \
+        "项目材料不自动进知识库(2026-09-25 有意删掉的行为),所以这里应该是空的"
 
 
 def test_a_reference_that_is_not_there_is_refused_by_name(store, make_router):

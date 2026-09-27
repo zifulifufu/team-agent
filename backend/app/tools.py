@@ -116,12 +116,17 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                 "can make. If the film is longer than one clip, the storyboard must state the number of "
                 "segments and each one's length. A target nobody wrote down is a target nobody can hit.\n"
                 "2. Every picture is LOOKED AT before it is signed off: call `review_picture` on the "
-                "still, and on a frame of any clip by naming the second, then quote what came back. A "
-                "member that cannot see says so — it never approves a picture it has not seen.\n"
+                "still, and on a frame of any clip by naming the second, then quote what came back. "
+                "**A set of frames goes in `paths` — one pass, one answer** — instead of one call per "
+                "frame, and a picture that has already been looked at with the same question comes "
+                "back at once; only pass `fresh` when the picture has just been changed. A member "
+                "that cannot see says so — it never approves a picture it has not seen.\n"
                 "3. Every recording is LISTENED TO before narration or a cloned voice goes into the "
-                "film: call `review_audio`, quote the transcript, and check it against the script. If "
-                "this machine has no transcriber, say that plainly and hand the user the install "
-                "command — never guess what a recording says.\n"
+                "film: call `review_audio`, quote the transcript, and check it against the script. On "
+                "a long narration, listen to the window you are asking about (`start_seconds` / "
+                "`seconds`) rather than the whole file, and re-use a reading this machine has already "
+                "made. If this machine has no transcriber, say that plainly and hand the user the "
+                "install command — never guess what a recording says.\n"
                 "4. A clip that came back in a different shape or length than was asked for does NOT go "
                 "into the film. Regenerate it, or re-agree the target size first.\n"
                 "5. The verdict says what was checked, with what, and by whom — and what could NOT be "
@@ -130,9 +135,13 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "1. 先把规格定死 —— 画幅、总时长、以及本程序单条片段最长能做多少秒。"
                    "若成片比一条片段长,分镜必须写明拆几段、每段多少秒。没写下来的目标,没人能达标。\n"
                    "2. 每一张图在签字前都要**被看过**:对静帧调 `review_picture`,对片段则指定第几秒取那一帧,"
-                   "并把报回来的内容照录。看不见的成员要明说 —— 绝不为一张自己没看过的图签字。\n"
+                   "并把报回来的内容照录。**一组帧用 `paths` 一次给过去 —— 一趟看完、一份回答**,"
+                   "不要一帧调一次;同一张图问同一个问题会立刻从记忆里拿回来,只有图刚被改过才传 `fresh`。"
+                   "看不见的成员要明说 —— 绝不为一张自己没看过的图签字。\n"
                    "3. 每一段录音在进成片前都要**被听过**:调 `review_audio`,把转写原文照录,并与脚本核对。"
-                   "若这台机器没有转写器,就如实说明并把安装命令转交用户 —— 不要猜录音里说了什么。\n"
+                   "旁白很长时**只听你问的那一段**(`start_seconds` / `seconds`),不要整段重读一遍;"
+                   "这台机器读过的也不必再读。若这台机器没有转写器,就如实说明并把安装命令转交用户 —— "
+                   "不要猜录音里说了什么。\n"
                    "4. 回来的片段若与要求的画幅或时长不一致,**不许进成片**。重新生成,或先把目标规格重新定下来。\n"
                    "5. 结论要写明:核了什么、用什么核的、谁核的,以及**什么还没法核**。只写「看着没问题」不算结论。",
     },
@@ -226,9 +235,10 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                 "costs, what you changed, what is still unverified. State plainly which stages you "
                 "looked at and found clean — \"no finding\" and \"not looked at\" must never look "
                 "alike.\n"
-                "The ledger is a file in this group's workspace (`process-log.md`) and is in the "
-                "group's library, so anyone can open it and the next round can read what has already "
-                "been ruled out.",
+                "The ledger is a file in this group's workspace (`process-log.md`). With automatic "
+                "recording enabled, unresolved corrections enter subsequent planning and execution. "
+                "A suggestion is not a fix: automatic entries require a matching successful re-run; "
+                "manual entries require explicit re-run evidence. The hidden engineer never speaks in chat.",
         "body_zh": "你监督的是这个群**怎么干活**,不是内容好坏。\n"
                    "0. **账本会自己填**。每一轮结束后,程序会把它量得出来的毛病写进去,标着 `by: auto`;同一个毛病再出现是**计数**(`seen`),不是多写一条。别重复报已有的东西 —— 要么 `update` 那条还开着的,要么不动它。程序写不了的正是文字部分:根因、修法、复核。\n"
                    "1. **先量再判断**。任何结论之前先跑 `process_log` 的 `action=scan`:它会数出谁发过言、谁一次没发,"
@@ -255,8 +265,9 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "然后把活下来的结论记成条目,并注明来源是外部模型。这类调用每次都要用户批准,所以要一次问透。\n"
                    "6. **向用户汇报的顺序**:哪里坏了(附量到的依据)、代价是什么、改了什么、还有什么没复核。"
                    "你看过且没问题的环节要明确说出来 —— 「无发现」和「没看过」绝不能长得一样。\n"
-                   "账本是本群工作目录里的 `process-log.md`(中文界面下是 `流程日志.md`),并已进本群知识库,"
-                   "所以谁都能打开,下一轮也能看到哪些已经被排除。",
+                   "账本保存在本群工作目录的 `process-log.md`(中文界面下是 `流程日志.md`)。开启自动记录时,"
+                   "未解决问题的建议会进入后续分工与执行。建议不等于修复:自动条目由程序在对应操作重跑成功后复核,"
+                   "人工条目须明确提供重跑证据。隐身工程师不在群聊发言。",
     },
     "brainstorming": {
         "name": "Brainstorming rules", "name_zh": "头脑风暴规则",
@@ -579,7 +590,43 @@ EXAMPLE_SKILLS: dict[str, dict] = {
             "of trying to finish it here.\n"
             "11. Never let a member promise a finished, broadcast-ready film: the narration is "
             "synthesised, the drawings are drawn rather than filmed, and saying so is part of the "
-            "deliverable.",
+            "deliverable.\n"
+            "12. **A picture has to be the right shape, and the film's own material decides what it "
+            "looks like.** The assembler reads the style off this film's own pictures and places every "
+            "still itself, so handing it a pile of unrelated images and hoping is not a plan. What it "
+            "does, per picture, and the numbers are in `app/visual.py`: a picture **already on the "
+            "film's own background** is left exactly as it is — not repainted, not even its "
+            "near-background pixels touched, because a picture this app drew is already right and "
+            "unifying it is damage; a drawing from **somewhere else** (a chart off a white page, a "
+            "diagram out of a slide) is **drawn again** in the film's palette; a real picture that is "
+            "**already the frame's shape** fills it; and any other real picture is **framed whole** "
+            "with its heading and its source line. Never cropped, never stretched, and **never "
+            "re-drawn** — a re-drawn angiogram is an invented angiogram, and the whole point of a real "
+            "one is that somebody real produced it. Short edge: at least 1000px, never under 540px. Do "
+            "not crop a picture by hand to \"make it fit\", do not ask for `cover` to do it, and give "
+            "every picture a `credit` naming where it came from. The material's palette and which "
+            "pictures do not match it are written beside the film as `style.json` — read it when the "
+            "film is not what the user expected.\n"
+            "13. **Where the picture has to be right, and nothing you have is right.** A mechanism "
+            "drawing is only as good as its parts: the coil is a dense platinum-white spiral that "
+            "fills the sac, the microcatheter is a thin bright blue tube coming up the vessel, the "
+            "flow is cyan. If a drawing has the anatomy but not those parts, the honest order is: "
+            "`list_figures` first — a group's own documents usually came with plates and angiograms — "
+            "then `search_literature` for a described reference, and only then extend the schematic "
+            "with `make_figure`'s own parts, which draw deterministically and cannot invent anatomy. "
+            "⚠️ **There is no web or image search here**, so \"go and look at what a microcatheter "
+            "looks like\" is not something you can do: say what you are missing instead of drawing "
+            "from memory. And have the key frame **looked at** (`review_picture`) before anything is "
+            "rendered — a still can be rejected, a rendered film can only be thrown away.\n"
+            "14. **One tone, and you do not have to make it.** The film's own black is one colour and "
+            "every still's shadows end up on it. Bring the pictures as they are and let the assembler "
+            "do it: a picture already on that background is **not touched at all**; a page, a lightbox "
+            "or a scan margin under a diagram is removed and the content itself is kept byte for byte; "
+            "a projection stored light-on-dark is reversed the way a viewer shows it; and a picture "
+            "that is bright *all over* keeps its brightness, because that is what it is. So **do not "
+            "crop a picture to \"fit\" the tone, do not paint over a white background yourself, and do "
+            "not throw a white-background screenshot in whole** — 25% of a frame of white paper is "
+            "what \"not the same tone\" meant when it was finally counted.",
         "body_zh":
             "一次生成的片段是 4-30 秒,成片按分钟算 —— 但这个差距不是难点。**难点是:一串静帧不叫片子。**"
             "血流不流、动脉瘤第一帧就已经鼓在那里、弹簧圈一出现就是盘好的,这些什么都没讲清楚,"
@@ -634,7 +681,29 @@ EXAMPLE_SKILLS: dict[str, dict] = {
             "那是 `run_code` 里的 Remotion 或 HyperFrames,需要装 Node。画面定稿、必须由人来做真正的配音、"
             "调色和精剪时,就交出去:生成一份剪映草稿给用户,而不是在这里硬做到最后。\n"
             "11. 绝不要让任何成员承诺「可直接播出的成片」:旁白是合成的、画面是画出来而不是拍出来的,"
-            "把这件事如实说清楚,本身就是交付物的一部分。",
+            "把这件事如实说清楚,本身就是交付物的一部分。\n"
+            "12. **先看形状,而且「本片自己的素材」决定它长什么样。** 装配时会从本片自己的图里量出风格,"
+            "并自己决定每张图怎么放,所以「塞一堆不相关的图进去碰运气」不算方案。逐张的处理方式(数字在 "
+            "`app/visual.py` 里):**本来就在本片底色上**的图**原封不动** —— 不重画、连靠近底色的像素都不动,"
+            "因为程序自己画的图本来就是对的,「统一」它反而是破坏;来自**别处**的画(白底图表、幻灯片里的图)"
+            "会用片子的调色板**重画**;**已经是画幅形状**的真实图片直接填满;其余真实图片**整张装进画框**,"
+            "配标题与来源行。绝不裁切、绝不拉伸、**绝不重画**——重画出来的血管造影是编出来的血管造影,"
+            "而用真实影像的全部意义就在于它是真人做出来的。短边至少 1000 像素,不得低于 540 像素。"
+            "不要手工裁剪去「让它填满」,也不要为此写 `cover`;每张图都给 `credit` 写清来源。"
+            "素材的调色板以及哪些图与它不一致,会写在成片旁的 `style.json` 里 —— 片子不像预期时先读它。\n"
+            "13. **画面必须对的地方,而手上什么都没有的时候。** 机制图的好坏取决于部件:弹簧圈是填满瘤腔的"
+            "致密白金螺旋、微导管是沿血管上行的细亮蓝色管、血流是青色。如果一张图有解剖但缺这些部件,"
+            "诚实的顺序是:先 `list_figures` —— 群自己的文档通常自带图版和血管造影;再用 `search_literature` "
+            "找有描述的参考;最后才用 `make_figure` 自带的部件去补,那些是确定性绘制、不可能编造解剖结构。"
+            "⚠️ **这里没有联网搜图能力**,所以「去看看微导管长什么样」是你做不到的事:把缺什么说出来,"
+            "不要凭记忆画。而且**关键帧在渲染之前要先被看过**(`review_picture`)——静态图能被否掉,"
+            "渲染好的片子只能扔掉。\n"
+            "14. **一种色调,而且不用你去调。** 全片只有一个黑,每张图的暗部都会落在它上面。把图**原样**"
+            "交上来,归色调是装配的事:本来就在这个底上的图**什么都不动**;示意图下面的纸底、灯箱底、"
+            "扫描页边会被去掉,内容本身按像素保留;存成亮底的投影会反相处理,和阅片显示一致;而"
+            "**整体都亮的图片保留它的亮度**,因为它本来就是这样。所以**不要为了「色调统一」去裁图、"
+            "不要自己把白底涂掉、也不要把白底截图整张铺满画幅**——一整帧里 25% 是白纸,"
+            "就是「色调不统一」这句话被量出来的样子。",
     },
 }
 
@@ -1173,8 +1242,32 @@ def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, gro
                 f"要跑的脚本也从那个目录里跑。没有这些文件,它的说明是走不通的。")
         chunk = (f"【{head}:{s.name}】{where}\n{s.body}" if lang == "zh"  # i18n-keep: already bilingual: 【Head: name】 vs [Head: name]
                  else f"[{head}: {s.name}]{where}\n{s.body}")
-        if used + len(chunk) > max_chars:
+        # ⚠️⚠️ A skill that did not fit used to be dropped **whole** (`break`) — and because it was a
+        # `break`, every skill *after* it was dropped with it, silently. Measured 2026-09-26 on the
+        # video group: `embedded-captions` is 32k characters, `hyperframes` 15k, `motion-graphics`
+        # 15k, `hyperframes-animation` 7k — the entire "how to make a real film" toolbox is longer
+        # than this budget, so all of it was absent from the prompt while the settings page showed
+        # the skills as attached. The group's own host said it in its words: 「群配置里登记的
+        # hyperframes / check-the-result 技能在本机库中未直接命中」.
+        # Now an oversized skill keeps a **readable head plus a pointer to the rest**: a skill nobody
+        # has heard of cannot be looked up, and `<SKILL_DIR>` — already used above for skills that
+        # ship files — is where its full text lives. It also no longer eats the ones behind it, and
+        # no single skill may take more than half the budget (one 32k manual used to swallow the lot).
+        room = max_chars - used
+        if room <= 200:
             break
+        limit = min(room, max(600, max_chars // 2))
+        if len(chunk) > limit:
+            head_txt = chunk[:limit].rsplit("\n", 1)[0] or chunk[:limit]
+            folder = Path(s.path).parent
+            note = i18n.pick(
+                lang,
+                f"\n… (long skill: the rest of it is in {folder}/SKILL.md — read that before working "
+                "from these steps)",
+                f"\n…(这个技能很长:剩下的在 {folder}/SKILL.md —— 照着这几步做之前先读它)")
+            parts.append(head_txt + note)
+            used += len(head_txt) + len(note)
+            continue
         parts.append(chunk)
         used += len(chunk)
     return "\n\n".join(parts)

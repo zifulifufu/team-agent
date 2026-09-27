@@ -133,7 +133,7 @@ export default function GeneralPage() {
       : t("kept out of the groups by the switch above");
   const processText = !proc
     ? t("Checking what the process engineer has recorded…")
-    : t("It never speaks, cannot be @-mentioned and is never given a task — what it produces is a file, 流程日志.md (process-log.md in English) in the workspace of every group it watches, indexed into that group's library so the next round can search it. Entries move open → changed → re-checked, and only a re-run makes something re-checked. {written} of {total} groups have a log so far.", {
+    : t("The engineer stays hidden. Each group's ledger records observations, suggested corrections and re-run evidence. Unresolved feedback enters subsequent rounds while automatic recording is on. {written} of {total} groups have a log so far.", {
         written: proc.ledgers, total: proc.groups,
       });
 
@@ -273,9 +273,13 @@ export default function GeneralPage() {
                   onChange={(v) => void set({ process_autolog: v })} />
         </Row>
         <Row title={t("Ask a model for the cause and the fix")}
-             desc={t("For the defects the app just recorded, one short call asks a model that is not a member of the group for the likely cause and a concrete fix, and writes them into the log. It only runs when a round actually produced a new defect, and it never overwrites a cause that was written by hand.")}>
+             desc={t("An independent model reviews unresolved defects after a round. Missing or incomplete reviews are retried after the next round. Suggestions never overwrite manual notes or count as a verified fix.")}>
           <Switch checked={settings.process_review} label={t("Ask a model for the cause and the fix")}
                   onChange={(v) => void set({ process_review: v })} />
+        </Row>
+        <Row title={t("Feedback and re-check")}
+             desc={t("While automatic recording is on, up to six unresolved issues enter the next round's planning and execution. The host coordinates members, tool inputs and acceptance checks. Only a successful matching re-run verifies an automatic issue; unrelated success does not close it.")}>
+          <span className={"chip" + (settings.process_autolog ? "" : " warn")} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>{settings.process_autolog ? t("Active") : t("Off")}</span>
         </Row>
         <Row title={t("What it has found")} desc={processText}>
           <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6, maxWidth: 420 }}>
@@ -294,7 +298,7 @@ export default function GeneralPage() {
           <div className="setting-row pad">
             <div>
               <div className="sr-title">{t("Latest entries")}</div>
-              <div className="sr-desc">{t("Newest first. The file itself is 流程日志.md (process-log.md in English) in each group's workspace, and it is searchable in that group's library.")}</div>
+              <div className="sr-desc">{t("Unresolved issues first. Evidence, feedback rounds and re-check results remain in each group's process-log.md (流程日志.md in Chinese).")}</div>
             </div>
           </div>
           {proc.recent.map((r) => (
@@ -305,6 +309,12 @@ export default function GeneralPage() {
                   {r.group} · {r.by ? t("written by {who}", { who: r.by }) : t("written by a member")}
                   {r.cause ? ` · ${t("cause")}: ${r.cause}` : ""}
                 </div>
+                {(r.fix || r.hint) && <div className="sr-desc">{t("Suggested correction")}: {r.fix || r.hint}</div>}
+                <div className="sr-desc">{t("Fed into {n} rounds", { n: r.advised || 0 })}
+                  {r.status === "open" || r.status === "fixed" ? ` · ${t("Awaiting a matching re-run")}` : ""}
+                </div>
+                {r.verify && <div className="sr-desc">{t("Re-check evidence")}: {r.verify}</div>}
+                {r.review_note && <div className="sr-desc">{t("Review status")}: {r.review_note}</div>}
               </div>
             </div>
           ))}

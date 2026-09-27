@@ -43,6 +43,29 @@ MEDIA_USES: tuple[str, ...] = ("image", "video")
 MEDIA_ORIGIN = "media"
 
 
+def may_host(agent: dict | None) -> bool:
+    """Can this member run a group chat — decide how the work is split, and be addressed as the one
+    in charge? Two kinds cannot, for two different reasons:
+
+    * an **external** member (`engine`) thinks with its own tools and does not take part in the
+      `<plan>` protocol, so there is nothing here for it to decide;
+    * a **generating** member (`origin == MEDIA_ORIGIN`) has no judgement to add — its turn is the
+      user's own sentence handed straight to a generator.
+
+    ⚠️ This is the **only** place that answers it, on purpose. It used to be answered twice — the
+    API refused such a group outright, while the orchestrator quietly handed the chair to somebody
+    else — and the client could not ask at all, so the "who is in this group" picker offered every
+    one of them as a candidate. Choosing one as the first member then failed the whole creation at
+    the last moment, which reads as "the members I chose never joined".
+
+    Note what is *not* here: a generating member is a legitimate **member** (you can address it and
+    it will make the thing). It just cannot be the one who runs the room.
+    """
+    if agent is None:
+        return False
+    return not agent.get("engine") and (agent.get("origin") or "") != MEDIA_ORIGIN
+
+
 def member_target(store, agent: dict) -> dict | None:
     """What a media member generates with: `{"model", "provider", "use"}` — or None.
 
@@ -210,6 +233,76 @@ def job_of(model: str, use: str) -> dict:
         return m
     submit, result, params, field = _MEDIA_GENERIC[use]
     return {"use": use, "submit": submit, "result": result, "params": params, "file": field}
+
+
+# ------------------------------------------------- which model a provider will actually run
+# Which kinds' catalogues are **closed**: the provider accepts exactly the ids this build ships and
+# nothing else, so a name outside the list is a request that will be refused (measured: MetaChat
+# answers HTTP 200 carrying `Invalid enum value. Expected 'flux-kontext' | … received 'gpt-image-1'`,
+# and nothing used to read that sentence).
+#
+# ⚠️ `comfyui` is deliberately **not** here. Its "models" are **workflow** names, and a user adds one
+# by writing a file into `workflows/` (`comfyui.reload_user` / the layout registries) — the shipped
+# list is a starting point, not a catalogue. Correcting a name against it would replace the user's
+# own graph with a built-in one, which is the opposite of what that registry exists for. Its test
+# says so in as many words: a user's own `my-i2v` graph is what should run.
+CLOSED_MODEL_KINDS: tuple[str, ...] = ("metachat_media", "ark_video")
+
+
+def shipped_models(kind: str, use: str) -> tuple[str, ...]:
+    """The model ids this build knows a provider of `kind` serves for `use`.
+
+    Empty for a kind whose models are discovered (a chat gateway's image models are read off its
+    `/models`) or typed by hand — there is nothing to check a name against, and a check invented
+    there would refuse a newer model the service added, which is the one thing free text is for.
+    """
+    return tuple(BUILTIN_MEDIA_MODELS.get(str(kind or ""), {}).get(use, ()))
+
+
+def reconcile_model(provider: dict, use: str, want: str, *, when_empty: str = "first") -> tuple[str, str]:
+    """(the model to ask for, a note when it is not the name that was configured).
+
+    Why this exists. A provider whose catalogue is fixed publishes no list to read, so the only
+    place this app can know its ids is `BUILTIN_MEDIA_MODELS`. Nothing used to reconcile that list
+    with the *setting* — and the drawing setting ships with another provider's id as its default.
+    So a group with MetaChat's media API chosen sent `gpt-image-1`, got HTTP 200 carrying
+    `Invalid enum value. Expected 'flux-kontext' | ... received 'gpt-image-1'`, retried the same
+    wrong call three times, and had its task marked failed: one whole round, no picture. The
+    service had named the exact fix in its own reply and nothing read it.
+
+    Substituting silently would be the other half of the same mistake — a user who believes a
+    picture was drawn by one model when another drew it. So the note travels back with the name,
+    and the caller puts it in what the member is told.
+
+    **Only for the settings value.** A generating member's own model is what the user chose when
+    they created that member, and it is passed through untouched (see `callers`).
+
+    `when_empty` decides what an unset name means. `"first"` takes this kind's own first shipped
+    model; `""` (what both callers pass) leaves it empty so the caller refuses and names the setting.
+    ⚠️ An unset model has to be **reported rather than guessed**: behind one MetaChat key sit fifteen
+    drawing models, and picking one at random spends the user's points on a medium or a look nobody
+    asked for. Guessing is only for a name that is *set* and provably belongs to another kind.
+    """
+    kind = str(provider.get("kind") or "")
+    name = (want or "").strip()
+    # A kind whose names are user-extensible is never corrected — see `CLOSED_MODEL_KINDS`.
+    if kind not in CLOSED_MODEL_KINDS:
+        return name, ""
+    known = shipped_models(kind, use)
+    if not known:
+        return name, ""
+    hit = next((k for k in known if k.lower() == name.lower()), "")
+    if hit:
+        return hit, ""
+    if not name:
+        return (known[0] if when_empty == "first" else ""), ""
+    picked = known[0]
+    return picked, i18n.pick_now(
+        f"\"{name}\" is not a model \"{provider.get('name') or provider.get('kind')}\" serves, so "
+        f"\"{picked}\" was used instead. The ids it accepts are: {', '.join(known)}. Change the "
+        "setting if you meant a different one.",
+        f"「{name}」不是「{provider.get('name') or provider.get('kind')}」服务的模型,已改用"
+        f"「{picked}」。它接受的 id 是:{', '.join(known)}。如果你要的是别的,请改设置。")
 
 
 # --------------------------------------------------- MetaChat's reply envelope, read in both tools

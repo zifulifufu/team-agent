@@ -1,0 +1,95 @@
+/* 视频专区。三块能力共用一个外壳,所以这里的类都以 `vz-` 开头,不碰其它页面。 */
+
+.vz { padding: 22px 26px 44px; }
+.vz-head h2 { margin: 0 0 6px; font-size: 19px; font-weight: 650; color: var(--text); }
+.vz-head p { margin: 0 0 18px; max-width: 780px; color: var(--text-2); font-size: 13px; line-height: 1.65; }
+
+/* 分区标签:与聊天区顶部那排同一种观感(下划线指示当前项),而不是四个方块按钮 ——
+   这一页的主体是内容,标签只是切换。 */
+.vz-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+.vz-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 13px; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-2); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.vz-tab:hover { color: var(--text); }
+.vz-tab.on { color: var(--text); border-bottom-color: var(--primary); font-weight: 600; }
+
+/* 音乐:左"作曲"右"曲库"。两栏而不是上下 —— 试听时想同时看着参数改。
+   窄窗口下自动落成一列,不做横向滚动。 */
+.vz-two { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1.1fr); gap: 20px; align-items: start; }
+@media (max-width: 900px) { .vz-two { grid-template-columns: 1fr; } }
+
+.vz-panel {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 16px 18px;
+}
+.vz-wide { max-width: 860px; }
+.vz-panel > h3 {
+  display: flex; align-items: center; gap: 7px; margin: 0 0 12px;
+  font-size: 14px; font-weight: 650; color: var(--text);
+}
+.vz-count {
+  margin-left: 2px; padding: 0 7px; border-radius: 9px; background: var(--hover);
+  color: var(--text-2); font-size: 11.5px; font-weight: 500;
+}
+
+.vz-field { display: block; margin-bottom: 12px; }
+.vz-field > span { display: block; margin-bottom: 5px; color: var(--text-2); font-size: 12.5px; }
+.vz-field > span b { color: var(--text); font-weight: 600; }
+.vz-field textarea, .vz-field input[type="text"], .vz-field input[type="number"], .vz-field input:not([type]), .vz-field select {
+  width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg, transparent); color: var(--text);
+  font-size: 13px; font-family: inherit;
+}
+.vz-field textarea { resize: vertical; line-height: 1.6; }
+.vz-field input[type="range"] { width: 100%; }
+.vz-field :disabled { opacity: .55; cursor: not-allowed; }
+.vz-row { display: flex; gap: 12px; align-items: flex-start; }
+.vz-row .vz-field { flex: 1; }
+.vz-row .vz-field.narrow { flex: 0 0 104px; }
+
+.vz-more {
+  border: 0; background: transparent; color: var(--text-2); cursor: pointer;
+  font-size: 12.5px; padding: 2px 0 8px; font-family: inherit;
+}
+.vz-more:hover { color: var(--text); }
+.vz-adv { border-left: 2px solid var(--border); padding-left: 12px; margin-bottom: 10px; }
+
+.vz-go { display: inline-flex; align-items: center; gap: 7px; width: 100%; justify-content: center; }
+
+.vz-note, .vz-dim {
+  display: flex; align-items: flex-start; gap: 7px; margin: 0 0 12px;
+  font-size: 12.5px; line-height: 1.6; color: var(--text-2);
+}
+.vz-dim { display: block; }
+.vz-note svg { flex: 0 0 auto; margin-top: 2px; }
+.vz-note.ok { color: var(--ok); }
+.vz-note.bad { color: var(--danger); }
+.vz-spin { animation: vz-spin 1.1s linear infinite; }
+@keyframes vz-spin { to { transform: rotate(360deg); } }
+
+/* 曲库 */
+.vz-tracks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.vz-track {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px;
+}
+.vz-track.on { border-color: var(--primary); background: var(--primary-soft, var(--hover)); }
+.vz-play {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+}
+.vz-play:hover { border-color: var(--primary); }
+.vz-track-body { flex: 1; min-width: 0; }
+.vz-track-body b { display: block; font-size: 13px; color: var(--text); word-break: break-all; }
+.vz-meta {
+  display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  margin-top: 3px; color: var(--text-3, var(--text-2)); font-size: 11.5px;
+}
+.vz-audio { display: block; width: 100%; margin-top: 7px; height: 32px; }
+
+/* 未建的两块:列事实,不装作能用 */
+.vz-facts { margin: 8px 0 12px; padding-left: 20px; color: var(--text-2); font-size: 13px; line-height: 1.75; }
+.vz-facts li { margin-bottom: 4px; }
+.vz-facts b { color: var(--text); }

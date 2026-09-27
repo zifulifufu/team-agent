@@ -263,6 +263,7 @@ def test_the_tools_are_offered_and_a_schematic_comes_back_as_a_still(store, make
 
     assert out.ok, out.text
     assert out.files and out.files[0]["kind"] == "image"
+    assert out.files[0]["path"] == "figures/coil-shot.png"
     assert "sac=" in out.text
     # The frame has to say it is a drawing, in whichever language the request is in — that line is
     # written into the credit, not left to the caller to remember.

@@ -2,8 +2,8 @@
 
 One status per model:
   ok       green    last call/check succeeded
-  limited  yellow   rate limited or out of quota (fine after a short wait)
-  bad      red      unreachable, invalid key, wrong model ID, local service not started or model not downloaded
+  limited  yellow   temporarily rate limited
+  bad      red      exhausted billing quota, unreachable, invalid key, wrong model ID, local service not started or model not downloaded
   unknown  hollow   usable, but never checked (cloud models are not checked automatically, to avoid quietly spending your quota)
   off      gray     will not be called at all right now: disabled / no key / outbound switch off
 
@@ -24,6 +24,7 @@ import httpx
 
 from .router import ModelRouter, has_credentials
 from .store import Store
+from .provider_errors import quota_exhausted
 
 CHECK_CONCURRENCY = 3
 STALE_SECONDS = 24 * 3600  # results older than a day are still shown, but flagged as "older"
@@ -135,6 +136,17 @@ class HealthBoard:
             if off:
                 out[m["id"]] = {"state": off[0], "detail": off[1], "latency_ms": 0, "checked_at": rec["checked_at"] if rec else 0,
                                 "source": rec["source"] if rec else "", "stale": False}
+                continue
+            if rec and rec["status"] != "ok" and quota_exhausted(rec["detail"]):
+                # Old records classified exhausted credit as a short rate limit.
+                # Neither that stored label nor a circuit timer can replenish credit.
+                out[m["id"]] = {
+                    "state": "bad", "detail": i18n.pick_now(
+                        "The provider reported exhausted billing quota; waiting will not refill it. Top up or select another configured provider, then check again.",
+                        "服务商报告账户额度不足；等待不会恢复。请补充额度或选择其他已配置服务商后重新检测。"),
+                    "latency_ms": rec["latency_ms"], "checked_at": rec["checked_at"],
+                    "source": rec["source"], "stale": now - rec["checked_at"] > STALE_SECONDS,
+                }
                 continue
             if self.router.circuit_open(m["id"]):
                 out[m["id"]] = {"state": "limited", "detail": i18n.pick_now("Failed repeatedly, so it is temporarily tripped; it retries automatically", "连续失败,暂时熔断,稍后自动重试"), "latency_ms": 0,

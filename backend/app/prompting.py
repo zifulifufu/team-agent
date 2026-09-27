@@ -13,6 +13,7 @@ import re
 from datetime import datetime
 
 from . import i18n
+from . import media, cooperation
 from .presets import localize_member
 from .router import ModelRouter
 from .store import Store
@@ -116,6 +117,32 @@ class PromptBuilder:
                             "model_display": i18n.pick_now(f"external agent ({m['name']})",
                                                            f"外部智能体({m['name']})")})
                 continue
+            if (m.get("origin") or "") == media.MEDIA_ORIGIN:
+                # A generating member has no conversation and no tools to choose from: its one turn
+                # runs its own generator, and which generator that is comes from the model it was
+                # made from (`media.member_target` → "image" | "video") — never from the task text.
+                #
+                # ⚠️ Measured failure without this branch. The host read a role of "Media member ·
+                # Video generation · …" as "a member that makes media", planned 「关键帧静帧生成」,
+                # and handed it to a **video** member — which can only call `generate_video`, so it
+                # died on the missing first frame and took four downstream tasks (§ t4/t6/t7
+                # skipped) with it. The roster said the same thing about it as about a chat member,
+                # so the host had nothing to plan against. `member_target` is the one place that
+                # knows what a generating member can make; this asks it rather than guessing from
+                # the name or the tags.
+                t = media.member_target(self.store, m)
+                out.append({
+                    "agent": m, "model": None, "strengths": [],
+                    "media_use": (t or {}).get("use") or "gone",
+                    "model_display": i18n.pick_now(
+                        f"generating member ({m['name']}) — makes video only" if (t or {}).get("use") == "video"
+                        else f"generating member ({m['name']}) — makes images only" if t
+                        else f"generating member ({m['name']}) — its model is gone, it can do nothing",
+                        f"生成成员({m['name']}) —— 只会做视频" if (t or {}).get("use") == "video"
+                        else f"生成成员({m['name']}) —— 只会做图片" if t
+                        else f"生成成员({m['name']}) —— 它依据的模型已不在,什么也做不了"),
+                })
+                continue
             model = self.router.resolve(m["model_id"], m.get("tags"))
             out.append({
                 "agent": m, "model": model, "strengths": merge_strengths(m, model),
@@ -144,7 +171,35 @@ class PromptBuilder:
             if m["skills"]:
                 line += i18n.pick(lang, f" | skills: {sep.join(m['skills'])}",
                                   f" | 技能:{sep.join(m['skills'])}")
+            # ⚠️ What a generating member *cannot* do is the part a host gets wrong. Saying only
+            # "makes video" leaves open "and also, presumably, a picture" — which is how a still-frame
+            # task reached a video model. So the sentence names the boundary and the one input it
+            # needs, and says plainly that the task text cannot change which generator runs.
+            worker = cooperation.contract(self.store, m)
+            if worker["mode"] == "listener":
+                line += " | " + i18n.pick_now("Listening executor: ", "旁听执行成员:") + worker["summary"] + " " + worker["preparation"]
+            if e.get("media_use") == "video":
+                line += i18n.pick(
+                    lang,
+                    " | a generating member: it makes video with its own generator and nothing else"
+                    " — no writing, no research, no assembling, it cannot use other tools, and it"
+                    " accepts only the inputs described above for its workflow;"
+                    " pictures it needs are somebody else's task, not its own",
+                    " | 生成成员:只会用它自己的生成器做视频,别的都不会(不写字、不查资料、不装配,"
+                    "也不能调用其他工具);输入要求以它上面列出的工作流能力为准。"
+                    "它需要的前置图片是别人的任务,不是它的。")
+            elif e.get("media_use") == "image":
+                line += i18n.pick(
+                    lang,
+                    " | a generating member: it makes pictures with its own generator and nothing"
+                    " else — no writing, no research, no assembling, and it cannot use other tools.",
+                    " | 生成成员:只会用它自己的生成器做图片,别的都不会(不写字、不查资料、不装配,"
+                    "也不能调用其他工具)。")
             lines.append(line)
+        if any(cooperation.is_listener(m) for m in members):
+            lines.append(i18n.pick_now(
+                "Coordination: listening executors do not debate or respond to @all. Use them when their capability fits. Put multi-step work on the task board with preparation → execution → review/assembly dependencies. For a direct handoff, write @name followed by one concrete instruction and real input paths. A mention triggers execution: do not @mention a tool merely to discuss it. After it returns, its assigning member resumes to check the actual files, handle failures and finish the delivery. Never rerun a completed or failed generation blindly, or claim a file exists without evidence.",
+                "协作规则:旁听执行成员不参与闲聊或 @all 讨论,能力合适时应主动派给它们。多步骤任务写进任务板,按准备素材/工程→执行→验收/装配建立依赖。直接接力时写 @名字 加一项具体指令和真实输入路径。点名会执行,介绍工具时不要加 @。工具返回后派工成员会继续,负责核对实际文件、处理失败并完成交付。不要盲目重复已经完成或失败的生成,没有文件证据不能宣称完成。"))
         return "\n".join(lines)
 
     # ------------------------------------------------------------ system prompt

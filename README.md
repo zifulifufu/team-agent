@@ -89,12 +89,18 @@ to keep it that way, and removing that variable is what makes the real keychain 
 | Making a film | A clip is seconds and a film is minutes, so the shots are **joined by a built-in tool every member has**: `assemble_video` records the narration with the machine's own voice, draws the subtitles in (this `ffmpeg` has no `drawtext`, so they are drawn with Pillow and overlaid), and writes a `.mp4` plus a `.srt` and an editable shot sheet. Local, free, and it says what it could not do |
 | Delivering the file | `write_document` turns a finished draft into the file the user opens — `.docx` (Word), `.pptx` (slides), `.xlsx` (a workbook) or `.md` — written into the group's workspace and indexed into its library in the same turn. One Markdown-ish body works in all four formats (`#`/`##` headings, `- ` bullets, `1. ` steps, `| a | b |` tables); in `.pptx` each `##` is a slide and in `.xlsx` each `##` is a sheet. It lays out text — it does not write or check it — and a task whose deliverable names a file is **checked against the workspace**, so "the report is written" and "there is a report.docx" stop being two different things |
 | Files | Any file can be attached (screenshot, PDF, Word, Excel, PowerPoint, video, archive); documents are read on this machine, pictures and video frames are looked at or described; `@file:` / `@dir:` / `@msg:` / `@doc:` references with autocomplete |
-| Watching the process | A built-in **process engineer** is kept in **every group and is invisible in all of them**: not in the member list, not `@`-mentionable, never a turn, never the host. After each round it records the defects a program can *measure* — a task marked done whose file is not on disk, a task whose every tool call failed, a plan nobody could use, the same call failing twice — into that group's `process-log.md`, counting a repeat (`seen ×N`) instead of writing it twice; one short call to a model that is **not a member** then adds the likely cause and a concrete fix, and never overwrites a cause written by hand. The watcher itself appears only in Settings → General, where its switches and everything it has recorded are shown. Visible members still have `process_log` (measure, record, move an entry `open → fixed → verified`, and only a re-run makes something verified) and `ask_advisor` (a narrow question to the codex / Claude Code on this machine, **read-only and inside the group's workspace**, each call approved by the user) |
+| Checking a picture or a recording | Before a picture, a clip or a narration is signed off, a member **looks at it** (`review_picture` — several frames in one pass with `paths`, a frame of a clip at a given second) or **listens to it** (`review_audio` — a window of a long recording, not the whole thing). A look is remembered for the whole group, so the second member to ask the same question pays nothing; the file itself comes back with the answer, so you can look at it yourself instead of reading a description of it |
+| A project's folder, and what it is doing | Each project in the sidebar shows the folder it works in — **the same directory the chat's workspace panel lists**, resolved once in the backend — with the name that identifies it (its own name when you picked the directory, the group's name when the app manages one), one click to open it in the Finder, and a rename that is only offered for a folder that is yours. Underneath sits the task that project is on: **what is running now**, else what is next, else what it just finished. Emptying the folder moves it to the Trash — never a delete |
+| A reply, and what you can do with it | Under every member's message: **copy**, **judge** (good / not good, with a note), **forward** to another group, **read aloud** on this machine, and **quote** — the whole message or just the passage you selected. Judgements land in the feedback panel, per member, with both counts: nothing about a member changes by itself |
+| Templates from your own groups | Any group you have run can be kept as a template — its members, host, skills and prompt — and it comes back with them in one click. Saved templates are listed **first**, newest first, on the home screen and in the template gallery || Watching the process | A built-in **process engineer** is kept in **every group and is invisible in all of them**: not in the member list, not `@`-mentionable, never a turn, never the host. After each round it records the defects a program can *measure* — a task marked done whose file is not on disk, a task whose every tool call failed, a plan nobody could use, the same call failing twice — into that group's `process-log.md`, counting a repeat (`seen ×N`) instead of writing it twice; one short call to a model that is **not a member** then adds the likely cause and a concrete fix, and never overwrites a cause written by hand. The watcher itself appears only in Settings → General, where its switches and everything it has recorded are shown. Visible members still have `process_log` (measure, record, move an entry `open → fixed → verified`, and only a re-run makes something verified) and `ask_advisor` (a narrow question to the codex / Claude Code on this machine, **read-only and inside the group's workspace**, each call approved by the user) |
 | Workspace | Every group has one, and it can be **a project folder of your own** (picked when the group is made, changeable later) rather than one the app manages; each task delivers into its own folder, and the panel lists and downloads what is in there |
 | Planning | Automatic / always / never, per group; plans are validated before they run |
 | Models | Built-in catalog plus live listings, strength-based selection, routing chain, automatic fallback, health indicator per model |
-| Tools | Text-protocol calls (max 3 per reply), eighteen built-ins, Python plugins, MCP over stdio / SSE / HTTP |
-| Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references; **the pictures a note came with**, reachable by document |
+| Tools | Text-protocol calls (max 3 per reply), eighteen built-ins, Python plugins, MCP over stdio / SSE / HTTP. Each call is **labelled with what it is doing** — a verb plus the command, file or query it acts on — instead of the bare tool name, and a call that is still running **shows its output as it is printed**, with the elapsed time ticking beside it |
+| Seeing the work | The **working behind a reply** is shown above it and folds away once the answer is there: a reasoning model's train of thought, or the plan a command-line engine writes before acting on it. It is stored with the message, so it can be read again later; a model that does not reason gets no empty block |
+| How it reads | No speech bubbles: avatar, name and text sit directly in the middle column, so a reply is as wide as the column and a paragraph does not wrap into a tower beside an empty half-window |
+| Library | txt, md, csv, json, html, pdf, docx, xlsx, pptx → chunks → BM25 search (CJK-aware); per-group scope; `#document` references; **the pictures a note came with**, reachable by document. A real library is thousands of documents, so it is **read one page at a time and classified** three ways — where each document came from, what kind of file it is, and **what the material is for** — each class with its own count; filter by title or file name, or open a class as a list |
+| A skill pile that reads as a list | Material the app fetched for itself carries a **category in its own words** (`camera work`, `storyboard`, `performance`, `ads`, `director style`, …) — a hundred-odd skills off one platform arrive as twelve short lists instead of one grey pile. Read off the name, then the platform's own tags, then the opening of the body; a document whose words say nothing stays **unclassified** rather than being guessed into a bucket |
 | Memory | Global / group / member × preference, fact, decision, lesson, playbook; auto-extraction; two-way Obsidian sync |
 | Prompts | Editable global system prompt, a prompt library, per-group prompts, `{{variables}}` |
 | Template gallery | 81 ready-made teams, roles, skills, prompts and MCP recipes, installed in one click; bring your own as JSON |
@@ -110,6 +116,8 @@ to keep it that way, and removing that variable is what makes the real keychain 
   with the app token first — so `blob:` is allowed for those two media types. Dropping it silently
   turns every image and every clip into something that cannot load.
 - API keys and the GitHub token are kept in the **system keychain**; the database holds only a reference.
+  Separate data directories use separate keychain namespaces, so a test profile cannot overwrite
+  or clear the normal installation's credentials.
 - Backups, exports and API responses never contain plaintext keys.
 - **No automatic outbound calls**: update checks are off by default.
 - A "block hosted models" switch stops every hosted request, including update checks and remote MCP.
@@ -165,6 +173,17 @@ Every group has a workspace, created when the group is created. It is the one di
 tool calls may use as their working directory, and it is where everything a group produces lands —
 including one folder per task (`tasks/<task>/`), so two tasks running in one plan do not write over
 each other. The workspace button in the chat header lists what is in there and downloads it.
+
+**The column on the right has two pages.** "Members" is the group's roster; **"Outputs"** is what the
+project has actually produced — every file in its workspace, newest first, grouped by the folder it
+landed in, with its size and when it changed. It re-reads itself whenever the group gets a new
+message, so a round's deliverables are there when the round ends rather than having to be hunted for
+in the transcript. Clicking a file opens it with the system's default application (in a browser, it
+downloads). The same header carries **collapse** (the chevron, which puts the column away entirely)
+and **maximise** (which lets the column fill the window, taking the chat's place until you click it
+again — both controls stay exactly where they were, so there is always a way back). What is listed is
+read from the same endpoint the workspace panel uses, so the two cannot disagree about what is on
+disk.
 
 **Which directory that is, is yours to decide.** It is picked while the group is being created, and
 can be changed afterwards from the workspace panel:
@@ -267,39 +286,62 @@ Paths are resolved inside the group's workspace and re-checked after resolving l
 reference cannot reach outside it. How much referenced content one prompt may carry is
 `refs_budget` under Settings → General.
 
-### A group's own material: the workspace, its attachments, and its knowledge base
+### A group's own material stays in the group; the library holds what you filed
 
-A group is a workspace, so it has **its own knowledge base** — it exists from the moment the group
-does (named after it, numbered when two groups share a name), and it is what "this group's own
-material" means. Three things that used to be three separate places are joined into it:
+A group is a workspace, and **nothing of its own enters the library by itself**. A group's
+attachments, the files its members write, its working directory — all of that is read where it is
+(attachments are read out when they arrive, the workspace is a directory a member can open). A
+knowledge base is a shelf somebody decided to build, and a project's working files are not that.
 
-* **what has already been read out of the group's attachments** — a document's extracted text, a
-  picture's description, a recording's transcript. Nothing is extracted *for* this: it is the cached
-  result of work the app already did, so a file nobody has opened yet simply is not in there yet
-  (turn on cloud vision and let a member look at it, and it appears);
-* **the documents in the workspace** — a script a member wrote, a table someone dropped in;
-* everything anyone imports by hand (notes, URLs, folders, uploads), as before.
+This is a reversal, and it is worth saying why, because the join it replaces sounded reasonable. Every
+group used to be handed a knowledge base the moment it existed, and before every turn the text already
+read out of its attachments plus the documents in its workspace were copied into it, so that a search
+would find what the group had now. The effect was a list nobody could read: this app's own database
+reached **sixty-four knowledge bases, sixty of them empty, for ten projects**, and a half-finished
+draft sat on the same footing as material somebody had deliberately collected. It also put a
+project's work in front of every *other* project, since a group's search scope includes the shared
+bases. So the copying is gone, along with the switch that controlled it (*"Keep this group's own
+material in its knowledge base"*) and the per-group base that was created for it.
 
-The join runs **before each turn**, so a file written a minute ago and a document just added are
-searchable in the turn that follows. It is also cheap by construction: a directory walk with the
-machinery pruned out (frames, checkouts, virtualenvs), only document kinds, at most 40 documents and
-a few megabytes read per run, and nothing rewritten while it is unchanged. A document that *did*
-change is replaced, not stacked — the earlier version's passages are dropped, or a search would
-still find what it used to say.
+**Filing something still works.** Upload a document, add a note or a URL, or import a folder — into a
+group's own library or the shared one — and it goes in, exactly as before. A group's first upload
+creates that group's base; it is owned by that group, so a document filed in one group never becomes
+readable by another.
 
-Two switches decide how far it goes, and both are the user's. Which knowledge bases a group searches
-is already `all / chosen ones / off`; beside it, **"Keep this group's own material in its knowledge
-base"** decides whether the workspace feeds the group's own base. On by default for a workspace this
-app manages; off for one you picked, because a directory you chose may be a project rather than
-material (it is one switch away, on the same panel).
+#### Two labels, so a library can be read rather than scrolled
 
-One kind of material cannot index itself: a document is read when it arrives, but a **picture has to
-be looked at**, and a picture nobody has looked at is not material yet. Doing that on a timer would
-spend money without being asked, so the panel shows the count and offers a button — *"N pictures have
-never been looked at → Describe them"* — describing a bounded batch per press (12 by default, at most
-50), caching each description, and putting them into the group's own knowledge base as they arrive.
-It says how many are left, and it says why nothing happened when no model can look (the same "which
-model looks at pictures" answer the settings page gives).
+* **Where the material came from** is a **fact about each document**, read off the row rather than
+  asked for: a folder you imported is *imported from a folder*, material the app fetched into its own
+  data directory is *fetched by this app*, a bare name came in through a form, a URL is a *web page*,
+  `attachment:`/`workspace:` keys are a group's own, and nothing at all was typed here.
+* **What a base is for** is a **heading the user chooses**. Five are suggested — project material,
+  reference, methods & craft, data & tables, writing material — and anything can be typed instead,
+  because the headings a person keeps are theirs.
+
+The shelf is **grouped by heading**, and the word for where a base's material came from sits on each
+row **together with the breakdown behind it** — a base that holds an imported folder *and* 114 notes
+fetched from a website is `mixed`, and it says "imported 6029 · fetched 114" rather than leaving the
+adjective standing on its own. A base belonging to a project is grouped under *project material* and
+**collapsed by default**: that is the part of a library which used to grow on its own, so it is the
+part that gets out of the way.
+
+The origin word is derived when the list is read, not stored — a value written once would go stale the
+moment a document was added, and a stale label is worse than none because it is exactly the thing a
+user would trust. Opening its editor is how you disagree with the derivation, and *automatic* is how
+you change your mind back.
+
+One kind of material still cannot read itself: a document is read when it arrives, but a **picture has
+to be looked at**, and a picture nobody has looked at cannot be handed to a model. Doing that on a
+timer would spend money without being asked, so the panel shows the count and offers a button —
+*"N pictures have never been looked at → Describe them"* — describing a bounded batch per press (12 by
+default, at most 50) and caching each description on the attachment, so the next member shown that
+picture reads the same description instead of paying for another look.
+
+And when a search still comes back empty, the member is told **what this group can search**: the
+document titles it can reach, plus the note that the knowledge base may be in another language than
+the conversation. That is the difference between a dead end and a next step — a word index matches
+words, and a question asked in Chinese shares none with an English document, which is the usual shape
+of a library here (atlases, papers, manuals).
 
 And when a search still comes back empty, the member is told **what this group can search**: the
 document titles it can reach, plus the note that the knowledge base may be in another language than
@@ -493,6 +535,59 @@ Two tools carry it:
   naming a part (`at_part: "sac"`) rather than by guessing a fraction — the drawing knows where its own
   parts are and hands those positions back, because a mark placed from a guess points somewhere else.
   A schematic also says on the frame that it is a drawing.
+
+### The style comes off the material, and every still is placed by it (`app/visual.py`)
+
+The grade above decides *whether* a picture may be used. This decides *how it gets in*, and it exists
+because a finished film was measured and the numbers were worse than the impression. One 300-second
+science film, 30 pictures:
+
+| Measured on the finished film | |
+|---|---|
+| pictures that were not the film's shape | **12 of 30** — the worst was 2210x584 against a 0.5625 frame, off by a factor of nearly seven |
+| distinct backgrounds | **9** — `#081828`, `#F8F8F8`, `#D8D8D8`, … |
+| spread in how many colours each used | **14x** (121 to 1706) — flat line art next to a rendered 3D illustration |
+| the 15 pictures this app drew itself | **identical to each other**: same background, colour spread within 7/255 |
+
+So the drawing code was never the problem. The problem was that a mixed pile of pictures was placed
+into the frame one at a time with nobody deciding, and nine of those backgrounds are not a matter of
+taste — they are what "stretched sideways screenshot" looks like from the inside.
+
+Now the material a group hands over **is** the brief, and it is read rather than asked about:
+
+* **`profile()`** measures the set — the background they share, the palette they are drawn in, how
+  heavy the lines are, and how much of the set actually agrees. `agreement` and `split` name the
+  pictures that do not belong, which is the useful half: on this film it named all 8 of them.
+* **`admit()`** then decides each picture's placement from two measurements, not from taste. Within
+  4% of the frame's aspect → it **fills** the frame. A drawing (`coverage` ≥ 0.65, measured in an
+  empty gap between 0.73–0.80 for line art and 0.40–0.53 for web diagrams) → it is **drawn again**:
+  structure kept, the film's one palette, the film's one background. Any other real picture →
+  **framed whole** with a heading and its source line.
+* **`redraw()`** is the drawing-again: the picture's own background is dropped, its colours are
+  matched to the film's palette, and ink and paper trade places in HSV when the film is darker than
+  the material was. Never cropped, never stretched.
+* **`assemble_video` runs this by itself**, before a single frame is encoded, and writes the
+  measurements beside the film as `style.json` — so a re-cut months later is the same film.
+
+⚠️ **A real picture is never re-drawn.** Measured, on real material: 496–716 colours in, **6–7 out**
+(71–102x), 9 distinct backgrounds → **1** for everything the gate placed, and an offline OCR re-read
+of the output keeps **98–100% of the labels** — which is the evidence that the structure and the
+contrast survived, since nobody working here can watch the film. But re-drawing a photograph produces
+a posterised picture that claims to be real, and on an angiogram that is fabrication. Those are
+framed, and the numbers above are the coverage threshold's job: **one of the 0.42s is somebody's
+angiogram.**
+
+To see what the assembler is about to do, before it does it:
+
+```sh
+python3 scripts/lint-figures.py ~/.team-agent/workspaces/<id> --size 1080x1920
+python3 scripts/lint-figures.py <folder> --json > figures.json   # for a pipeline; exit 1 = act on it
+```
+
+**What is not done**: a photograph's own look is not restyled — that needs the structure-locked
+generative route (SDXL + ControlNet + IP-Adapter), which is not wired up here. And the app's own
+cards and animations still draw on `figure.DRAWING_BG` (#0B1422) while plates use `figure.INK`
+(#0C1016) — a 4/255 difference nobody can see, but it is two backgrounds where there should be one.
 
 ### Read someone else's film before making your own (`study_video`)
 
@@ -1092,6 +1187,76 @@ Then `voice: "voice:clinic-zh"` on `assemble_video` narrates the whole film in i
   agreed to it. `Test` on the provider names the binary and the command that installs it when the
   engine is absent; nothing here downloads anything by itself.
 
+### Music: a bed under the film, and a shelf to choose from
+
+No script for this one — the shelf *is* a folder. `<data dir>/music/` holds audio files, and each may
+carry a sidecar `.json` of the same name saying what it is: mood, tags, length, where it came from,
+under what licence. `app/music.py` reads them at startup, `assemble.render(..., music=…)` mixes from
+them, and a member writing a film can pass `music: "auto"` and let the shelf choose.
+
+The split is the one the title card already follows: **the layout decides how the music sits** — its
+level, its fades, how far it gets out of the narrator's way — and **the caller decides which track**
+(or asks). "Which piece" changes with every film; "how loud under a voice" does not, and a film that
+answered it per film would be mixed differently by whoever happened to be driving.
+
+`auto` is not a lottery. A mood match beats a track that is merely `neutral`; a track long enough not
+to loop beats one that has to; a track with no vocals beats one that would fight a narrator. **The
+reason comes back with the choice** — in the tool's receipt and in the film's own notes — because a
+score the maker cannot argue with is a score they cannot correct either.
+
+**On ducking, measured rather than assumed.** The obvious tool is `sidechaincompress`, and it was
+tried first. It does work, but weakly and invisibly: with the bed at -16 dB under a narration, its own
+output fell **1.8 dB** — and since the voice dominates the sum, the finished film measured *identical*
+to one with no ducking at all (0.0 dB across three sampled spans, A/B against `duck_db: 0`). A
+compressor is the wrong instrument when the answer is already known: every shot records how long its
+narration actually ran (`voice_seconds`), so the windows are computed from the plan and the music is
+lowered by exactly `duck_db` over exactly those spans. Measured on the rendered film, A/B:
+
+| Where | with ducking | without | difference |
+|---|---|---|---|
+| the 0.3 s right after the first line ends | -50.5 dB | -40.5 dB | **-10.0 dB** |
+| after the third shot's line, same place | -49.9 dB | -43.8 dB | -6.1 dB |
+| while the narrator is speaking | -20.9 dB | -20.9 dB | 0.0 — the voice is untouched |
+| after the window has passed | -40.5 dB | -40.5 dB | 0.0 — nothing else was touched |
+
+The bed is looped and cut to the film's length (`-stream_loop -1` + `atrim`), the fades go on the
+music and not on the film (fading the film would take the narration down with it), and the picture is
+copied rather than re-encoded, so this costs seconds.
+
+#### Where the music comes from
+
+The shelf chooses and mixes. **`make_music` composes** — with ACE-Step 1.5 running inside this
+machine's own ComfyUI — and puts the result straight on the shelf, so the film being made *right now*
+can be scored with it (`music: "auto"` finds it, or it can be named). A generator that only wrote
+into the workspace would be half a feature: the shelf is what the choosing reads.
+
+**Nothing but the weights had to be installed.** ACE-Step's nodes are part of ComfyUI itself
+(`comfy_extras/nodes_ace.py`) — the reasonable assumption that a music generator needs a custom node
+is wrong here, and the way to know is to ask the running instance rather than the documentation.
+(This machine had no ACE-Step node at all until it moved to 0.35.) What is required is **four files,
+13.7 GB**, and **both text encoders are needed** — one `DualCLIPLoader` loads them — which is why
+7.8 GB of that is not optional, however much one would like it to be. Ask for music without them and
+the answer names every file, its folder and its address; a ComfyUI traceback is not an instruction.
+
+The graph is ComfyUI's own `blueprints/Text to Audio (ACE-Step 1.5).json`, flattened out of its
+subgraph form into the API format the instance accepts, plus the `SaveAudioMP3` the blueprint leaves
+to whoever calls it. Every widget value and every wire was read off that blueprint and the combo
+values checked against the running instance (`timesignature` is a *string*, `language` includes `zh`,
+`quality` is V0/128k/320k). What this adds is the words, the length, the seed — and the shelf.
+
+⚠️ **It is slow**, which is why it has its own budget (`music_timeout`, default 1800 s, separate from
+`video_timeout`): the checkpoint is loaded, two encoders run over the prompt, then eight sampling
+steps over minutes of audio. And the member that asked is told, in the tool's own description, that
+**it cannot hear the result** — a model asked to compose will otherwise describe the music it thinks
+it made.
+
+⚠️ **即梦's SeedMusic 1.0 is a platform feature, not an API.** It is absent from Ark's model list
+(five candidate names all answer `InvalidEndpointOrModel.NotFound`, verified against a control model
+that answers a *parameter* error under the same key), its generation endpoints need a signed-in
+session rather than the anonymous reads the gallery and the skill market allow, and automating a
+generation endpoint is a different thing from reading public content. **Export an MP3 from 即梦 and
+drop it on the shelf** — that path works too.
+
 ### 即梦 (Jimeng): a creative-craft knowledge base, from a public feed
 
 `scripts/ingest-jimeng.py` collects **prompts and style vocabulary** from 即梦's public gallery into
@@ -1112,13 +1277,58 @@ a knowledge base, and the **Creative director** expert (`🎨 创意大师`) is 
 * **The work-detail pages are server-rendered and readable without logging in**; the explore *list*
   page is not (its SSR payload is empty and the list arrives over the feed above). 即梦's
   `robots.txt` is `User-Agent: * / Allow: /` with a declared sitemap.
-* ⚠️ **What this cannot give you.** The feed answers with `text_generate_image` works only — every
-  `category_id` tried returned the same shape, and no video-bearing item appeared. So camera-movement,
-  transition and storyboard **reference films are not on this endpoint**, and guessing further
-  endpoints is exactly what this project does not do. For those, the route that exists today is
-  `study_video`: point a member at a reference clip and it writes a structured style note into the
-  knowledge base, which the Creative director then cites. Making a transition *usable* is a separate
-  matter and it is a layout knob now — see above.
+* ⚠️ **What the feed cannot give you, and where it is instead.** The feed answers with
+  `text_generate_image` works only — every `category_id` tried returned the same shape, and no
+  video-bearing item appeared. So the feed holds **no reference films**. Camera movement,
+  storyboards and directing *are* here, though, one section down — they live in 即梦's **skills**,
+  which is the better source anyway: a skill's body is the reasoning, not one picture's worth of
+  words. When what you need is reference *footage* to watch, the route that exists is `study_video`:
+  point a member at a clip and it writes a structured style note into the knowledge base, which the
+  Creative director then cites.
+
+#### Skills: the camera language itself
+
+The gallery gives you one picture's worth of words. The thing that was actually asked for — **how a
+long take is organised, how a storyboard is laid out, how a director schedules a scene** — lives on
+即梦 in a second place: the **skills** (the Agent's skills; the home page lists them as
+「电影级长镜头运镜 / 创作分镜 / 名导风格大师 / 微表情导演 / 电影广告全能导演」).
+`scripts/ingest-jimeng-skills.py` collects those, and most of them ship their **whole `instruction`
+body**: measured on this run, 114 skills, the largest («一图成片-电影广告全能导演», used 15013 times)
+35163 characters, and the named ones — 电影级长镜头 (24088 uses), AI演员微表情导演, 叙事短片导演分镜
+(22897 characters) — all present with their bodies.
+
+Two sources, both anonymous (measured 2026-09-25):
+
+| Source | Endpoint | What it gives |
+|---|---|---|
+| Official preset skills | `POST /mweb/v1/creation_agent/v2/skill/list` | 7 skills — 视频反解 / **创作分镜** / 全流程广告片导演 / 影视故事短片 / 电商套图 / 海报设计 / Logo设计 — title, description and guide text; **the body itself is not public** |
+| Market skills | `POST /mweb/v1/creation_agent/v2/skill/market/search`, body `{"keyword":…,"isTest":false,"offset":0,"limit":20}` | whole records: `instruction`, author, usage count, showcase media |
+
+⚠️ Four things that cost time here, all of them versions of "do not jump to *即梦 doesn't have it*":
+
+* **The list endpoint does not work.** `skill/market/list` answers `invalid skill parameter: invalid
+  source: 0` whatever you send it (`source` is an integer enum; 1 and 2 pass validation and return
+  `skills: null`). So this script **searches by keyword** rather than listing — the keyword table is
+  at the top of it.
+* **The home page's names are not the market's names.** 「电影级长镜头运镜」is 「电影级长镜头」there,
+  「微表情导演」is 「AI演员微表情导演」, 「电影广告全能导演」is 「一图成片-电影广告全能导演」. And
+  **「创作分镜」is not in the market at all** — it is an official preset skill. Collect both sources,
+  or you conclude — wrongly — that half of what was asked for does not exist.
+* **An empty `instruction` is kept, and labelled as such.** A skill whose logic runs on their side
+  returns `""`; written up as an ordinary entry it looks like a method we hold, when what we hold is
+  a name and a description.
+* **There is no anonymously readable skill page** (`/ai-tool/skill/<id>` is a client-rendered shell
+  with an empty payload), so each note carries `skill_id` + author + "search this name in 即梦"
+  instead of a link that would not open.
+
+```bash
+TEAM_AGENT_DATA=... .venv/bin/python scripts/ingest-jimeng-skills.py           # 10 keywords × 20
+TEAM_AGENT_DATA=... .venv/bin/python scripts/ingest-jimeng-skills.py --keywords 运镜,分镜
+```
+
+These are other people's instructions, collected under the same standing as the gallery: **learn the
+structure, keep the attribution, do not republish it as your own.** Every note names its author and
+`skill_id`, and the Creative director's own instructions say the same thing.
 
 ### ComfyUI (local video, nothing billed per clip)
 
@@ -1138,10 +1348,15 @@ Add the **"ComfyUI (local video)"** preset under Model providers — the address
 `http://127.0.0.1:8188` unless your instance listens elsewhere — then pick it under *Permissions &
 control → Video generation*.
 
-- **ComfyUI has to be running**, and it has to have the files the workflow names. Start it with
-  `python main.py` in its directory. The **Test** button asks all three questions rather than just
+- **ComfyUI needs the files named by the workflow.** Start it with `python main.py`, or enable
+  **Start ComfyUI when needed** in its provider settings, enter the absolute paths
+  to the ComfyUI directory and its Python executable, and save. Connection tests, video and music
+  tasks then start the local service as needed and reuse an existing one. Auto-start supports
+  loopback HTTP addresses only and does not download models. Logs are written to
+  `<data dir>/logs/comfyui-PORT.log`. The **Test** button asks all three questions rather than just
   "is it up", and it names the file that is missing — a ComfyUI with no video checkpoint is running
   perfectly and cannot make a clip.
+
 - **The workflow shipped here is `wan2.2-ti2v-5b`** — ComfyUI's own `video_wan2_2_5B_ti2v` template,
   rearranged into the API format `/prompt` takes. It needs three files:
 
@@ -1154,6 +1369,9 @@ control → Video generation*.
   Text-to-video, 24 fps, **no sound**, and no reference image: the graph fills a latent with noise,
   so there is nowhere to put a keyframe — asking for `first_frame` is **refused with that reason**
   rather than quietly dropped.
+- The built-in graph uses **Euler sampling**. In a local Apple Silicon comparison, `uni_pc`
+  finished rendering but produced corrupted colors; Euler produced a clear image with the same
+  prompt, seed and dimensions. Imported workflow graphs retain their own sampler choices.
 - **It is slow, and the numbers are measured rather than guessed.** 832×480, 5 seconds (121 frames),
   20 steps took **8 minutes** on an M-series Mac with the 5B checkpoint. Raise *Render timeout* if
   your machine is slower; the default is set for hosted services. The clip length is capped at 10
@@ -1163,6 +1381,13 @@ control → Video generation*.
   sending a number that will be rejected after you have waited: `length` must be `4n+1` (121 is five
   seconds at 24 fps, the template's own figure), and both sides are rounded to a multiple of 16 with
   the long side capped at 1280, which is what the checkpoint is built for.
+
+Media members receive tasks matching their bound capability: image members make images, video
+members make clips, and chat members plan, run tools and assemble the result. Plans validate these
+assignments and pass duration, aspect ratio and upstream artifacts to the next step. Missing,
+empty or incorrectly typed deliverables fail validation. Add `wan2.2-ti2v-5b` to a group and mention
+it directly, or let the host assign it a planned task. Ordinary `@all` discussions do not trigger
+media generation.
 
 #### Bring your own workflow
 
@@ -1223,8 +1448,15 @@ of dropping it.
 
 ### Generating members: the model itself, in the group
 
+Discussion members plan and review; listening tools execute. ComfyUI is listed first among generators,
+and its default Wan workflow creates a tool named **ComfyUI**. Renderers and voice engines live in
+Tools too. Assign them through the task board or `@name concrete instruction`. After a direct
+handoff, the assigning member resumes with actual output paths or the failure reason. Prepare a
+renderer’s project in its documented group folder before running it; pass narration in
+`arguments.text`. The built-in Wan workflow is silent text-to-video, without reference-image input.
+
 The sections above are about members *calling* `generate_video` and `generate_image`. A video or
-image model can also **be** a member: the member adder has a **Generating members** section listing
+image model can also join as a **tool**: the group roster has separate **Members** and **Tools** sections, each with its own add button. The invitation dialog's **Tools** tab lists
 every enabled model that generates — including the drawing models a gateway reports under its own key
 (the eleven `*-image` ones on MetaChat's OpenAI-compatible address, for instance).
 

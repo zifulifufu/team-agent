@@ -22,7 +22,6 @@
   --warn: #b7791f;
   --warn-bg: #fdf3dc;
   --ok: #0a8f57;
-  --bubble-user: #f0f0f2;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.09), 0 1px 3px rgba(0, 0, 0, 0.06);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --chart-1: #0a8f57; /* 已用 dataviz 校验脚本验证:亮/暗表面上均通过明度带与对比度 */
@@ -47,7 +46,6 @@
   --warn: #e3b04b;
   --warn-bg: #3a3020;
   --ok: #3ecf8e;
-  --bubble-user: #2c2c31;
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
   --shadow-sm: none;
   --chart-1: #28a874;
@@ -107,6 +105,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .icon-btn.on { background: var(--active); color: var(--text); }
 .icon-btn.tiny { width: 24px; height: 24px; border-radius: 6px; }
+/* 图标按钮上带一个数字(聊天头部那个「成果」)。⚠️ 不能只把数字塞进 30px 的方框里 ——
+   那要么被裁掉、要么把图标挤歪,所以带数字时按钮自己变宽,数字用等宽字形。 */
+.icon-btn.with-n { width: auto; min-width: 30px; padding: 0 8px; gap: 5px; }
+.icon-btn .n { font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-3); }
+.icon-btn.on .n { color: var(--text-2); }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--card); color: var(--text); white-space: nowrap; flex: none; }
 .btn:hover:not(:disabled) { background: var(--hover); }
@@ -168,11 +171,41 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
    (`.shell` clips nothing and `.main` is positioned, hence the z-index: the line must paint over the
    main area it now sits on, or the button would be visible-but-unclickable.) */
 .sidebar { --side-pad: 12px; }
-.side-top { position: relative; z-index: 30; display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 10px 0 var(--side-pad); flex: none; }
-/* The lights are ~70x26 in this corner, so the first line starts below them. */
-.is-mac .side-top { margin-top: 26px; }
-.brand-row { padding: 0 18px 6px var(--side-pad); flex: none; }
+/* One header block, **the same height as the two headers beside it** — the members column's
+   (`.mrail-head`) and the chat's (`.chat-head`) are both 52px with a bottom border, and this one has
+   to end on the same line or the three columns start with three different horizontals. It used to be
+   40px pushed down 26px, so the panel's first edge sat 14px below its neighbours'.
+   On macOS the window's traffic lights occupy the top 26px of this corner, so the buttons centre in
+   what is left *below* them rather than in the whole block: `padding-top` + `box-sizing: border-box`
+   keeps the block's own height at 52 and the buttons out of the lights. */
+.side-top { position: relative; z-index: 30; display: flex; align-items: center; gap: 6px;
+            height: 52px; padding: 0 10px 0 var(--side-pad); flex: none; }
+/* The lights are ~70x26 in this corner, so the buttons start below them. */
+.is-mac .side-top { padding-top: 26px; }
+/* The line the neighbours draw, so the alignment is something you can see rather than a number that
+   happens to match. Not drawn when collapsed: there is nothing to the left of the main area then. */
+.sidebar:not(.collapsed) .side-top { border-bottom: 1px solid var(--border); }
+/* 26px squares, not the 30px `.icon-btn` default: the content box below the lights is 26 tall, and a
+   button taller than its row would spill into the lights above it and the border below it. */
+.side-top .icon-btn { width: 26px; height: 26px; border-radius: 7px; }
+/* The app's name, centred under that header: **one line** — the mark, the name, and the version right
+   after it. The version used to sit on a line of its own, which is what the row had to do while two
+   buttons shared it (measured: the name, a badge and both buttons do not fit in 279px); the buttons
+   moved to the row above, so this row is the mark and the words and nothing else.
+   The gap between the buttons and this block is the `padding-top` — the header above ends on the
+   shared line, so the breathing room has to come from here. */
+.brand-row { display: flex; align-items: center; justify-content: center;
+             padding: 16px var(--side-pad) 12px; flex: none; min-width: 0; }
+.brand-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+/* One mark, one drawing: the same filled tile and nodes as the app icon (`scripts/make-icon.py`),
+   in the theme's own colours rather than a second palette kept in step by hand. */
+.brand-logo { flex: none; }
+.bm-tile { fill: var(--primary); }
+.bm-node { fill: var(--on-primary); }
 .brand-name { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 版本号就在名字右边(同一条线上),所以它必须 `flex: none` 且不换行 —— 名字可以省略号,它不能。 */
+.brand-ver { flex: none; font-size: 11px; line-height: 14px; color: var(--text-3);
+             font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sidebar.collapsed { width: 0; border-right: 0; background: transparent; }
 /* The strip stays wide enough to be the window's drag handle — a collapsed panel with nothing to
    grab is a window you can no longer move. */
@@ -189,49 +222,119 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
    down (the row it hangs from is the only thing above the project list), so opening it never moves
    the project you were about to click. `left/right: 0` are the top row's own padding box, which lines
    this up with the panel's other content. */
-.side-filter { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; }
-.sf-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; border-radius: 8px; font-size: 12.5px; color: var(--text-2); text-align: left; }
-.sf-row:hover { background: var(--hover); color: var(--text); }
-.sf-row[aria-checked="true"] { background: var(--active); color: var(--text); font-weight: 600; }
-.sf-row .n { margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.sf-row[aria-checked="true"] .n { color: var(--text-2); }
-.sf-tick { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border-strong); color: var(--on-primary); flex: none; }
-.sf-row[aria-checked="true"] .sf-tick { background: var(--primary); border-color: var(--primary); }
-.sf-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+.side-filter { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 5px; display: flex; gap: 4px; }
+/* One row of icon chips. Five states side by side, each a mark and its count; the words live in the
+   tooltip, because four stacked sentences made a block as tall as the list it filters. `flex:1` so
+   they share the row evenly whatever the counts are. */
+.sf-chip { display: flex; flex: 1; align-items: center; justify-content: center; gap: 5px; padding: 7px 4px; border-radius: 8px; font-size: 12.5px; color: var(--text-2); }
+.sf-chip:hover { background: var(--hover); color: var(--text); }
+.sf-chip.on { background: var(--active); color: var(--text); font-weight: 600; }
+.sf-chip svg { flex: none; color: var(--text-3); }
+.sf-chip.on svg { color: var(--primary); }
+.sf-chip .n { font-variant-numeric: tabular-nums; }
 .side-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 10px; }
 .nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text); text-align: left; width: 100%; }
 .nav-item:hover { background: var(--hover); }
 .nav-item.on { background: var(--active); font-weight: 600; }
 .nav-item svg { color: var(--text-2); flex: none; }
-.nav-cap { padding: 12px 18px 4px; color: var(--text-3); font-size: 12px; }
+.nav-cap { padding: 12px 18px 4px; color: var(--text-2); font-size: 12px; font-weight: 500; letter-spacing: 0.02em; }
 /* 项目列表的标题:带数量,点一下把列表折起来。它固定在工具那一组下面 —— 导航在上、列表在下。 */
-.side-section { display: flex; align-items: center; gap: 4px; padding: 14px 18px 6px; color: var(--text-3); font-size: 12px; text-align: left; }
+.side-section { display: flex; align-items: center; gap: 4px; padding: 14px 18px 6px; color: var(--text-2); font-size: 12px; font-weight: 500; letter-spacing: 0.02em; text-align: left; }
 .side-section:hover { color: var(--text-2); }
 .side-section .count { margin-left: 2px; }
 .side-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 8px; }
 .side-empty { color: var(--text-3); font-size: 12.5px; padding: 8px 10px; }
-.conv { display: flex; align-items: center; border-radius: 8px; position: relative; }
+/* A project is a *place*, so its row is two lines whatever is in it — and the same two lines for
+   every project, so the list has one rhythm instead of one height per project. Line 1 is the place
+   (state dot, mark, name, and the folder's name only when the folder is called something else);
+   line 2 is what it is doing (the task, its progress, when it last moved, and the folder's own
+   actions on hover). It used to be three bands, and the third repeated the first verbatim for every
+   app-managed directory. */
+.conv { display: flex; flex-direction: column; border-radius: 8px; position: relative; }
 .conv:hover { background: var(--hover); }
 .conv.on { background: var(--active); }
-.conv-main { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; text-align: left; }
-.conv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-head { position: relative; display: flex; align-items: center; }
+/* 缩进只有一处定义:`--conv-indent` 是第二行文字要与项目名对齐的那个 x(项目名左边是
+   状态点 + 间隔 + 文件夹图标 + 间隔)。第二行的标题要是自己算出来的,两边一旦不同步,
+   看起来就是「下面那行没缩进」—— 参考样式里那一层层次感就是靠这个缩进读出来的。 */
+/* 缩进只有一处定义。⚠️ `--conv-indent` 量的是**项目名那一列**的 x —— 而 2026-09-25 状态点并进
+   文件夹图标之后,项目名整体左移了 15px(点 7px + 间距 8px),这个数就得跟着减 15,
+   否则第二行会比项目名多缩进一格(冒烟里那条「任务行缩进到与项目名同一列」会红)。 */
+/* 名字要在按钮底下淡出多少像素。⚠️ 这个数**不是**从行的右缘量起的,而是从 `.conv-main`(名字那一列)
+   的右缘量起的 —— 中间还隔着 `.conv-row` 的右内边距 11px 和(有折叠箭头时)那个箭头 28px。
+   三按钮的浮层 `right: 4px`、宽 74px,所以它伸进名字列的那一段 = (74 + 4) − 11 = 67px,
+   **有没有折叠箭头都是 67px**(箭头 28px 把浮层也推左了 28px,两边同时移,差值不变)。
+   74px = 67px + 一点余量:字一定在被盖住之前就淡完了。 */
+.conv { --conv-pad: 11px; --conv-indent: 32px; --conv-fade-w: 74px; }
+/* 第一行 = 两个入口并排:**进目录**(文件夹图标,只有外壳在时才是个按钮)与**进群聊**(名字那一块)。
+   两个都是 button,所以谁也不能套在谁里面(button 里套 button 是非法结构,点谁算谁都说不清),
+   于是这一行多了一层 `.conv-row` —— 行高和缩进值都靠它撑着(`--conv-indent` 量的是项目名那一列)。 */
+.conv-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px var(--conv-pad) 4px; }
+.conv-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left; }
+/* ⚠️ 名字必须**肯让步**:它一长,后面还有文件夹名和那个折叠箭头,不让步就会把行挤到溢出
+   (这一条已经吃过一次亏:旧排版把名字、状态词、时间、文件夹名全挤在一行上)。 */
+.conv-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv.on .conv-name { font-weight: 600; }
-.conv-time { font-size: 11.5px; color: var(--text-3); flex: none; }
-/* A project's state, written on its row: three words, one of which is almost always the same, so
-   they are small and go quiet on hover where the actions take over. */
+/* The folder's own name, shown only when it differs from the project's — dimmed, and never a second
+   line. `flex: none` with a cap: it is a suffix, so it gives way to the name rather than the reverse. */
+.conv-dir { flex: none; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-3); font-size: 11px; }
+.cv-ico { position: relative; display: inline-flex; color: var(--text-3); flex: none; }
+/* 文件夹图标是可以点的(点它 = 进那个目录),所以它要有一点"可点"的样子;没有外壳时它是 span,
+   没有 hover 效果 —— 一个点了没反应的按钮不是入口。 */
+.cv-open:hover { color: var(--text); }
+/* 「折叠成一行」那个箭头:**只出现在当前打开的那一个项目上**(用户要的「点这个项目的时候才出现」)。
+   悬停时那一排操作按钮要给它让位,否则它就活在那块补丁下面,看得见点不到。 */
+.cv-fold { flex: none; margin-right: 4px; color: var(--text-3); }
+.conv.has-fold .conv-acts { right: 32px; }
+/* A project's state, as one dot. Three words per row was four words per screen of the same word;
+   the word itself is the dot's tooltip and its accessible name. */
+/* 状态并进文件夹图标(见 `Sidebar.tsx` 里那段注释):四个状态四种颜色,元素少一个。
+   ⚠️ 正在跑的**不用这里的颜色** —— 那个是会呼吸的点(`.conv-run`),它自己会变,要显眼。 */
+.cv-ico.s-done { color: var(--ok); }
+.cv-ico.s-arch { color: var(--text-3); opacity: 0.7; }
 /* A project that is working right now. A dot rather than a word: it is the one state that changes on
    its own, and it has to be noticeable without being read. */
-.conv-run { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; margin-right: 6px;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); animation: conv-run 1.6s ease-out infinite; }
+/* ⚠️⚠️ 它是文件夹图标的**角标**:`position: absolute` 是必须的,不是排版偏好 —— 它原来在行里占
+   7px + 8px 间距,于是**项目正在跑的时候**,那个项目的名字被推右 15px、跟自己的任务行错开一格。
+   那个群里一跑起来才会出现,所以一直没被发现(冒烟里那一条「任务行缩进到与项目名同一列」抓到了它)。
+   `.cv-ico` 因此要有 `position: relative`。 */
+.conv-run { position: absolute; right: -1px; top: -1px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
+  animation: conv-run 1.6s ease-out infinite; }
 @keyframes conv-run { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
                      70% { box-shadow: 0 0 0 5px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .conv-run { animation: none; } }
-.conv-state { font-size: 10.5px; color: var(--text-3); flex: none; }
-.conv-state.done { color: var(--ok); }
-.conv.arch .conv-name { color: var(--text-3); }
-.conv-acts { position: absolute; right: 4px; display: flex; gap: 1px; padding-left: 10px; background: var(--bg-side); opacity: 0; }
+.conv.arch .conv-name, .conv.arch .cv-ico { color: var(--text-3); }
+/* Revealed on hover, over the end of their own line — but with **no background of its own**.
+   ⚠️⚠️ 这里原来是给这块补丁刷"行自己的底色"(`--hover` / `--active`),注释还写着「盖住的是名字的尾巴,
+   而不是露出一块别的颜色」。那句话是错的:半透明黑**叠**在半透明黑上会更深 —— 当前那个项目
+   (`.conv.on` 8.5% + 补丁 8.5% ≈ 16%) 一出现这三个按钮,名字尾巴上就浮出一块明显更深的方块。
+   用户 2026-09-25 拿着实拍图点名:「出现三个按钮的时候,透明色就行了,不用看起来加深有个方框」。
+   (codex 读同一张图也说到「按钮后面有一整块**比项目行底色更深**的灰色背景」—— 两边的说法对上了。)
+   于是补丁彻底透明。代价:**它再也盖不住底下的名字**,所以名字那一列要在按钮底下**淡出**(见下面
+   `.conv-main` 的 mask)—— 假遮是方块、真遮是叠字,淡出两样都不占。 */
+.conv-acts { position: absolute; right: 4px; top: 0; bottom: 0; display: flex; align-items: center;
+  gap: 1px; background: transparent; opacity: 0; }
+/* ⚠️ 当前这个项目**常显**那三个按钮,不用悬停(用户 2026-09-25:「点击项目时,右侧出现三个按钮」)。
+   别的项目仍然是悬停才让位 —— 两行都挂着三个按钮的列表,看起来像每一条都在被选中。 */
+.conv.on .conv-acts, .conv.on .cf-acts { opacity: 1; }
 .conv:hover .conv-acts, .conv-acts:focus-within { opacity: 1; }
-.conv:hover .conv-state, .conv:hover .conv-time { visibility: hidden; }
+/* 名字的右端在按钮底下淡出。`--conv-fade-w` 是这条行上"按钮占掉的那一段",`mask` 的淡出区
+   比它再宽一点(按钮右缘离行右缘还有 4px),所以字一定在被盖住之前就没了。
+   ⚠️ 只在按钮看得见的时候淡(当前 / 悬停 / 键盘走进去),别的时候名字是完整的一整条。 */
+.conv.on .conv-main, .conv:hover .conv-main, .conv:focus-within .conv-main {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--conv-fade-w)), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - var(--conv-fade-w)), transparent 100%); }
+/* 第二行同理:那一对文件夹按钮压着的是「6 小时前」那个时间。⚠️ 只在**悬停/键盘走进去**时淡 ——
+   第二行这对按钮 `display:none`,只有悬停才出现,不像第一行那样常显,所以当前项目那行不需要淡。
+   45px = 那对按钮(2×24 + 1 间距 = 49px)+ `right: 4px` 再减去 `.conv-task` 自己的右内边距 8px ──
+   也就是**时间这个元素**被盖住的那一段。 */
+.conv:hover .ct-time, .conv:focus-within .ct-time {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 45px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 45px), transparent 100%); }
+/* 悬停时那个「删除」才变红:常显的三分之一是红的,一条列表看起来像出错了。 */
+.conv-acts .danger:hover { color: var(--danger); }
 
 /* There was a "Projects" heading here with four state tabs under it, and a search field of its own.
    The states are the filter button in the top row now, and the search is a floating box of its own
@@ -253,6 +356,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .search-pal-hint, .search-pal-empty { color: var(--text-3); font-size: 12px; padding: 6px 10px 8px; }
 .search-pal-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; }
 .search-pal-row .conv-name { flex: 1; min-width: 0; }
+/* 搜索面板里状态仍然是一个**词**(侧栏的行上已经只剩一个点):命中的行是被逐个比对的,
+   而列表里的行是被一眼认出来的 —— 两种读法,两种写法。 */
+.search-pal-row .conv-state { font-size: 10.5px; color: var(--text-3); flex: none; }
+.search-pal-row .conv-state.done { color: var(--ok); }
 .search-pal-row.sel { background: var(--hover); }
 .search-pal-row.sel .conv-name { font-weight: 600; }
 /* 正开着的那个项目,和侧栏里高亮它的方式一致 */
@@ -279,7 +386,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .home { flex: 1; overflow-y: auto; display: flex; justify-content: center; padding: 0 28px; }
 .home-inner { width: 100%; max-width: 760px; margin: auto; padding: 64px 0 80px; }
 .hero { text-align: center; margin-bottom: 28px; }
-.hero-logo { width: 46px; height: 46px; border-radius: 14px; background: var(--primary); color: var(--on-primary); display: inline-flex; align-items: center; justify-content: center; margin-bottom: 14px; flex: none; }
+/* The mark carries its own tile now (BrandMark): the wrapper is only where it sits, so the same
+   drawing can be 20 px in the sidebar and 46 px here without one of them being a different picture. */
+.hero-logo { display: inline-flex; margin-bottom: 14px; flex: none; }
 .hero h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.5px; }
 .hero p { margin: 0; color: var(--text-2); font-size: 15px; }
 .scene-tabs { display: flex; justify-content: center; gap: 4px; padding: 4px; background: var(--hover); border-radius: 12px; width: fit-content; margin: 0 auto 18px; }
@@ -304,6 +413,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .ng-mem:hover { border-color: var(--primary); color: var(--text); }
 .ng-mem.on { background: var(--primary-soft); border-color: var(--primary); color: var(--text); font-weight: 600; }
 .ng-ava { font-size: 13px; }
+/* A member that can join and be addressed but cannot hold the chair (a generator, an external
+   agent). Marked rather than hidden: it is a legitimate member of a group, and the whole point is
+   that the user can still choose it — what they cannot do is make it the one in charge. Dashed
+   instead of a second colour, so it reads as "a different kind of thing" rather than "disabled". */
+.ng-mem.solo { border-style: dashed; }
+.ng-solo { font-size: 10.5px; color: var(--text-3); border: 1px solid var(--border); border-radius: 8px; padding: 0 5px; }
+.ng-nohost { font-size: 12px; color: var(--danger); }
 .ng-hint { font-size: 12px; color: var(--text-3); }
 .ng-suggest { font-size: 12px; color: var(--primary); background: transparent; border: 1px dashed var(--border-strong); border-radius: 16px; padding: 3px 10px; }
 .ng-suggest:hover { border-color: var(--primary); background: var(--primary-soft); }
@@ -365,8 +481,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .chat-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .head-actions { display: flex; gap: 2px; }
 .msg-list { flex: 1; overflow-y: auto; min-height: 0; }
-.msg-inner { max-width: 820px; margin: 0 auto; padding: 22px 24px 8px; display: flex; flex-direction: column; gap: 18px; }
-.chat-composer { max-width: 820px; width: 100%; margin: 0 auto; padding: 8px 24px 12px; flex: none; }
+/* The conversation fills the middle column instead of sitting in a fixed 820px strip: the column
+   is as wide as the window allows, and a paragraph that has the room should use it rather than
+   wrap into a tall narrow tower. The padding is what keeps it off the window edges. */
+.msg-inner { max-width: 100%; margin: 0 auto; padding: 22px clamp(18px, 2.2vw, 44px) 8px; display: flex; flex-direction: column; gap: 18px; }
+.chat-composer { max-width: 100%; width: 100%; margin: 0 auto; padding: 8px clamp(18px, 2.2vw, 44px) 12px; flex: none; }
 .composer-hint { text-align: center; font-size: 11.5px; color: var(--text-3); margin-top: 8px; }
 .members { width: 250px; flex: none; border-left: 1px solid var(--border); background: var(--bg-sub); display: flex; flex-direction: column; min-height: 0; }
 .member { display: flex; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; }
@@ -375,13 +494,20 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 
 .msg { display: flex; gap: 12px; }
 .msg.mine { flex-direction: row-reverse; }
-.msg-body { max-width: min(680px, 86%); min-width: 0; }
+/* The message owns the whole column: the box that used to cap it at 680px made a long answer wrap
+   into a tower even with half the window empty beside it. */
+.msg-body { flex: 1 1 auto; max-width: 100%; min-width: 0; }
 .msg.mine .msg-body { display: flex; flex-direction: column; align-items: flex-end; }
 .msg-name { font-size: 12.5px; color: var(--text-2); margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
 .msg-role { font-size: 11px; color: var(--text-3); }
-.bubble { padding: 10px 14px; border-radius: 16px; line-height: 1.65; overflow-wrap: anywhere; }
-.msg.mine .bubble { background: var(--bubble-user); border-bottom-right-radius: 5px; }
-.msg.theirs .bubble { background: var(--card); border: 1px solid var(--border); border-top-left-radius: 5px; }
+/* No bubble: a reply reads as text under the speaker's name, the way a document does. The speaker
+   is already identified by the avatar and the name above it, so the frame added nothing but a
+   narrower measure — and on a wide window that is exactly what forces one sentence onto four
+   lines. Alignment is what still separates mine from theirs. */
+.bubble { padding: 0; border-radius: 0; line-height: 1.7; overflow-wrap: anywhere; }
+.msg.mine .bubble { background: none; }
+.msg.theirs .bubble { background: none; border: 0; }
+.msg.hl .bubble { border-radius: 10px; }
 .msg-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .sys-msg { align-self: center; font-size: 12px; color: var(--text-3); background: var(--hover); padding: 3px 12px; border-radius: 12px; }
 .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
@@ -513,7 +639,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 /* 依赖 / 关于 */
 .dep-ver { font-size: 13px; color: var(--text-2); display: inline-flex; align-items: center; }
 .about-hero { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
-.about-hero .hero-logo { margin: 0; width: 54px; height: 54px; border-radius: 16px; }
+.about-hero .hero-logo { margin: 0; }
 
 /* 使用统计 */
 .seg { display: inline-flex; padding: 3px; border-radius: 9px; background: var(--hover); gap: 2px; }
@@ -570,3 +696,34 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .ia-pick { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .ia-pick input { margin: 0; }
 .ia .card { margin-bottom: 6px; }
+
+/* ---- 侧栏里每个项目下面的文件夹与任务 ---- */
+/* 文件夹 = 这个项目的工作目录(和群聊工作空间同一个路径),下面一行是它最新/最主要的任务。 */
+/* Line 2 — the same line for every project, task board or not ("No task board yet" instead of
+   nothing, because a row that grows a line when it has something to say is a list with two rhythms).
+   The folder's three actions live here on hover: they act on the directory this line is about. */
+/* ⚠️ 左边距就是 `--conv-indent` 本身,**没有 `- 11px`**。那个减号当年是给状态点留的位置:
+   点是悬挂在文字列外面的(6px + 5px 间距),标题靠它顶到项目名那一列。2026-09-25 点换成状态词、
+   词又挪到了右边那组元信息里,第一个文字元素重新变成标题 —— 不减这 11px,标题就会比项目名少缩进
+   一格(冒烟当场量到 42 vs 31)。 */
+.conv-task { position: relative; display: flex; align-items: center; gap: 5px; padding: 0 8px 6px var(--conv-indent); font-size: 12px; color: var(--text-3); }
+.conv-task .ct-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; text-align: left; }
+/* ⚠️ 状态**是一个带底色的徽标**,不是一小串浅灰字。第一版是 10.5px 的浅色文字,让视觉模型读实拍图
+   时它给的一句话结论是「名字短、归档改名删除可辨;**哪个在跑看不出**」—— 而「显示运行状态」正是
+   用户要的。底色 = 当前文字色的 12%,所以颜色和文字一起说同一件事,不用把字号做大也能一眼扫到。 */
+.conv-task .ct-state { flex: none; padding: 0 5px; border-radius: 4px; font-size: 10.5px; font-weight: 600;
+  color: var(--text-3); background: color-mix(in srgb, currentColor 12%, transparent); }
+.conv-task.running .ct-state { color: var(--primary); }
+.conv-task.failed .ct-state, .conv-task.stopped .ct-state, .conv-task.skipped .ct-state { color: var(--danger); }
+.conv-task.done .ct-state { color: var(--ok); }
+/* codex 读实拍图的第二条:第二行里「描述 / 进度 / 时间」三者同样浅灰同样大,长描述那行显得碎且挤。
+   于是**描述提一档、数字退一档** —— 一行里只有一个主角。 */
+.conv-task .ct-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.conv-task .ct-owner { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; font-size: 10.5px; }
+.conv-task .ct-time { flex: none; font-size: 10.5px; opacity: 0.85; }
+/* ⚠️ 同第一行:补丁**不带底色**(那一块会叠在行底色上变成一个更深的方块,用户点名要去掉),
+   所以它压着的「6 小时前」靠 `.ct-time` 的 mask 淡出,而不是靠被盖住。 */
+.conv-task .cf-acts { position: absolute; right: 4px; top: 0; bottom: 0; display: none; align-items: center; gap: 1px; background: transparent; }
+.conv:hover .conv-task .cf-acts, .conv-task .cf-acts:focus-within { display: inline-flex; }
+/* Whatever the patch covers goes quiet rather than sitting under it. */
+.conv:hover .conv-task .ct-time { visibility: hidden; }

@@ -107,13 +107,20 @@ def build_hooks_router(store: Store, manager: hooks_lib.HookManager) -> APIRoute
         if info is None:
             raise HTTPException(404, i18n.pick_now("That hook does not exist", "钩子不存在"))
         wanted = (body.event if body else "") or (info.events[0] if info.events else "")
-        if wanted not in hooks_lib.EVENTS:
+        if wanted not in hooks_lib.EVENTS or wanted not in info.events:
             raise HTTPException(422, i18n.pick_now(
                 f"This hook is not registered for {wanted}", f"这个钩子没有登记 {wanted} 事件"))
-        group = store.get_group((body.group_id if body else "") or "")
+        requested = (body.group_id if body else "") or ""
+        group = store.get_group(requested) if requested else None
+        if requested and not group:
+            raise HTTPException(404, i18n.pick_now("Group not found", "群聊不存在"))
+        if group and info.groups and group["id"] not in info.groups:
+            raise HTTPException(422, i18n.pick_now("This group is outside the hook's scope", "这个群不在钩子的作用范围内"))
         if not group:
-            existing = store.list_groups()
-            group = existing[0] if existing else {}
+            existing = [g for g in store.list_groups() if not info.groups or g["id"] in info.groups]
+            if not existing:
+                raise HTTPException(422, i18n.pick_now("No group in this hook's scope", "钩子作用范围内没有可用群聊"))
+            group = existing[0]
         return await manager.test(hid, wanted, sample_payload(wanted, group))
 
     return r

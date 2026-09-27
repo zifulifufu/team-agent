@@ -33,10 +33,15 @@ from . import i18n, library
 # module (this one imports the library, which imports the store, which imports `media`, which
 # imports `coderun`). Re-exported so the many callers that already say
 # `attachments.tool("ffmpeg")` keep working, and so there is still exactly one list.
-from .bindirs import TOOL_DIRS, search_path, tool
+from .bindirs import TOOL_DIRS as TOOL_DIRS, search_path, tool
 
 IMAGE, VIDEO, AUDIO, DOCUMENT, OTHER = "image", "video", "audio", "document", "other"
 VISUAL = (IMAGE, VIDEO)
+
+# The longest side a picture may keep on its way to a model. Not this app's own preference: it is
+# what the vision endpoints themselves accept before they downscale it anyway, so pixels beyond it
+# are uploaded, paid for and thrown away. See `shrink_image`.
+LONGEST_SIDE = 1568
 
 # Magic bytes -> (mime, extension, kind). Only families that can be told apart by content: a zip
 # is deliberately absent, and handled by extension below, because every OOXML file starts `PK`.
@@ -505,15 +510,34 @@ def frames(path: Path, out_dir: Path, count: int) -> list[Path]:
     return sorted(out_dir.glob("f*.jpg"))[:count]
 
 
-def shrink_image(data: bytes, mime: str, limit_bytes: int) -> tuple[str, bytes]:
-    """Downscale an oversized picture instead of refusing it.
+def longest_side(data: bytes) -> int:
+    """The picture's longer dimension, or 0 when that cannot be told (not an image, no Pillow)."""
+    try:
+        import io as _io
 
-    A phone photo is several MB and mostly pixels nobody needs; sending it whole buys nothing and
-    costs the context window. Falls back to the original bytes when Pillow is unavailable or the
-    data is not really an image.
+        from PIL import Image
+    except ImportError:
+        return 0
+    try:
+        with Image.open(_io.BytesIO(data)) as im:
+            return max(im.size)
+    except Exception:                                              # noqa: BLE001
+        return 0
+
+
+def shrink_image(data: bytes, mime: str, limit_bytes: int,
+                 longest_ok: int = LONGEST_SIDE) -> tuple[str, bytes]:
+    """Downscale a picture that is too big *in either sense*, instead of refusing it.
+
+    Two ways a picture is too big, and only one of them used to be checked. Bytes matter for the
+    upload; **pixels** matter for the wait, because the model looks at the picture and every
+    provider cuts it to its own ceiling first. A 646 KB, 1080×1920 PNG is comfortably under the
+    byte limit and was therefore sent whole — re-encoded to the same 1568 px the provider was going
+    to use anyway it is 145 KB, and the look came back 20% sooner on the same model.
+
+    Falls back to the original bytes when Pillow is unavailable or the data is not really an image,
+    so a caller never gets a *worse* answer than not shrinking at all.
     """
-    if len(data) <= limit_bytes:
-        return mime, data
     try:
         import io as _io
 
@@ -522,10 +546,16 @@ def shrink_image(data: bytes, mime: str, limit_bytes: int) -> tuple[str, bytes]:
         return mime, data
     try:
         with Image.open(_io.BytesIO(data)) as im:
+            # Some image endpoints return JPEG bytes under a .png filename.
+            # The vision endpoint checks the bytes, not the suffix. Keep small
+            # images unchanged, but always send their actual media type.
+            mime = Image.MIME.get(im.format, mime)
+            if len(data) <= limit_bytes and max(im.size) <= longest_ok:
+                return mime, data
             im = im.convert("RGB") if im.mode in ("RGBA", "P", "LA") else im
             longest = max(im.size)
-            if longest > 1568:
-                scale = 1568 / longest
+            if longest > longest_ok:
+                scale = longest_ok / longest
                 im = im.resize((max(1, int(im.width * scale)), max(1, int(im.height * scale))))
             for quality in (85, 70, 55, 40):
                 buf = _io.BytesIO()
@@ -541,10 +571,91 @@ def file_key(workspace: Path, path: Path) -> str:
     """A cache key that changes when the file does: path + size + modification time."""
     try:
         stat = path.stat()
-        raw = f"{path.relative_to(workspace)}:{int(stat.st_mtime)}:{stat.st_size}"
+        raw = f"{path.relative_to(workspace)}:{stat.st_mtime_ns}:{stat.st_size}"
     except (OSError, ValueError):
         raw = str(path)
-    return hashlib.sha1(raw.encode()).hexdigest()[:16]      # noqa: S324 — a cache key, not a signature
+    return hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest()[:16]      # noqa: S324 — a cache key, not a signature
+
+
+def _digest(*parts: object) -> str:
+    raw = "|".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest()[:10]      # noqa: S324 — a cache key, not a signature
+
+
+def _asked(question: str) -> str:
+    """The question as it will be compared: trimmed, case-folded, whitespace collapsed.
+
+    Two members asking the same thing type it slightly differently — a stray space, a capital — and
+    paying a second model call for that difference is paying for nothing.
+    """
+    return " ".join(str(question or "").split()).lower()
+
+
+def look_key(workspace: Path, path: Path, *, at_seconds: float | None = None,
+             question: str = "") -> str:
+    """The key for "we have already looked at this file, at this moment, for this question".
+
+    Three parts, and each one is there because dropping it would hand back something untrue:
+
+      * the file's identity — `file_key`, so path + mtime + size. A picture that was re-rendered
+        after a member fixed it is a **new** key and gets a real look, not the previous verdict;
+      * `at_seconds` for a video: what was looked at is a frame of it, not the file;
+      * the question, folded. The same question about the same bytes has the same answer, and a
+        different question is a different look — which is exactly how the members work: one asks
+        "is the tube round", the next asks "is the caption legible".
+    """
+    frame = None if at_seconds is None else round(float(at_seconds), 2)
+    return f"{file_key(workspace, path)}-{_digest(frame, _asked(question))}"
+
+
+def cached_look(workspace: Path, key: str) -> dict | None:
+    """The remembered look, or `None`. A damaged entry is a miss, never an exception.
+
+    Anything in a workspace can be written to by a member's own code, so this file is not trusted:
+    the only promise is that a *valid* entry is one this module wrote.
+    """
+    raw = cached(workspace, key, "look")
+    if not raw:
+        return None
+    try:
+        got = json.loads(raw)
+    except ValueError:
+        return None
+    return got if isinstance(got, dict) and isinstance(got.get("text"), str) and got["text"] else None
+
+
+def remember_look(workspace: Path, key: str, entry: dict) -> None:
+    """Write the look down. First writer wins (`remember` creates exclusively), which is what makes
+    two members looking at the same picture at the same moment cost one call rather than two."""
+    remember(workspace, key, "look", json.dumps(entry, ensure_ascii=False))
+
+
+def speech_key(workspace: Path, path: Path, *, start: float | None = None,
+               seconds: float | None = None) -> str:
+    """The key for "we have already heard this file" — and, for a window, for exactly that window."""
+    window = None if start is None and seconds is None else \
+        f"{round(float(start or 0), 2)}+{'' if seconds is None else round(float(seconds), 2)}"
+    return f"{file_key(workspace, path)}-{_digest(window)}"
+
+
+def cached_speech(workspace: Path, key: str) -> str | None:
+    return cached(workspace, key, "speech")
+
+
+def speech_age(workspace: Path, key: str) -> float:
+    """When the remembered transcript was written, as a timestamp; `0.0` when it cannot be told.
+
+    A transcript is quoted to a reader with its age, so the age has to come from somewhere that
+    cannot be forged by the thing being described: the cache file's own mtime, not a field inside it.
+    """
+    try:
+        return (cache_dir(workspace) / f"{key}.speech").stat().st_mtime
+    except (OSError, ValueError):
+        return 0.0
+
+
+def remember_speech(workspace: Path, key: str, text: str) -> None:
+    remember(workspace, key, "speech", text)
 
 
 def cache_dir(workspace: Path) -> Path:

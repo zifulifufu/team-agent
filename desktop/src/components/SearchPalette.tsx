@@ -10,10 +10,14 @@ import { useI18n } from "../i18n";
  *  you typed. A floating panel keeps the search, the query and the hits in one place, over the app
  *  rather than inside it, and it can be pushed aside to look at what is behind.
  *
- *  Two deliberate details: the results are the *same* rows the sidebar shows (same state words, same
- *  relative time), so a hit is recognisable without opening it; and a query searches every project,
- *  archived ones included — the same promise the sidebar's search made, since filing a project away
- *  must not make it unfindable. With no query it lists what the sidebar is currently showing. */
+ *  Two deliberate details: the results are the *same* rows the sidebar shows (same name, same relative
+ *  time), so a hit is recognisable without opening it; and a query searches every project, archived
+ *  ones included — the same promise the sidebar's search made, since filing a project away must not
+ *  make it unfindable. With no query it lists what the sidebar is currently showing.
+ *
+ *  The state stays a *word* here while the sidebar's rows now carry only a dot: a hit is being read
+ *  and compared against its neighbours, which is what a word is for, whereas a row in the list is
+ *  being recognised at a glance. */
 export default function SearchPalette({ groups, visible, activeGid, onOpen, onClose }: {
   /** Every project: what a query searches. */
   groups: Group[];

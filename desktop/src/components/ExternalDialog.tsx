@@ -43,6 +43,12 @@ export default function ExternalDialog(props: Props) {
 
   const eng = ov?.engines.find((e) => e.id === engine) ?? ov?.engines[0];
   const isHttp = eng?.kind === "http";
+  // A local tool (`cmd`) is a *program*, not a conversation partner: `external.clean_cfg` ignores
+  // its permission level, its working directory, its model address and its key, and it runs the
+  // tool's own command inside the group's workspace. So the dialog must not ask for them — the
+  // one field it does need is where that program is, for the tools installed into a clone's
+  // virtualenv rather than onto PATH (`localcmd.exe_for`).
+  const isCmd = eng?.kind === "cmd";
   // Non-null = this engine talks through a model provider (MetaChat): the address, the key and the
   // model list are that provider's, so the dialog asks for none of them — only the model, picked
   // from what the provider offers.
@@ -209,9 +215,9 @@ export default function ExternalDialog(props: Props) {
           )}
           <span className="ext-status-btns">
             <button className="btn small" disabled={blocked || !!testing} onClick={() => void test(false)}>{testing === "quick" ? <Loader2 size={12} className="spin" /> : null} {t("Check")}</button>
-            <button className="btn small" disabled={blocked || !!testing || !ov?.external_calls_enabled} onClick={() => void test(true)} title={t("Actually send one sentence — this calls the cloud model and uses a very small amount of quota")}>
+            {!isCmd && <button className="btn small" disabled={blocked || !!testing || !ov?.external_calls_enabled} onClick={() => void test(true)} title={t("Actually send one sentence — this calls the cloud model and uses a very small amount of quota")}>
               {testing === "live" ? <Loader2 size={12} className="spin" /> : null} {t("Test the connection")}
-            </button>
+            </button>}
           </span>
         </div>
         {probe?.live && (
@@ -262,6 +268,36 @@ export default function ExternalDialog(props: Props) {
                   </>
                 ) : (
                   <>
+                    {/* Which service, as one choice. A command-line engine has no sign-in of its
+                        own, so it needs an address, a key and **the model name the service itself
+                        spells** — and the one mistake this list removes is a display name in the
+                        model field: WorkBuddy shows this user's DeepSeek as "DeepSeek-V4 Flash",
+                        while the API only answers to `deepseek-flash`. Picking a service fills the
+                        address and the model; the key is the only thing left to paste. */}
+                    {(ov?.model_presets?.length ?? 0) > 0 && (
+                      <label className="field">
+                        <span>{t("Fill in the address and model for me (measured working on {d})", { d: ov?.presets_verified ?? "" })}</span>
+                        <select value={ov?.model_presets.find((p) => p.base_url === cfg.base_url)?.id ?? ""}
+                                onChange={(e) => {
+                                  const p = ov?.model_presets.find((x) => x.id === e.target.value);
+                                  if (p) set({ base_url: p.base_url, model: p.measured[0] ?? p.models[0] ?? "" });
+                                }}>
+                          <option value="">{t("I will type the address and the model myself")}</option>
+                          {(ov?.model_presets ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                        {(() => {
+                          const p = ov?.model_presets.find((x) => x.base_url === cfg.base_url);
+                          if (!p) return null;
+                          return (
+                            <span className="muted small">
+                              {t("Answered a real call from here: {m}. The service also serves: {all}.",
+                                 { m: p.measured.join(", "), all: p.models.join(", ") })}
+                              {" · "}{t("Where to get a key:")} {p.where}
+                            </span>
+                          );
+                        })()}
+                      </label>
+                    )}
                     <label className="field">
                       <span>{t("API address (empty = the default for this engine)")}</span>
                       <input value={cfg.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder={eng?.base_url ?? ""} spellCheck={false} />
@@ -279,7 +315,12 @@ export default function ExternalDialog(props: Props) {
                     </label>
                     <label className="field">
                       <span>{t("Model to call (required: a gateway has to be told which model to run)")}</span>
-                      <input value={cfg.model} onChange={(e) => set({ model: e.target.value })} placeholder="gpt-5 / claude-sonnet-4-6 / …" spellCheck={false} />
+                      <input value={cfg.model} onChange={(e) => set({ model: e.target.value })} placeholder="gpt-5 / claude-sonnet-4-6 / …" spellCheck={false} list="ext-preset-models" />
+                      {/* The names as the services themselves spell them — an API id, which is not
+                          the display name any desktop app shows it under. */}
+                      <datalist id="ext-preset-models">
+                        {[...new Set((ov?.model_presets ?? []).flatMap((p) => p.models))].map((m) => <option key={m} value={m} />)}
+                      </datalist>
                     </label>
                   </>
                 )}
@@ -296,9 +337,12 @@ export default function ExternalDialog(props: Props) {
                 <p className="muted small">{bound
                   ? t("This engine only exchanges messages: there is no working directory and no permission level to set, and nothing about the provider is duplicated here.")
                   : t("This engine only exchanges messages: there is no working directory and no permission level to set.")}</p>
+                {isCmd && <p className="muted small">{t("This member is a program on this machine: it takes the sentence it was given, runs its own command inside this group's workspace, and hands back the files it produced. There is no permission level, no working directory and no model to set — what it runs is fixed by the tool itself, and the only thing it may need from you is the path above.")}</p>}
               </>
             ) : (
               <>
+                {!isCmd && (
+                  <>
                 <div className="field">
                   <span>{t("Permission level")}</span>
                   <div className="ext-levels" role="radiogroup" aria-label={t("Permission level")}>
@@ -326,6 +370,10 @@ export default function ExternalDialog(props: Props) {
                   )}
                 </div>
 
+                  </>
+                )}
+                {!isCmd && (
+                  <>
                 <label className="check ext-native">
                   <input type="checkbox" checked={cfg.native} onChange={(e) => set({ native: e.target.checked })} />
                   {t("Use the application's own configuration (load its MCP connectors, no turn limit, and keep one continuing session so it remembers its earlier turns) — off by default, because this is what makes its answers match running it by hand, and it is also what gives it the reach it has there")}
@@ -340,11 +388,15 @@ export default function ExternalDialog(props: Props) {
                   {cfg.level !== "read" && !cfg.cwd.trim() && <span className="muted small">{t("It is set to {level} right now: it can only touch things inside its own empty folder. To let it work on your project, pick a specific project folder (not the root, and not your whole home directory).", { level: cfg.level === "edit" ? t("Edit files") : t("Full") })}</span>}
                 </label>
 
+                  </>
+                )}
                 <label className="check">
                   <input type="checkbox" checked={cfg.handoff} onChange={(e) => set({ handoff: e.target.checked })} />
                   {t("When its reply @mentions another member, that member speaks next")}
                 </label>
 
+                {!isCmd && (
+                  <>
                 <label className="field">
                   <span>{t("Model address (optional — an OpenAI-compatible endpoint this member should run on)")}</span>
                   <input value={cfg.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://api.deepseek.com/v1" spellCheck={false} />
@@ -374,13 +426,23 @@ export default function ExternalDialog(props: Props) {
                   <span className="muted small">{t("The model name is passed to the service as written, so use the name that service documents.")}</span>
                 </label>
 
-                <details className="ext-adv">
+                  </>
+                )}
+                <details className="ext-adv" open={isCmd}>
                   <summary>{t("Advanced")}</summary>
                   <div className="form-row">
                     <label className="field" style={{ width: 130 }}><span>{t("Timeout per turn (seconds)")}</span><input type="number" min={30} max={3600} value={cfg.timeout} onChange={(e) => set({ timeout: Number(e.target.value) || 600 })} /></label>
-                    <label className="field" style={{ width: 130 }}><span>{t("Max turns per reply")}</span><input type="number" min={1} max={100} value={cfg.max_turns} disabled={cfg.native} onChange={(e) => set({ max_turns: Number(e.target.value) || 20 })} /></label>
+                    {!isCmd && (
+                      <label className="field" style={{ width: 130 }}><span>{t("Max turns per reply")}</span><input type="number" min={1} max={100} value={cfg.max_turns} disabled={cfg.native} onChange={(e) => set({ max_turns: Number(e.target.value) || 20 })} /></label>
+                    )}
                   </div>
-                  <label className="field"><span>{t("Command-line path (empty = find the one bundled with WorkBuddy automatically; the file name must start with codebuddy)")}</span><input value={cfg.cli_path} onChange={(e) => set({ cli_path: e.target.value })} /></label>
+                  {/* The one setting a local tool needs. Its install command is often "clone this and
+                      run `uv sync`", which puts the console script inside *that clone's* virtualenv —
+                      a place this app cannot guess, so the field has to be here and the label has to
+                      say what the path looks like. */}
+                  <label className="field"><span>{isCmd
+                    ? t("Path to the program (empty = look for it by name; for a tool installed with uv sync it lives inside the clone, e.g. <clone>/.venv/bin/omnivoice-infer)")
+                    : t("Command-line path (empty = find the one bundled with WorkBuddy automatically; the file name must start with codebuddy)")}</span><input value={cfg.cli_path} onChange={(e) => set({ cli_path: e.target.value })} spellCheck={false} placeholder={isCmd && eng?.path ? eng.path : ""} /></label>
                 </details>
               </>
             )}

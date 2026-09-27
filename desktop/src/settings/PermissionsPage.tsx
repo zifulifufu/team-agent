@@ -268,6 +268,7 @@ export default function PermissionsPage({ onTab }: PageProps) {
             </Row>
             <Row title={t("Render timeout")} desc={t("How long one generation may take before giving up. Rendering takes minutes, which is why this is separate from the tool-call timeout.")}>
               <NumInput v={settings.video_timeout} min={30} max={7200} unit={t("sec")} label={t("Render timeout")} onCommit={(n) => set({ video_timeout: n })} />
+              <NumInput v={settings.music_timeout} min={60} max={7200} unit={t("sec")} label={t("Music timeout")} onCommit={(n) => set({ music_timeout: n })} />
             </Row>
             <Row title={t("Assembly timeout")} desc={t("How long joining the shots into one film may take, in seconds. Assembling is local and free — ffmpeg joins the clips, this machine's speech records the narration, and the subtitles are drawn here — but a three-minute 1080x1920 film is thousands of frames, so this is measured in minutes like a render.")}>
               <NumInput v={settings.assemble_timeout} min={60} max={7200} unit={t("sec")} label={t("Assembly timeout")} onCommit={(n) => set({ assemble_timeout: n })} />
@@ -354,7 +355,7 @@ export default function PermissionsPage({ onTab }: PageProps) {
         <Row title={t("Max split tasks")} desc={t("How many tasks the host may split one job into at most.")}>
           <NumInput v={settings.plan_max_tasks} min={2} max={12} unit={t("tasks")} label={t("Max split tasks")} onCommit={(n) => set({ plan_max_tasks: n })} />
         </Row>
-        <Row title={t("Max speaking turns per message")} desc={t("The relay limit when members @ each other, to prevent infinite loops.")}>
+        <Row title={t("Max speaking turns per message")} desc={t("The relay limit when members @ each other, to prevent infinite loops. It is floored at one turn per member: a limit smaller than the group cannot fit a round, and the members at the end of the list would never be heard from. Stop a round by hand instead.")}>
           <NumInput v={settings.max_hops} min={1} max={30} unit={t("turns")} label={t("Max speaking turns per message")} onCommit={(n) => set({ max_hops: n })} />
         </Row>
         <Row title={t("Max tool rounds per reply")} desc={t("Members may call tools before answering. 0 means members cannot use any tool at all.")}>

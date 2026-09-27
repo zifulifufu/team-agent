@@ -103,7 +103,7 @@ def render_note(mem: dict, scope_name: str, other: list[str] | None = None) -> s
 
 
 def state_hash(scope: str, scope_id: str, kind: str, pinned: bool, content: str) -> str:
-    return hashlib.sha1(json.dumps([scope, scope_id, kind, bool(pinned), content.strip()], ensure_ascii=False).encode()).hexdigest()
+    return hashlib.sha1(json.dumps([scope, scope_id, kind, bool(pinned), content.strip()], ensure_ascii=False).encode(), usedforsecurity=False).hexdigest()
 
 
 def _mem_hash(m: dict) -> str:

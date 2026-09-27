@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -157,11 +158,10 @@ def normalize_ext(ext: Any) -> dict:
         for key in ("kb_ids", "collection_ids"):
             if isinstance(lib.get(key), list):
                 out["library"][key] = [str(x) for x in dict.fromkeys(lib[key])]
-        # Whether this group's workspace also feeds its own knowledge base. Absent = the default,
-        # which `Library.sync_group_material` decides from where the workspace is (a directory the
-        # user picked is not watched unless they say so; the app-managed one is).
-        if isinstance(lib.get("watch_workspace"), bool):
-            out["library"]["watch_workspace"] = lib["watch_workspace"]
+        # `watch_workspace` used to be normalized here — the switch that decided how much of a
+        # group's workspace was copied into its knowledge base. Nothing is copied any more, so the
+        # field is dropped rather than carried: a stored switch that controls nothing is worse than
+        # no switch, because it reads like it still does something.
     if ext.get("plan") in ("inherit", "auto", "on", "off"):
         out["plan"] = ext["plan"]
     if isinstance(ext.get("memory"), bool):
@@ -293,6 +293,23 @@ class Store(ExtStore):
             # library that mixed them would answer with confident nonsense and no way to notice.
             ("library_chunks", "vec", "BLOB"),
             ("library_docs", "embed_model", "TEXT NOT NULL DEFAULT ''"),
+            # Where each piece of material came from, and what its knowledge base is for. Both exist
+            # so a library can be *read*: sixty-four bases for ten projects was the shape of a list
+            # nobody could find anything in. `origin` is a fact about the row and is derived from it
+            # (`library.origin_of`); `source` is the one-word summary of a base's origins, and
+            # `purpose` is the heading its user files it under.
+            ("library_docs", "origin", "TEXT NOT NULL DEFAULT ''"),
+            # What the material is *for* (`library.CATEGORIES`), derived from its own words by
+            # `library.category_of`. Fetched skill material is what this is for: a hundred-odd skills
+            # off one platform are one grey pile until they are read as 运镜 / 分镜 / 微表情 / 广告 …
+            # Empty on everything else, which is the honest answer for a document whose own words do
+            # not name a function.
+            ("library_docs", "category", "TEXT NOT NULL DEFAULT ''"),
+            ("knowledge_bases", "source", "TEXT NOT NULL DEFAULT ''"),
+            ("knowledge_bases", "purpose", "TEXT NOT NULL DEFAULT ''"),
+            # A template saved from a group keeps the group's *name* beside its id: the group may be
+            # renamed or deleted afterwards, and the gallery shows where each template came from.
+            ("group_templates", "from_group_name", "TEXT NOT NULL DEFAULT ''"),
         ]
         for table, col, decl in adds:
             cols = {r["name"] for r in self._q(f"PRAGMA table_info({table})")}
@@ -311,6 +328,68 @@ class Store(ExtStore):
             self._x(sql)
 
         self._docs_to_knowledge_bases()
+        self._label_library_material()
+
+    def _label_library_material(self) -> None:
+        """Fill in where every document came from, and give a project's own base its heading.
+
+        Two things this deliberately does **not** do.
+
+        It does not compute a knowledge base's `source`: that word summarises what is in the base, so
+        a value written once would go stale the moment a document was added — and a stale label is
+        worse than none, because it is the thing a user would trust. It is derived on read instead
+        (`shelf_of(origins)` in the knowledge-base list), and the column only ever holds a value the
+        user typed to overrule that.
+
+        It does not overwrite anything that is already there. `purpose` is a decision, so only an
+        empty one is filled, and only for a base that belongs to a project — the rest stay unfiled,
+        because a heading nobody chose is a heading that will be wrong.
+
+        The document half is a fact and is safe to derive at any time; it is written once so that the
+        rules live in one place (`library.origin_of`) rather than being applied on every request.
+        """
+        from . import library as _lib  # deferred: `library` imports this module
+
+        blanks = self._q("SELECT id, filename, kind FROM library_docs WHERE origin=''")
+        for row in blanks:
+            self._x("UPDATE library_docs SET origin=? WHERE id=?",
+                    (_lib.origin_of(row["filename"] or "", row["kind"] or "",
+                                    data_dir=self.data_dir), row["id"]))
+        if blanks:
+            print(f"labelled {len(blanks)} documents with where they came from")
+
+        self._classify_library_material()
+
+    def _classify_library_material(self) -> None:
+        """Give the fetched skill material a category, once.
+
+        Only `capture` rows: material this app fetched for itself is the material whose own words say
+        what it is for (`library.CATEGORIES`), and it is readable as a short list of twelve instead
+        of one pile. Everything else is left empty on purpose — a classifier run over a folder the
+        user imported would confidently file a trial protocol under "design" because its title says
+        试验设计, and a wrong label is less useful than no label.
+
+        Reads each row's title, the platform's own tag line, and the beginning of its body — the
+        same three sources the ingest uses (`library.category_of`), so a document classified here and
+        one classified at fetch time cannot disagree. Written once, like `origin`, so the rules live
+        in one place rather than being applied on every request.
+        """
+        from . import library as _lib  # deferred: `library` imports this module
+
+        rows = self._q("SELECT id, title FROM library_docs WHERE category='' AND origin='capture'")
+        if not rows:
+            return
+        for row in rows:
+            first = self._one("SELECT text FROM library_chunks WHERE doc_id=? AND idx=0", (row["id"],))
+            body = (first["text"] if first else "") or ""
+            got = _lib.category_of(row["title"] or "", body, _lib.tags_in(body))
+            if got:
+                self._x("UPDATE library_docs SET category=? WHERE id=?", (got, row["id"]))
+        done = self._one("SELECT COUNT(*) AS n FROM library_docs WHERE category!=''")
+        print(f"classified {(done or {}).get('n', 0)} fetched documents by what they are for")
+        for kb in self._q("SELECT id, group_id, purpose FROM knowledge_bases"):
+            if not (kb["purpose"] or "") and kb["group_id"]:
+                self._x("UPDATE knowledge_bases SET purpose='project' WHERE id=?", (kb["id"],))
 
     def _docs_to_knowledge_bases(self) -> None:
         """Move the pre-knowledge-base library into knowledge bases.
@@ -428,6 +507,9 @@ something the user deleted is not seeded again."""
             ids = [self.create_agent(**{k: v for k, v in a.items() if not k.endswith("_zh")})["id"]
                    for a in SEED_AGENTS]
             lang = i18n.current()
+            # ⚠️ 英文那个演示名(20 个字符)比项目名上限长,所以**启动时会被 `names.shorten_stored`
+            # 改成「Product」**(中文那个 6 个字,不受影响)。这里刻意不改种子文案去躲这条规则:
+            # 一条对所有名字都生效的上限,不该有一类名字例外。
             g = self.create_group(
                 i18n.pick(lang, "Product launch group", "产品发布小组"),
                 host_agent_id=ids[0], member_ids=ids,
@@ -513,10 +595,20 @@ something the user deleted is not seeded again."""
         return self.get_settings()
 
     # ------------------------------------------------------- sensitive values (API keys etc.)
+    def _secret_ref(self, scope: str, ident: str) -> str:
+        ref = secrets_store.ref_name(scope, ident)
+        root = self.data_dir.resolve()
+        # Preserve references used by the normal installation. Independent data directories
+        # must never overwrite or clear credentials belonging to that installation.
+        if root == (Path.home() / ".team-agent").resolve():
+            return ref
+        profile = hashlib.sha256(str(root).encode()).hexdigest()[:20]
+        return f"profile:{profile}:{ref}"
+
     def _secret_on(self, scope: str, ident: str, value: str) -> str:
         """Write: store only a reference when the system keychain is available; store it as-is
 otherwise (fall back to plaintext, never lose the key)."""
-        ref = secrets_store.ref_name(scope, ident)
+        ref = self._secret_ref(scope, ident)
         if not value:
             secrets_store.delete(ref)          # clearing also removes the keychain entry while we are at it
             return value
@@ -547,7 +639,7 @@ otherwise (fall back to plaintext, never lose the key)."""
                 continue
             if not secrets_store.is_sensitive_name(key):
                 continue
-            ref = f"{scope}:{key}"
+            ref = self._secret_ref(scope, key)
             if secrets_store.put(ref, value):
                 out[key] = secrets_store.make_ref(ref)
         return out
@@ -607,7 +699,7 @@ plaintext (non-macOS / keychain unavailable)."""
         for r in self._q("SELECT id, api_key FROM providers WHERE api_key<>''"):
             if secrets_store.is_ref(r["api_key"]):
                 continue
-            ref = secrets_store.ref_name("provider", r["id"])
+            ref = self._secret_ref("provider", r["id"])
             if secrets_store.put(ref, r["api_key"]):
                 secrets_store.forget_cache(ref)
                 if secrets_store.get(ref) == r["api_key"]:      # only rewrite when the value can really be read back
@@ -617,7 +709,7 @@ plaintext (non-macOS / keychain unavailable)."""
         if row:
             val = json.loads(row["value"])
             if isinstance(val, str) and val and not secrets_store.is_ref(val):
-                ref = secrets_store.ref_name("github-token", "default")
+                ref = self._secret_ref("github-token", "default")
                 if secrets_store.put(ref, val):
                     secrets_store.forget_cache(ref)
                     if secrets_store.get(ref) == val:
@@ -650,7 +742,7 @@ plaintext (non-macOS / keychain unavailable)."""
                         continue
                     if not secrets_store.is_sensitive_name(key):
                         continue
-                    ref = f"mcp:{row['id']}:{key}"
+                    ref = self._secret_ref(f"mcp:{row['id']}", key)
                     if not secrets_store.put(ref, value):
                         continue
                     secrets_store.forget_cache(ref)
@@ -952,7 +1044,8 @@ already exists, otherwise create it (name and strengths are both taken from the 
         for a in self.list_agents():
             if a.get("origin") == origin and a["model_id"] == model_id:
                 return a
-        base = re.sub(r"[\s@]+", "-", (m["display_name"] or m["model_name"]).strip()).strip("-") \
+        display = ("ComfyUI" if m["model_name"] == "wan2.2-ti2v-5b" else f"ComfyUI-{m['model_name']}") if m.get("kind") == "comfyui" else (m["display_name"] or m["model_name"])
+        base = re.sub(r"[\s@]+", "-", display.strip()).strip("-") \
             or i18n.pick_now("Model", "模型")
         taken = {a["name"] for a in self.list_agents()}
         name = base
@@ -1062,26 +1155,24 @@ already exists, otherwise create it (name and strengths are both taken from the 
         )
         for i, aid in enumerate(member_ids or []):
             self.add_member(gid, aid, i)
-        # Every group gets its own knowledge base the moment it exists, rather than the first time
-        # somebody adds a document to it. "This group's own material" then has somewhere to be from
-        # the start (see `Library.sync_group_material`, which fills it with what the group itself
-        # accumulates), and the knowledge-base list shows it as this group's own rather than the
-        # relationship being invisible until it is used.
-        self.add_kb(self._free_kb_name(name), "This group's own material", gid)
+        # The host leads the roster from the moment the group exists. On the home screen the host is
+        # "the first member ticked that can hold the chair", which is not necessarily the first id
+        # sent — so without this a brand-new group already has its host sitting in the middle of its
+        # own member list.
+        self._lead_with(gid, host_agent_id)
+        # No knowledge base is created here. A group used to be handed one the moment it existed, so
+        # that "this group's own material" had somewhere to be — which is how this app's own database
+        # reached sixty-four bases, sixty of them empty, for ten projects. A library is a shelf
+        # somebody chose to build; a group's working files are not that, and its members can read
+        # them where they are. `Library.workspace_kb` still creates one on the first upload.
         return self.get_group(gid)  # type: ignore[return-value]
 
-    def _free_kb_name(self, name: str) -> str:
-        """A knowledge base name that is not taken yet. Two groups may carry the same name (this
-        app's own list has three called the same thing), and two knowledge bases called the same
-        thing are impossible to tell apart in the picker — so the later one gets a number, the way
-        member names already do."""
-        taken = {k["name"] for k in self.list_kbs()}
-        if name not in taken:
-            return name
-        n = 2
-        while f"{name} {n}" in taken:
-            n += 1
-        return f"{name} {n}"
+    # `_free_kb_name` used to live here: the "videomaking", "videomaking 2" numbering, which existed
+    # because *this method's caller* created a knowledge base per group and two groups may share a
+    # name. Nothing creates one automatically any more, and the two remaining creation paths name
+    # their base from something the user is looking at (a group's panel, or the new-base form), so
+    # the numbering had no caller left. Removed rather than left standing: an unused name-uniquifier
+    # reads like a rule that is still being kept.
 
     # ------------------------------------------------------------------ where a group works
     #
@@ -1105,6 +1196,7 @@ already exists, otherwise create it (name and strengths are both taken from the 
             self._x("UPDATE groups SET name=? WHERE id=?", (patch["name"], gid))
         if "host_agent_id" in patch:
             self._x("UPDATE groups SET host_agent_id=? WHERE id=?", (patch["host_agent_id"], gid))
+            self._lead_with(gid, patch["host_agent_id"])
         if patch.get("prompt") is not None:
             self._x("UPDATE groups SET prompt=? WHERE id=?", (patch["prompt"], gid))
         if patch.get("workspace") is not None:
@@ -1146,9 +1238,44 @@ already exists, otherwise create it (name and strengths are both taken from the 
             (gid, aid, position),
         )
 
+    def _lead_with(self, gid: str, aid: str | None) -> None:
+        """Put the host at the front of the roster.
+
+        `group_members.position` is the order every roster is built from: the queue a round walks,
+        the member list in the dock, the names in the planner's roster. A host sitting last still
+        *is* the host — the code reads the `host_agent_id` column, not the order — but every list the
+        user looks at then contradicts it, and the live group that prompted this had the host in last
+        place while the user addressed it by name three times in a row. Moving the row is what makes
+        the order agree with the role; everybody else keeps their relative order.
+        """
+        if not aid:
+            return
+        rows = [r["agent_id"] for r in self._q(
+            "SELECT agent_id FROM group_members WHERE group_id=? ORDER BY position, rowid", (gid,))]
+        if aid not in rows:
+            return
+        self._renumber(gid, first=[aid] + [a for a in rows if a != aid])
+
+    def _renumber(self, gid: str, first: list[str] | None = None) -> None:
+        """Rewrite `group_members.position` as 0..n-1, in the given order (or the current one).
+
+        Called after anything that changes the roster, so the column stays a real index into it.
+        """
+        order = first if first is not None else [r["agent_id"] for r in self._q(
+            "SELECT agent_id FROM group_members WHERE group_id=? ORDER BY position, rowid", (gid,))]
+        if not order:
+            return
+        for i, other in enumerate(order):
+            self._x("UPDATE group_members SET position=? WHERE group_id=? AND agent_id=?",
+                    (i, gid, other))
+
     def remove_member(self, gid: str, aid: str) -> None:
         self._x("DELETE FROM group_members WHERE group_id=? AND agent_id=?", (gid, aid))
         self._x("UPDATE groups SET host_agent_id=NULL WHERE id=? AND host_agent_id=?", (gid, aid))
+        # Close the gap the deletion left. `position` is read as "the order of this roster", and a
+        # hole in it is the kind of thing that is harmless right up until somebody treats it as an
+        # index — measured: removing the second of four members left `[0, 2, 3]`.
+        self._renumber(gid)
 
     # ----------------------------------------------------------------- messages
     def add_message(
@@ -1211,6 +1338,15 @@ already exists, otherwise create it (name and strengths are both taken from the 
         ) is not None
 
     def clear_messages(self, gid: str) -> None:
+        """Delete a group's chat, and the verdicts the user passed on it with it.
+
+        Neither is a note *about* the other: a rating whose message is gone cannot be shown, cannot be
+        argued with, and would still be counted on the scoreboard — a member would be marked down for
+        a reply nobody can read any more. `message_feedback` also declares the cascade, but an older
+        database keeps whatever shape its table was created with, so the deletion is done here too
+        rather than assumed.
+        """
+        self._x("DELETE FROM message_feedback WHERE group_id=?", (gid,))
         self._x("DELETE FROM messages WHERE group_id=?", (gid,))
 
     def recover_interrupted_plans(self) -> int:

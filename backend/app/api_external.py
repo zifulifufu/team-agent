@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from . import i18n
 
+import asyncio
 import re
 
 from fastapi import APIRouter, HTTPException
@@ -143,7 +144,11 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
     async def overview() -> dict:
         s = store.get_settings()
         engines = []
-        for eid, e in external.ENGINES.items():
+        # Probes run subprocesses (including voice runtimes). Running them on the event
+        # loop freezes chat, progress updates and every other HTTP request while adding a tool.
+        descriptions = await asyncio.gather(*(asyncio.to_thread(runner.describe, eid)
+                                               for eid in external.ENGINES))
+        for (eid, e), description in zip(external.ENGINES.items(), descriptions):
             shown = i18n.localize(e)
             engines.append({"id": eid, "name": shown["name"], "avatar": shown["avatar"],
                             "role": shown["role"], "kind": external.kind_of(eid),
@@ -158,13 +163,17 @@ def build_external_router(store: Store, runner: external.ExternalRunner) -> APIR
                             # asks for none of those itself, and the add-member list leaves the
                             # engine out entirely (its models join as ordinary members).
                             "provider": provider_view(store, eid),
-                            **runner.describe(eid)})
+                            **description})
         return {
             "enabled": bool(s["external_agents_enabled"]),
             "external_calls_enabled": bool(s["external_calls_enabled"]),
             "engines": engines,
             "levels": [{"id": k, **external.level_view(k)} for k in external.LEVELS],
             "defaults": external.DEFAULT_CFG,
+            # The measured address+model pairs, so the member's settings can offer "which service?"
+            # as one choice instead of two fields the user has to know the spelling of.
+            "model_presets": external.model_presets(),
+            "presets_verified": external.PRESET_VERIFIED,
             "members": [
                 {"id": a["id"], "name": a["name"], "engine": engine_of(a), "cfg": cfg_of(a),
                  "binding": binding_of(a),

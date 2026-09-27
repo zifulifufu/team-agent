@@ -289,12 +289,17 @@ async def test_failures_name_the_setting_to_go_and_change(env):
         (400, {"error": {"message": "unsupported size"}}, "size"),
         (400, {"error": {"message": "content policy violation"}}, "content policy"),
         (503, {"error": {"message": "upstream down"}}, "transient"),
+        (500, {"status": "Fail", "message": "You exceeded your current API quota. Please purchase the API points."}, "waiting will not refill"),
+        (429, {"error": {"code": "insufficient_quota", "message": "Billing limit reached"}}, "waiting will not refill"),
+        (500, {"error": "insufficient balance"}, "waiting will not refill"),
     ):
         fake = FakeServer(status=status, body=body)
         with pytest.raises(imagegen.ImageError) as e:
             await imagegen.generate(prov, imagegen.build_payload("x", model="m", size="1024x1024"),
                                     max_bytes=1024 * 1024, deadline_s=10, client=fake.client())
         assert want in str(e.value), f"{status} should mention {want}: {e.value}"
+        if want == "waiting will not refill":
+            assert "transient" not in str(e.value) and "try again shortly" not in str(e.value)
 
 
 # ------------------------------------------------------------------ where it lands
@@ -304,7 +309,8 @@ async def test_the_image_lands_in_the_groups_own_image_folder(env):
     assert out.ok, out.text
     files = list(image_dir(store, g).glob("*.png"))
     assert len(files) == 1 and files[0].read_bytes() == PNG
-    assert out.files == [{"kind": "image", "name": files[0].name, "bytes": len(PNG)}]
+    assert out.files == [{"kind": "image", "name": files[0].name,
+                          "path": str(files[0].relative_to(store.workspace_dir(g["id"]))), "bytes": len(PNG)}]
     assert "cannot see the result" in out.text, "the model must be told not to describe it"
 
 

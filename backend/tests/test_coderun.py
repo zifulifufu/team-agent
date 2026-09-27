@@ -326,3 +326,78 @@ async def test_a_member_runs_code_and_reads_the_output(store, make_router):
     # The run is visible to the user in the tool trace, not silently swallowed
     meta = json.dumps(ends[-1]["meta"], ensure_ascii=False)
     assert "run_code" in meta and "exit code 0" in meta and "42" in meta
+
+
+# ------------------------------------------------------- seeing the work while it happens
+async def test_the_output_arrives_while_the_program_is_still_running(code_env):
+    """A program that takes minutes used to be invisible until it exited: the pill said "running"
+    and nothing else, so "what is it doing" had no answer on screen. The fragments now come out as
+    they appear — and they are the same text the model gets back, from the same read.
+    """
+    orch, store, g = code_env
+    ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
+    seen: list[str] = []
+    first_at: list[float] = []
+    t0 = time.time()
+
+    async def on_output(piece: str) -> None:
+        if not seen:
+            first_at.append(time.time() - t0)
+        seen.append(piece)
+
+    code = "import time\nprint('step 1', flush=True)\ntime.sleep(1.5)\nprint('step 2', flush=True)"
+    out = await orch.toolhub.call(ctx, "run_code", {"language": "python", "code": code}, _yes, on_output)
+
+    assert out.ok and "step 2" in out.text
+    assert "step 1" in "".join(seen) and "step 2" in "".join(seen)
+    assert first_at and first_at[0] < 1.0, (
+        f"the first line only arrived after {first_at[0]:.2f}s — that is the end of the run, not the "
+        "middle of it, which is exactly the report the user was missing")
+
+
+async def test_a_program_that_never_flushes_is_still_visible_while_it_runs(code_env):
+    """Piped stdout is block-buffered: a python program that merely prints hands its output over in
+    8 KB lumps when it exits, so the live view would show nothing and then everything at once.
+    The child runs unbuffered (inherited by grandchildren too), which is what makes `print` enough.
+    """
+    orch, store, g = code_env
+    ctx = await orch.toolhub.context(store.get_group(g["id"]), store.list_agents()[0])
+    first_at: list[float] = []
+    t0 = time.time()
+
+    async def on_output(piece: str) -> None:
+        if not first_at:
+            first_at.append(time.time() - t0)
+
+    code = "import time\nprint('early')\ntime.sleep(1.5)\nprint('late')"
+    out = await orch.toolhub.call(ctx, "run_code", {"language": "python", "code": code}, _yes, on_output)
+
+    assert out.ok and "early" in out.text and "late" in out.text
+    assert first_at and first_at[0] < 1.0, f"nothing was visible for {first_at[0]:.2f}s of a 1.5s run"
+
+
+async def test_a_running_call_is_visible_in_the_chat_and_forgets_its_tail_when_it_ends(store, make_router):
+    """The chat is fed `live` fragments while the call runs, and the stored trace has no `live` left
+    in it: what is kept is the result, and the tail of a running program is a view, not a record.
+    """
+    from tests.test_collab import Collector, call as tool_call, last_user
+
+    def script(messages):
+        if "<tool_result" in last_user(messages):
+            return "做完了。"
+        return "开始跑。" + tool_call(
+            "run_code", language="python",
+            code="import time\nprint('building', flush=True)\ntime.sleep(1.5)\nprint('done', flush=True)")
+
+    orch, g = setup(store, make_router, FakeLLM(default=script))
+    store.update_settings({"code_enabled": True, "perm_mode": "allow_all", "code_timeout": 10})
+    c = Collector()
+    await orch.handle_user_message(g["id"], "跑一下", c)
+    await orch.drain()
+
+    tools = [e for e in c.events if e["type"] == "tool"]
+    running = [e["call"] for e in tools if e["call"].get("live")]
+    assert running, "no live fragment reached the chat while the program was running"
+    assert "building" in "".join((e["call"].get("live") or "") for e in tools)
+    assert all("live" not in t for t in c.ends()[-1]["meta"]["tools"]), "the tail is a view, not part of the record"
+    assert "done" in json.dumps(c.ends()[-1]["meta"], ensure_ascii=False)

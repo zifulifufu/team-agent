@@ -136,7 +136,8 @@ def _band_heights(size: tuple[int, int], *, head: bool, foot: str) -> tuple[int,
 
 def compose(body_path: Path | None, out: Path, size: tuple[int, int], *,
             heading: str = "", caption: str = "", credit: str = "", draw=None,
-            body_fit: str = "full", ruler: bool = False, marks: list | None = None) -> Path:
+            body_fit: str = "full", ruler: bool = False, marks: list | None = None,
+            canvas: tuple[int, int, int] | None = None) -> Path:
     """Put a picture, or a drawing, on a titled canvas with a caption and a credit line, and save it.
 
     Everything about the layout exists for one reason: a picture dropped into a film with no heading
@@ -145,15 +146,18 @@ def compose(body_path: Path | None, out: Path, size: tuple[int, int], *,
     to the question every published film eventually gets asked.
 
     `draw` is called with `(image, draw)` for a schematic; supplying it means `body_path` is unused.
+    `canvas` overrides the background (`INK`) — `visual` passes the film's own canvas so that a framed
+    picture and a drawn one do not sit on two slightly different darks.
     """
     plate(size, body_path, heading=heading, caption=caption, credit=credit, draw=draw,
-          body_fit=body_fit, ruler=ruler, marks=marks).save(out)
+          body_fit=body_fit, ruler=ruler, marks=marks, canvas=canvas).save(out)
     return out
 
 
 def plate(size: tuple[int, int], body_path: Path | None = None, *,
           heading: str = "", caption: str = "", credit: str = "", draw=None,
-          body_fit: str = "full", ruler: bool = False, marks: list | None = None):
+          body_fit: str = "full", ruler: bool = False, marks: list | None = None,
+          canvas: tuple[int, int, int] | None = None):
     """The same titled canvas, returned as an image instead of written to a file.
 
     It exists for the animations: every frame of one is this canvas with a different body drawn into
@@ -165,12 +169,18 @@ def plate(size: tuple[int, int], body_path: Path | None = None, *,
     from PIL import Image, ImageDraw
     w, h = size
     head_h, foot_h = _band_heights(size, head=bool(heading), foot=(caption or credit))
-    canvas = Image.new("RGB", size, INK)
+    # The canvas the frame sits on, and — for a drawing — the field the drawing itself is made on.
+    # Both default to what they have always been, so an existing caller is byte-for-byte unchanged;
+    # an explicit `canvas` moves both, which is what keeps a film to **one** dark instead of three.
+    explicit = tuple(canvas) if canvas else None
+    base = explicit or INK
+    body_base = explicit or DRAWING_BG
+    canvas = Image.new("RGB", size, base)
     d = ImageDraw.Draw(canvas)
 
     avail_h = h - head_h - foot_h
     if draw is not None:
-        body = Image.new("RGB", size, DRAWING_BG)
+        body = Image.new("RGB", size, body_base)
         draw(body, ImageDraw.Draw(body))
         canvas.paste(body, (0, 0))
         d = ImageDraw.Draw(canvas)
@@ -201,7 +211,10 @@ def plate(size: tuple[int, int], body_path: Path | None = None, *,
     if caption or credit:
         y = h - foot_h
         d.rectangle([0, y - 4, w, y], fill=ACCENT)
-        d.rectangle([0, y, w, h], fill=INK)
+        # `base`, not `INK`: the footer is part of the canvas, and filling it with the old constant
+        # while the rest of the frame moved is how a film ends up with two darks four units apart —
+        # invisible to the eye and visible to the measurement, which is worse.
+        d.rectangle([0, y, w, h], fill=base)
         ty = y + 18
         f_cap = font(int(h * 0.0215))
         for line in wrap(caption, f_cap, w - 80, d)[:2]:

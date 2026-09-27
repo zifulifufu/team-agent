@@ -62,6 +62,29 @@ def offered(store: Any, pool: list[dict]) -> list[dict]:
                                       str(m.get("model_name") or "")) is not False]
 
 
+def _brisk(models: list[dict]) -> list[dict]:
+    """The same models, quickest first — by what the catalog says, not by where they sit in the list.
+
+    Looking at a picture is reading, not reasoning: "is the tube round, is the caption legible, did
+    the frame render at all" is answered by a small model as well as by a large one, and the large
+    one costs seven times as much wall clock for the answer. Measured here, same picture, same
+    question: the pool happened to be led by a heavyweight, 46.3 s; a `speed`-flagged model on the
+    same downscaled picture, 7.1 s. The group is blocked for every one of those seconds, and a
+    member checking eight frames paid for it eight times.
+
+    That measurement is also why this ordering is not merely a preference. A single model call is
+    capped by `request_timeout` (60 s by default), so the heavyweight was arriving *at the edge of
+    the deadline*: a slower moment, and a review that should have come back with a description came
+    back with a timeout instead, which a member reads as "the picture could not be looked at".
+
+    Tie-break is the pool's own order (Python's sort is stable), so nothing else about the choice
+    changes. A user who wants the heavyweight can still name it: an explicit pick wins in `pick`.
+    """
+    return sorted(models, key=lambda m: (
+        0 if "speed" in (m.get("strengths") or []) else 1 if "low-cost" in (m.get("strengths") or []) else 2,
+    ))
+
+
 def automatic(pool: list[dict], cfg: dict, *, allow_cloud: bool | None = None) -> dict | None:
     """The model the app would choose on its own: local first, then a cloud one if allowed.
 
@@ -74,7 +97,7 @@ def automatic(pool: list[dict], cfg: dict, *, allow_cloud: bool | None = None) -
     if local:
         return local[0]
     cloud = [m for m in pool if _can_see(m)]
-    return cloud[0] if cloud and cloudoi else None
+    return _brisk(cloud)[0] if cloud and cloudoi else None
 
 
 def pick(store: Any, models: list[dict] | None = None) -> dict | None:
@@ -92,7 +115,8 @@ def pick(store: Any, models: list[dict] | None = None) -> dict | None:
     cfg = store.get_settings()
     pool = offered(store, models if models is not None else [])
     want = chosen(store, pool)
-    if want and _can_see(want) and (want.get("is_local") or cfg["vision_cloud"]):
+    if (want and (models is None or any(m["id"] == want["id"] for m in pool))
+            and _can_see(want) and (want.get("is_local") or cfg["vision_cloud"])):
         return want
     # A named model that cannot look does **not** end the search here, which is what it used to do:
     # the choice was honoured to the letter, so one wrong pick turned every picture in every group
@@ -197,6 +221,14 @@ def reason_missing(store: Any, router: Any) -> str:
     return " ".join(parts)
 
 
+class Description(str):
+    """Text-compatible description carrying the model that actually answered."""
+    def __new__(cls, text: str, model_id: str):
+        result = super().__new__(cls, text)
+        result.model_id = model_id
+        return result
+
+
 async def describe(store: Any, router: Any, pictures: list[tuple[str, bytes]], prompt: str) -> str:
     """One model call over one or more pictures -> prose. Raises only on a routing failure, which
     the caller turns into a sentence; it never returns a made-up description."""
@@ -206,5 +238,12 @@ async def describe(store: Any, router: Any, pictures: list[tuple[str, bytes]], p
     parts: list[dict] = [{"type": "text", "text": prompt}]
     for mime, data in pictures:
         parts.append({"type": "image_url", "image_url": {"url": images.data_uri(data, mime)}})
-    res = await router.complete([{"role": "user", "content": parts}], only=model["id"], source="vision")
-    return (res.text or "").strip()[:MAX_DESCRIPTION]
+    cfg = store.get_settings()
+    if cfg.get("route_auto_match"):
+        pool = [m for m in offered(store, router.usable_models())
+                if _can_see(m) and (m.get("is_local") or cfg["vision_cloud"])]
+        res = await router.complete([{"role": "user", "content": parts}], preferred=model["id"],
+                                    tags=["multimodal", "reasoning"], allowed_ids=[m["id"] for m in _brisk(pool)], source="vision")
+    else:
+        res = await router.complete([{"role": "user", "content": parts}], only=model["id"], source="vision")
+    return Description((res.text or "").strip()[:MAX_DESCRIPTION], getattr(res, "model_id", model["id"]))

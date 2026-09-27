@@ -19,7 +19,7 @@ import threading
 import time
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -206,6 +206,181 @@ def _pptx_text(data: bytes) -> str:
 XLSX_MAX_ROWS = 500
 DIR_EXT = TEXT_EXT | {".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx"}
 MAX_DIR_FILES = 300
+
+# ------------------------------------------------------------------ where material came from
+# How a document got into the library. A **closed vocabulary of tokens**, not a free string,
+# because this is a fact about the row rather than a label somebody chose: it is derived from the
+# row itself and can therefore be trusted when it is used to *group* things. One base holding two
+# kinds of material is exactly what a user needs to be told, and it can only be told if "kind of
+# material" is a value and not a sentence.
+#
+#   import      a folder on this machine, imported by the user
+#   capture     material the app fetched for itself and stored under its own data directory
+#   upload      a file that came in through a form (no path: a bare name)
+#   link        a page, fetched from a URL
+#   attachment  read out of a group's attachment (`attachment:<id>`)
+#   workspace   a document sitting in a group's workspace (`workspace:<rel path>`)
+#   written     typed or composed in the app, with no file behind it
+ORIGINS = ("import", "capture", "upload", "link", "attachment", "workspace", "written")
+MIXED = "mixed"                    # only a knowledge base can be this: it is not one of the above
+
+# What a knowledge base is *for*. These are **suggestions, not a closed vocabulary** — unlike
+# `ORIGINS`, which is a fact about a row, a purpose is a decision, and the decisions a person makes
+# about their own shelf are not ours to enumerate. The list exists so the field opens with something
+# to pick and a group's own base files itself under "project" without being asked; anything typed in
+# its place is stored as typed and grouped as typed.
+#
+#   project    the material a project (a group chat) works from
+#   reference  background to look things up in
+#   method     how to do something: technique, procedure, craft
+#   data       tables, figures, measurements
+#   writing    material to quote, reuse or write from
+PURPOSES = ("project", "reference", "method", "data", "writing")
+
+# What a piece of fetched skill material is *for*. Like `ORIGINS` this is closed and stored, because
+# it is derived from the material's own words rather than chosen by the user — and a label the user
+# cannot see the basis of is a label they will not trust.
+#
+# This exists because a hundred-odd skills fetched off a platform are, to a reader, one grey pile:
+# they are named "电影级长镜头", "AI演员微表情导演", "一图成片-电影广告全能导演" — every one of them
+# says what it is for, and none of that was a field. Grouped, they are twelve short lists.
+#
+#   camera      镜头怎么动:运镜、长镜头、景别、机位
+#   storyboard  分镜、故事板、镜头脚本
+#   performance 表演与微表情
+#   director    导演风格、大师风格、布光
+#   commercial  广告、TVC、带货、营销
+#   trailer     预告片、片头、混剪
+#   effect      特效、转场、变身
+#   character   角色、数字人、口播、人像
+#   story       剧情、短剧、故事开发
+#   edit        剪辑、字幕、配音、成片
+#   design      平面与设计:海报、logo、版式
+#   visual      影像风格与美学:电影感、质感、氛围
+CATEGORIES = ("camera", "storyboard", "performance", "director", "commercial", "trailer",
+              "effect", "character", "story", "edit", "design", "visual")
+
+# Keyword → category, **in priority order**: the first hit wins, and the order is the whole
+# specification. It is load-bearing in two places, both measured on the 114 skills fetched here:
+#   * 电影级长镜头运镜 must land in `camera`, not in `visual` — so camera is tested before the
+#     "电影感/电影级" bucket, which would otherwise swallow every cinematic skill there is;
+#   * 微表情导演 must land in `performance`, not in `director` — the distinguishing word is 微表情.
+_CATEGORY_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("storyboard", ("分镜", "故事板", "镜头脚本", "storyboard")),
+    ("performance", ("微表情", "表情", "演技", "演员", "表演", "expression")),
+    # The platform's own tags are English tokens (`commercial_ads`, `ecommerce_updated`,
+    # `film_short`, `graphic_design`), so both spellings are listed. Only seven of the 114 skills
+    # carried a tag at all — the names carry the rest.
+    ("commercial", ("广告", "TVC", "带货", "营销", "宣传", "电商", "种草", "直播",
+                    "commercial", "ecommerce")),
+    ("trailer", ("预告片", "预告", "片头", "混剪", "trailer")),
+    ("camera", ("运镜", "镜头", "长镜头", "景别", "机位", "推拉", "摇移", "跟拍", "航拍",
+                "一镜到底", "手持", "camera")),
+    ("director", ("名导", "导演", "大师", "风格", "光影", "布光", "director")),
+    ("character", ("数字人", "口播", "人像", "角色", "拟人", "换脸", "character")),
+    ("effect", ("特效", "转场", "法宝", "魔法", "变身", "光效", "vfx", "effect")),
+    ("story", ("剧情", "短剧", "故事", "剧本", "叙事", "连续剧", "film_short")),
+    ("edit", ("剪辑", "字幕", "配音", "成片", "卡点", "edit")),
+    ("design", ("设计", "海报", "logo", "平面", "拼贴", "图形", "图标", "graphic_design")),
+    ("visual", ("电影感", "电影级", "美学", "质感", "唯美", "氛围", "油彩", "油画")),
+)
+
+# How much of a body to read before deciding. The name and the one-line description settle 111 of
+# the 114 skills here; the body is only a fallback for the handful whose name says nothing
+# ("惊喜镜头"), and reading all of it would let a passing mention ("把分镜表渲染成视频") decide the
+# label for a skill that is about something else entirely.
+CATEGORY_TEXT_CHARS = 3000
+
+
+def tags_in(text: str) -> list[str]:
+    """The `tags: [a, b]` line a fetched note carries in its own header, if any.
+
+    Seven of the 114 skills fetched here carried one — the platform's own category tokens
+    (`commercial_ads`, `film_short`, `graphic_design`). They are read back out of the note rather
+    than passed around separately, so a re-run of the ingest produces the same category as the
+    backfill over what it wrote last time.
+    """
+    out: list[str] = []
+    for m in re.finditer(r"^\s*tags:\s*\[([^\]]*)\]", str(text or ""), re.M):
+        out += [t.strip() for t in m.group(1).split(",") if t.strip()]
+    return out
+
+
+def category_of(title: str, text: str = "", tags: "Sequence[str] | tuple[str, ...]" = ()) -> str:
+    """Which of `CATEGORIES` this material is for, or `""` — "nothing in its own words says".
+
+    Read in three passes, in order of how much they mean: **the name** (what the author called it),
+    then **the platform's own tags**, then **the opening of the body**. The first pass that says
+    anything wins, so a name is never overruled by a phrase half way down its instructions.
+
+    `""` is a real answer and is not the same as "other": the classifier only ever labels material
+    whose own words name its function. A medical guideline does not, and getting `design` because its
+    title happens to contain 试验设计 is exactly the kind of confident wrong label this avoids.
+    """
+    haystacks = [str(title or "")]
+    if tags:
+        haystacks.append(" ".join(str(t) for t in tags))
+    if text:
+        haystacks.append(str(text)[:CATEGORY_TEXT_CHARS])
+    for hay in haystacks:
+        if not hay.strip():
+            continue
+        for cat, words in _CATEGORY_WORDS:
+            if any(w.lower() in hay.lower() for w in words):
+                return cat
+    return ""
+
+
+def origin_of(filename: str, kind: str = "", *, data_dir: "Path | None" = None) -> str:
+    """Which of `ORIGINS` a document came from, read off the row rather than asked for.
+
+    `filename` is the load-bearing field, and every form it takes means exactly one thing:
+
+    * `attachment:<id>` / `workspace:<rel>` are keys this app writes itself;
+    * a URL, or the `link` kind, is a page;
+    * **an absolute path is a folder that was imported** — and a path *inside the app's own data
+      directory* is material the app fetched and stored itself (the ingest scripts write there),
+      which is a different promise from a folder the user pointed at;
+    * a bare name is a file that came in through a form;
+    * nothing at all is something typed in here.
+
+    Deliberately one function: a second copy of these rules would drift, and the label would start
+    disagreeing with the row it describes.
+    """
+    name = str(filename or "").strip()
+    if name.startswith("attachment:"):
+        return "attachment"
+    if name.startswith("workspace:"):
+        return "workspace"
+    if not name:
+        return "written"
+    if kind == "link":
+        return "link"
+    if name.startswith(("http://", "https://")):
+        return "link"
+    if os.path.isabs(name):
+        if data_dir is not None:
+            try:
+                Path(name).resolve().relative_to(Path(data_dir).resolve())
+                return "capture"
+            except (ValueError, OSError):
+                pass
+        return "import"
+    return "upload"
+
+
+def shelf_of(origins: "list[str]") -> str:
+    """The one word for a whole knowledge base's worth of origins.
+
+    A base whose documents all came the same way *is* that word; one that mixes them is `mixed`, and
+    saying so is the point — "this base is a folder you imported" and "this base is a folder you
+    imported plus 114 notes fetched off a website" are different situations, and only one of them
+    means somebody should probably split it.
+    """
+    seen = {o for o in origins if o}
+    if not seen:
+        return ""
+    return next(iter(seen)) if len(seen) == 1 else MIXED
 MAX_URL_BYTES = 5 * 1024 * 1024
 
 # --------------------------------------------------------------- the pictures a note came with
@@ -360,22 +535,9 @@ allowed, at most 3 redirects, 5MB maximum."""
         raise LibraryError(i18n.pick_now(f"Could not open this link: {type(e).__name__}", f"打不开这个链接:{type(e).__name__}")) from None
 
 
-def watch_workspace(group: dict) -> bool:
-    """Whether the *documents in this group's workspace* feed its own knowledge base.
-
-    (The text already read out of its attachments goes in either way — that is the group's own
-    material by definition, and it costs nothing to index. This switch is about the folder.)
-
-    The user's own switch wins. With none set, the default follows where the workspace *is*: one
-    this app manages is watched, one the user picked is not — a directory they chose may be a
-    project rather than material, and importing a checkout into a knowledge base is nobody's idea of
-    a good time.
-    """
-    ext = (group.get("ext") or {}).get("library") or {}
-    watch = ext.get("watch_workspace")
-    return bool(watch) if isinstance(watch, bool) else not str(group.get("workspace") or "").strip()
-
-
+# `watch_workspace` used to live here: the switch that decided how much of a group's own
+# workspace was copied into its knowledge base. It is gone with the copying itself — see
+# the note above `workspace_kb` for why nothing enters the library by itself any more.
 class Library:
     def __init__(self, store: Store):
         self.store = store
@@ -415,7 +577,7 @@ class Library:
 
     # ------------------------------------------------------------------ write
     def add_text(self, title: str, text: str, filename: str = "", kind: str = "note", size: int | None = None,
-                 did: str | None = None, kb_id: str = "") -> dict:
+                 did: str | None = None, kb_id: str = "", origin: str = "", category: str = "") -> dict:
         # Refused rather than quietly stored somewhere: a document with no knowledge base is
         # invisible to every group, which is impossible to notice from the outside. Callers go
         # through `workspace_kb` / `shared_kb` (the API's `_kb_for_new_doc`) to pick one.
@@ -423,8 +585,17 @@ class Library:
             raise LibraryError(i18n.pick_now("A document needs a knowledge base", "文档必须归属某个知识库"))
         text = _check_text(text)
         chunks = chunk_text(text)
+        # `origin` is passed in only when the caller knows better than the row does; normally it is
+        # read off the row (see `origin_of`), so there is no second place to keep in step.
+        came_from = origin or origin_of(filename, kind, data_dir=self.store.data_dir)
+        # Fetched material gets a category from its own words (`category_of`), because that is the
+        # material whose name states its function — a hundred skills off one platform are one grey
+        # pile otherwise. Nothing else does: see `Store._classify_library_material`. An explicit
+        # `category` wins, so an ingester that knows better can say so.
+        cat = category or (category_of(title, text, tags_in(text)) if came_from == "capture" else "")
         doc = self.store.add_doc(title.strip() or filename or i18n.pick_now("Untitled", "未命名"), filename, kind,
-                                 size if size is not None else len(text.encode()), chunks, did, kb_id)
+                                 size if size is not None else len(text.encode()), chunks, did, kb_id,
+                                 origin=came_from, category=cat)
         self.invalidate()
         return doc
 
@@ -826,112 +997,20 @@ skipped, files whose size changed are replaced with the new version."""
             return kb
         return self.store.add_kb("Shared knowledge base", "Documents every group can search", "") if create else None
 
-    # ------------------------------------------------- a group's own material, kept up to date
-    # The three things a group has used to be three separate places: the chat (which is the context),
-    # the knowledge bases (only what someone remembered to import), and the workspace (files nothing
-    # could search). Keeping them joined means a group's own material is *its own* knowledge base, and
-    # the join has to be cheap enough to run on every turn — hence: nothing is extracted here, only
-    # what a file already carries is indexed, and every run is capped.
-    SYNC_MAX_FILES = 40            # documents picked up in one run, so a first pass cannot stall a turn
-    SYNC_MAX_FILE_BYTES = 4_000_000  # one file this big is already unusual for a document
-    SYNC_SCAN_LIMIT = 3000         # entries walked before the rest is left for the next run
-    SYNC_SKIP_DIRS = {".frames", ".git", "node_modules", "__pycache__", ".venv", "venv", ".cache"}
-
-    def sync_group_material(self, gid: str, workspace: Path | None = None, *,
-                            with_files: bool = True) -> dict:
-        """Bring this group's own material into this group's own knowledge base.
-
-        Two sources, both re-read every time and only rewritten when they changed:
-
-        * **attachments that already carry text** — a document's extracted text, a picture's
-          description, a recording's transcript. Nothing is extracted here on purpose: a picture
-          nobody has looked at has no description yet, and this is not the place to spend a vision
-          call on it (that happens the first time a member is shown it, and the cached result is what
-          this picks up);
-        * **documents in the workspace** (`with_files`) — what the group itself accumulated: a script
-          a member wrote, a table someone dropped in.
-
-        Documents are keyed by where they came from (`attachment:<id>` / `workspace:<relative path>`),
-        so re-running replaces rather than duplicates, and a file that changed keeps its id — a
-        document already enabled or selected for a group is not lost by an update.
-        """
-        kb = self.workspace_kb(gid)
-        if not kb:
-            return {"added": 0, "updated": 0, "skipped": 0, "documents": 0}
-        existing = {d["filename"]: d for d in self.store.list_docs(kb["id"]) if d.get("filename")}
-        added = updated = skipped = 0
-
-        def put(key: str, title: str, text: str, kind: str, size: int) -> None:
-            """Add or replace one document. An empty extraction keeps the version already there —
-            a document that cannot be read this time must not vanish from the library."""
-            nonlocal added, updated, skipped
-            try:
-                _check_text(text)
-            except LibraryError:
-                skipped += 1
-                return
-            old = existing.get(key)
-            self.add_text(title.strip()[:200] or key, text, key, kind, size,
-                          did=old["id"] if old else None, kb_id=kb["id"])
-            if old is None:
-                added += 1
-            else:
-                updated += 1
-
-        for row in self.store.list_attachments(gid):
-            body = (str(row.get("text") or "").strip() or str(row.get("vision_text") or "").strip())
-            if not body:
-                continue
-            key = f"attachment:{row['id']}"
-            old = existing.get(key)
-            if old is not None and int(old.get("chars") or 0) == len(body):
-                skipped += 1
-                continue
-            put(key, str(row.get("name") or row["id"]), body, str(row.get("kind") or "note"),
-                int(row.get("bytes") or 0))
-
-        if with_files and workspace and workspace.is_dir():
-            for rel, path in self._workspace_documents(workspace):
-                if added + updated >= self.SYNC_MAX_FILES:
-                    break
-                try:
-                    size = path.stat().st_size
-                except OSError:
-                    continue
-                key = f"workspace:{rel}"
-                old = existing.get(key)
-                if old is not None and int(old.get("size") or 0) == size:
-                    skipped += 1
-                    continue
-                if size > self.SYNC_MAX_FILE_BYTES:
-                    skipped += 1
-                    continue
-                try:
-                    kind, text = extract_text(path.name, path.read_bytes())
-                except (LibraryError, OSError):
-                    skipped += 1
-                    continue
-                put(key, path.stem or rel, text, kind, size)
-        return {"added": added, "updated": updated, "skipped": skipped,
-                "documents": len(self.store.list_docs(kb["id"]))}
-
-    def _workspace_documents(self, workspace: Path):
-        """(relative path, path) for the importable documents in a workspace, bounded by a scan.
-
-        `os.walk` rather than `rglob` so the directories that are machinery rather than material are
-        pruned where they stand: a workspace holds generated frames, videos and often an environment
-        of its own, and this walk happens before every single turn.
-        """
-        seen = 0
-        for root, dirs, files in os.walk(workspace):
-            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in self.SYNC_SKIP_DIRS)
-            for name in sorted(files):
-                seen += 1
-                if seen > self.SYNC_SCAN_LIMIT:
-                    return
-                if name.startswith(".") or Path(name).suffix.lower() not in DIR_EXT:
-                    continue
-                path = Path(root) / name
-                if path.is_symlink() or not path.is_file():
-                    continue
-                yield str(path.relative_to(workspace)), path
+    # ------------------------------------------------- a group's own material stays in the group
+    # This used to be the join that made a group's own material searchable: before every turn, the
+    # text already read out of its attachments and the documents sitting in its workspace were copied
+    # into a knowledge base, and every group was handed a base the moment it was created. Both are
+    # gone, deliberately.
+    #
+    # The reason is that a library is a shelf somebody decided to build, and a project's working files
+    # are not that. Every project dumping its workspace into one list made the list unreadable long
+    # before it made it useful — this app's own database reached sixty-four bases, sixty of them
+    # empty, for ten projects — and it put a half-finished draft on the same footing as material a
+    # user had deliberately collected. A group's members can already read the group's own attachments
+    # and files directly; what they *cannot* do is read a document the user chose to file, and that is
+    # the only thing a knowledge base should be.
+    #
+    # So: nothing enters the library by itself. Either a user put it there, or it is not in there.
+    # Uploading from a group's own library page still works and still creates that group's base on
+    # first use (`workspace_kb`) — the decision was about *automatic* entry, not about the feature.

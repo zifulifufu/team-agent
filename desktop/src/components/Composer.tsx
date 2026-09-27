@@ -20,6 +20,7 @@ interface Props {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
+  sendLabel?: string;
   busy?: boolean;
   onStop?: () => void;
   members: Mentionable[];
@@ -284,7 +285,7 @@ export default function Composer(p: Props) {
               <Square size={13} fill="currentColor" />
             </button>
           ) : (
-            <button className="send-btn" title={t("Send")} aria-label={t("Send")} disabled={!sendable} onClick={p.onSend}>
+            <button className="send-btn" title={p.sendLabel || t("Send")} aria-label={p.sendLabel || t("Send")} disabled={!sendable} onClick={p.onSend}>
               <ArrowUp size={17} />
             </button>
           )}

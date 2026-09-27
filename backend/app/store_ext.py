@@ -105,6 +105,36 @@ CREATE TABLE IF NOT EXISTS updates (
     status TEXT NOT NULL DEFAULT 'new',        -- new | dismissed | done
     created_at REAL NOT NULL
 );
+-- How the user judged a member's reply. One row per message (the user's verdict, not a log of
+-- clicks), and the note is optional: a thumb with a sentence beside it is what can be acted on.
+CREATE TABLE IF NOT EXISTS message_feedback (
+    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    group_id TEXT NOT NULL DEFAULT '',
+    agent_id TEXT NOT NULL DEFAULT '',
+    agent_name TEXT NOT NULL DEFAULT '',
+    rating TEXT NOT NULL DEFAULT '',          -- up | down | '' (cleared)
+    note TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_group ON message_feedback(group_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_agent ON message_feedback(agent_id, rating);
+-- A group the user has actually run, kept as a template: the working set, not an idea of one.
+-- Stored as names rather than ids because a template outlives the rows it was read from — the same
+-- reason the built-in ones name their members.
+CREATE TABLE IF NOT EXISTS group_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_zh TEXT NOT NULL DEFAULT '',
+    desc TEXT NOT NULL DEFAULT '',
+    desc_zh TEXT NOT NULL DEFAULT '',
+    scene TEXT NOT NULL DEFAULT '',
+    members TEXT NOT NULL DEFAULT '[]',
+    host TEXT NOT NULL DEFAULT '',
+    skills TEXT NOT NULL DEFAULT '[]',
+    prompt TEXT NOT NULL DEFAULT '',
+    from_group TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sources (
     kind TEXT NOT NULL,                        -- skill | plugin
     name TEXT NOT NULL,
@@ -305,6 +335,20 @@ class ExtStore:
         return {r["kb_id"]: r["n"] for r in self._q(  # type: ignore[attr-defined]
             "SELECT kb_id, COUNT(*) AS n FROM library_docs GROUP BY kb_id")}
 
+    def origins_by_kb(self) -> dict[str, dict[str, int]]:
+        """{kb_id: {origin: count}} — the breakdown behind a base's one-word source.
+
+        One query for the whole list, because the alternative is one per base and this is on the page
+        a user opens to find out what is in there. It exists so the list can say *why* a base is
+        `mixed` ("imported 6029 · fetched 114") instead of leaving the word standing on its own: the
+        word is the summary, this is the evidence.
+        """
+        out: dict[str, dict[str, int]] = {}
+        for r in self._q(  # type: ignore[attr-defined]
+                "SELECT kb_id, origin, COUNT(*) AS n FROM library_docs GROUP BY kb_id, origin"):
+            out.setdefault(r["kb_id"], {})[r["origin"] or ""] = r["n"]
+        return out
+
     # ----------------------------------------------------------- knowledge bases
     def list_kbs(self, group_id: str | None = None) -> list[dict]:
         """Knowledge bases. `group_id=None` -> every one; `""` -> the shared ones; a group id ->
@@ -321,35 +365,37 @@ class ExtStore:
     def get_kb(self, kb_id: str) -> dict | None:
         return self._one("SELECT * FROM knowledge_bases WHERE id=?", (kb_id,))  # type: ignore[attr-defined]
 
-    def ensure_group_kbs(self) -> int:
-        """Give every group its own knowledge base; returns how many were missing.
+    # `ensure_group_kbs` used to live here: the backfill that handed every group a knowledge base of
+    # its own, at every start. Removed together with the automatic creation itself — a library is a
+    # shelf somebody chose to build, and a project's working files are not that (the reasoning is
+    # written out in full above `Library.workspace_kb`). Groups made since then still get a base, but
+    # only when somebody puts a document in it.
 
-        Same shape as the other backfills (see `coderun.ensure_workspaces`): a group's own knowledge
-        base is created with the group now, and this fills in the groups that already existed.
-        Re-running does nothing — it only looks at groups with none — so it is safe at every start.
+    def add_kb(self, name: str, description: str = "", group_id: str = "", kid: str | None = None,
+               purpose: str = "") -> dict:
+        """Create a knowledge base.
+
+        Only the *purpose* gets a default, and only from ownership: a project's own base files itself
+        under the "project" heading rather than arriving as a loose end. `source` gets none on purpose
+        — it is derived from the base's documents when the list is read (`library.shelf_of`), so
+        writing a guess here would freeze it at whatever the base held on the day it was created.
         """
-        have = {k["group_id"] for k in self.list_kbs() if k["group_id"]}
-        made = 0
-        for g in self.list_groups():
-            if g["id"] in have:
-                continue
-            self.add_kb(self._free_kb_name(g["name"]), "This group's own material", g["id"])
-            made += 1
-        return made
-
-    def add_kb(self, name: str, description: str = "", group_id: str = "", kid: str | None = None) -> dict:
         kid = kid or self.new_id()  # type: ignore[attr-defined]
         self._x(  # type: ignore[attr-defined]
-            "INSERT INTO knowledge_bases(id,name,description,group_id,created_at) VALUES(?,?,?,?,?)",
-            (kid, name, description, group_id, time.time()),
+            "INSERT INTO knowledge_bases(id,name,description,group_id,purpose,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (kid, name, description, group_id,
+             str(purpose or ("project" if group_id else "")), time.time()),
         )
         return self.get_kb(kid)  # type: ignore[return-value]
 
     def update_kb(self, kb_id: str, patch: dict) -> dict | None:
-        # `group_id` is not patchable here: it is the ownership field. Renaming and re-describing is
-        # all this exposes, so neither a client bug nor a hand-made request can move a knowledge base
-        # into another workspace (handing it that workspace's documents) or orphan a shared one.
-        for k in ("name", "description"):
+        # `group_id` is not patchable here: it is the ownership field. Ownership, naming and the two
+        # labels are all this exposes, so neither a client bug nor a hand-made request can move a
+        # knowledge base into another workspace (handing it that workspace's documents) or orphan a
+        # shared one. Note that `source` is an *override* — what the list shows is derived from the
+        # base's documents unless this holds something (see `api_ext.kbs_list`).
+        for k in ("name", "description", "purpose", "source"):
             if patch.get(k) is not None:
                 self._x(f"UPDATE knowledge_bases SET {k}=? WHERE id=?", (str(patch[k]), kb_id))  # type: ignore[attr-defined]
         return self.get_kb(kb_id)
@@ -430,13 +476,19 @@ class ExtStore:
         return r
 
     def add_doc(self, title: str, filename: str, kind: str, size: int, chunks: list[str],
-                did: str | None = None, kb_id: str = "") -> dict:
+                did: str | None = None, kb_id: str = "", origin: str = "",
+                category: str = "") -> dict:
         """Add a document, or replace the one with this id if it is already there.
 
         Replacing means the row goes first (which takes its chunks with it) rather than being
         written over: a document whose text changed must not keep the passages of its earlier
         version, or a search would still find what it used to say. `enabled` is carried across, so
         replacing a document a user had switched off does not quietly switch it back on.
+        `origin` is where the material came from (`library.ORIGINS`); it travels with the row
+        because it is a fact about the row, and the knowledge-base list reports it back.
+        `category` is what the material is *for* (`library.CATEGORIES`), derived from its own words
+        by whoever knows them — see `library.category_of`. Empty means "its own words do not say",
+        which is a real answer and not an error.
         """
         did = did or self.new_id()  # type: ignore[attr-defined]
         with self._lock:  # type: ignore[attr-defined]
@@ -447,10 +499,10 @@ class ExtStore:
                     enabled = int(old["enabled"])
                     self._db.execute("DELETE FROM library_docs WHERE id=?", (did,))  # type: ignore[attr-defined]
                 self._db.execute(  # type: ignore[attr-defined]
-                    "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,kb_id,created_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO library_docs(id,title,filename,kind,size,chars,chunks,enabled,kb_id,origin,category,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (did, title, filename, kind, size, sum(len(c) for c in chunks), len(chunks),
-                     enabled, kb_id, time.time()),
+                     enabled, kb_id, str(origin or ""), str(category or ""), time.time()),
                 )
                 self._db.executemany(  # type: ignore[attr-defined]
                     "INSERT INTO library_chunks(doc_id,idx,text) VALUES(?,?,?)",
@@ -724,3 +776,103 @@ one. Identical content that was already ignored/completed is not reminded again.
 
     def delete_source(self, kind: str, name: str) -> None:
         self._x("DELETE FROM sources WHERE kind=? AND name=?", (kind, name))  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------ what each project is doing
+    def latest_plan(self, gid: str) -> dict | None:
+        """The newest task board of one group, or `None` if it never had one.
+
+        Read here rather than from the message list the UI already has, because the sidebar asks this
+        question about **every** project at once: one query per project for one line of text is the
+        difference between a panel that opens and a panel that fills in.
+        """
+        row = self._one(  # type: ignore[attr-defined]
+            "SELECT meta, created_at FROM messages WHERE group_id=? AND sender_type='plan' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1", (gid,))
+        if not row:
+            return None
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except ValueError:
+            return None
+        return {"meta": meta, "at": row["created_at"]}
+
+    def latest_said(self, gid: str, look: int = 5) -> dict | None:
+        """这个群**最近一条有正文的成员发言**(没有就 None)。
+
+        ⚠️ 为什么需要它:左栏那一行第二格读的是**任务板**,而任务板只在「没点名别人」的那一轮里
+        才会生成。一个跑过好几轮、出过图出过视频的项目,完全可能从来没有任务板 —— 那时那一行写
+        「还没有任务」,而聊天里明明有产物。用户 2026-09-25 报的「已经执行过任务,却显示没有任务」
+        就是这个。退回来讲「它最近做了什么」是诚实的近似。
+
+        ⚠️ 取的是**有正文**的那条:`strip_hidden` 之后是空的(整条都是工具调用)不算 —— 实测有一个
+        群里唯一一条成员发言就是 120 个裸 `<tool_calls>` 标记,拿它当摘要就是给用户看一堆记号。
+        往后多看几条,是为了让这种空壳发言不会把摘要整个吃掉。
+        """
+        from . import toolcall                                  # 叶子模块,只在需要时才导入
+
+        rows = self._q(  # type: ignore[attr-defined]
+            "SELECT content, sender_name, created_at FROM messages "
+            "WHERE group_id=? AND sender_type='agent' ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (gid, max(1, int(look))))
+        for r in rows:
+            visible = toolcall.strip_hidden(str(r["content"] or ""))
+            if visible.strip():
+                return {"text": visible.strip(), "owner": str(r["sender_name"] or ""),
+                        "at": float(r["created_at"] or 0.0)}
+        return None
+
+    # ------------------------------------------------------------------ groups kept as templates
+    def save_template(self, row: dict) -> dict:
+        """Store a group's working set under a name. The id is new, so saving twice is two templates
+        (the user may well want the group both before and after it was tuned)."""
+        row = {**row, "created_at": row.get("created_at") or time.time()}
+        self._x(  # type: ignore[attr-defined]
+            "INSERT INTO group_templates(id,name,name_zh,desc,desc_zh,scene,members,host,skills,prompt,"
+            "from_group,from_group_name,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (row["id"], row["name"], row.get("name_zh") or "", row.get("desc") or "",
+             row.get("desc_zh") or "", row.get("scene") or "", json.dumps(row.get("members") or []),
+             row.get("host") or "", json.dumps(row.get("skills") or []), row.get("prompt") or "",
+             row.get("from_group") or "", row.get("from_group_name") or "", row["created_at"]))
+        return row
+
+    def list_group_templates(self) -> list[dict]:
+        """Newest first: the one the user just saved is the one they want to see at the top."""
+        rows = self._q("SELECT * FROM group_templates ORDER BY created_at DESC")  # type: ignore[attr-defined]
+        for r in rows:
+            r["members"] = json.loads(r["members"] or "[]")
+            r["skills"] = json.loads(r["skills"] or "[]")
+        return rows
+
+    def delete_group_template(self, tid: str) -> None:
+        self._x("DELETE FROM group_templates WHERE id=?", (tid,))  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------ how the user judged a reply
+    def rate_message(self, mid: str, gid: str, agent_id: str, agent_name: str,
+                     rating: str, note: str) -> dict:
+        """Record (or change) the user's verdict on one message, and hand the row back.
+
+        One row per message, replaced rather than appended: a rating the user changes their mind
+        about is one opinion, and a table that keeps every revision would let a scoreboard be gamed
+        by clicking. `rating=""` clears it, which is how a mis-click is undone.
+        """
+        now = time.time()
+        self._x(  # type: ignore[attr-defined]
+            "INSERT INTO message_feedback(message_id,group_id,agent_id,agent_name,rating,note,created_at) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET "
+            "rating=excluded.rating, note=excluded.note, created_at=excluded.created_at",
+            (mid, gid, agent_id, agent_name, rating, note, now))
+        return {"message_id": mid, "group_id": gid, "agent_id": agent_id, "agent_name": agent_name,
+                "rating": rating, "note": note, "created_at": now}
+
+    def list_feedback(self, gid: str | None = None, limit: int = 100) -> list[dict]:
+        """Newest first, with the message it is about — a rating with no text beside it is unusable."""
+        where = "WHERE f.group_id=?" if gid else ""
+        args: tuple = (gid, limit) if gid else (limit,)
+        return self._q(  # type: ignore[attr-defined]
+            "SELECT f.*, m.content AS text, m.sender_type, m.created_at AS message_at, "
+            "g.name AS group_name FROM message_feedback f "
+            "LEFT JOIN messages m ON m.id=f.message_id LEFT JOIN groups g ON g.id=f.group_id "
+            f"{where} ORDER BY f.created_at DESC LIMIT ?", args)
+
+    def clear_feedback(self, mid: str) -> None:
+        self._x("DELETE FROM message_feedback WHERE message_id=?", (mid,))  # type: ignore[attr-defined]

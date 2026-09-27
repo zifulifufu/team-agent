@@ -93,7 +93,7 @@ def _row(tool: str, *, name: str, name_zh: str, avatar: str, cmd: list[str], ins
          install_zh: str, needs: tuple[str, ...], artifacts: tuple[str, ...],
          slot: str, role: str, role_zh: str, prompt: str, prompt_zh: str, tags: list[str],
          licence: str, docs: str, project: str = "", project_zh: str = "",
-         verify: list[str] | None = None) -> dict:
+         verify: list[str] | None = None, voice_engine: str = "", out_ext: str = ".mp4") -> dict:
     """One tool, in the shape `external.ENGINES` expects plus the four fields only this module
     reads. Written as a function with keyword arguments rather than a bare dict literal of eight
     near-identical entries: the fields are the contract, and a missing one should be a TypeError
@@ -118,7 +118,16 @@ def _row(tool: str, *, name: str, name_zh: str, avatar: str, cmd: list[str], ins
         "slot": slot,               # "none" | "text" — whether the member's sentence reaches argv
         "needs": needs,             # binaries / runtimes that must exist, for the probe
         "artifacts": artifacts,     # globs, relative to the tool's folder
+        # The extension of the file *we* name for it to write. Not derivable from `artifacts`: that
+        # list is what the collector looks for afterwards, and a tool may produce several kinds.
+        # It has to be a format the tool can actually write — a synthesiser handed a `.mp4` dies
+        # with `ValueError: Unsupported format: mp4`, after the model has been loaded.
+        "out_ext": out_ext,
         "project": project, "project_zh": project_zh,   # what the user must put there first
+        # Set when `voices` owns this engine too: the narration path and this member run **the same
+        # program**, so `exe_for` asks that module rather than looking it up a second time (see the
+        # note there — one binary, one answer, or the member works while the narration does not).
+        "voice_engine": voice_engine,
         "tool": tool,
     }
 
@@ -134,9 +143,16 @@ TOOLS: dict[str, dict] = {
         avatar="🎞️",
         # `render` with no `-c` renders the project directory's `index.html`; `-o` is where the mp4
         # goes. Both facts are from `packages/cli/README.md` in the HyperFrames repository.
-        cmd=["npx", "hyperframes", "render", "-o", "{out}"],
+        #
+        # ⚠️ 这里以前写的是 `npx hyperframes render …`,检查也是 `npx --no-install hyperframes
+        # --version` —— 而 **npx 找不到全局装的包**:它只在当前目录的 node_modules 里找
+        # (实测:`npm install -g hyperframes` 装好了、`hyperframes --version` 也通,
+        #  但 `npx --no-install hyperframes --version` 报 "canceled due to missing packages")。
+        # 于是这个工具无论怎么装都显示「不可用」。改成**它自己的二进制**:`exe_for` 会解析到
+        # `/usr/local/bin/hyperframes`,跑的就是那一个 —— 顺带也不再有可能在回合中途下载包。
+        cmd=["hyperframes", "render", "-o", "{out}"],
         install="npm install -g hyperframes", install_zh="npm install -g hyperframes",
-        verify=["npx", "--no-install", "hyperframes", "--version"],
+        verify=["hyperframes", "--version"],
         needs=("node22", "ffmpeg"),
         artifacts=("*.mp4", "*.webm"),
         slot="none",
@@ -177,6 +193,13 @@ TOOLS: dict[str, dict] = {
         needs=("python",),
         artifacts=("*.wav", "*.mp3", "*.m4a"),
         slot="text",
+        # It writes audio, and the name we hand it decides the encoder: `torchaudio.save` reads the
+        # format off the extension, and `.mp4` is not one it has. `.mp4` is what every renderer here
+        # wants, so this is the one row that has to say otherwise.
+        out_ext=".wav",
+        # The same engine `voices` drives for narration. Declared here rather than matched with an
+        # `if tool == "voicestudio"` further down, so `exe_for` and `argv_for` read one field.
+        voice_engine=VOICE_ENGINE,
         role="Local tool · VoiceStudio", role_zh="本机工具 · VoiceStudio",
         prompt=(
             "You are VoiceStudio — local voice cloning and speech synthesis on this machine. Your "
@@ -193,6 +216,45 @@ TOOLS: dict[str, dict] = {
         tags=["audio", "tts", "voice"],
         licence="AGPL-3.0-only (closed-source commercial use needs a separate licence)",
         docs="https://github.com/omnivoice/VoiceStudio",
+    ),
+    "qwen3tts": _row(
+        "qwen3tts",
+        name="Qwen3-TTS", name_zh="Qwen3-TTS",
+        avatar="🎙️",
+        # 一次命令、一个 wav,和别的本机工具一样。`{text}` 是成员这一轮要说的那句话(整句作为**一个
+        # argv 元素**传进去);参考音色不在这里 —— 它走 `voice_engine`:`argv_for` 会把同一段参考录音
+        # 交给旁白侧那套旗标(`--ref_audio/--ref_text`),所以"群里的成员"和"视频里的旁白"用的是
+        # **同一个程序、同一段参考音频**,不会一个像一个人声、另一个不像。
+        cmd=["qwen-tts-say", "--text", "{text}", "--output", "{out}"],
+        install="cd ~/Documents/GitHub/Qwen3-TTS && uv venv --python 3.12 .venv && "
+                "uv pip install -U qwen-tts   # 再下 4.5GB 权重",
+        install_zh="cd ~/Documents/GitHub/Qwen3-TTS && uv venv --python 3.12 .venv && "
+                   "uv pip install -U qwen-tts   # 再下 4.5GB 权重",
+        # ⚠️ 检查的是**这个包和这套权重真的在**(`--check` 会 import torch/qwen_tts 并逐个找权重文件)。
+        # 只跑 `--help` 会在包没装好时也回答"就绪",而探针说假话正是这张表要防的那件事。
+        verify=["qwen-tts-say", "--check"],
+        needs=("python",),
+        artifacts=("*.wav", "*.mp3"),
+        slot="text",
+        out_ext=".wav",          # 它写音频;`.mp4` 会让 soundfile 在模型加载完之后才报格式错误
+        voice_engine="qwen3tts",  # 旁白侧也有它 —— 一个程序、一个答案(exe_for 向 voices 要)
+        role="Local tool · Qwen3-TTS", role_zh="本机工具 · Qwen3-TTS",
+        prompt=(
+            "You are Qwen3-TTS — offline speech synthesis on this machine, with voice cloning from a "
+            "3-second reference. Your turn speaks the sentence you were given and hands the audio "
+            "file back to the group. Speak the words as they are: you are the voice, not the author. "
+            "On this machine it runs on the CPU, so a long paragraph takes a while — say what you "
+            "produced (file name, length in seconds) or the real error, never an imagined take."
+        ),
+        prompt_zh=(
+            "你是 Qwen3-TTS —— 这台机器上的离线语音合成,能用 3 秒参考音频克隆音色。轮到你的回合时,"
+            "程序会把你收到的那句话念出来,并把音频文件交回群里。照原样念:你是嗓子,不是作者。"
+            "这台机器上用 CPU 跑,长段落要等一会儿 —— 请报告真实产出的东西(文件名、多少秒),"
+            "或者真实的报错,绝不描述一段你没听见的录音。"
+        ),
+        tags=["audio", "tts", "voice", "clone"],
+        licence="Apache-2.0",
+        docs="https://github.com/QwenLM/Qwen3-TTS",
     ),
     "openchatcut": _row(
         "openchatcut",
@@ -350,38 +412,58 @@ class LocalToolError(Exception):
 
 def _safe_out(engine: str, stamp: str = "") -> str:
     """The output file name. **Ours**, never the model's: it appears as an argv element, so letting
-    a sentence reach it would be the one place a stray word could change the command's meaning."""
-    return f"{folder_name(engine)}-{stamp or time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    a sentence reach it would be the one place a stray word could change the command's meaning.
+
+    The extension comes from the row (`out_ext`), because the tool takes it as an instruction about
+    what to encode. A synthesiser told to write `.mp4` fails at the last step — after the model has
+    been loaded and the audio generated — with a message about the format, which reads like a broken
+    install and is really a file name.
+    """
+    r = row(engine) or {}
+    return f"{folder_name(engine)}-{stamp or time.strftime('%Y%m%d-%H%M%S')}{r.get('out_ext') or '.mp4'}"
 
 
 def argv_for(engine: str, *, out: str, instruction: str, ref_audio: str = "",
-             ref_text: str = "") -> list[str]:
+             ref_text: str = "", cli_path: str = "") -> list[str]:
     """The command to run, with the slots filled.
 
     `{text}` is the member's sentence and goes in as **one element** — the whole reason this is a
-    list and not a string. It is truncated at a sensible length rather than rejected: a long
-    sentence is a normal thing to want spoken. An empty instruction leaves the slot as an empty
+    list and not a string. Oversized speech is rejected so no narration silently disappears.
+    An empty instruction leaves the slot as an empty
     argument, which is what these CLIs read as "nothing given" and answer with their own usage
     error — a better failure than one we invent.
 
     `ref_audio` is a cloned voice's reference recording. It is not a `{slot}` in the table: the
     *shape* of a cloning command belongs to whoever owns the engine, and `voices.argv_for` already
     owns it — so this delegates rather than keeping a second copy of the same flags that could
-    drift (`--ref_audio`, with underscores; argparse does not accept `--ref-audio`). A table with a
+    drift (Qwen uses hyphens, OmniVoice uses underscores). A table with a
     second spelling of the same command is how one of them ends up out of date.
+
+    The first element is the **resolved** program (`exe_for`), not the bare name the table states.
+    That is the whole difference between a turn that starts and one that dies with "command not
+    found" on a machine where the tool is installed into its own virtualenv — and `assemble` does
+    the same substitution for the narration path, for the same reason.
     """
     r = row(engine)
     if r is None:
         raise LocalToolError(i18n.pick_now(f"Unknown local tool \"{engine}\".", f"未知的本机工具「{engine}」。"))
-    text = " ".join(str(instruction or "").split())[:1000]
-    if ref_audio and r["tool"] == "voicestudio":
+    text = " ".join(str(instruction or "").split())
+    if r.get("voice_engine") and len(text) > 1000:
+        raise LocalToolError(i18n.pick_now(
+            "Speech exceeds 1000 characters. Split the narration into separate calls; nothing was spoken.",
+            "旁白超过 1000 字，请拆分为多个配音任务；本次未执行，未截掉任何内容。"))
+    exe = exe_for(engine, cli_path)
+    if ref_audio and r.get("voice_engine"):
         from . import voices
-        return voices.argv_for({"engine": VOICE_ENGINE, "name": engine, "path": ref_audio,
-                                "ref_text": ref_text},
-                               text, Path(out))
+        cmd = voices.argv_for({"engine": r["voice_engine"], "name": engine, "path": ref_audio,
+                               "ref_text": ref_text}, text, Path(out))
+        cmd[0] = exe
+        return cmd
     out_argv: list[str] = []
-    for tok in r["cmd"]:
-        if tok == "{out}":
+    for i, tok in enumerate(r["cmd"]):
+        if i == 0:
+            out_argv.append(exe)
+        elif tok == "{out}":
             out_argv.append(out)
         elif tok == "{text}":
             out_argv.append(text)
@@ -422,20 +504,31 @@ def _collect(root: Path) -> list[dict]:
 
 
 async def run(engine: str, *, workspace: Path, instruction: str, timeout: int,
-              on_line=None) -> dict:
+              on_line=None, cli_path: str = "", ref_audio: str = "", ref_text: str = "") -> dict:
     """Run one turn of a local tool. Returns what to say and what came out.
 
     Only files that appear **during this run** are reported: a tool folder accumulates output, and
     handing back last week's film as this turn's result is the kind of quiet wrongness that makes
     every later message suspect. `mtime` is the test — it is what the folder has to offer without
     keeping state of our own.
+
+    `cli_path` is the member's own "where I put this program" (see `exe_for`). It reaches the argv
+    here, in the same call the probe used, so what the settings page reported and what this starts
+    cannot be two different programs.
     """
     r = row(engine)
     if r is None:
         raise LocalToolError(i18n.pick_now(f"Unknown local tool \"{engine}\".", f"未知的本机工具「{engine}」。"))
     cwd = work_dir(Path(workspace), engine)
     out = _safe_out(engine)
-    argv = argv_for(engine, out=out, instruction=instruction)
+    if ref_audio:
+        ref = (Path(workspace) / ref_audio).resolve()
+        if not ref.is_relative_to(Path(workspace).resolve()) or not ref.is_file():
+            raise LocalToolError(i18n.pick_now("The reference audio must be an existing file in this group's workspace.",
+                                              "参考录音必须是本群工作目录中存在的文件。"))
+        ref_audio = str(ref)
+    argv = argv_for(engine, out=out, instruction=instruction, cli_path=cli_path,
+                    ref_audio=ref_audio, ref_text=ref_text)
     started = time.time()
     env = _env(cwd)
     proc = None
@@ -454,13 +547,14 @@ async def run(engine: str, *, workspace: Path, instruction: str, timeout: int,
     tail = bytearray()
     try:
         assert proc.stdout
-        while chunk := await proc.stdout.read(4096):
-            tail.extend(chunk)
-            if len(tail) > OUTPUT_KEEP:
-                del tail[:-OUTPUT_KEEP]
-            if on_line is not None:
-                await on_line(chunk.decode("utf-8", "replace"))
-        rc = await asyncio.wait_for(proc.wait(), timeout=max(MIN_TIMEOUT, int(timeout)))
+        async with asyncio.timeout(max(MIN_TIMEOUT, int(timeout))):
+            while chunk := await proc.stdout.read(4096):
+                tail.extend(chunk)
+                if len(tail) > OUTPUT_KEEP:
+                    del tail[:-OUTPUT_KEEP]
+                if on_line is not None:
+                    await on_line(chunk.decode("utf-8", "replace"))
+            rc = await proc.wait()
     except asyncio.TimeoutError:
         _kill(proc)
         raise LocalToolError(i18n.pick_now(
@@ -470,6 +564,9 @@ async def run(engine: str, *, workspace: Path, instruction: str, timeout: int,
             f"「{r['name']}」跑了 {int(timeout)} 秒还没结束,已停止。渲染本来就要几分钟 —— "
             "如果只是这台机器慢,请在成员的设置里把超时调大。",
         )) from None
+    except asyncio.CancelledError:
+        _kill(proc)
+        raise
     said = tail.decode("utf-8", "replace")
     files = [f for f in _collect(cwd) if f["mtime"] >= started - 1]
     return {"ok": rc == 0, "exit": rc, "text": said, "files": files, "command": argv,
@@ -498,8 +595,21 @@ def _env(cwd: Path) -> dict[str, str]:
     render that writes a few hundred megabytes into the user's real home directory (leaving it
     there) is a side effect a group chat has no business having. Everything the run needs lives
     under the folder it is already confined to.
+
+    **Except the model weights, which are the one thing a run does not produce.** They are already
+    on disk, downloaded once, and shared by every tool that needs the same model — so the paths that
+    point at them are put in *before* `HOME` moves. Otherwise the tool resolves its cache to
+    `<redirected home>/.cache/huggingface`, finds nothing, and tries to download 2.3 GB from a hub
+    this machine cannot reach (`bindirs.model_cache_env` has the measurement). A voice synthesiser
+    that cannot see a cached model is not "not installed" — it is being sent to fetch something it
+    already has, and it takes six minutes to say so.
     """
     env = dict(_child_env(cwd))
+    env.update(bindirs.model_cache_env(os.environ.get("HOME")))
+    qwen_model = os.environ.get("QWEN3_TTS_MODEL")
+    default_qwen = Path.home() / "Documents/GitHub/Qwen3-TTS/weights/Qwen3-TTS-12Hz-1.7B-Base"
+    if qwen_model or default_qwen.is_dir():
+        env["QWEN3_TTS_MODEL"] = qwen_model or str(default_qwen)
     env["HOME"] = str(cwd)
     env.setdefault("PATH", bindirs.search_path())
     return env
@@ -518,6 +628,76 @@ def _child_env(cwd: Path) -> dict[str, str]:
 # ------------------------------------------------------------------ the probe
 def _binary(name: str) -> str:
     return shutil.which(name) or bindirs.tool(name) or ""
+
+
+def _exe_ok(path: str) -> bool:
+    """Whether this really is a program that can be started.
+
+    An absolute path (or anything with a separator) is checked as a file, because that is what the
+    user pointed at and a typo there must not fall back to searching — a silent fallback turns a
+    mistyped path into "installed and ready" and then into a failure somewhere else. A bare name is
+    asked of `bindirs` (which already includes `PATH`).
+    """
+    if not path:
+        return False
+    p = Path(path).expanduser()
+    if p.is_absolute() or os.sep in path:
+        return p.is_file() and os.access(p, os.X_OK)
+    return bool(bindirs.tool(path))
+
+
+def exe_for(engine: str, cli_path: str = "") -> str:
+    """The program to run for this tool: the one the user named, or the one that can be found.
+
+    **One exit for all three readers** — `probe`, `argv_for` (so what a settings page reports is the
+    same program a turn starts), and the argv `run` actually executes. They have to agree, and the
+    way they disagree is the most confusing failure this table can produce: a dialog that says
+    "installed and ready" while the turn cannot start a program that was never on `PATH`.
+
+    Three sources, in this order, and each knows something the others do not:
+
+    * **the path set by hand** — the only way to name a program that lives where this app cannot
+      guess. VoiceStudio is the case that forced this: its install command is
+      `cd <VoiceStudio clone> && uv sync`, which puts the console script in *that clone's*
+      virtualenv (`.venv/bin/omnivoice-infer`). No amount of searching finds it — the location is the
+      user's to choose, so asking them, once, is the honest answer. The field is the member's own
+      `cfg["cli_path"]`, which used to be read for command-line engines only.
+    * **`voices.binary`** for an engine `voices` also owns: that module already knows the one fact
+      this table cannot state — a cloning engine normally lives in a project's virtualenv and is on
+      nobody's PATH — and it resolves the *same* binary the narration path runs. Two answers to
+      "where is omnivoice-infer" is how a member works while narration does not, or the reverse.
+    * **`bindirs`** (which starts with `PATH`, then the usual install prefixes) for everything else.
+
+    Falls back to the row's own name, unresolved, so a failure names the program rather than an
+    empty string.
+    """
+    r = row(engine)
+    if r is None:
+        return str(engine)
+    want = str(cli_path or "").strip()
+    if want:
+        return str(Path(want).expanduser())
+    if r.get("voice_engine"):
+        from . import voices  # deferred: `voices` is a sibling of this table, not a dependency of it
+        got = voices.binary(r["voice_engine"])
+        if got:
+            return got
+    head = r["cmd"][0]
+    return bindirs.tool(head) or head
+
+
+def _project_ready(engine: str, workspace: Path) -> bool:
+    """这个工具要渲染的工程,在不在它自己的工作目录里。
+
+    「工程类」工具(Remotion / HyperFrames / video-shotcraft)的 `verify` 是**在工程目录里**跑的,
+    所以「检查失败」既可能是没装、也可能是没工程 —— 这两件事的修法完全不同,判据只有一条,
+    两个调用点(检查失败那一句、已装好那一句)共用它。
+    """
+    d = Path(workspace) / folder_name(engine)
+    try:
+        return d.is_dir() and any(d.iterdir())
+    except OSError:
+        return False
 
 
 def _probe_cwd(engine: str, workspace: Path | None) -> Path:
@@ -576,7 +756,7 @@ def _node_major() -> int:
         return 0
 
 
-def probe(engine: str, *, workspace: Path | None = None) -> dict:
+def probe(engine: str, *, cli_path: str = "", workspace: Path | None = None) -> dict:
     """Can this tool run? `{found, path, version, hint, install}` — the same shape the external
     agent dialog already renders, so the interface needs no new vocabulary for it.
 
@@ -584,6 +764,9 @@ def probe(engine: str, *, workspace: Path | None = None) -> dict:
     tool itself there, and does the folder it will work in have anything to work on. A missing
     project is a *hint*, not a failure: the member is legitimately installed and simply has nothing
     to render yet, and that is a different thing to fix.
+
+    `cli_path` is the location the user set by hand (the member's own field). It goes through
+    `exe_for`, so the path this reports is the path a turn will start.
     """
     r = row(engine)
     if r is None:
@@ -591,7 +774,6 @@ def probe(engine: str, *, workspace: Path | None = None) -> dict:
                 "hint": i18n.pick_now(f"Unknown local tool \"{engine}\".", f"未知的本机工具「{engine}」。"),
                 "install": "", "install_zh": "", "name": engine}
     missing: list[str] = []
-    notes: list[str] = []
     for need in r["needs"]:
         binary, what = _NEEDS.get(need, (need, need))
         if not _binary(binary):
@@ -612,37 +794,64 @@ def probe(engine: str, *, workspace: Path | None = None) -> dict:
     # needs node *and* the package. `-y` would let npx fetch it silently, turning "not installed"
     # into a several-hundred-megabyte download in the middle of a turn, so it is not used.
     head = r["cmd"][0]
-    path = _binary(head)
+    exe = exe_for(engine, cli_path)
+    path = exe if _exe_ok(exe) else ""
     if not path:
-        missing.append(head)
+        # Name the program, and — when the user pointed at it — name their path too: "not found" for
+        # a path you typed a moment ago is a different sentence from "not found" for a bare name.
+        missing.append(head if exe == head else f"{head} ({exe})")
     # And now the tool itself, which is a different question from its runtime: a machine with node
     # and npm does not have HyperFrames. Answered by running the row's own `verify` — with
     # `--no-install` where npm is involved, so this stays a check and never becomes a download in
-    # the middle of a settings page.
+    # the middle of a settings page. The verified command is the resolved one, not the bare name.
     version = ""
     if not missing and r.get("verify"):
-        rc, said, err = _try(r["verify"], cwd=_probe_cwd(engine, workspace))
+        check = [exe, *list(r["verify"][1:])] if path else list(r["verify"])
+        rc, said, err = _try(check, cwd=_probe_cwd(engine, workspace))
         if rc == 0:
             version = (said.strip().splitlines() or [""])[0][:120]
         else:
-            # A non-zero exit is reported as "not found", which is the actionable reading: either
-            # it is genuinely absent, or it is installed somewhere this check cannot see — and both
-            # are answered by the same install command.
-            missing.append(r["verify"][0] if not str(r["verify"][0]).startswith("npx")
-                           else r["verify"][2])
+            # ⚠️ 这一句以前是 `check[2] if check[0] 以 "npx" 开头` —— 而 `check[0]` 是**解析后的
+            # 绝对路径**(`/usr/local/bin/npx`),永远不以 "npx" 开头,于是每一条 verify 失败都被说成
+            # 「缺少 /usr/local/bin/npx」。用户报「hyperframes 用不了」时,应用就是这么答的,
+            # 而 npx 明明是好的(`npx --version` → 10.9.4):真正缺的是**那个包**。
+            # 现在不猜是哪个文件缺:说清是「这个工具自己的检查命令失败了」,并在提示里带上安装命令。
+            missing.append(i18n.pick_now(
+                f"{r['name']} itself (its own check exited {rc})",
+                f"{r['name_zh']} 本身(它自己的检查命令退出码 {rc})"))
             if err.strip():
                 version = err.strip().splitlines()[-1][:160]
     if not missing and not version:
         version = i18n.pick_now("the runtimes it needs are here", "它需要的运行时都在")
     hint = ""
     if missing:
-        hint = i18n.pick_now(
-            "Not ready: " + "; ".join(missing) + f". Install it with: {r['install']}",
-            "还不能用:缺少 " + "; ".join(missing) + f"。安装: {r['install_zh']}",
-        )
+        # ⚠️ 对「渲染一个工程」的工具(Remotion / HyperFrames / video-shotcraft),检查失败有**两种**
+        # 完全不同的原因,而这句话以前只说第一种:工具没装好,或者**工程不在** —— `verify` 是在
+        # 工具自己的工作目录里跑的,`npx --no-install remotion` 只有在那个工程里才找得到 remotion。
+        # 实测:工程还没放进去时提示写「缺少 Remotion 本身(它自己的检查命令退出码 1)」,
+        # 用户照着装也装不出结果 —— 真正要做的是把工程放进去。所以工程不在时先说那一句。
+        # ⚠️ `workspace=None` 也要走这一支:型号清单那个接口(设置页的引擎列表)是**不带工作目录**问的,
+        # 于是「工程不在」这一句以前永远只出现在群里的那一份报告上,设置页看到的还是「缺少 Remotion
+        # 本身」—— 而用户正是在设置页里判断「这个工具能不能用」。没有绝对路径时就写相对位置。
+        if r.get("project") and (workspace is None or not _project_ready(engine, workspace)):
+            where = (str(Path(workspace) / folder_name(engine)) if workspace is not None
+                     else i18n.pick_now(f"this group's {folder_name(engine)}/ folder",
+                                        f"本群工作目录里的 {folder_name(engine)}/"))
+            hint = i18n.pick_now(
+                "Not usable yet: " + "; ".join(missing) + f". This one renders {r['project']} — "
+                f"put one in {where} first, then it will run. (It also has to be installed: {r['install']}.)",
+                "还不能用:" + "; ".join(missing) + f"。这个工具渲染的是{r['project_zh']} —— 先把它放进 "
+                f"{where},再让它跑。(它本身也要装好:{r['install_zh']}。)",
+            )
+        else:
+            hint = i18n.pick_now(
+                "Not ready: " + "; ".join(missing) + f". Install it with: {r['install']} — or set the "
+                "path to the program by hand in this member's settings.",
+                "还不能用:缺少 " + "; ".join(missing) + f"。安装: {r['install_zh']} —— 也可以在这个成员的"
+                "设置里手动指定该程序的路径。",
+            )
     elif workspace is not None and r.get("project"):
-        d = Path(workspace) / folder_name(engine)
-        if not d.is_dir() or not any(d.iterdir()):
+        if not _project_ready(engine, workspace):
             hint = i18n.pick_now(
                 f"Installed and ready. This one renders {r['project']} — and that folder is still "
                 f"empty, so its first turn will say there is nothing to render.",

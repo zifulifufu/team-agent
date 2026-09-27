@@ -21,6 +21,14 @@ def health(c):
     return c.get("/api/models-health").json()["health"]
 
 
+def test_provider_readiness_includes_environment_credentials_without_exposing_them(tmp_path, monkeypatch):
+    c, _, _ = make(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "isolated-environment-credential")
+    provider = next(p for p in c.get("/api/providers").json() if p["id"] == "deepseek")
+    assert provider["credentials_ready"] and not provider["has_key"]
+    assert "api_key" not in provider and "isolated-environment-credential" not in str(provider)
+
+
 def test_states_off_and_unknown(tmp_path):
     c, store, _ = make(tmp_path)
 
@@ -88,6 +96,22 @@ def test_the_local_probe_stores_its_verdict_in_one_language(tmp_path, monkeypatc
     assert store.all_health()[ol["id"]]["detail"] == \
         "Ollama is not running (or the address is wrong):ConnectError"
     assert h[ol["id"]]["detail"] == "Ollama 没有在运行(或地址不对):ConnectError"
+
+
+def test_old_quota_record_stays_bad_even_when_circuit_is_open(tmp_path, monkeypatch):
+    c, store, _ = make(tmp_path)
+    store.update_provider("deepseek", {"api_key": "sk-test-credit"})
+    mid = "deepseek/deepseek-v4-pro"
+    store.set_health(mid, "limited", "RateLimitError: You exceeded your current API quota.")
+    monkeypatch.setattr(c.app.state.router, "circuit_open", lambda _: True)
+    record = c.get("/api/models-health?lang=en").json()["health"][mid]
+    assert record["state"] == "bad"
+    assert "waiting will not refill" in record["detail"]
+    assert "retries automatically" not in record["detail"]
+    # A later successful check must remove the historical quota warning.
+    store.set_health(mid, "ok", "Connected")
+    monkeypatch.setattr(c.app.state.router, "circuit_open", lambda _: False)
+    assert c.get("/api/models-health").json()["health"][mid]["state"] == "ok"
 
 
 def test_check_records_ok_and_bad_and_limited(tmp_path):

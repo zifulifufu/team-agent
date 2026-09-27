@@ -144,7 +144,8 @@ async def test_a_rendered_clip_lands_in_the_group_workspace(video_env, fake):
     assert out.ok, out.text
     path = video_dir(store, g) / out.files[0]["name"]
     assert path.read_bytes() == MP4
-    assert out.files == [{"kind": "video", "name": path.name, "bytes": len(MP4), "seconds": 8}]
+    assert out.files == [{"kind": "video", "name": path.name, "path": f"video/{path.name}",
+                          "bytes": len(MP4), "seconds": 8}]
     # What was sent is what was asked for
     assert srv.payloads[0]["prompt"].startswith("a cat asleep")
     assert srv.payloads[0]["target"] == {"short_edge": 768, "aspect_ratio": "16:9", "duration_seconds": 8}

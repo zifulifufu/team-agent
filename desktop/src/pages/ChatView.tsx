@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Eraser, PanelRight } from "lucide-react";
-import { api, downloadChat, downloadTasks, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message } from "../api";
+import { Download, Eraser, Package } from "lucide-react";
+import { api, downloadChat, downloadTasks, useGroupSocket, type Approval, type Attachment, type ChatEvent, type Message, type MessageFeedback } from "../api";
 import { useData } from "../data";
 import { draftFiles, draftText, setDraftFiles, setDraftText } from "../drafts";
 import { useRoute } from "../hooks";
@@ -10,37 +10,46 @@ import Bubble from "../components/Bubble";
 import Composer from "../components/Composer";
 import ApprovalBar from "../components/ApprovalBar";
 import PlanCard from "../components/PlanCard";
-import GroupPanel, { useCapabilities, type PanelTab } from "../components/GroupPanel";
+import { useCapabilities } from "../components/group/capabilities";
 import WorkspacePicker from "../components/WorkspacePicker";
-import AddMemberButton from "../components/members/AddMemberButton";
 import "../styles/members.css";
-import type { SettingsTab } from "../settings/SettingsModal";
 
 interface Props {
   gid: string;
   autoSend?: string;
   onAutoSent: () => void;
-  onSettings: (tab: SettingsTab) => void;
-  /** Open this group's own library in the main area */
-  onOpenLibrary: () => void;
+  /** The outputs column on the right of this chat: whether it is showing, how many files it counted,
+   *  and how to flip it. The count is computed *there* (one place, one number) and only displayed
+   *  here — two independent readings of "how many files" is a mistake this project has already made. */
+  outputs: { open: boolean; count: number | null; onToggle: () => void };
 }
 
-export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpenLibrary }: Props) {
+export default function ChatView({ gid, autoSend, onAutoSent, outputs }: Props) {
   const { t } = useI18n();
-  const { groups, agents, models, reloadGroups } = useData();
+  const { groups, agents, models, reloadGroups, reload } = useData();
+  useEffect(() => {
+    let live = true;
+    api.feedback(gid, 500).then((board) => {
+      if (!live) return;
+      setJudged(new Map((board.items ?? []).map((f) => [f.message_id, f])));
+    }).catch(() => { /* no ratings yet, or none reachable: the keys still work */ });
+    return () => { live = false; };
+  }, [gid]);
   const confirm = useConfirm();
   const route = useRoute();
   const [msgs, setMsgs] = useState<Message[]>([]);
+  // What the user has already judged in this group, by message id. Read once per group and updated
+  // from each rating's own answer, so a thumb that is lit is one the backend agrees is lit.
+  const [judged, setJudged] = useState<Map<string, MessageFeedback>>(new Map());
   // Initialised from the draft store, not from "": this component is remounted whenever the group
   // changes (`key={view.gid}` in App), and a draft that lives only here dies with the mount.
   const [text, setText] = useState(() => draftText(gid));
   const [files, setFiles] = useState<Attachment[]>(() => draftFiles(gid));
   const [busy, setBusy] = useState(false);
   const [wsUp, setWsUp] = useState(false);
-  // The group's own settings open as a dialog, so they start closed: a dialog that opened itself
-  // on a wide screen would be in the way of the conversation it belongs to.
-  const [panel, setPanel] = useState(false);
-  const [panelTab, setPanelTab] = useState<PanelTab>("ext");
+  // ⚠️ 这里原来有两个 state 管「本群设置」那个对话框。2026-09-25 用户要求把整个面板删掉
+  // (「技能、MCP、提示词都一样,在这个地方不合适,可以删除」),所以连它的开合状态、那个齿轮按钮
+  // 和 `GroupPanel` 一起没了。**能力列表(`useCapabilities`)留着** —— 成员栏要它。
   const [hl, setHl] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [err, setErr] = useState("");
@@ -56,7 +65,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
     [group, agentById],
   );
 
-  const { caps, err: capsErr, refresh: refreshCaps } = useCapabilities(group);
+  const { caps } = useCapabilities(group);
   const toolSources = useMemo(() => new Map((caps?.tools ?? []).map((t) => [t.name, t.source])), [caps]);
 
   /** Re-sync from the backend: messages, pending approvals, whether a turn is still
@@ -119,8 +128,15 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
   /** Reference an earlier message: the token goes in the composer, and the backend inlines that
    *  message's text into the prompt — so quoting an old turn never depends on it still fitting in
    *  the context window. */
-  const quote = useCallback((m: Message) => {
-    setText((cur) => `${cur}${cur && !/\s$/.test(cur) ? " " : ""}@msg:${m.id} `);
+  const quote = useCallback((text: string, whole: boolean) => {
+    if (whole) {
+      setText((cur) => `${cur}${cur && !/\s$/.test(cur) ? " " : ""}@msg:${text} `);
+      return;
+    }
+    // A passage is quoted as text, not as a reference: what the user selected is exactly what they
+    // want the members to answer about, and `@msg:` would inline the whole message instead.
+    const lines = text.split("\n").map((l) => `> ${l}`).join("\n");
+    setText((cur) => `${cur}${cur && !/\s$/.test(cur) ? "\n\n" : ""}${lines}\n\n`);
   }, []);
 
   /** Clicking a row on the plan card: scroll to that message and flash it briefly. */
@@ -162,6 +178,12 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
               tools[e.index] = e.call;
               return { ...m, meta: { ...m.meta, tools } };
             });
+          case "thinking":
+            // Kept in `meta` so that the streaming path and the stored message agree on where the
+            // working lives; "" is the reset, not an append.
+            return cur.map((m) => (m.id === e.message_id
+              ? { ...m, meta: { ...m.meta, thinking: e.text === "" ? "" : (m.meta?.thinking ?? "") + e.text } }
+              : m));
           case "message_discard":
             return cur.filter((m) => m.id !== e.message_id);
           case "stopped":
@@ -171,6 +193,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
         }
       });
       if (e.type === "approval") setApprovals((cur) => (cur.some((a) => a.id === e.approval.id) ? cur : [...cur, e.approval]));
+      if (e.type === "group_updated") void reload();
       if (e.type === "message_start" || (e.type === "message" && e.message.sender_type === "user")) setBusy(true);
       if (e.type === "approval_done") setApprovals((cur) => cur.filter((a) => a.id !== e.id));
       if (e.type === "stopped") {
@@ -182,7 +205,7 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
         void reloadGroups();
       }
     },
-    [reloadGroups],
+    [reloadGroups, reload],
   );
   useGroupSocket(gid, onEvent, setWsUp);
 
@@ -208,7 +231,9 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
     if (autoSend && wsUp && !autoSent.current) {
       autoSent.current = true;
       onAutoSent();
-      void sendText(autoSend);
+      void sendText(autoSend).then((ok) => {
+        if (!ok) setText((current) => current || autoSend);
+      });
     }
   }, [autoSend, wsUp, onAutoSent, sendText]);
 
@@ -259,9 +284,14 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
               <Eraser size={16} />
             </button>
             <ExportMenu gid={gid} />
-            <AddMemberButton group={group} align="right" label={t("Add member")} className="icon-btn" />
-            <button className={"icon-btn" + (panel ? " on" : "")} title={t("This group's settings: skills, plugins, MCP, knowledge bases, prompt")} aria-label={t("This group's settings")} aria-pressed={panel} onClick={() => setPanel((p) => !p)}>
-              <PanelRight size={16} />
+            {/* 「成果」入口就在聊天头部:那一栏挂在**这个对话**的右侧,所以打开/收起它的开关也
+                应该在对话自己身上。面板开着时它是亮着的(和「本群设置」那个按钮同一种写法)。 */}
+            <button className={"icon-btn" + (outputs.open ? " on" : "") +
+                               (outputs.count ? " with-n" : "")}
+              title={t(outputs.open ? "Hide the outputs column" : "Show the outputs column")}
+              aria-label={t("Outputs")} aria-pressed={outputs.open} onClick={outputs.onToggle}>
+              <Package size={16} />
+              {outputs.count ? <span className="n">{outputs.count}</span> : null}
             </button>
           </div>
         </header>
@@ -281,10 +311,13 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
                 <Bubble
                   key={m.id}
                   m={m}
+                  gid={gid}
+                  groups={groups}
                   agent={m.sender_id ? agentById.get(m.sender_id) : undefined}
                   models={models}
                   toolSources={toolSources}
                   highlight={hl === m.id}
+                  judged={judged.get(m.id)}
                   onQuote={quote}
                 />
               ),
@@ -317,20 +350,6 @@ export default function ChatView({ gid, autoSend, onAutoSent, onSettings, onOpen
         </div>
       </section>
 
-
-      {panel && (
-        <GroupPanel
-          group={group}
-          caps={caps}
-          capsErr={capsErr}
-          refreshCaps={refreshCaps}
-          tab={panelTab}
-          onTab={setPanelTab}
-          onSettings={onSettings}
-          onOpenLibrary={onOpenLibrary}
-          onClose={() => setPanel(false)}
-        />
-      )}
     </div>
   );
 }

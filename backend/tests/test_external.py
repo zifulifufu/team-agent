@@ -264,6 +264,42 @@ def test_parser_partial_deltas_not_duplicated_by_final_assistant_message():
     assert "".join(deltas) == "你好世界" and p.outcome().text == "你好世界"
 
 
+def test_parser_streams_the_engines_working_separately_from_its_answer():
+    """The engines write their plan out before acting on it, in a "thinking" block. That plan is
+    what explains the tool calls that follow, so it goes to the live view — and it must not be mixed
+    into the answer, which is what is kept as the member's reply."""
+    deltas, thoughts = [], []
+
+    async def d(t):
+        deltas.append(t)
+
+    async def r(t):
+        thoughts.append(t)
+
+    async def tl(i, e):
+        pass
+
+    p = StreamParser(d, tl, r)
+    lines = [
+        # Incremental form: one thinking delta per token.
+        j({"type": "stream_event", "event": {"type": "content_block_delta",
+                                             "delta": {"type": "thinking_delta", "thinking": "先读"}}}),
+        j({"type": "stream_event", "event": {"type": "content_block_delta",
+                                             "delta": {"type": "thinking_delta", "thinking": "index.ts"}}}),
+        j({"type": "assistant", "message": {"content": [{"type": "text", "text": "读完了。"}]}}),
+        # Whole-block form, for an engine that sends no incremental events.
+        j({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "再看一眼测试"},
+                                                        {"type": "text", "text": "结论在这里。"}]}}),
+        j({"type": "result", "subtype": "success", "result": "结论在这里。"}),
+    ]
+    for ln in lines:
+        asyncio.run(p.feed(ln))
+
+    assert "".join(thoughts) == "先读index.ts再看一眼测试"
+    assert "".join(deltas) == "读完了。\n\n结论在这里。"
+    assert p.outcome().text == "结论在这里。"
+
+
 def test_parser_error_result_unknown_events_and_non_json_fallback():
     p = asyncio.run(feed_all([j({"type": "weird"}), j([1, 2]), "not json", "",
                               j({"type": "result", "subtype": "error_max_turns", "is_error": True, "errors": ["太多轮了"]})]))

@@ -1,3 +1,4 @@
+import { CapabilityBinding, CapabilityFilter, useCapabilityGroup } from "./CapabilityWorkspace";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppWindow, ChevronRight, ExternalLink, FileJson, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type McpServer, type McpTemplate } from "../api";
@@ -131,9 +132,10 @@ function Summary({ servers, filter, setFilter }: {
   const { t } = useI18n();
   const counts: { key: string; label: string; n: number }[] = [
     { key: "all", label: t("All"), n: servers.length },
-    { key: "ready", label: t("Connected"), n: servers.filter((s) => s.status === "ready").length },
-    { key: "error", label: t("Connection failed"), n: servers.filter((s) => s.status === "error").length },
-    { key: "idle", label: t("Not connected"), n: servers.filter((s) => s.status === "idle").length },
+    { key: "ready", label: t("Connected"), n: servers.filter((s) => s.enabled && s.status === "ready").length },
+    { key: "connecting", label: t("Connecting…"), n: servers.filter((s) => s.enabled && s.status === "connecting").length },
+    { key: "error", label: t("Connection failed"), n: servers.filter((s) => s.enabled && s.status === "error").length },
+    { key: "idle", label: t("Not connected"), n: servers.filter((s) => s.enabled && s.status === "idle").length },
     { key: "off", label: t("Disabled"), n: servers.filter((s) => !s.enabled).length },
   ];
   return (
@@ -164,6 +166,9 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   const [busy, setBusy] = useState<Record<string, string>>({});       // id → what it is doing
   const [rowErr, setRowErr] = useState<Record<string, string>>({});
   const [stateFilter, setStateFilter] = useState("all");
+  const group = useCapabilityGroup();
+  const [q, setQ] = useState("");
+  const [attachedOnly, setAttachedOnly] = useState(false);
   const timer = useRef<number>();
 
   const load = useCallback(async () => {
@@ -225,11 +230,11 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
   // "Which ones are broken?" is the question this page gets asked, and answering it by reading a
   // list of twelve is work. The strip above counts them and each count filters.
   const shownServers = useMemo(() => {
-    const l = servers ?? [];
+    const l = (servers ?? []).filter((s) => `${s.name} ${s.description}`.toLowerCase().includes(q.toLowerCase()) && (!group || !attachedOnly || group.ext.mcp.includes(s.id)));
     if (stateFilter === "all") return l;
     if (stateFilter === "off") return l.filter((s) => !s.enabled);
     return l.filter((s) => s.enabled && s.status === stateFilter);
-  }, [servers, stateFilter]);
+  }, [servers, stateFilter, q, group, attachedOnly]);
 
   const openAdd = (init: Partial<FormInit> = {}) => setDialog({ server: null, init: { ...EMPTY_INIT, ...init } });  const openEdit = (s: McpServer) =>
     setDialog({
@@ -253,19 +258,14 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
           <button className="btn primary" onClick={() => openAdd()}><Plus size={15} /> {t("Add an MCP server")}</button>
         </div>
       </div>
-      <p className="sp-desc">
-        {t("An MCP server is a local process (or a remote service) that members use to reach external tools such as reading and writing files or fetching web pages. It is not the same thing as a plugin. Once you enable it under Extensions in the chat's right-hand panel, it connects the first time it is actually used; you can also connect it here by hand to see whether it works.")}{onTab && <> <button className="link" onClick={() => onTab("gallery")}>{t("Template gallery")}</button>{t(" has some ready-made MCP setups (always imported disabled).")}</>}
-      </p>
-      <Callout tone="warn" title={t("An MCP server runs commands with your privileges")}>
-        {t("Local commands run on your computer with your account's privileges, so only add servers you trust. Remote services receive whatever members send them.")}
-      </Callout>
-
+      <p className="sp-desc">{t("MCP connects local or remote tool services. Configure and enable a server, then attach it to a group. A connected server is usable only by groups that have it attached.")}{onTab && <> <button className="link" onClick={() => onTab("gallery")}>{t("Template gallery")}</button></>}</p>
       {note && <div className="ok-text" role="status" style={{ marginBottom: 8 }}>{note}</div>}
       {err && <div className="ext-errbox"><div className="err">{t("Failed to load: {err}", { err })}</div><button className="btn small" onClick={() => void load()}>{t("Retry")}</button></div>}
       {!servers && !err && <div className="empty"><Spin /> {t("Loading…")}</div>}
       {servers && servers.length > 0 && (
         <Summary servers={servers} filter={stateFilter} setFilter={setStateFilter} />
       )}
+      {servers && <CapabilityFilter query={q} onQuery={setQ} attachedOnly={attachedOnly} onAttachedOnly={setAttachedOnly} total={servers.length} shown={shownServers.length} />}
       {servers && (
         <div className="card flush">
           {servers.length === 0 && (
@@ -273,7 +273,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
               {t("No MCP servers yet. Start from a template below (it pre-fills the form for you to confirm and save),")}<br />{t("or click Add an MCP server to fill it in by hand.")}
             </div>
           )}
-          {servers.length > 0 && stateFilter !== "all" && shownServers.length === 0 && (
+          {servers.length > 0 && shownServers.length === 0 && (
             <div className="empty">{t("Nothing in this state right now.")}</div>
           )}
           {shownServers.map((s) => {
@@ -301,8 +301,9 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
                     </div>
                     <div className="ext-item-sub">
                       {s.status === "ready" ? t("{n} tools", { n: s.tools.length }) : t("Tools are listed once connected")}
-                      {inGroups ? t(" · enabled in {n} groups", { n: inGroups }) : t(" · not enabled in any group yet")}
+                      {inGroups ? t(" · attached to {n} groups", { n: inGroups }) : t(" · not attached to any group yet")}
                     </div>
+                    <CapabilityBinding key={group?.id} kind="mcp" id={s.id} name={s.name} problem={!s.enabled ? t("Globally disabled") : s.status === "error" ? t("Connection failed") : s.status !== "ready" ? t("Connects on first use") : ""} />
                     {(rowErr[s.id] || (st === "error" && s.error)) && <Folded text={rowErr[s.id] || s.error || ""} />}
                   </div>
                   <div className="ext-item-actions">
@@ -334,6 +335,8 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
         </div>
       )}
 
+      <details className="ext-details"><summary>{t("Templates and installation notes")}</summary>
+      <Callout tone="warn" title={t("An MCP server runs commands with your privileges")}>{t("Local commands run on your computer with your account's privileges, so only add servers you trust. Remote services receive whatever members send them.")}</Callout>
       <div className="sec">{t("Templates")}</div>
       <p className="muted small" style={{ margin: "-4px 0 10px", lineHeight: 1.7 }}>{t("Clicking a template only fills the form in; it is not saved straight away. Check the command, then save.")}</p>
       <div className="ext-tpl-grid">
@@ -375,6 +378,7 @@ export default function McpPage({ onTab }: { onTab?: (t: SettingsTab) => void } 
         ))}
       </div>
 
+      </details>
       {dialog && (
         <McpDialog
           server={dialog.server}

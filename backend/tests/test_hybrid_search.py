@@ -289,4 +289,11 @@ def test_the_index_endpoint_names_a_knowledge_base_that_has_nothing_in_it(tmp_pa
 
 
 def _kb(app) -> str:
-    return app.state.store.list_kbs()[0]["id"]
+    """A knowledge base to put a test document into.
+
+    `list_kbs()[0]` used to do, because every group was handed one the moment it was created. Nothing
+    creates one automatically any more (`library` says why, above `workspace_kb`), so this asks for
+    the shared one the way the API does — created on demand, and the natural home for a document that
+    belongs to no particular group.
+    """
+    return app.state.ctx.library.shared_kb()["id"]

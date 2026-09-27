@@ -168,6 +168,25 @@ def test_a_hook_that_is_off_costs_nothing(data, store, make_router):
 
 
 # ------------------------------------------------------------------ observers
+async def test_slow_observer_start_cannot_arrive_after_end(data, monkeypatch):
+    observer(data, events=("round.start", "round.end"))
+    m = manager(data)
+    seen_events = []
+
+    async def delayed(hook, event, payload):
+        if event == "round.start" and payload["group_id"] == "slow":
+            await asyncio.sleep(0.03)
+        seen_events.append((payload["group_id"], event))
+        return {}, ""
+    monkeypatch.setattr(m, "_run", delayed)
+    m.notify("round.start", "slow", {})
+    m.notify("round.end", "slow", {})
+    m.notify("round.start", "other", {})
+    await m.drain()
+    assert seen_events == [("other", "round.start"), ("slow", "round.start"), ("slow", "round.end")]
+    assert not m._observer_tails
+
+
 def test_round_start_and_round_end_reach_an_observer(data, store, make_router):
     observer(data, events=("round.start", "round.end"))
     orch, m = orchestrator(store, make_router, data)
@@ -224,7 +243,7 @@ def test_a_gate_can_rewrite_the_arguments(store, data, make_router):
                                    "parameters": {}, "source": "builtin"}
     seen_args: list[dict] = []
 
-    async def fake_dispatch(ctx_, spec, args, timeout):
+    async def fake_dispatch(ctx_, spec, args, timeout, on_progress=None):
         seen_args.append(dict(args))
         return "done", True, []
 
@@ -287,7 +306,7 @@ def test_a_gate_never_sees_a_credential(store, data, make_router):
                           "parameters": {}, "source": "plugin"}
     got: list[dict] = []
 
-    async def fake_dispatch(ctx_, spec, args, timeout):
+    async def fake_dispatch(ctx_, spec, args, timeout, on_progress=None):
         got.append(dict(args))
         return "done", True, []
 

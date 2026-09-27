@@ -148,7 +148,7 @@ async def test_an_outside_model_fills_the_cause_and_the_fix(store, make_router, 
                 ensure_ascii=False) + "\n```"
         return script_with_no_file(messages)
 
-    monkeypatch.setattr(scoring, "pick_judge", lambda *a, **k: "deepseek/deepseek-chat")
+    monkeypatch.setattr(scoring, "pick_judge", lambda *a, **k: "deepseek/deepseek-flash")
     orch, g = setup(store, make_router, FakeLLM(script={"deepseek": script}, default=script))
     c = Collector()
     await orch.handle_user_message(g["id"], "写一份报告", c)

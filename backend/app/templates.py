@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from . import i18n
+from . import media
 from . import proclog
 from .presets import (
     AGENT_PRESET_BY_KEY,
@@ -111,7 +112,7 @@ def process_status(store: Store) -> dict:
         for e in entries:
             counts[e.status] = counts.get(e.status, 0) + 1
             recent.append({"group": g["name"], "gid": g["id"], **e.brief()})
-    recent.sort(key=lambda r: (r.get("status") != "open", r.get("found") or ""), reverse=True)
+    recent.sort(key=lambda r: (r.get("status") in ("open", "fixed"), r.get("found") or ""), reverse=True)
     return {
         "name": (agent or {}).get("name", ""),
         "hidden": bool((agent or {}).get("hidden")),
@@ -166,7 +167,7 @@ def keep_process_engineer(store: Store, group_id: str | None = None) -> list[str
 
 
 def create_group_from_template(store: Store, tid: str, name: str | None = None) -> dict | None:
-    t = next((x for x in TEMPLATES if x["id"] == tid), None)
+    t = find_template(store, tid)
     if not t:
         return None
     agents = [a for a in (ensure_agent(store, n) for n in t["members"]) if a]
@@ -199,8 +200,16 @@ def agent_view(agent: dict, lang: str | None = None) -> dict:
     """One member, shown in `lang`."""
     lang = lang or i18n.current()
     out = localize_member(agent, lang)
+    # Whether this member can be the one in charge rides along with every member, because the client
+    # needs it to build the "who is in this group" picker: the first member chosen becomes the host,
+    # and a generator or an external agent cannot take that seat. Told here rather than inferred by
+    # the client from `engine`/`origin` — the rule lives in `media.may_host`, and a second copy of it
+    # in TypeScript is a copy that drifts.
+    out = dict(out)
+    out["may_host"] = media.may_host(agent)
+    from .cooperation import is_listener
+    out["is_tool"] = is_listener(agent)
     if out.get("skills"):
-        out = dict(out)
         out["skills"] = [display_skill_name(n, lang) for n in out["skills"]]
     return out
 
@@ -223,14 +232,88 @@ def group_view(group: dict | None, lang: str | None = None) -> dict | None:
     return out
 
 
-def template_rows() -> list[dict]:
-    """Group templates with every displayed name and text in the request language."""
+def _new_template_id() -> str:
+    """A template id. Imported inside the function: `templates` is imported *by* `store`, so naming
+    `new_id` at module level would close the cycle (see the `TYPE_CHECKING` note at the top)."""
+    from .store import new_id
+    return f"user-{new_id()[:8]}"
+
+
+def user_templates(store: "Store") -> list[dict]:
+    """Templates made from groups the user actually ran — newest first.
+
+    These come **before** the built-in ones everywhere templates are listed, for the reason they
+    exist: a team that has been used once is a better starting point than one that was designed, and
+    the user who just saved it expects to see it at the top rather than to go looking for it.
+    """
+    rows = store.list_group_templates()
+    for r in rows:
+        r["user"] = True
+        r["home"] = r.get("home", True)
+    return rows
+
+
+def find_template(store: "Store", tid: str) -> dict | None:
+    """A built-in template by id, or one the user saved. One lookup, used by both readers."""
+    return next((x for x in [*store.list_group_templates(), *TEMPLATES] if x["id"] == tid), None)
+
+
+def template_rows(store: "Store | None" = None) -> list[dict]:
+    """Group templates with every displayed name and text in the request language.
+
+    The user's own first (newest first), then the built-in ones. Names of members and skills are
+    resolved through the same display functions in both halves: a saved template stores canonical
+    names, so the Chinese interface shows Chinese ones for the built-in members it reused.
+    """
     lang = i18n.current()
     out = []
-    for t in TEMPLATES:
-        row = i18n.localize(t, lang)
+    for t in [*(user_templates(store) if store is not None else []), *TEMPLATES]:
+        row = i18n.localize(t, lang) if not t.get("user") else dict(t)
         row["members"] = [display_name(n, lang) for n in t.get("members", [])]
         row["host"] = display_name(t.get("host", ""), lang)
         row["skills"] = [display_skill_name(s, lang) for s in t.get("skills", [])]
+        # Where this template came from, for the ones made from a group: the panel shows it so a
+        # list of similar teams can be told apart by the group each was taken from.
+        row["from_group_name"] = t.get("from_group_name", "")
         out.append(row)
     return out
+
+
+def save_group_as_template(store: "Store", gid: str, name: str = "") -> dict:
+    """Keep this group's working set as a template.
+
+    What is stored is what makes the group work: its members, its host, its skills, its prompt — by
+    **name**, not by id, because a template outlives the rows it was read from. Hidden members (the
+    process engineer) are left out on purpose: it re-joins every group by itself, and a template that
+    listed it would look like it needed to.
+
+    A model member that only exists in this store is still written down: recreating the template
+    elsewhere will find it here if it was created here, and quietly skip it if it was not — a
+    template is a starting point, not a guarantee about somebody else's machine.
+    """
+    group = store.get_group(gid)
+    if not group:
+        raise ValueError(i18n.pick_now("No such group chat", "没有这个群聊"))
+    members = [m for m in store.group_members(gid) if not m.get("hidden")]
+    host_id = str(group.get("host_agent_id") or "")
+    host = next((m["name"] for m in members if m["id"] == host_id), members[0]["name"] if members else "")
+    # A generating member is not part of the dialogue roster: including it would put a video model on
+    # the list of speakers when the template is used.
+    members = [m for m in members if (m.get("origin") or "") != media.MEDIA_ORIGIN]
+    got = store.save_template({
+        "id": _new_template_id(),
+        "name": name.strip() or group["name"],
+        "name_zh": name.strip() or group["name"],
+        "desc": i18n.pick_now(
+            f"Saved from the group \"{group['name']}\" — the members, host, skills and prompt it ran with.",
+            f"从群聊「{group['name']}」存下来的:它当时的成员、群主、技能与提示词。"),
+        "desc_zh": f"从群聊「{group['name']}」存下来的:它当时的成员、群主、技能与提示词。",
+        "scene": "saved",
+        "members": [m["name"] for m in members],
+        "host": host,
+        "skills": list(group.get("skills") or []),
+        "prompt": str(group.get("prompt") or ""),
+        "from_group": gid,
+        "from_group_name": group["name"],
+    })
+    return got

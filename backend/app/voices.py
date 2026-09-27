@@ -28,7 +28,7 @@ from . import bindirs, i18n
 
 __all__ = ["ENGINES", "VOICE_FOLDER_NAME", "use_folder", "reload", "available", "names", "row",
            "errors", "parse", "is_clone", "audio_suffix", "folder", "audio_of", "argv_for",
-           "probe", "binary", "reason_missing", "CLONE_PREFIX", "MAX_REF_SECONDS"]
+           "binary", "reason_missing", "CLONE_PREFIX", "MAX_REF_SECONDS"]
 
 VOICE_FOLDER_NAME = "voices"
 MANIFEST = "voice.json"
@@ -49,6 +49,23 @@ ENGINES: dict[str, dict] = {
         "licence": "AGPL-3.0 code; the shipped OmniVoice weights are CC-BY-NC (non-commercial)",
         "notes": "Zero-shot: the reference recording IS the voice. No training step, so a voice is "
                  "a file rather than a run of the model.",
+    },
+    # Qwen3-TTS(阿里 Qwen 团队开源,Apache-2.0)。加它的理由是一条**实测**的差距:长稿稳定性 ——
+    # 官方报告里中文长语音的 WER 是 1.52,而 VoxCPM 是 4.84。旁白是整段念的,念错一个字就要重录
+    # 一整段,所以「长稿不错字」排在「音色最像」前面。
+    # ⚠️ 本机没有 CUDA:默认 device=cpu、dtype=float32(低精度在 Apple Silicon 上出过音质问题),
+    # 慢一点但不猜。它的入口 `qwen-tts-say` 住在自己的 venv 里,所以只能靠 `bin` 或成员设置里的路径找到。
+    "qwen3tts": {
+        "bin": "qwen-tts-say",
+        "needs": ("python",),
+        "install": "cd ~/Documents/GitHub/Qwen3-TTS && uv venv --python 3.12 .venv && "
+                   "uv pip install -U qwen-tts   # 再下 4.5GB 权重",
+        "install_zh": "cd ~/Documents/GitHub/Qwen3-TTS && uv venv --python 3.12 .venv && "
+                      "uv pip install -U qwen-tts   # 再下 4.5GB 权重",
+        "licence": "Apache-2.0",
+        "notes": "The reference recording IS the voice (3-second zero-shot clone); give it the "
+                 "reference's transcript too and the clone keeps more of the original detail. "
+                 "Runs on CPU on this machine, so it is slower than a GPU but needs no cloud.",
     },
 }
 
@@ -254,10 +271,12 @@ def argv_for(row_: dict, text: str, out: Path) -> list[str]:
     `--ref-audio`) gets caught here instead of after a film has been timed.
     """
     engine = ENGINES[row_["engine"]]
+    ref_flag = "--ref-audio" if row_["engine"] == "qwen3tts" else "--ref_audio"
+    text_flag = "--ref-text" if row_["engine"] == "qwen3tts" else "--ref_text"
     cmd = [engine["bin"], "--text", text, "--output", str(out),
-           "--ref_audio", str(row_["path"])]
+           ref_flag, str(row_["path"])]
     if row_.get("ref_text"):
-        cmd += ["--ref_text", str(row_["ref_text"])]
+        cmd += [text_flag, str(row_["ref_text"])]
     if row_.get("language"):
         cmd += ["--language", str(row_["language"])]
     if row_.get("device"):

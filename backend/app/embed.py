@@ -26,6 +26,7 @@ from . import i18n
 import asyncio
 import os
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -216,9 +217,11 @@ def start(settings: dict, *, data_dir: str = "", allow_download: bool = False) -
     log_dir = Path(data_dir) if data_dir else Path(os.environ.get("TEAM_AGENT_DATA") or (Path.home() / ".team-agent"))
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
+        log = open(log_dir / "embed-server.log", "ab", buffering=0)  # noqa: SIM115 - handed to the child
     except OSError:
-        log_dir = Path(os.environ.get("TMPDIR") or "/tmp")
-    log = open(log_dir / "embed-server.log", "ab", buffering=0)  # noqa: SIM115 - handed to the child
+        # A fixed filename in a shared temp directory can be a symlink owned by
+        # another user. An anonymous, private file is safe to hand to the child.
+        log = tempfile.TemporaryFile(mode="a+b", prefix="team-agent-embed-")
     env = dict(os.environ)
     env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     env.setdefault("HF_HUB_DISABLE_XET", "1")   # the mirror cannot serve huggingface_hub's Xet backend
@@ -228,7 +231,8 @@ def start(settings: dict, *, data_dir: str = "", allow_download: bool = False) -
     except OSError as e:
         return {"started": False, "pid": 0, "reason": i18n.pick_now(
             f"Could not start the embedding server: {e}", f"嵌入服务没能启动:{e}")}
-    log.close()
+    finally:
+        log.close()
     return {"started": True, "pid": p.pid, "reason": ""}
 
 
