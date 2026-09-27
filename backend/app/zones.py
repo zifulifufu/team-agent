@@ -246,11 +246,22 @@ _add("video", {
                         "**不对口型** —— 旁白是另外叠上去的。"},
             {"id": "lipsync", "label": "Presenter lip sync (InfiniteTalk)", "label_zh": "口播口型（InfiniteTalk）",
              "state": "blocked",
-             "note": "All the weights are in place — the 14B base, the patch, the Chinese audio "
-                     "encoder — and the one thing missing is the node pack "
-                     "`ComfyUI-WanVideoWrapper`. Nothing else is.",
-             "note_zh": "权重全齐（14B 底座、补丁、中文音频编码器）,唯独缺一个节点包"
-                        "`ComfyUI-WanVideoWrapper`。除此以外不缺东西。"},
+             # ⚠️ This said "All the weights are in place — the 14B base, the patch, the Chinese
+             # audio encoder — and the one thing missing is the node pack
+             # `ComfyUI-WanVideoWrapper`. Nothing else is." Both halves were wrong, measured
+             # 2026-09-27: not one of the six files was on disk, and the nodes ship with ComfyUI
+             # itself (`comfy_extras/nodes_wan.py`, `nodes_model_patch.py`, `nodes_audio_encoder.py`
+             # — present in the 0.35.0 installed here), so no node pack is involved at all. The row
+             # that knows what this needs is `comfyui.SETUP_WORKFLOWS["infinite-talk"]`, and it said
+             # the opposite; this note now states what it needs rather than what the machine has,
+             # because the machine's own answer belongs to the probe and changes as files arrive.
+             "note": "Needs the six Wan2.1/InfiniteTalk weight files this app's own ComfyUI workflow "
+                     "lists (about 28 GB, all on HuggingFace — reachable from this machine only "
+                     "through a mirror). The nodes are part of ComfyUI itself; no node pack is "
+                     "needed. `Test` names whichever file is missing.",
+             "note_zh": "要的是本程序自带的 ComfyUI 工作流列出的那六个 Wan2.1/InfiniteTalk 权重"
+                        "（约 28 GB,全在 HuggingFace 上 —— 本机只能走镜像拿到）。节点是 ComfyUI "
+                        "自带的,不需要任何节点包。缺哪一个由「测试」指名。"},
             {"id": "scene-stills", "label": "Scene stills (text to image)", "label_zh": "场景静帧（文生图）",
              "state": "blocked",
              "note": "The cloud service is configured with fifteen image models and its account is "
@@ -289,7 +300,8 @@ _add("video", {
              "note_zh": "写脚本,然后用克隆音色录出来。它听得到结果 —— 工具里明说了别人听不到。"},
             {"id": "storyboard", "label": "Storyboard and pictures", "label_zh": "分镜与画面",
              "member": "Storyboard", "in_template": True,
-             "skills": ["Short video storyboards", "Work from a reference instead of from memory"],
+             "skills": ["Short video storyboards", "Writing a prompt for a generated shot",
+                        "Work from a reference instead of from memory"],
              "tools": ["make_figure", "make_animation", "review_picture"],
              "note": "Looks at the device reference library before drawing, and draws mechanisms "
                      "frame by frame rather than stills.",

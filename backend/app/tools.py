@@ -1254,7 +1254,8 @@ def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, gro
             by_name.setdefault(spelling, s)
     lang = i18n.current()
     parts, used = [], 0
-    for n in names:
+    leftover: list[str] = []
+    for i, n in enumerate(names):
         s = by_name.get(n)
         if not s:
             continue
@@ -1269,13 +1270,17 @@ def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, gro
             # where they live. Nobody was, so every such line led nowhere. The path is the app's own
             # data directory, which a member's own tools can read.
             folder = Path(s.path).parent
+            # ⚠️ "read what it points you at from there" was advice a member cannot follow — see the
+            # note on the budget cut below: no member tool reads outside the group's workspace. The
+            # honest version keeps the path (it is where the files are, and the user can be asked for
+            # them) and says outright that the member cannot open it.
             where = i18n.pick(
                 lang,
-                f"\nThis skill has files of its own. `<SKILL_DIR>` means {folder} — read what it "
-                f"points you at from there, and run its scripts from that directory. Its "
-                f"instructions do not work without them.",
-                f"\n这个技能有自己的文件。`<SKILL_DIR>` 指的是 {folder} —— 它让你读的东西都在那里,"
-                f"要跑的脚本也从那个目录里跑。没有这些文件,它的说明是走不通的。")
+                f"\nThis skill has files of its own and does not work without them. `<SKILL_DIR>` "
+                f"means {folder} — ⚠️ but no tool you can call reads outside this group's workspace, "
+                f"so say plainly that you cannot open them and ask the user for the part you need.",
+                f"\n这个技能有自己的文件,没有它们它的说明走不通。`<SKILL_DIR>` 指的是 {folder} —— "
+                f"⚠️ 但你调得到的工具都读不到本群工作目录以外,所以直说你打不开,向用户要你需要的那部分。")
         chunk = (f"【{head}:{s.name}】{where}\n{s.body}" if lang == "zh"  # i18n-keep: already bilingual: 【Head: name】 vs [Head: name]
                  else f"[{head}: {s.name}]{where}\n{s.body}")
         # ⚠️⚠️ A skill that did not fit used to be dropped **whole** (`break`) — and because it was a
@@ -1291,21 +1296,44 @@ def skills_prompt(skills_dir: Path, names: list[str], max_chars: int = 4000, gro
         # no single skill may take more than half the budget (one 32k manual used to swallow the lot).
         room = max_chars - used
         if room <= 200:
+            # ⚠️ This used to `break` and say nothing, which left the same hole the rest of this
+            # block was rewritten to close: a skill can be attached, shown as attached in the
+            # settings page, and be **entirely absent** from the prompt. Measured 2026-09-27 on the
+            # group that made a film: 7 skills, only the first two in the prompt, and no trace of
+            # `Long-form video: from shots to a finished film` — the one skill that group needed.
+            # Naming the rest costs one line and tells the only reader who can act on it.
+            leftover = [x for x in names[i:] if x in by_name]
             break
         limit = min(room, max(600, max_chars // 2))
         if len(chunk) > limit:
             head_txt = chunk[:limit].rsplit("\n", 1)[0] or chunk[:limit]
             folder = Path(s.path).parent
+            # ⚠️ It used to say "the rest of it is in <path> — read that before working from these
+            # steps", which a member cannot do: every tool that reads a file goes through
+            # `_read_workspace_file`/`relative_to(workspace)` and refuses anything outside this
+            # group's own workspace, and nothing in `toolhub` touches the skills folder at all
+            # (measured 2026-09-27). So the pointer led nowhere and the member either guessed at the
+            # missing steps or claimed to have read them. The path stays — it is where the text
+            # really is — but the sentence now says who can open it.
             note = i18n.pick(
                 lang,
-                f"\n… (long skill: the rest of it is in {folder}/SKILL.md — read that before working "
-                "from these steps)",
-                f"\n…(这个技能很长:剩下的在 {folder}/SKILL.md —— 照着这几步做之前先读它)")
+                f"\n… (cut short to fit this group's skill budget. The rest is in {folder}/SKILL.md, "
+                "which no tool you can call can open — ask the user for it instead of assuming it.)",
+                f"\n…(为放进本群的技能预算被截短。剩下的在 {folder}/SKILL.md,而你调得到的工具都打不开"
+                "它 —— 需要时向用户要,不要凭猜补全。)")
             parts.append(head_txt + note)
             used += len(head_txt) + len(note)
             continue
         parts.append(chunk)
         used += len(chunk)
+    if leftover:
+        shown = ", ".join(leftover[:8]) + ("…" if len(leftover) > 8 else "")
+        parts.append(i18n.pick(
+            lang,
+            f"\n… (this group has {len(leftover)} more skill(s) attached that did not fit here, so "
+            f"they are NOT in this prompt: {shown}. Do not assume you have been given them.)",
+            f"\n…(本群另有 {len(leftover)} 条技能放不进这里,所以**不在**本提示词里:{shown}。"
+            f"别以为你已经拿到它们了。)"))
     return "\n\n".join(parts)
 
 
