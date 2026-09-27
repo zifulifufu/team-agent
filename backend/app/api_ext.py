@@ -345,10 +345,6 @@ class WorkspaceFolder(BaseModel):
     path: str = ""
 
 
-class OpenInFinder(BaseModel):
-    path: str = ""
-
-
 @dataclass
 class Ctx:
     store: Store

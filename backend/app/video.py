@@ -163,7 +163,8 @@ ASPECT_RATIOS: tuple[str, ...] = tuple(
 #
 # The only two resolutions that API takes. A named resolution rather than a pixel count, so the
 # user's "output short edge" is mapped onto them instead of duplicated as a second setting — at or
-# below this pivot it is the smaller file.
+# below this pivot it is the smaller file. (1080p exists in the API but not in the Seedance 2.5
+# launch build, so offering it would be offering something that fails.)
 META_RESOLUTIONS = ("480p", "720p")
 META_RESOLUTION_PIVOT = 640
 
@@ -175,12 +176,6 @@ META_RESOLUTION_PIVOT = 640
 # `error`), which is why the finished clip needs a nested lookup — see `link_of`.
 ARK_SUBMIT = "contents/generations/tasks"
 ARK_TASK = "contents/generations/tasks/{vid}"
-
-# Ark takes a named resolution, so the user's "output short edge" is mapped onto its two values
-# rather than duplicated as a second setting — the same pivot MetaChat uses, since both take the
-# same pair and neither takes a pixel count. (1080p exists in the API but not in the Seedance 2.5
-# launch build, so offering it would be offering something that fails.)
-ARK_RESOLUTIONS = ("480p", "720p")
 
 # One request may carry a lot of reference material — 30 images, 10 videos, 10 audio clips, 50
 # items in total — but the *body* is capped at 64 MB, and the documentation says in as many words

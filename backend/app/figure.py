@@ -502,10 +502,6 @@ ANIMATION_PARTS: dict[str, tuple[str, ...]] = {
     "catheter_advance": ("sac", "catheter", "flow"),
     "contrast_fill": ("sac",),
 }
-SCHEMATIC_PARTS: dict[str, tuple[str, ...]] = {
-    **ANIMATION_PARTS,
-    **{old: ANIMATION_PARTS[new] for old, new in SCHEMATIC_ALIASES.items()},
-}
 PARTS = ("sac", "catheter", "coil", "flow")
 CAMERAS = ("none", "push", "pull")
 # The camera each drawing uses unless told otherwise: a push where attention should narrow, nothing

@@ -428,15 +428,6 @@ def path_for_row(store, row: dict) -> Path | None:
 
 
 # ------------------------------------------------------------------ reading the content
-def is_visual(kind: str) -> bool:
-    return kind in VISUAL
-
-
-def blocks_text(kind: str) -> bool:
-    """Kinds the model must be *told about*; the rest are only ever a path and a size."""
-    return kind in (IMAGE, VIDEO, AUDIO, OTHER)
-
-
 def extract_text(filename: str, data: bytes) -> str:
     """Pull the text out of a document locally. Returns "" when this type has no text to give."""
     ext = Path(filename).suffix.lower()

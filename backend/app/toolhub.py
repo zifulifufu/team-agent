@@ -12,7 +12,7 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 from __future__ import annotations
 
 from . import (animate, assemble, attachments, coderun, comfyui, embed, ffmpeg, figure, i18n,
-                 imagegen, layouts, media, music, musicwork, net, study, video, vision)
+                 imagegen, layouts, media, musicwork, net, study, video, vision)
 
 import asyncio
 import json
@@ -20,7 +20,6 @@ import logging
 import os
 import tempfile
 import time
-import httpx
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
