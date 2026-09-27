@@ -248,7 +248,7 @@ def test_a_builtin_skill_seeded_twice_is_merged_on_startup(tmp_path):
                if e.get("name_zh") and k not in ("remotion-video", "hyperframes-video",
                                                  "capcut-draft", "long-form-video",
                                                  "verify-before-signoff", "imitate-reference",
-                                                 "deliver-a-file")}
+                                                 "deliver-a-file", "video-prompt-craft")}
     for e in doubled.values():
         folder = data / "skills" / tools.safe_skill_name(e["name_zh"])
         folder.mkdir(parents=True, exist_ok=True)

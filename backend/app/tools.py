@@ -58,6 +58,41 @@ EXAMPLE_SKILLS: dict[str, dict] = {
                    "2. 前 3 秒必须有钩子;\n3. 分镜表列:镜号 | 画面 | 旁白/台词 | 时长 | 镜头 | 音效;\n"
                    "4. 总时长控制在用户要求内,并在末尾给出总时长核算。",
     },
+    # Condensed from the Seedance prompt guide in `~/Documents/GitHub/seedance2-skill` (15k chars
+    # there, which would eat four times this group's whole skill budget — see `skills_prompt`'s
+    # `max_chars`). The five rules kept are the ones that change the output: the reference system,
+    # the time segments, the camera vocabulary, the sound direction, and what gets refused.
+    "video-prompt-craft": {
+        "name": "Writing a prompt for a generated shot", "name_zh": "生成视频的提示词规范",
+        "description": "How to prompt the video generator: one shot per prompt, references assigned "
+                       "roles, time segments, camera terms, and what gets refused",
+        "description_zh": "怎么写视频生成提示词:一次一个镜头、参考素材指定角色、时间分段、镜头术语、以及什么会被拒",
+        "scope": "member",
+        "body": "When you GENERATE a clip instead of assembling one:\n"
+                "1. ONE PROMPT = ONE SHOT. 4–15 s each; over 10 s, write it as time segments "
+                "(`0–4s: … 4–8s: …`) rather than one long sentence.\n"
+                "2. EVERY REFERENCE GETS A ROLE, named by its position in the prompt (`@图片1` / "
+                "`@视频1` on Ark; \"the first image\" elsewhere): first frame, the character, the "
+                "scene, the camera movement, the action, the rhythm, the voice, the music. "
+                "\"reference @视频1\" alone wastes the upload — say WHAT is referenced.\n"
+                "3. SAY WHAT THE CAMERA DOES — push in, pull back, pan, tilt, track, orbit, "
+                "one-take — plus the shot size. Never two contradictory ones in one segment.\n"
+                "4. DIRECT THE SOUND: ambience, effects, music, narration tone. Say nothing and the "
+                "provider decides for you.\n"
+                "5. REFUSED OR RUINED: real people's photographs (blocked — compose the person "
+                "instead), a reference nobody named, more scenes than the seconds allow.",
+        "body_zh": "用**生成**的方式做片段时(不是把镜头拼起来):\n"
+                   "1. **一次一个镜头**。每段 4–15 秒;超过 10 秒就写成时间分段"
+                   "(`0–4s:… 4–8s:…`),不要写成一句话。\n"
+                   "2. **每个参考素材都要指定角色**,并按位置在提示词里点名(方舟上是 `@图片1`/`@视频1`,"
+                   "别处写「第一张图」):首帧、人物、场景、运镜、动作、节奏、音色、配乐。只写"
+                   "「参考@视频1」等于白传 —— 要说清**参考的是什么**。\n"
+                   "3. **写清镜头怎么动**:推、拉、摇、移、跟、环绕、一镜到底,外加景别。"
+                   "同一段里不要给两个互相打架的要求。\n"
+                   "4. **声音也要写**:环境声、音效、配乐、旁白语气。不写就由服务商自己发挥。\n"
+                   "5. **会被拒或被毁的**:真人照片(会被拦,人物要合成或画出来)、没点名的参考、"
+                   "秒数装不下的场次。",
+    },
     "imitate-reference": {
         "name": "Work from a reference instead of from memory", "name_zh": "照着参考片做",
         "description": "Group prompt: how to learn a reference video's format first, then build a new "
@@ -1133,6 +1168,7 @@ BUILTIN_SKILL_CATEGORY: dict[str, str] = {
     "data-analysis": "analysis",
     "code-review": "code",
     "short-video-storyboard": "video",
+    "video-prompt-craft": "video",
     "verify-before-signoff": "video",
     "imitate-reference": "video",
     "remotion-video": "video",

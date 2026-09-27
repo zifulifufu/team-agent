@@ -1487,7 +1487,13 @@ every enabled model that generates — including the drawing models a gateway re
   also told **this provider's own conventions** (Seedance wants references named by position,
   @图片1, and makes sound by default; H3 wants shots and then sound), which is the one thing it
   cannot guess. The result lands in the group's workspace and appears exactly as a tool call does —
-  the same pill, the same player.
+  the same pill, the same player. There is also a built-in skill for the part a tool description
+  cannot hold — *Writing a prompt for a generated shot*: one prompt is one shot, `0–4s: …` time
+  segments past ten seconds, every uploaded reference assigned a role by name, what the camera does,
+  what the sound is, and the things that get a clip refused (real people's photographs, above all).
+  It is condensed from the Seedance prompt guide in `~/Documents/GitHub/seedance2-skill`, which is
+  15k characters — four times a group's whole skill budget, so only the rules that change the
+  output were kept.
 - **The prompt is built on the group's material, and the picture is only allowed to state what that
   material states.** This is the difference between "the clip ignored the discussion" and "the picture
   invented anatomy", and it is the reason a chat log is not enough on its own: a chat says *what* the
