@@ -249,3 +249,50 @@ def test_a_film_of_stills_says_it_is_a_slide_show(store, make_router):
                                     yes))
     assert out.ok, out.text
     assert "幻灯片" in out.text or "slide show" in out.text
+
+
+# ------------------------------------------------------------------ how long a drawing may run
+def test_the_drawable_length_covers_every_shot_the_assembler_allows():
+    """⚠️ Two ceilings for one thing is how a film silently gets shorter.
+
+    An animation is drawn to the length its shot ended up needing (`assemble.py:622` says so), so a
+    drawable ceiling **below** the assembler's per-shot limit does not shorten the film — it shortens
+    the *drawing*, while the sidecar `.srt`, the music windows, the concat arithmetic and the
+    reported length all still count the longer time. A 120 s ceiling under a 600 s per-shot limit did
+    exactly that (measured 2026-09-27). This guard keeps the two together.
+    """
+    assert animate.MAX_SECONDS >= assemble.MAX_SHOT, (
+        f"a shot may run {assemble.MAX_SHOT:g}s, but only {animate.MAX_SECONDS:g}s can be drawn")
+
+
+def test_a_length_that_cannot_be_drawn_is_refused_and_not_quietly_shortened():
+    """⚠️ What this replaces was a `min(..., MAX_SECONDS)`: the caller was handed a shorter clip and
+    given no way to find out, which is the one failure nobody downstream can detect.
+
+    Answered before anything starts, so it holds on a machine with no ffmpeg as well — that is the
+    point of checking the argument before the resource.
+    """
+    with pytest.raises(figure.FigureError) as bad:
+        asyncio.run(animate.render(pathlib.Path("/tmp/never-drawn.mp4"), {"kind": "blood_flow"},
+                                   size=SIZE, seconds=animate.MAX_SECONDS + 1))
+    assert f"{animate.MAX_SECONDS:g}" in str(bad.value)
+
+
+@needs_ffmpeg
+def test_a_drawing_that_comes_back_short_stops_the_assembly(tmp_path, monkeypatch):
+    """The other half of the same guarantee, at the call site that trusts it.
+
+    Whatever the reason a drawing ends up shorter than its slot, the film from that shot onward is
+    out by the same amount — subtitles, music, the reported length. Stopping is the only honest
+    outcome; delivering a film whose words and pictures do not line up is not.
+    """
+    async def short(*a, **kw):
+        return {"path": str(tmp_path / "s001-anim.mp4"), "name": "s001-anim.mp4", "kind": "blood_flow",
+                "seconds": 1.0, "frames": 24, "fps": 24, "still": "", "size": "270x480"}
+
+    monkeypatch.setattr(animate, "render", short)
+    with pytest.raises(assemble.AssembleError) as bad:
+        asyncio.run(assemble.render(tmp_path, [{"anim": "blood_flow", "title": "血流的动", "seconds": 4}],
+                                    size="270x480", burn=False, unify=False))
+    message = str(bad.value)
+    assert "4" in message and "1" in message, message

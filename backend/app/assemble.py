@@ -929,6 +929,23 @@ async def _render_shot(entry: dict, plan_dir: Path, size: tuple[int, int], fps: 
         drawn = await animate.render(
             clip, entry["anim"], size=size, fps=fps, seconds=entry["seconds"],
             heading=entry["title"], credit=entry["credit"], still=still, timeout=timeout)
+        # ⚠️ What was drawn against what this shot is costed at. An animation is the one kind of
+        # shot whose length is *manufactured* here, so it is the one kind that can come back short
+        # without anything noticing: the frames simply end, `-shortest` trims the slot to match, and
+        # from this shot onward the sidecar `.srt`, the music windows and the film's reported length
+        # are all out by the same amount — silently. `animate.render` now refuses to over-run its own
+        # ceiling rather than clamping, and this is the second half of that guarantee: whatever the
+        # reason, a drawing that does not fill its slot stops the assembly instead of shifting
+        # everything after it. Half a frame is rounding; more than that is a defect.
+        if drawn["seconds"] < entry["seconds"] - 0.5 / fps:
+            raise AssembleError(i18n.pick_now(
+                f"Shot {idx}: the animation came back {drawn['seconds']:g}s long, but this shot is "
+                f"costed at {entry['seconds']:g}s. Every time-coded part of this film would be out "
+                f"from here on, so the assembly stops rather than deliver a film whose subtitles and "
+                f"music do not line up.",
+                f"第 {idx} 个镜头:动画只画出了 {drawn['seconds']:g} 秒,而这个镜头是按 "
+                f"{entry['seconds']:g} 秒计时的。从这里往后整条片子的字幕、配乐和时长都会错位,"
+                f"所以装配停在这里,而不是交出一条对不上的成片。"))
         entry["source"] = str(clip)
         entry["anim_still"] = str(still)
         entry["animated"] = drawn["kind"]

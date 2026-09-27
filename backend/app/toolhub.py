@@ -606,9 +606,14 @@ BUILTIN_SPECS: dict[str, dict] = {
                      "description": "Which animation to draw",
                      "description_zh": "画哪一种动画"},
             "seconds": {"type": "number",
-                        "description": "How long the clip is; 5 by default. The motion is spread over "
-                                       "exactly this long",
-                        "description_zh": "片段多长,默认 5 秒。动作会正好铺满这个时长"},
+                        "description": f"How long the clip is; 5 by default, at most "
+                                       f"{animate.MAX_SECONDS:g}. The motion spreads over exactly this "
+                                       "long — a longer one is refused rather than trimmed, because a "
+                                       "clip that is quietly shorter than its shot puts every "
+                                       "subtitle after it out of step",
+                        "description_zh": f"片段多长,默认 5 秒,最长 {animate.MAX_SECONDS:g} 秒。"
+                                          "动作会正好铺满这个时长 —— 超长会被拒绝而不是截短,"
+                                          "因为一段悄悄短于自己格子的画面会让它之后的字幕全部错位"},
             "size": {"type": "string", "enum": list(assemble.SIZES),
                      "description": f"Picture size, one of: {', '.join(assemble.SIZES)}. Keep it the same "
                                     "as the film's so the shot needs no rescaling",
@@ -3279,7 +3284,12 @@ something is. Tools that have nothing to say mid-flight simply ignore it."""
         workspace = self.store.workspace_dir(ctx.group["id"])
         try:
             spec = animate.spec_of({"kind": args.get("kind"), **(args.get("params") or {})})
-            seconds = max(2.0, min(float(args.get("seconds") or 5.0), animate.MAX_SECONDS))
+            # ⚠️ No `min(..., animate.MAX_SECONDS)` here. Clamping at this level would hand the model
+            # a short clip together with a sentence about the length it asked for — the same silent
+            # shortening a 120 s ceiling used to cause down in the assembler. `animate.render` refuses
+            # a request it cannot honour, and the `figure.FigureError` handler below carries that
+            # sentence straight back to the model, so the ceiling lives in exactly one place.
+            seconds = max(2.0, float(args.get("seconds") or 5.0))
             w, h, label = assemble.parse_size(str(args.get("size") or ""))
             try:
                 folder, leaf = output_name_parts(str(args.get("name") or ""), str(spec["kind"]), "anim")

@@ -30,7 +30,19 @@ ANIMATIONS = figure.ANIMATIONS
 PARTS = figure.PARTS
 CAMERAS = figure.CAMERAS
 DEFAULT_FPS = 24
-MAX_SECONDS = 120.0
+# The longest animation this can draw.
+#
+# ⚠️ It has to reach **at least** as far as `assemble.MAX_SHOT` (600), because an animation is drawn
+# to whatever length its shot ended up needing — `assemble.py:622` says so in as many words ("drawn
+# to whatever length the shot ended up needing, so it is never shorter than its slot"). A lower
+# ceiling here does not shorten the film; it shortens **the drawing** while the sidecar `.srt`, the
+# music ducking, the concat arithmetic and the reported length all still count the longer time. That
+# is exactly what a 120 s ceiling under a 600 s ceiling did (measured 2026-09-27): from the affected
+# shot onward, every time-coded artefact was out by the same amount, and nothing said so.
+#
+# The ceiling is not a resource wall: measured the same day, 6 s at 1080x1920 draws in ~1.9 s, so
+# 600 s is roughly three minutes of Pillow. A test holds it and `assemble.MAX_SHOT` together.
+MAX_SECONDS = 600.0
 
 # What each drawing shows, in the words a model needs to pick between them. Prose lives here rather
 # than in `figure` because it is tool-facing text (it appears in a tool description and in the error a
@@ -114,6 +126,19 @@ async def render(out: Path, spec: dict, *, size: tuple[int, int], fps: int = DEF
     The still is what the review step of the workflow is built on, so it is always written: a frame
     can be looked at and changed, a rendered clip can only be thrown away.
     """
+    # ⚠️ Argument first, resources second: "that length cannot be drawn" is answerable on any machine,
+    # and checking for ffmpeg first let a missing binary mask a request that could never be honoured.
+    seconds = float(seconds)
+    if seconds > MAX_SECONDS:
+        # ⚠️ **Refused, not clamped.** Clamping is what produced the bug this ceiling exists to
+        # describe: the caller carried on believing the shot was its original length, and every
+        # artefact timed against it was wrong from there on. A runtime that cannot honour a request
+        # has to say so — silently returning something shorter is the one outcome nobody can detect.
+        raise figure.FigureError(i18n.pick_now(
+            f"That animation would run {seconds:g}s; the longest drawable here is {MAX_SECONDS:g}s. "
+            f"Split it into two shots.",
+            f"这段动画要 {seconds:g} 秒,而这里最长能画 {MAX_SECONDS:g} 秒。请拆成两个镜头。"))
+    seconds = max(0.5, seconds)
     ff, why = ffmpeg.available()
     if not ff:
         raise figure.FigureError(why)
@@ -122,7 +147,6 @@ async def render(out: Path, spec: dict, *, size: tuple[int, int], fps: int = DEF
     raw_params = dict(spec.get("params") or {})
     params = {**raw_params, "camera": str(raw_params.get("camera") or figure.ANIMATION_CAMERA[kind])}
     labels = [x for x in (params.get("labels") or []) if isinstance(x, dict)]
-    seconds = max(0.5, min(float(seconds), MAX_SECONDS))
     frames = max(2, int(round(seconds * fps)))
     at = figure.drawer(kind, size, params, labels)
 
