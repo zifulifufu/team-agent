@@ -3094,6 +3094,58 @@ async function main() {
   expect(zonePage.bench && zonePage.benchTabs > 0, "视频专区带工作台 (" + zonePage.benchTabs + " 个标签页)");
   if (SHOT) await shotTo(shotPath(".zone"));
 
+  console.log("— 作曲面板:一句话就够了");
+  // 用户 2026-09-27:「用户填提示词后自动选择音乐生成方式……情绪也没必要放到面板上，这些都在算法里面，
+  // 不用在面板中展示出来」。所以这一节主要验**没有**什么 —— 五台推子（流派/情绪/乐器/制作/BPM）
+  // 一个都不该还在面板上，而描述写完要能看到「读成了什么」。
+  const mixPanel = await val(`(function () {
+    var p = document.querySelector('.zone-bench .vz-panel');
+    if (!p) return null;
+    // 推子在页面上长得就是一堆可点的小标签（自带那个 patch 补齐时用的也是 .vz-chip）
+    var selects = [].slice.call(p.querySelectorAll('select'));
+    return { textareas: p.querySelectorAll('textarea').length,
+             chips: p.querySelectorAll('.vz-chip').length,
+             vocals: selects.length ? selects[0].value : '',
+             labels: [].slice.call(p.querySelectorAll('label > span')).map(function (s) {
+               return String(s.textContent).replace(/\\s+/g, ' ').trim(); }) };
+  })()`);
+  expect(!!mixPanel, "作曲面板在");
+  expect(mixPanel.textareas === 2, "只有两个输入框:描述 + 歌词 (实际 " + (mixPanel && mixPanel.textareas) + ")");
+  expect(mixPanel.chips === 0, "流派/情绪/乐器/制作那些可点标签已经不在面板上 (" + (mixPanel && mixPanel.chips) + " 个)");
+  expect(mixPanel.vocals === "auto", "人声留着,而且默认是「自动」(" + (mixPanel && mixPanel.vocals) + ")");
+  console.log("       面板上的字段:" + (mixPanel.labels || []).join(" / "));
+
+  // 写一句话 → 面板上要出现「读成 …」。这是「自动」必须付的账：读成什么得说出来。
+  await val(`(function () {
+    var ta = document.querySelector('.zone-bench .vz-panel textarea');
+    var set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    set.call(ta, '安静一点的钢琴，不要鼓，慢慢铺开，垫在旁白下面');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'typed';
+  })()`);
+  await sleep(1500);   // 预览是 300ms 防抖 + 一次往返
+  const mixRead = await val(`(function () {
+    var p = document.querySelector('.zone-bench .vz-panel');
+    if (!p) return null;
+    var r = p.querySelector('.vz-receipt');
+    var d = p.querySelector('.vz-tags');
+    return { receipt: r ? String(r.textContent).replace(/\\s+/g, ' ').trim() : '',
+             hasDetails: !!d, open: d ? d.open : null,
+             tagChars: d && d.querySelector('code') ? String(d.querySelector('code').textContent).length : 0,
+             goDisabled: (function () { var b = p.querySelector('.vz-go'); return b ? !!b.disabled : null; })() };
+  })()`);
+  expect(!!mixRead && /BPM/.test(mixRead.receipt) && mixRead.receipt.length > 8,
+    "写完描述,面板上出现「读成 …」的回执:" + (mixRead && mixRead.receipt));
+  expect(!!mixRead && mixRead.hasDetails && mixRead.open === false && mixRead.tagChars > 10,
+    "那串原始标签收在折叠里、默认不展开 (字符 " + (mixRead && mixRead.tagChars) + ")");
+  expect(!!mixRead && mixRead.goDisabled === false, "有描述之后「作曲」按钮才可点");
+  await val(`(function () {
+    var ta = document.querySelector('.zone-bench .vz-panel textarea');
+    var set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    set.call(ta, ''); ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'cleared';
+  })()`);
+
   console.log("— 那六样:搬到了设置面板的工具栏(提示词、资料库那一栏)");
   // 用户 2026-09-27:「技术、插件、钩子、MCP、智能体与本地工具、聊天通道都移到用户设置面板
   // 提示词、资料库那个工具栏里」。所以验三件事:

@@ -4,7 +4,7 @@ import {
   LoaderCircle, Music2, Pause, Play, Sparkles, Trash2, TriangleAlert, Upload,
 } from "lucide-react";
 import {
-  api, type MusicJob, type MusicPreset, type MusicPreview, type MusicShelf, type MusicTrack,
+  api, type MusicJob, type MusicPreview, type MusicRead, type MusicShelf, type MusicTrack,
   type MusicVocabulary, type StudioAsset, type StudioAssets, type StudioTake,
 } from "../api";
 import { notify, useConfirm } from "../ui";
@@ -14,11 +14,6 @@ import "../styles/videozone.css";
 /** 专区的四块。音乐是唯一端到端跑通的；「我的素材」是三块共用的地基（上传 → 私有存放 →
  *  生成 → 看效果 → 修正 → 历史），它本身不依赖任何生成模型，所以先建它。 */
 type Tab = "music" | "assets" | "scene" | "motion";
-
-/** 五台推子。`mood` 与 `vocals` 的候选来自后端（`music.MOODS` / 词表），**不在前端另列一份**：
- *  曾经这里写死过 `["calm", "neutral", "tense", "triumphant", "warm", "dark"]`，而曲库校验用的
- *  是另外七个词 —— `triumphant` / `dark` 根本不是它认的情绪，两个列表各自都对，合起来就错。 */
-type Pick = { genre: string; mood: string; instruments: string[]; production: string[]; vocals: string };
 
 export default function VideoZonePage() {
   const { t } = useI18n();
@@ -60,20 +55,23 @@ function MusicBlock() {
   const [loading, setLoading] = useState(true);
   const [problem, setProblem] = useState("");
   /**
-   * 五台推子。它们是**结构化选择**，不是一句描述 —— ACE-Step 的 `tags` 是一组逗号分隔的关键词，
-   * 官方公式是「流派, 情绪, 乐器, 人声, 制作, BPM」，流派必须放第一、超 12 个词开始互相稀释、
-   * 具体名词远胜形容词。一个自由文本框保证不了这些，所以这里给出的每个选项都是**模型认的词**。
+   * 用户要写的东西只有三样：**描述**（必填）、**歌词**（可选）、**人声**（可选）。
+   *
+   * 2026-09-27 撤掉了五台推子（流派 / 情绪 / 乐器 / 制作 / BPM）—— 用户的原话是「这些都在
+   * 算法里面……不用在面板中展示出来」。它们现在由后端 `musicprompt.read()` 从这句话里读出来，
+   * 面板上留一行**回执**：读成了什么。自动的东西必须说得出来它读成了什么，否则「自动」就是黑箱。
+   *
+   * ⚠️ 人声是唯一留着的手动项，而且默认是 `auto`：唱不唱、谁来唱，是作者真会有意见的一件事。
    */
-  const [pick, setPick] = useState<Pick>({ genre: "", mood: "calm", instruments: [], production: [], vocals: "instrumental" });
-  const [note, setNote] = useState("");               // 补充描述（追加在拼好的 tags 之后）
-  const [preview, setPreview] = useState<MusicPreview | null>(null);
-  const [seconds, setSeconds] = useState(0);
-  const [bpm, setBpm] = useState(72);
-  const [title, setTitle] = useState("");
-  const [open, setOpen] = useState(false);            // 高级选项
+  const [desc, setDesc] = useState("");
   const [lyrics, setLyrics] = useState("");
+  const [vocals, setVocals] = useState("auto");
+  const [seconds, setSeconds] = useState(0);
+  const [title, setTitle] = useState("");
+  const [open, setOpen] = useState(false);            // 高级：语言 / 种子
   const [language, setLanguage] = useState("en");
   const [seed, setSeed] = useState(0);
+  const [preview, setPreview] = useState<MusicPreview | null>(null);
   const [job, setJob] = useState<MusicJob | null>(null);
   const [clock, setClock] = useState(0);
   const [playing, setPlaying] = useState<{ name: string; url: string } | null>(null);
@@ -97,25 +95,28 @@ function MusicBlock() {
   useEffect(() => { void load(); }, [load]);
 
   /**
-   * 实时预览：**拼串走后端**，因为拼词规则（流派第一、词数上限、每个流派的 BPM 区间）只有
-   * `musicprompt.compose_tags` 一处。前端自己拼一份的话，用户看到一串、实际送出去另一串 ——
-   * 这个项目已经因为"一个判断写了几份"返工过好几轮，这里一次也不再犯。
+   * 回执：描述变了就去后端问一次**它读成了什么**。
+   *
+   * 拼这一行放在前端，是因为它要中文的流派名（词表里有）和本地化的情绪词（`t()` 在 ZH 表里）
+   * —— 后端拼出来必然是半中半英的。而「读」这件事只有后端一处（`musicprompt.read`），
+   * 前端不重算。
    */
   useEffect(() => {
-    if (!vocab) return;
+    const text = desc.trim();
+    if (!vocab || !text) { setPreview(null); return; }
     let live = true;
     const timer = window.setTimeout(async () => {
       try {
-        const got = await api.previewMusic({ ...pick, bpm, prompt: note });
+        const got = await api.previewMusic({ prompt: text, lyrics, vocals: vocals === "auto" ? "" : vocals });
         if (live) setPreview(got);
       } catch {
-        /* 预览失败不影响作曲：真正的拼串在提交时还会做一次 */
+        /* 预览失败不影响作曲：真正的读与拼在提交时还会做一次 */
       }
-    }, 250);
+    }, 300);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [pick, bpm, note, vocab]);
+  }, [desc, lyrics, vocals, vocab]);
 
-  /** 「作曲中」要显示已经过去多久 —— 它是分钟级的，一个不动的转圈看起来就是死了。 */
+  /** 「生成中」要显示已经过去多久 —— 它是分钟级的，一个不动的转圈看起来就是死了。 */
   useEffect(() => {
     if (job?.state !== "running") return;
     const timer = window.setInterval(() => setClock(Date.now() / 1000), 1000);
@@ -149,17 +150,15 @@ function MusicBlock() {
   useEffect(() => () => { if (playing) URL.revokeObjectURL(playing.url); }, [playing]);
 
   const compose = async () => {
-    // 与后端同一条判据：**必须有流派或一句自己写的话**。mood 有默认值，所以「什么都没选」
-    // 不等于「文本框是空的」—— 只看文本框会放行一次只有一个词的提交。
-    if (!pick.genre && !note.trim()) {
-      notify(t("Pick a genre, or describe the music yourself."));
+    if (!desc.trim()) {
+      notify(t("Describe the music first — one sentence is enough."));
       return;
     }
     setBusy(true);
     try {
       const { job: started } = await api.composeMusic({
-        ...pick, bpm, seconds, name: title.trim(), lyrics: lyrics.trim(),
-        language, seed, prompt: note,
+        prompt: desc.trim(), lyrics: lyrics.trim(), vocals: vocals === "auto" ? "" : vocals,
+        seconds, name: title.trim(), language, seed,
       });
       setJob(started);
       setClock(Date.now() / 1000);
@@ -168,24 +167,6 @@ function MusicBlock() {
     } finally {
       setBusy(false);
     }
-  };
-
-  /** 选流派就把速度挪到它真正的区间里 —— 官方指南明确说流派与 BPM 对不上时模型会来回摇摆。 */
-  const chooseGenre = (id: string) => {
-    const g = vocab?.genres.find((x) => x.id === id);
-    setPick((p) => ({ ...p, genre: p.genre === id ? "" : id }));
-    if (g?.bpm) setBpm(Math.round((g.bpm[0] + g.bpm[1]) / 2));
-  };
-  const toggleIn = (key: "instruments" | "production", id: string) =>
-    setPick((p) => ({
-      ...p,
-      [key]: p[key].includes(id) ? p[key].filter((x) => x !== id) : [...p[key], id],
-    }));
-  const applyPreset = (p: MusicPreset) => {
-    setPick({ genre: p.genre, mood: p.mood, instruments: p.instruments,
-              production: p.production, vocals: p.vocals });
-    setBpm(p.bpm);
-    setTitle((v) => v || p.label);
   };
 
   const play = async (tr: MusicTrack) => {
@@ -220,6 +201,14 @@ function MusicBlock() {
   const ready = shelf?.composer.ready ?? false;
   const limits = shelf?.limits ?? { min_seconds: 10, max_seconds: 240, default_seconds: 60 };
   const elapsed = job?.state === "running" ? Math.max(0, Math.floor(clock - job.started)) : 0;
+  const label = (id: string, kind: "genres" | "instruments") =>
+    vocab?.[kind].find((x) => x.id === id)?.label ?? id;
+  /** 回执那一行：「你那句话我这么理解的」。 */
+  const receipt = (r?: MusicRead) => !r ? "" : [
+    label(r.genre, "genres"), t(r.mood),
+    r.instruments.map((i) => label(i, "instruments")).join(" + "),
+    `${r.bpm} BPM`,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div className="vz-two">
@@ -233,127 +222,82 @@ function MusicBlock() {
           <p className="vz-note bad"><CircleAlert size={14} /> {shelf?.composer.why}</p>
         )}
 
-        {!vocab && !loading && (
-          <p className="vz-note bad"><CircleAlert size={14} /> {t("The vocabulary did not load, so only free text is available.")}</p>
-        )}
+        {/* 描述：这一页唯一必填的东西，所以它拿到最大的地方。 */}
+        <label className="vz-field">
+          <span>{t("What is this music for?")}</span>
+          <textarea rows={4} value={desc} disabled={!ready}
+                    placeholder={t("One sentence: where it is used, what it is made of, how it should feel. e.g. quiet piano, no drums, spreading slowly under a narrator")}
+                    onChange={(e) => setDesc(e.target.value)} />
+        </label>
 
-        {/* 场景预设：分类真正省事的地方 —— 把「这几个词该一起用」这件经验固化下来。 */}
-        {!!vocab?.presets.length && (
-          <div className="vz-field">
-            <span>{t("Start from a scene")}</span>
-            <div className="vz-chips">
-              {vocab.presets.map((p) => (
-                <button key={p.id} className="vz-chip" disabled={!ready} title={p.note}
-                        onClick={() => applyPreset(p)}>{p.label}</button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* 流派：单选。每个都标出它真正生活的 BPM 区间 —— 选错速度是模型变糊的常见原因。 */}
-        <div className="vz-field">
-          <span>{t("Genre (this anchors everything else)")}</span>
-          <div className="vz-chips">
-            {vocab?.genres.map((g) => (
-              <button key={g.id} disabled={!ready} title={g.use}
-                      className={"vz-chip" + (pick.genre === g.id ? " on" : "")}
-                      onClick={() => chooseGenre(g.id)}>
-                {g.label}{g.bpm && <em>{g.bpm[0]}–{g.bpm[1]}</em>}
-              </button>
-            ))}
-          </div>
-          {pick.genre && (
-            <p className="vz-hint">{vocab?.genres.find((g) => g.id === pick.genre)?.use}</p>
-          )}
-        </div>
+        <label className="vz-field">
+          <span>{t("Lyrics (optional — leave empty for an instrumental)")}</span>
+          <textarea rows={2} value={lyrics} disabled={!ready}
+                    placeholder={t("empty = instrumental")}
+                    onChange={(e) => setLyrics(e.target.value)} />
+        </label>
 
         <div className="vz-row">
-          <label className="vz-field">
-            <span>{t("Tempo (BPM)")} <b>{bpm}</b></span>
-            <input type="range" min={40} max={190} step={1} value={bpm} disabled={!ready}
-                   onChange={(e) => setBpm(Number(e.target.value))} />
-          </label>
-          <label className="vz-field narrow">
-            <span>{t("Mood")}</span>
-            <select value={pick.mood} disabled={!ready}
-                    onChange={(e) => setPick((p) => ({ ...p, mood: e.target.value }))}>
-              {vocab?.moods.map((m) => <option key={m} value={m}>{t(m)}</option>)}
-            </select>
-          </label>
           <label className="vz-field narrow">
             <span>{t("Vocals")}</span>
-            <select value={pick.vocals} disabled={!ready}
-                    onChange={(e) => setPick((p) => ({ ...p, vocals: e.target.value }))}>
+            <select value={vocals} disabled={!ready} onChange={(e) => setVocals(e.target.value)}>
+              <option value="auto">{t("Auto (from the description)")}</option>
               {vocab?.vocals.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
           </label>
-        </div>
-
-        {/* 乐器与制作：多选，而且**都是能被渲染出来的具体名词** ——
-            `felt piano` 出来的是毡化钢琴，`sophisticated` 出来的是随机。 */}
-        <div className="vz-field">
-          <span>{t("Instruments (pick the ones you actually want to hear)")}</span>
-          <div className="vz-chips">
-            {vocab?.instruments.map((i) => (
-              <button key={i.id} disabled={!ready} title={i.for}
-                      className={"vz-chip" + (pick.instruments.includes(i.id) ? " on" : "")}
-                      onClick={() => toggleIn("instruments", i.id)}>{i.label}</button>
-            ))}
-          </div>
-        </div>
-        <div className="vz-field">
-          <span>{t("Production")}</span>
-          <div className="vz-chips">
-            {vocab?.production.map((p) => (
-              <button key={p.id} disabled={!ready}
-                      className={"vz-chip" + (pick.production.includes(p.id) ? " on" : "")}
-                      onClick={() => toggleIn("production", p.id)}>{p.label}</button>
-            ))}
-          </div>
-        </div>
-
-        <label className="vz-field">
-          <span>{t("Anything the list above has no word for (optional)")}</span>
-          <input value={note} disabled={!ready}
-                 placeholder={t("e.g. no drums, fades under the narration")}
-                 onChange={(e) => setNote(e.target.value)} />
-        </label>
-
-        {/* 预览：让用户看见**模型真正会收到的那串词**。这不只是校对 ——
-            看几次就知道提示词该怎么写，比读一段说明有用。 */}
-        <div className="vz-preview">
-          <span className="vz-preview-label">{t("The model will receive")}</span>
-          <code>{preview?.tags || "—"}</code>
-          {preview?.warnings.map((w, i) => (
-            <p key={i} className="vz-warn"><TriangleAlert size={13} /> {w}</p>
-          ))}
-        </div>
-
-        <div className="vz-row">
           <label className="vz-field">
             <span>{t("Seconds")} <b>{seconds}s</b></span>
             <input type="range" min={limits.min_seconds} max={limits.max_seconds} step={5}
                    value={seconds} disabled={!ready}
                    onChange={(e) => setSeconds(Number(e.target.value))} />
           </label>
-          <label className="vz-field">
+          <label className="vz-field narrow">
             <span>{t("Title (optional)")}</span>
             <input value={title} disabled={!ready} placeholder={t("what this theme is for")}
                    onChange={(e) => setTitle(e.target.value)} />
           </label>
         </div>
+
+        {job?.state === "running" ? (
+          <>
+            <p className="vz-note"><LoaderCircle size={14} className="vz-spin" /> {t("Composing… {n}s elapsed. It runs on this machine and takes minutes.", { n: elapsed })}</p>
+            <p className="vz-hint">{job.prompt}</p>
+          </>
+        ) : (
+          <button className="btn primary vz-go" disabled={!ready || busy || !desc.trim()}
+                  onClick={() => void compose()}>
+            <Sparkles size={15} /> {t("Compose")}
+          </button>
+        )}
+        {job?.state === "failed" && (
+          <p className="vz-note bad"><CircleAlert size={14} /> {job.error}</p>
+        )}
+
+        {/* 回执 + 模型真正收到的那串词。**收在折叠里**：用户要的是不看见那些旋钮，
+            但他随时该能查「你到底按什么生成的」——所以它不是没有，是不占地方。 */}
+        {!!receipt(preview?.read) && (
+          <p className="vz-receipt" title={preview?.tags}>
+            {t("Read as")}: <b>{receipt(preview?.read)}</b>
+          </p>
+        )}
+        {!!preview && (
+          <details className="vz-tags">
+            <summary>{t("What the model receives")}</summary>
+            <code>{preview?.tags || "—"}</code>
+            {preview?.warnings.map((w, i) => (
+              <p key={i} className="vz-warn"><TriangleAlert size={13} /> {w}</p>
+            ))}
+          </details>
+        )}
+
         <button className="vz-more" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
           {open ? "▾" : "▸"} {t("Advanced")}
         </button>
         {open && (
           <div className="vz-adv">
-            <label className="vz-field">
-              <span>{t("Lyrics (optional — leave empty for instrumental)")}</span>
-              <textarea rows={2} value={lyrics} disabled={!ready} onChange={(e) => setLyrics(e.target.value)} />
-            </label>
             <div className="vz-row">
               <label className="vz-field narrow">
-                <span>{t("Language")}</span>
+                <span>{t("Language (for the lyrics)")}</span>
                 <select value={language} disabled={!ready} onChange={(e) => setLanguage(e.target.value)}>
                   <option value="en">en</option><option value="zh">zh</option>
                 </select>
@@ -365,20 +309,6 @@ function MusicBlock() {
               </label>
             </div>
           </div>
-        )}
-        {job?.state === "running" ? (
-          <>
-            <p className="vz-note"><LoaderCircle size={14} className="vz-spin" /> {t("Composing… {n}s elapsed. It runs on this machine and takes minutes.", { n: elapsed })}</p>
-            <p className="vz-hint">{job.prompt}</p>
-          </>
-        ) : (
-          <button className="btn primary vz-go"
-                  disabled={!ready || busy || (!pick.genre && !note.trim())} onClick={() => void compose()}>
-            <Sparkles size={15} /> {t("Compose")}
-          </button>
-        )}
-        {job?.state === "failed" && (
-          <p className="vz-note bad"><CircleAlert size={14} /> {job.error}</p>
         )}
       </section>
 

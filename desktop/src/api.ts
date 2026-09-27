@@ -1355,15 +1355,22 @@ export interface MusicShelf {
   limits: { min_seconds: number; max_seconds: number; default_seconds: number };
 }
 export interface MusicComposeIn {
-  /** Free text, appended after the faders. On its own it still works — that is what the tool sends. */
-  prompt?: string;
-  /** The faders. `musicprompt.compose_tags` turns these into the tag string the model reads. */
-  genre?: string;
-  instruments?: string[];
-  production?: string[];
+  /** 一句话描述你要的音乐。**这是唯一必填的东西** —— 流派/乐器/情绪/速度由后端从它读出来。 */
+  prompt: string;
+  /** 可选。填了就唱，留空是纯器乐。 */
+  lyrics?: string;
+  /** 「auto」或留空 = 让算法读描述决定；写了就是用户压过算法（人声是唯一一处这样做的）。 */
   vocals?: string;
-  seconds?: number; bpm?: number; language?: string; seed?: number;
-  lyrics?: string; name?: string; mood?: string; tags?: string[];
+  seconds?: number; name?: string; seed?: number; language?: string;
+}
+
+/** 后端**从那句话里读出来**的东西。面板上不再有这些旋钮，所以它是回执，不是输入。 */
+export interface MusicRead {
+  genre: string; mood: string; instruments: string[]; production: string[];
+  vocals: string; bpm: number;
+  /** 「这句话里没读出流派」这类要说的话。空数组才说明读懂了。 */
+  notes: string[];
+  matched: { genre: Record<string, number>; mood: Record<string, number> };
 }
 /** One row of a vocabulary column: `label` is already in the UI language. */
 export interface VocabRow {
@@ -1380,13 +1387,9 @@ export interface MusicPreset {
 export interface MusicVocabulary {
   genres: VocabRow[]; instruments: VocabRow[]; production: VocabRow[];
   vocals: VocabRow[]; presets: MusicPreset[]; max_tags: number;
-  /** From the backend's `music.MOODS` — the shelf's closed vocabulary. Listed here rather than in
-   *  the page so the two cannot drift apart (`triumphant` was in a hand-written copy of this list
-   *  and is not a value the shelf accepts). */
-  moods: string[];
 }
-/** What the model would actually receive, and anything wrong with it. */
-export interface MusicPreview { tags: string; warnings: string[]; }
+/** What the model would actually receive, what the description was read as, and anything wrong. */
+export interface MusicPreview { tags: string; read: MusicRead; warnings: string[]; }
 
 // --------------------------------------------------------------------- zones
 /** 一个专区里某一件东西的状态。

@@ -135,3 +135,21 @@
 .vz-thumb:hover { border-color: var(--primary); }
 .vz-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .vz-track { align-items: center; }
+
+/* ---- 作曲面板：一句话 + 回执。五台推子 2026-09-27 撤掉之后的形状。
+   描述框是这一页唯一必填的东西，所以它拿最大的地方；参数那几栏要么收了（人声、时长、标题在同一行），
+   要么由算法决定、只在本行回执里露一次。 */
+.vz-field textarea { min-height: 0; }
+/* 回执那一行：「你那句话我这么理解的」。它是**说明**不是控件 —— 没有边框、没有底色，
+   只在描述框下面安静地占一行。 */
+.vz-receipt { margin: 2px 0 10px; color: var(--text-3, var(--text-2)); font-size: 11.5px; line-height: 1.5; }
+.vz-receipt b { color: var(--text-2); font-weight: 600; }
+/* 模型真正收到的那串词：**收在折叠里**。用户要的就是别看见那堆参数，但他随时该能追问
+   「你到底按什么生成的」—— 所以它不是没有，是不占地方。 */
+.vz-tags { margin: 0 0 10px; font-size: 11.5px; }
+.vz-tags > summary { color: var(--text-3, var(--text-2)); cursor: pointer; }
+.vz-tags code {
+  display: block; margin-top: 6px; padding: 8px 10px; border-radius: 8px;
+  background: var(--hover); color: var(--text-2); font-size: 11.5px; line-height: 1.6;
+  word-break: break-word; background-image: none;
+}
