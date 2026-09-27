@@ -1953,7 +1953,8 @@ async function main() {
     var want = [/Keep it in every group|\\u6bcf\\u4e2a\\u7fa4\\u90fd\\u653e\\u4e00\\u4e2a/,
                 /Record what this app can measure|\\u628a\\u7a0b\\u5e8f\\u91cf\\u5f97\\u51fa\\u6765\\u7684\\u8bb0\\u4e0b\\u6765/,
                 /Ask a model for the cause|\\u8ba9\\u6a21\\u578b\\u8865\\u6839\\u56e0/,
-                /What it has found|\\u5b83\\u53d1\\u73b0\\u4e86\\u4ec0\\u4e48/];
+                /What it has found|\\u5b83\\u53d1\\u73b0\\u4e86\\u4ec0\\u4e48/,
+                /Hand the open problems|\\u628a\\u5f85\\u89e3\\u51b3\\u7684\\u95ee\\u9898/];
     return {
       sections: [].slice.call(document.querySelectorAll('.settings-content .sec')).map(function (x) {
         return x.textContent.trim(); }),
@@ -1962,6 +1963,7 @@ async function main() {
         if (!r) return { found: false };
         var b = r.getBoundingClientRect();
         return { found: true, switch: !!r.querySelector('.switch, [role=switch], input[type=checkbox]'),
+                 clickable: !!r.querySelector('button:not([disabled])'),
                  chip: [].slice.call(r.querySelectorAll('.chip')).map(function (c) { return c.textContent.trim(); }),
                  inWindow: b.top >= 0 && b.bottom <= innerHeight + 1, right: Math.round(b.right) };
       }),
@@ -1977,6 +1979,13 @@ async function main() {
   // A single backslash here, not the doubled one template literals need: this regex is read by node,
   // not by the page, and `/\\d+/` would look for a literal backslash and fail on every real chip.
   expect(/\d+/.test(panel.rows[3].chip[0] || ""), "chip 里是真实数字:" + JSON.stringify(panel.rows[3].chip));
+  // The hand-off row: the one control here that starts a program with write access. Asserted as
+  // "the row is on the page and carries something pressable", never by **pressing it** — a smoke
+  // test that dispatched a real coding agent into a fixture directory would be a smoke test that
+  // edits the repository.
+  expect(panel.rows[4].found, "「把待解决的问题交给编程智能体」那一行在页面上:" + JSON.stringify(panel.rows[4]));
+  expect(panel.rows[4].found && (panel.rows[4].clickable || panel.rows[4].chip.length > 0),
+    "它要么有可点的按钮、要么说清为什么不能点:" + JSON.stringify(panel.rows[4]));
   const procRoom = await panelRooms();
   expect(procRoom && procRoom.spill <= 1 && procRoom.hScroll <= 1,
     "流程工程师这些行也不横向溢出 (" + (procRoom ? procRoom.rows + " 行, 溢出 " + procRoom.spill + "px" : "没有") + ")");

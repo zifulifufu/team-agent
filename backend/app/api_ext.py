@@ -25,6 +25,7 @@ from . import assemble, coderun, embed, feedback as feedback_lib, i18n, imagegen
 from . import strengths as strength_lib, updater, video, media
 from . import teamrec, cooperation
 from . import advisor
+from . import handoff
 from . import attachments as attachments_lib
 from . import vision
 from .approvals import Approvals, risk_label, risk_of
@@ -66,6 +67,21 @@ MASK = "••••••"
 
 
 # ------------------------------------------------------------------ schemas
+class HandoffIn(BaseModel):
+    """Which group's open problems to hand to a coding agent, and to which agents.
+
+    Empty `gid` means "every group that has something open" — the process engineer watches all of
+    them, and asking it to review the flow and then picking one group by hand would be the wrong
+    way round. Empty `targets` means "every agent this machine has".
+
+    Module level, like every other model here: declared inside `build_router` it would work for the
+    request and take `/openapi.json` down (see the note on `StudioAssetPatch` in
+    `api_video_zone.py`).
+    """
+    gid: str = ""
+    targets: list[str] = []
+
+
 class McpIn(BaseModel):
     name: str
     command: str = ""
@@ -1374,6 +1390,10 @@ def build_router(c: Ctx) -> APIRouter:
             # install one — the same shape as the transcriber row, for the same reason: "nothing
             # found" on its own is a dead end for somebody who has never installed one.
             "advisor": advisor.info(store.get_settings(), folder=store.data_dir),
+            # Who the process engineer's findings can be handed to. Same shape as the advisor row
+            # above and for the same reason: "nothing found" on its own is a dead end, so the row
+            # carries what would install one.
+            "handoff": handoff.info(),
             "upload_max_mb": int(store.get_settings()["upload_max_mb"]),
         }
 
@@ -1386,6 +1406,98 @@ def build_router(c: Ctx) -> APIRouter:
         that it is in every group, and read what it has recorded without opening each workspace.
         """
         return process_panel(store)
+
+    # ------------------------------------------------ handing the findings to a coding agent
+    # ⚠️ The difference from `ask_advisor` is the whole point of this pair. That one asks a question
+    # read-only, from inside a member's turn, and needs approval every time. This one is started by
+    # a **person pressing a button**, runs the agent with write access, and hands over work that
+    # changes files. The press is the approval — which is exactly why it lives here and not as a
+    # tool a member could reach for on its own.
+    handoff_jobs: dict[str, dict] = {}
+
+    def _handoff_view(job: dict) -> dict:
+        return {k: v for k, v in job.items() if k != "task"}
+
+    @r.post("/api/process/handoff")
+    async def process_handoff(body: HandoffIn) -> dict:
+        """Review the flow and hand what is still open to the agents that can fix it.
+
+        Runs in the background and is polled: a coding agent takes minutes, and a request that
+        waited for two of them would time out while the work was going well. One hand-off at a
+        time — two rounds of agents loose in the same directories is not something anybody wants to
+        debug.
+        """
+        keys = [k for k in (body.targets or handoff.ORDER) if k in handoff.installed()]
+        if not keys:
+            raise HTTPException(400, i18n.pick_now(
+                "No coding agent is installed on this machine, so there is nothing to hand the "
+                "problems to. " + " ".join(handoff.INSTALL[k][0] for k in handoff.ORDER),
+                "这台机器上没装任何编程智能体,问题无处可交。" +
+                " ".join(handoff.INSTALL[k][1] for k in handoff.ORDER)))
+        busy = next((j for j in handoff_jobs.values() if j["state"] == "running"), None)
+        if busy:
+            raise HTTPException(409, i18n.pick_now(
+                f"A hand-off is already running (started {int(time.time() - busy['started'])}s "
+                "ago). Wait for it to finish.", 
+                f"已经有一次外派在跑(已开始 {int(time.time() - busy['started'])} 秒)。等它结束。"))
+        wanted = store.get_group(body.gid) if body.gid else None
+        if body.gid and not wanted:
+            raise HTTPException(404, i18n.pick_now("No such group chat", "没有这个群聊"))
+        todo = []
+        for g in ([wanted] if wanted else store.list_groups()):
+            workspace = store.workspace_dir(g["id"])
+            entries = handoff.problems(workspace)
+            if entries:
+                todo.append((g, workspace, entries))
+        if not todo:
+            raise HTTPException(400, i18n.pick_now(
+                "Nothing is open in the process log, so there is nothing to hand over. Entries "
+                "appear after a round the program could measure a defect in.",
+                "流程日志里没有待解决的条目,没有可交出去修的东西。"
+                "程序在一轮里量出毛病之后才会有条目。"))
+        timeout = float(store.get_settings()["handoff_timeout"])
+        job = {"id": new_id(), "state": "running", "started": time.time(), "finished": 0.0,
+               "timeout": timeout,
+               # ⚠️ Always present, empty when nothing went wrong. A field that only appears on
+               # failure makes "no error" and "no such field" indistinguishable to every reader.
+               "error": "",
+               "groups": [{"gid": g["id"], "group": g["name"], "dir": str(workspace),
+                           "count": len(entries), "note": "", "sends": []}
+                          for g, workspace, entries in todo]}
+        handoff_jobs[job["id"]] = job
+
+        async def run() -> None:
+            # Two groups at a time, each group's two agents side by side: four processes at the very
+            # most. ⚠️ The two agents share the directory **on purpose** — both were asked for and
+            # neither waits — so a collision is a real possibility. That is why both answers are
+            # shown as they came back rather than merged into one verdict.
+            sem = asyncio.Semaphore(2)
+
+            async def one_group(row: dict, g: dict, workspace, entries) -> None:
+                async with sem:
+                    text = handoff.brief(group=g["name"], folder=workspace, entries=entries,
+                                         minutes=int(timeout // 60))
+                    sends = await asyncio.to_thread(handoff.send_all, keys,
+                                                    folder=workspace, text=text, timeout=timeout)
+                    row["sends"] = [s.brief() for s in sends]
+                    row["note"] = next((s.note for s in sends if s.note), "")
+
+            try:
+                await asyncio.gather(*[one_group(row, g, ws, entries)
+                                       for (g, ws, entries), row in zip(todo, job["groups"])])
+            except Exception as e:  # noqa: BLE001 — a background job must not die silently
+                job["error"] = f"{type(e).__name__}: {e}"
+            job.update(state="done", finished=time.time())
+
+        job["task"] = asyncio.create_task(run())
+        return {"job": _handoff_view(job)}
+
+    @r.get("/api/process/handoff/{job_id}")
+    async def process_handoff_job(job_id: str) -> dict:
+        found = handoff_jobs.get(job_id)
+        if not found:
+            raise HTTPException(404, i18n.pick_now("No such hand-off", "没有这次外派"))
+        return {"job": _handoff_view(found)}
 
     # ============================================================ attachments (any file)
     # Attachments were images only. They are now any file the user drops in: a screenshot, a PDF,

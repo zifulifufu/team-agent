@@ -600,6 +600,7 @@ export interface Settings {
   transcribe_cmd: string;          // Speech-to-text command; empty = whichever known transcriber is installed
   advisor_cmd: string;             // Command-line model to consult read-only; empty = claude/codex if installed
   advisor_timeout: number;         // How long one such consultation may take, in seconds
+  handoff_timeout: number;         // How long a coding agent may spend fixing the open entries
   process_autojoin: boolean;       // Keep the (hidden) process engineer in every group
   process_autolog: boolean;        // Record the defects the app can measure by itself, silently
   process_review: boolean;         // Ask a model outside the group for the cause and the fix
@@ -612,6 +613,34 @@ export interface Settings {
   score_threshold: number;           // Percent; below this a task counts as needing rework
   score_excerpt_chars: number;       // How much of each deliverable the judge reads (head + tail)
   score_max_lessons: number;         // How many lessons one round may write into memory
+}
+/** One run of handing the process log's open entries to the coding agents on this machine.
+ *
+ *  `groups` is one row per group that had something open, each with its own directory and one
+ *  answer per agent. They are kept **apart**: two agents sent at the same directory and told not to
+ *  wait for each other can disagree, and one merged verdict would hide that. */
+export interface HandoffJob {
+  id: string;
+  state: "running" | "done";
+  started: number;
+  finished: number;
+  timeout: number;
+  error: string;                     // "" unless the run itself blew up; always present
+  groups: {
+    gid: string;
+    group: string;
+    dir: string;                     // the group's own workspace — never anywhere else
+    count: number;                   // how many open entries went out
+    note: string;                    // e.g. "routed through the local proxy on port 7890"
+    sends: {
+      target: string;
+      label: string;
+      ok: boolean;
+      text: string;
+      seconds: number;
+      note: string;
+    }[];
+  }[];
 }
 /** One configurable field of a chat channel, described by the backend catalogue.
  *  `setting` is the full settings key; `secret` fields never carry a value, only `set`. */
@@ -1830,7 +1859,14 @@ export const api = {
   vision: () => get<VisionStatus>("/api/vision"),
   /** What this machine can do with files: which document kinds are read locally, whether
    *  ffmpeg is there for video frames, and who can look at pictures. */
-  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string } }>("/api/capabilities"),
+  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string }; handoff: { targets: { key: string; label: string; ready: boolean; install: string }[]; ready: string[] } }>("/api/capabilities"),
+  /** Hand the process log's open entries to the coding agents on this machine — the ones allowed to
+   *  **edit files** in that group's own workspace. Returns at once; poll with `processHandoffJob`.
+   *  The button that calls this *is* the approval, which is why members cannot reach it. */
+  processHandoff: (body: { gid?: string; targets?: string[] } = {}) =>
+    post<{ job: HandoffJob }>("/api/process/handoff", body),
+  processHandoffJob: (id: string) =>
+    get<{ job: HandoffJob }>(`/api/process/handoff/${encodeURIComponent(id)}`),
   /** The process engineer: where it is and what it has written. It is invisible in every group, so
    *  this panel is the only place it can be seen at all. */
   process: () => get<{ name: string; hidden: boolean; autojoin: boolean; autolog: boolean; review: boolean; groups: number; in_groups: number; not_in: string[]; entries: Record<string, number>; ledgers: number; recent: { group: string; gid: string; id: string; title: string; status: string; severity: string; stage: string; found: string; by: string; seen: number; sentence: string; cause: string; fix: string; hint: string; verify: string; advised: number; last_advised: string; review_state: string; review_note: string }[] }>("/api/process"),

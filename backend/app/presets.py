@@ -437,6 +437,12 @@ DEFAULT_SETTINGS: dict = {
     # one-line question, and a real review runs into several — so the ceiling is generous.
     "advisor_cmd": "",
     "advisor_timeout": 900,
+    # ---- handing the findings to a coding agent (see handoff.py). Not a consultation: the agent
+    # gets write access to the group's own workspace and is asked to fix what the ledger still lists
+    # as open. Tens of minutes, because it is doing real work — reading the evidence, editing files,
+    # saying which ones it changed — so this is generous for the same reason `advisor_timeout` is:
+    # the call ends when the agent stops, not when the clock runs out.
+    "handoff_timeout": 1800,
     # ---- the process engineer: a member that watches every group without appearing in any of them.
     # `process_autojoin` keeps it in every group (created hidden, never a turn, never an @-candidate);
     # `process_autolog` has the app record the defects it can decide *by measurement* — a task marked

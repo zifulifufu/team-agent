@@ -192,7 +192,7 @@ def ask(
                                          f"executable?", f"启动不了 `{argv[0]}` —— 它装了吗、可执行吗?"),
                       ok=False, label=label)
     except subprocess.TimeoutExpired:
-        _kill(proc)
+        kill_group(proc)
         return Answer(text=i18n.pick_now(
             f"{label} did not answer within {int(timeout)} seconds and was stopped. Narrow the "
             f"question, or raise the time limit in Settings → General.",
@@ -203,13 +203,17 @@ def ask(
                       ok=False, label=label)
     seconds = round(time.time() - started, 1)
     text = (out or "").strip()
-    if proc.returncode != 0 and not text:
-        tail = (err or "").strip().splitlines()[-6:]
+    if not text:
+        # ⚠️ **An empty answer is not the same thing as a failed exit code**, and this family of
+        # engines uses exactly that shape for "not signed in": the sentence goes to stderr and the
+        # process still exits **0** (measured 2026-09-27 — see `handoff.send`, which learned it the
+        # hard way). Keying off `returncode != 0` dropped the one line that explained the silence.
+        tail = "\n".join((err or "").strip().splitlines()[-8:]) or i18n.pick_now(
+            "(it printed nothing at all)", "(它什么都没打印)")
         return Answer(
             text=i18n.pick_now(
-                f"{label} exited with code {proc.returncode} and said nothing. Its last lines were:\n"
-                + "\n".join(tail),
-                f"{label} 以退出码 {proc.returncode} 结束,没有回答。它最后几行是:\n" + "\n".join(tail)),
+                f"{label} said nothing (exit code {proc.returncode}). Its last lines were:\n{tail}",
+                f"{label} 什么都没说(退出码 {proc.returncode})。它最后几行是:\n{tail}"),
             ok=False, label=label, seconds=seconds, code=proc.returncode)
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS] + i18n.pick_now(
@@ -239,9 +243,13 @@ def _env(folder: Path | str) -> dict[str, str]:
     return env
 
 
-def _kill(proc: subprocess.Popen | None) -> None:
+def kill_group(proc: subprocess.Popen | None) -> None:
     """Stop the whole process group. A CLI is a wrapper around node, which is a wrapper around the
-    model call: killing only the parent leaves the rest running."""
+    model call: killing only the parent leaves the rest running.
+
+    Public because the hand-off to a coding agent (`handoff.py`) needs exactly this and must not
+    grow a second copy of it — the two would drift, and a half-killed agent keeps billing.
+    """
     if proc is None or proc.poll() is not None:
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):

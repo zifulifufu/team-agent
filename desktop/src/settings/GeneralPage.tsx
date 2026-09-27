@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Settings, type VisionStatus } from "../api";
+import { api, type HandoffJob, type Settings, type VisionStatus } from "../api";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import { Switch } from "../ui";
@@ -40,7 +40,10 @@ export default function GeneralPage() {
   const { settings } = useData();
   const { set, err } = useSettingsSaver();
   const [vision, setVision] = useState<VisionStatus | null>(null);
-  const [caps, setCaps] = useState<{ audio_transcribe: boolean; transcriber_install: string; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string } } | null>(null);
+  // What this machine can do, taken from the endpoint's own return type rather than re-declared: a
+  // second copy of "which fields `/api/capabilities` has" is a copy that goes stale silently, and
+  // the first symptom of that is a value that is always `undefined`.
+  const [caps, setCaps] = useState<Awaited<ReturnType<typeof api.machineCapabilities>> | null>(null);
   const [proc, setProc] = useState<Awaited<ReturnType<typeof api.process>> | null>(null);
   useEffect(() => { void api.vision().then(setVision).catch(() => undefined); }, [settings?.vision_model_id, settings?.vision_cloud]);
   // Asked again whenever the command changes, so the chip reflects what would actually happen — and
@@ -56,6 +59,27 @@ export default function GeneralPage() {
     try { setProc(await api.process()); } catch { /* the panel keeps what it had */ }
   }, []);
   useEffect(() => { void checkProcess(); }, [checkProcess]);
+  // The hand-off: the one control on this page that starts programs with **write access** to a
+  // group's workspace. A job with its own state because it takes minutes, polled only while it
+  // runs — two agents' worth of prose is the only thing it ever returns, and nothing else on this
+  // page changes it.
+  const [job, setJob] = useState<HandoffJob | null>(null);
+  const [handoffErr, setHandoffErr] = useState("");
+  const runHandoff = useCallback(async () => {
+    setHandoffErr("");
+    try {
+      setJob((await api.processHandoff({})).job);
+    } catch (e) {
+      setHandoffErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+  useEffect(() => {
+    if (job?.state !== "running") return;
+    const timer = window.setInterval(async () => {
+      try { setJob((await api.processHandoffJob(job.id)).job); } catch { /* keep what we have */ }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [job?.id, job?.state]);
   if (!settings) return <div className="empty big">{t("Loading…")}</div>;
 
   // Only models that can really look are offered. The list used to be every enabled model, and a
@@ -136,6 +160,12 @@ export default function GeneralPage() {
     : t("The engineer stays hidden. Each group's ledger records observations, suggested corrections and re-run evidence. Unresolved feedback enters subsequent rounds while automatic recording is on. {written} of {total} groups have a log so far.", {
         written: proc.ledgers, total: proc.groups,
       });
+  // Who would actually take the work, read from the machine rather than from a setting: an agent
+  // that is not installed cannot be handed anything, and a switch promising otherwise would be a
+  // switch that lies on first press.
+  const handReady = caps?.handoff?.ready ?? [];
+  const canHand = handReady.length > 0;
+  const handLabels = (caps?.handoff?.targets ?? []).filter((x) => x.ready).map((x) => x.label).join(" + ");
 
   const numRows = (rows: NumRow[]) =>    rows.map((r) => {
       const title = pick(r.title, r.titleZh);
@@ -292,7 +322,70 @@ export default function GeneralPage() {
             <button className="btn small" onClick={() => void checkProcess()}>{t("Refresh")}</button>
           </span>
         </Row>
+        {/* The only control in this app that deliberately starts a program allowed to **change
+            files**. It sits with the engineer's other switches because that is where it belongs:
+            what the engineer found is what gets handed over, and the press is the approval. */}
+        <Row title={t("Hand the open problems to a coding agent")}
+             desc={t("Not a second opinion — this starts a program that can change files, in each group's own workspace, and tells it to fix what the log lists as open. WorkBuddy and codex are both sent and neither waits for the other, so whichever gets there first is the one that fixed it. Every call starts programs on this machine that edit without asking again; that is why it runs only when you press it.")}>
+          <span style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: 6, maxWidth: 420 }}>
+            <button className="btn small" disabled={job?.state === "running" || !canHand}
+                    onClick={() => void runHandoff()}>
+              {job?.state === "running" ? t("Working…") : t("Review the flow")}
+            </button>
+            <span className={"chip" + (canHand ? "" : " warn")}>
+              {canHand
+                ? t("Will hand to: {names}", { names: handLabels })
+                : t("No coding agent found")}
+            </span>
+            {!canHand && (
+              <span className="muted small" style={{ textAlign: "right" }}>
+                {t("Nothing on this machine can take a repair yet. WorkBuddy's own engine ships inside the WorkBuddy app; codex comes from npm.")}
+              </span>
+            )}
+            {handoffErr && <span className="err small" style={{ textAlign: "right" }}>{handoffErr}</span>}
+          </span>
+        </Row>
       </div>
+      {job && (
+        <div className="card flush">
+          <div className="setting-row pad">
+            <div>
+              <div className="sr-title">
+                {job.state === "running" ? t("Handing the problems over…") : t("Hand-off finished")}
+              </div>
+              <div className="sr-desc">
+                {t("Each agent was given that group's open entries and its own workspace. Both answers are shown as they came back — they were not merged, because the two were sent at the same directory at the same time.")}
+              </div>
+            </div>
+          </div>
+          {job.groups.map((g) => (
+            <div className="setting-row pad" key={g.gid}>
+              <div style={{ minWidth: 0 }}>
+                <div className="sr-title">{g.group} · {t("{n} open", { n: g.count })}</div>
+                <div className="sr-desc">{g.dir}{g.note ? " · " + g.note : ""}</div>
+                {g.sends.map((s) => (
+                  <div className="sr-desc" key={s.target}>
+                    <b>{s.label}</b>{" · "}
+                    {s.ok
+                      ? t("finished in {s}", { s: `${Math.round(s.seconds)}s` })
+                      : t("did not finish — {why}", { why: s.text.slice(0, 300) })}
+                  </div>
+                ))}
+                {!g.sends.length && <div className="sr-desc">{t("Still working…")}</div>}
+                {g.sends.some((s) => s.ok) && (
+                  <details>
+                    <summary className="sr-desc">{t("What they said")}</summary>
+                    {g.sends.filter((s) => s.ok).map((s) => (
+                      <pre key={s.target} style={{ whiteSpace: "pre-wrap", maxHeight: 260, overflow: "auto" }}>{s.text}</pre>
+                    ))}
+                  </details>
+                )}
+              </div>
+            </div>
+          ))}
+          {job.error && <div className="setting-row pad"><div className="err">{job.error}</div></div>}
+        </div>
+      )}
       {proc?.recent?.length ? (
         <div className="card flush">
           <div className="setting-row pad">

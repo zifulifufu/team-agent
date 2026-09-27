@@ -535,12 +535,41 @@ class Launcher:
     node_dir: str = ""       # directory of the node binary that has to go on PATH
 
 
-def _extra_bins() -> list[str]:
+def _extra_bins(managed_first: bool = False) -> list[str]:
+    """The prefixes a child needs, in the order the caller wants them.
+
+    `managed_first` exists for `codex`: the two node installations on this machine are not
+    interchangeable (see `preferred_node`), so a caller that needs the arm64 one asks for it rather
+    than growing a second copy of this list with a different order.
+    """
     home = Path.home()
-    dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-    dirs += sorted(glob.glob(str(home / ".workbuddy/binaries/node/versions/*/bin")), reverse=True)
-    dirs += sorted(glob.glob(str(home / ".nvm/versions/node/*/bin")), reverse=True)
-    return dirs
+    bases = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+    runtimes = (sorted(glob.glob(str(home / ".workbuddy/binaries/node/versions/*/bin")), reverse=True)
+                + sorted(glob.glob(str(home / ".nvm/versions/node/*/bin")), reverse=True))
+    return runtimes + bases if managed_first else bases + runtimes
+
+
+def preferred_node() -> str:
+    """A node that can run **any** known agent, rather than whichever one PATH happens to name.
+
+    ⚠️ The two installations here are not interchangeable for a program that ships a
+    per-architecture binary. `codex` loads `@openai/codex-darwin-<arch>` and only one of those is
+    installed, so the node that starts it decides between a working run and a crash — measured
+    2026-09-27 on this machine, same command, same directory:
+
+        <managed>/bin/node (arm64 v22.22.2) → `codex-cli 0.155.1`
+        /usr/local/bin/node  (x64 v22.22.0, Rosetta) → `Missing optional dependency
+                                                        @openai/codex-darwin-x64`
+
+    So the managed runtime — arm64 on Apple Silicon — comes first, then the Homebrew prefixes, and
+    the inherited PATH last. Only used where an agent has to run at all (`handoff`): the bundled
+    engine is plain JavaScript and starts under either one.
+    """
+    for d in _extra_bins(managed_first=True):
+        p = Path(d) / "node"
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return shutil.which("node", path=_search_path()) or ""
 
 
 def _search_path() -> str:
@@ -562,6 +591,36 @@ def _is_node_script(p: Path) -> bool:
     return head.startswith(b"#!") and b"node" in head
 
 
+def launcher_for(raw: str, *, node: str = "") -> Launcher | None:
+    """One program that is **already named** — how to start it, or `None` if it cannot be started.
+
+    Pulled out of `find_launcher` so a caller that has decided *what* to run gets the same
+    three-way decision (python file / node script / plain executable) instead of making a second
+    guess that would then drift from this one. The hand-off to a coding agent is exactly such a
+    caller: it looks its program up itself, and it found `codex` where this module never looks.
+
+    `node` names the interpreter to start a node script with; left empty, `_search_path()` decides.
+    It exists because that default is wrong for a script with a per-architecture binary behind it —
+    pass `preferred_node()`.
+    """
+    return _launcher(Path(raw).expanduser(), "path", node)
+
+
+def _launcher(p: Path, via: str, node: str = "") -> Launcher | None:
+    if not p.is_file():
+        return None
+    if p.suffix == ".py":
+        return Launcher([sys.executable, str(p)], str(p), via)
+    if _is_node_script(p):
+        node = node or shutil.which("node", path=_search_path()) or ""
+        if not node:
+            return None
+        return Launcher([node, str(p)], str(p), via, str(Path(node).parent))
+    if os.access(p, os.X_OK):
+        return Launcher([str(p)], str(p), via)
+    return None
+
+
 def find_launcher(cli_path: str = "") -> Launcher | None:
     cands: list[tuple[str, str]] = []
     if cli_path:
@@ -574,18 +633,9 @@ def find_launcher(cli_path: str = "") -> Launcher | None:
         if w:
             cands.append((w, "path"))
     for raw, via in cands:
-        p = Path(raw).expanduser()
-        if not p.is_file():
-            continue
-        if p.suffix == ".py":
-            return Launcher([sys.executable, str(p)], str(p), via)
-        if _is_node_script(p):
-            node = shutil.which("node", path=_search_path())
-            if not node:
-                continue
-            return Launcher([node, str(p)], str(p), via, str(Path(node).parent))
-        if os.access(p, os.X_OK):
-            return Launcher([str(p)], str(p), via)
+        lc = _launcher(Path(raw).expanduser(), via)
+        if lc:
+            return lc
     return None
 
 
@@ -946,6 +996,25 @@ def scrub_secrets(text: str) -> str:
     return CREDENTIAL_LITERAL.sub("***", text)
 
 
+# What to do when the engine says it is not signed in — and the answer is **not the same** in the
+# two places this text is shown. An external agent *member* can be pointed at a model of the user's
+# own: it has a settings panel with those three fields. A hand-off (`handoff.py`) is a button, not a
+# member — it has no such field, and advice that names a control the reader cannot find is worse than
+# no advice at all. `explain_failure(member=…)` picks.
+_MEMBER_ROUTE = (
+    "The route that works is to point this member at a model of your own: fill in the "
+    "OpenAI-compatible address, the key and the model name in its settings (the same three fields a "
+    "chat gateway uses). It then calls that service directly, with the tools it brings.",
+    "能用的办法是给这个成员指定一个你自己的模型:在它的设置里填上「模型地址(OpenAI 兼容)+ 密钥 + 模型名」"
+    "(和对话网关填的是同样三个字段)。填好后引擎会直接调用那个服务,并照常带上它自己的工具。",
+)
+_HANDOFF_ROUTE = (
+    "There is nothing here to point at a model of its own, so the route that works is the other "
+    "agent: a work order sent to `codex` needs no WorkBuddy account.",
+    "外派这条路没有「给谁指定模型」这一说,所以能做的就是换另一个智能体:交给 `codex` 的活不需要 WorkBuddy 账号。",
+)
+
+
 def explain_http(status: int, detail: str, engine: str) -> str:
     """An HTTP failure from a chat gateway, phrased as what the user can do about it."""
     tail = scrub_secrets(re.sub(r"\s+", " ", (detail or "").strip()))[-200:]
@@ -962,7 +1031,7 @@ def explain_http(status: int, detail: str, engine: str) -> str:
 
 
 def explain_failure(rc: int | None, stderr: str, error: str, login_cmd: str = "",
-                    signin: bool = True) -> str:
+                    signin: bool = True, member: bool = True) -> str:
     """Turn a failed command-line run into something the user can act on.
 
 `login_cmd` is the exact command line this program would run (node plus the engine's path); it is
@@ -971,7 +1040,11 @@ user's PATH — "run codebuddy in a terminal" is advice that fails at the first 
 
 `signin` says whether that command line has an interactive screen to type `/login` into at all
 (`has_signin_screen`). When it does not, the only advice worth giving is the route that needs no
-account: pointing the member at a model of the user's own."""
+account: pointing the member at a model of the user's own.
+
+`member` says who is reading: an external agent member (`True`, the default) or a one-off hand-off
+(`handoff.py`, `False`) — see `_MEMBER_ROUTE` / `_HANDOFF_ROUTE` for why the closing advice differs.
+"""
     detail = scrub_secrets(re.sub(r"\s+", " ", (error or stderr or "").strip()))[-300:]
     msg = i18n.pick_now(f"The command-line engine did not return properly (exit code {rc})", f"命令行引擎没有正常返回(退出码 {rc})") if rc else i18n.pick_now("The command-line engine reported an error", "命令行引擎报告了错误")
     if detail:
@@ -987,17 +1060,14 @@ account: pointing the member at a model of the user's own."""
             msg += i18n.pick_now(
                 " This build of the command line has no sign-in screen at all — there is no `/login` to"
                 " type in a terminal (the interactive bundle is not shipped), and no `codebuddy` command"
-                " on your PATH — so the WorkBuddy window's own sign-in cannot be shared with it. The"
-                " route that works is to point this member at a model of your own: fill in the"
-                " OpenAI-compatible address, the key and the model name in its settings (the same three"
-                " fields a chat gateway uses). It then calls that service directly, with the tools it"
-                " brings. WorkBuddy's own account models (glm-5.1, kimi-k2.5, …) stay out of reach —"
-                " running those is exactly what the account's sign-in is for.",
+                " on your PATH — so the WorkBuddy window's own sign-in cannot be shared with it. "
+                + (_MEMBER_ROUTE[0] if member else _HANDOFF_ROUTE[0])
+                + " WorkBuddy's own account models (glm-5.1, kimi-k2.5, …) stay out of reach —"
+                  " running those is exactly what the account's sign-in is for.",
                 " 这份命令行没有可登录的界面——终端里没有 /login 可以输入(交互式产物没有随这个版本发布),"
                 "PATH 里也没有 codebuddy 命令——所以 WorkBuddy 窗口自己的登录没法共享给它。"
-                "能用的办法是给这个成员指定一个你自己的模型:在它的设置里填上「模型地址(OpenAI 兼容)+ 密钥 + 模型名」"
-                "(和对话网关填的是同样三个字段)。填好后引擎会直接调用那个服务,并照常带上它自己的工具。"
-                "WorkBuddy 账号自带的模型(glm-5.1、kimi-k2.5 等)用不了——那正是账号登录要做的事。")
+                + (_MEMBER_ROUTE[1] if member else _HANDOFF_ROUTE[1])
+                + "WorkBuddy 账号自带的模型(glm-5.1、kimi-k2.5 等)用不了——那正是账号登录要做的事。")
         else:
             run_it = (i18n.pick_now(f"In a terminal, run `{login_cmd}` and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
                                     f"在终端里运行 `{login_cmd}`,然后输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。")
@@ -1005,8 +1075,10 @@ account: pointing the member at a model of the user's own."""
                       i18n.pick_now("In a terminal, run the engine's command line once and type /login — the sign-in is kept in your home folder, so it works however this program was started.",
                                     "在终端里运行一次这个引擎的命令行并输入 /login —— 登录信息存在你的主目录,无论本程序怎么启动都有效。"))
             routes = [run_it, i18n.pick_now(
-                "Or point this member at a model of your own: an OpenAI-compatible address, that service's key and a model name make it run with no sign-in at all.",
-                "或者给这个成员指定一个你自己的模型:填上 OpenAI 兼容地址、该服务的密钥和模型名,它不需要登录就能跑。")]
+                "Or point this member at a model of your own: an OpenAI-compatible address, that service's key and a model name make it run with no sign-in at all." if member else
+                "Or send the work to `codex` instead: it is a separate program with a sign-in of its own, and it needs no WorkBuddy account.",
+                "或者给这个成员指定一个你自己的模型:填上 OpenAI 兼容地址、该服务的密钥和模型名,它不需要登录就能跑。" if member else
+                "或者把这份活交给 `codex`:它是另一个程序,有自己的登录,不需要 WorkBuddy 账号。")]
             msg += i18n.pick_now(
                 " It looks like the command line is not signed in — the WorkBuddy window being signed in"
                 " does not sign it in. Either of these is enough: " + " ".join(routes)

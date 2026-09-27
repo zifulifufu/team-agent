@@ -157,6 +157,21 @@ def test_a_failure_with_no_output_reports_the_exit_code_and_the_last_lines(tmp_p
     assert "3" in answer.text and "not signed in" in answer.text
 
 
+def test_silence_with_a_zero_exit_code_still_reports_what_it_said(tmp_path, monkeypatch):
+    """⚠️ The same shape that made a hand-off look like it had changed nothing: this family of
+    engines answers "Authentication required. Please use /login" on **stderr** and exits **0**.
+    Keying the failure branch off a non-zero exit code alone threw that line away."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    exe = _fake_cli(tmp_path, 'echo "Authentication required. Please use /login" >&2\nexit 0\n')
+    _point_at(monkeypatch, exe)
+
+    answer = advisor.ask({}, question="x", folder=workspace, timeout=30)
+
+    assert not answer.ok and answer.code == 0
+    assert "Authentication required" in answer.text
+
+
 def test_a_question_that_never_finishes_is_stopped_and_the_group_is_killed(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()

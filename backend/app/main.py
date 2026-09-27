@@ -532,6 +532,9 @@ def create_app(
               # asking an outside model: a narrow question takes minutes, a real review of a run
               # takes longer, and the ceiling is a person's patience rather than a service's
               "advisor_timeout": (60, 3600),
+              # handing the findings to a coding agent: it is editing files, so the ceiling is
+              # "how long may a repair run before it is not a repair any more"
+              "handoff_timeout": (60, 7200),
               # image: a generation is seconds rather than minutes, and a 4K PNG is tens of MB
               "image_timeout": (20, 900), "image_max_mb": (1, 128),
               # scoring: the threshold is a percentage, and the excerpt bounds what a judge reads
