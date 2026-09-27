@@ -310,9 +310,12 @@ def send(
                     text=i18n.pick_now(
                         f"{label} was still working after {int(timeout)} seconds and was stopped. "
                         "What it had done so far is in the directory; read what changed before "
-                        "sending it the same list again.",
+                        "sending it the same list again. If it never changed anything at all, the "
+                        "likely cause is that it cannot reach its model service from here — check "
+                        "the proxy, or raise the time limit under Process engineer.",
                         f"{label} 干了 {int(timeout)} 秒还没结束,已终止。它做到哪一步就留在目录里了 —— "
-                        "再发同一份清单之前,先看看它改了什么。"))
+                        "再发同一份清单之前,先看看它改了什么。如果它**一个字都没改**,多半是它从这里"
+                        "连不上自己的模型服务 —— 检查一下代理,或者在「流程工程师」里把时限调大。"))
     except OSError as e:
         return Sent(target=key, label=label, note=note,
                     text=i18n.pick_now(f"{label} could not be run: {e}", f"{label} 跑不起来:{e}"))
