@@ -1388,6 +1388,29 @@ export interface MusicVocabulary {
 /** What the model would actually receive, and anything wrong with it. */
 export interface MusicPreview { tags: string; warnings: string[]; }
 
+// ---------------------------------------------------------- the private studio
+/** 用户自己的素材（脸、录像、录音）。⚠️ 与其它库**故意相反**：它不在任何群的工作目录里、
+ *  不进知识库、不参与导出 —— 成员只能通过显式引用拿到由它生成的**产出**，拿不到原始素材。 */
+export interface StudioAsset {
+  id: string; title: string; kind: "photo" | "video" | "audio";
+  tags: string[]; note: string; created: number; bytes: number;
+  original_name: string; mime: string;
+}
+/** 一次生成。`reviewed` 与 `chosen` 是**两件事**：看过 ≠ 满意。 */
+export interface StudioTake {
+  id: string; asset: string; name: string; prompt: string;
+  params: Record<string, unknown>;
+  state: "running" | "done" | "failed";
+  created: number; seconds: number; bytes: number;
+  reviewed: boolean; chosen: boolean; error: string;
+}
+export interface StudioAssets {
+  assets: StudioAsset[];
+  /** 读不出 sidecar 的素材会被**点名**，不是静默跳过 —— 不能再描述的东西就不能拿来生成。 */
+  errors: { name: string; why: string; path: string }[];
+  kinds: string[];
+}
+
 // ------------------------------------------------------------------- http
 /** Turn the backend error body into something readable: FastAPI validation errors are arrays and must not be JSON.stringify'd straight to the user */
 function errorText(detail: unknown, fallback: string): string {
@@ -1489,6 +1512,27 @@ export const api = {
   delMusic: (name: string) => del<{ ok: boolean }>(`/api/video-zone/music/${encodeURIComponent(name)}`),
   /** Bytes of one track, as a blob URL a player can use (see `blobUrl`). */
   musicAudio: (name: string) => blobUrl(`/api/video-zone/music/${encodeURIComponent(name)}/audio`),
+
+  // ---- The private studio: the user's own material, and every take made from it.
+  studioAssets: (q: { kind?: string; tag?: string } = {}) =>
+    get<StudioAssets>(`/api/video-zone/studio/assets${qs(q)}`),
+  /** Raw bytes like every other upload; the **type comes from the bytes**, not the file name. */
+  uploadStudioAsset: (file: File, meta: { title?: string; note?: string; tags?: string } = {}) =>
+    postRaw<{ asset: StudioAsset }>(
+      `/api/video-zone/studio/assets${qs({ filename: file.name, ...meta })}`, file),
+  patchStudioAsset: (id: string, b: { title?: string; note?: string; tags?: string[] }) =>
+    patch<{ asset: StudioAsset }>(`/api/video-zone/studio/assets/${encodeURIComponent(id)}`, b),
+  /** Deleting the material deletes every take made from it — that is the rule, not a side effect. */
+  delStudioAsset: (id: string) => del<{ ok: boolean }>(`/api/video-zone/studio/assets/${encodeURIComponent(id)}`),
+  studioTakes: (assetId: string) =>
+    get<{ takes: StudioTake[] }>(`/api/video-zone/studio/assets/${encodeURIComponent(assetId)}/takes`),
+  patchStudioTake: (id: string, b: { reviewed?: boolean; chosen?: boolean; name?: string }) =>
+    patch<{ take: StudioTake }>(`/api/video-zone/studio/takes/${encodeURIComponent(id)}`, b),
+  delStudioTake: (id: string) => del<{ ok: boolean }>(`/api/video-zone/studio/takes/${encodeURIComponent(id)}`),
+  /** Material and takes go through `blobUrl` for the same reason music does: an `<img src>` cannot
+   *  carry this app's token, so the request would come back 401 and the picture would be blank. */
+  studioAssetBlob: (id: string) => blobUrl(`/api/video-zone/studio/assets/${encodeURIComponent(id)}/file`),
+  studioTakeBlob: (id: string) => blobUrl(`/api/video-zone/studio/takes/${encodeURIComponent(id)}/file`),
   // ---- Model services
   providers: () => get<Provider[]>("/api/providers"),
   addProvider: (b: Record<string, unknown>) => post<Provider>("/api/providers", b),

@@ -11,16 +11,25 @@ Music is the first block of the zone; scenes and motion will sit beside it in th
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import comfyui, i18n, music, musicprompt, musicwork
-from .api_ext import Ctx
+from . import attachments, comfyui, i18n, music, musicprompt, musicwork, studio
+# `_need_octet` / `_refuse_oversized` are imported rather than re-written: they are the two checks
+# that keep a cross-origin form out and refuse a runaway body before it is buffered, and a second
+# copy of either is a second answer to "may this arrive at all".
+from .api_ext import UPLOAD_HARD_BYTES, Ctx, _need_octet, _refuse_oversized
 from .store import new_id
+
+# What a piece of the user's own material can be, mapped from what the **bytes** say it is. Not from
+# the extension: a `.mov` that is really a still is a thing that happens, and this value decides
+# which generator may be pointed at the asset at all.
+STUDIO_KINDS = {attachments.IMAGE: "photo", attachments.VIDEO: "video", attachments.AUDIO: "audio"}
 
 # What a browser may be handed, by container. Kept next to the shelf rather than guessed at the call
 # site: a wrong media type makes a player refuse a file that is perfectly good.
@@ -51,6 +60,25 @@ class MusicComposeIn(BaseModel):
     name: str = ""
     mood: str = "neutral"
     tags: list[str] = []
+
+
+# ⚠️⚠️ These two have to be **module-level**, like `MusicComposeIn` above. Declared inside
+# `build_video_zone_router` they work fine for the request itself, but FastAPI cannot resolve a local
+# class when it builds the OpenAPI schema — `/openapi.json` then raises
+# `PydanticUserError: ForwardRef('AssetPatch') is not fully defined`, which takes the whole API
+# description down with it. Caught by `test_the_api_surface_is_not_exposed_when_a_token_is_set`,
+# which is the only test that opens that document.
+class StudioAssetPatch(BaseModel):
+    title: str = ""
+    note: str = ""
+    tags: list[str] = []
+
+
+class StudioTakePatch(BaseModel):
+    """`reviewed` and `chosen` are separate on purpose: watched is not the same as wanted."""
+    reviewed: bool | None = None
+    chosen: bool | None = None
+    name: str = ""
 
 
 def _track_view(t: dict) -> dict:
@@ -223,6 +251,115 @@ def build_video_zone_router(c: Ctx) -> APIRouter:
         if not music.remove(name):
             raise HTTPException(404, i18n.pick_now("That track is not on the shelf",
                                                    "音乐库里没有这首"))
+        return {"ok": True}
+
+    # ------------------------------------------------------------------ the private studio
+    # 用户的**私有**素材与由它生成的每一次产出。⚠️ 这一段的边界与其它库**故意相反**：器械参考库是
+    # 「拷进每个群、成员随便看」，而这里是「你自己的脸和你的录像」—— 它不在任何群的工作目录里、
+    # 不进知识库、不参与导出；成员只能通过显式引用拿到**产物**，永远拿不到原始素材。
+    def _asset_view(row: dict) -> dict:
+        return {k: v for k, v in row.items() if k != "dir"}
+
+    def _take_view(row: dict) -> dict:
+        return {k: v for k, v in row.items() if k != "dir"}
+
+    def _serve(path: Path, mime: str = "") -> FileResponse:
+        """字节交给浏览器。媒体类型以记录下来的为准 —— 猜错会让播放器拒掉一个完好的文件。"""
+        kind = mime or (mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        return FileResponse(path, media_type=kind, filename=path.name)
+
+    @r.get("/api/video-zone/studio/assets")
+    async def studio_assets(kind: str = "", tag: str = "") -> dict:
+        """The private shelf. `kind`/`tag` filter, and a sidecar that will not parse is **named**
+        rather than skipped: material this app can no longer describe is material it must not
+        generate from."""
+        return {"assets": [_asset_view(x) for x in studio.assets(kind=kind, tag=tag).values()],
+                "errors": studio.errors(), "kinds": list(studio.KINDS)}
+
+    @r.post("/api/video-zone/studio/assets")
+    async def studio_upload(request: Request, filename: str = "file", title: str = "",
+                            note: str = "", tags: str = "") -> dict:
+        """Raw bytes, like every other upload in this app.
+
+        ⚠️ `kind` is **not** a parameter: it comes from the bytes (`attachments.classify`), so a
+        `.mov` that is really a still cannot claim to be a video and be handed to a video generator.
+        """
+        _need_octet(request)
+        cfg = store.get_settings()
+        limit = min(int(cfg["upload_max_mb"]) * 1024 * 1024, UPLOAD_HARD_BYTES)
+        _refuse_oversized(request, limit)
+        data = await request.body()
+        if not data:
+            raise HTTPException(400, i18n.pick_now("That file was empty.", "这个文件是空的。"))
+        if len(data) > limit:
+            raise HTTPException(413, i18n.pick_now("That file is too large.", "文件太大。"))
+        found, mime, _ext = attachments.classify(data, filename)
+        kind = STUDIO_KINDS.get(found)
+        if kind is None:
+            raise HTTPException(400, i18n.pick_now(
+                "The studio keeps photos, video and audio — that file is none of them.",
+                "工作室只收照片、视频和音频 —— 这个文件都不是。"))
+        try:
+            row = await asyncio.to_thread(
+                lambda: studio.add_asset(title=title, kind=kind, filename=filename, data=data,
+                                         note=note, mime=mime,
+                                         tags=[t for t in str(tags).split(",") if t.strip()]))
+        except (OSError, ValueError, KeyError) as e:
+            raise HTTPException(400, str(e)) from None
+        return {"asset": _asset_view(row)}
+
+    @r.get("/api/video-zone/studio/assets/{asset_id}/file")
+    async def studio_asset_file(asset_id: str) -> FileResponse:
+        row = studio.asset(asset_id)
+        path = studio.file_of_asset(asset_id)
+        if row is None or path is None:
+            raise HTTPException(404, i18n.pick_now("No such material", "没有这份素材"))
+        return _serve(path, str(row.get("mime") or ""))
+
+    @r.patch("/api/video-zone/studio/assets/{asset_id}")
+    async def studio_asset_patch(asset_id: str, body: StudioAssetPatch) -> dict:
+        try:
+            row = studio.update_asset(asset_id, title=body.title, note=body.note, tags=body.tags)
+        except KeyError:
+            raise HTTPException(404, i18n.pick_now("No such material", "没有这份素材")) from None
+        return {"asset": _asset_view(row)}
+
+    @r.delete("/api/video-zone/studio/assets/{asset_id}")
+    async def studio_asset_delete(asset_id: str) -> dict:
+        """Removes the material **and every take made from it** — see `studio.remove_asset`."""
+        if not studio.remove_asset(asset_id):
+            raise HTTPException(404, i18n.pick_now("No such material", "没有这份素材"))
+        return {"ok": True}
+
+    @r.get("/api/video-zone/studio/assets/{asset_id}/takes")
+    async def studio_takes(asset_id: str) -> dict:
+        """One asset's generation history, newest first. This is what "look at it and fix it" reads."""
+        if studio.asset(asset_id) is None:
+            raise HTTPException(404, i18n.pick_now("No such material", "没有这份素材"))
+        return {"takes": [_take_view(t) for t in studio.takes(asset_id)]}
+
+    @r.get("/api/video-zone/studio/takes/{take_id}/file")
+    async def studio_take_file(take_id: str) -> FileResponse:
+        row = studio.take(take_id)
+        path = studio.file_of_take(take_id)
+        if row is None or path is None:
+            raise HTTPException(404, i18n.pick_now("That take produced no file", "这次生成没有产出文件"))
+        return _serve(path)
+
+    @r.patch("/api/video-zone/studio/takes/{take_id}")
+    async def studio_take_patch(take_id: str, body: StudioTakePatch) -> dict:
+        """「看过」与「选中」是两件事：看过 ≠ 满意，选中才是要进片子的那一个。"""
+        try:
+            row = studio.update_take(take_id, reviewed=body.reviewed, chosen=body.chosen,
+                                     name=body.name or None)
+        except KeyError:
+            raise HTTPException(404, i18n.pick_now("No such take", "没有这次生成")) from None
+        return {"take": _take_view(row)}
+
+    @r.delete("/api/video-zone/studio/takes/{take_id}")
+    async def studio_take_delete(take_id: str) -> dict:
+        if not studio.remove_take(take_id):
+            raise HTTPException(404, i18n.pick_now("No such take", "没有这次生成"))
         return {"ok": True}
 
     return r

@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  CircleAlert, CircleCheck, Clock3, LoaderCircle, Music2, Pause, Play, Sparkles, Trash2, TriangleAlert,
+  AudioLines, CircleAlert, CircleCheck, Clock3, Film, FolderOpen, Image as ImageIcon,
+  LoaderCircle, Music2, Pause, Play, Sparkles, Trash2, TriangleAlert, Upload,
 } from "lucide-react";
 import {
   api, type MusicJob, type MusicPreset, type MusicPreview, type MusicShelf, type MusicTrack,
-  type MusicVocabulary,
+  type MusicVocabulary, type StudioAsset, type StudioAssets, type StudioTake,
 } from "../api";
 import { notify, useConfirm } from "../ui";
 import { useI18n } from "../i18n";
 import "../styles/videozone.css";
 
-/** 专区的三块。音乐是唯一现在就能用的 —— 它的引擎（本机 ACE-Step）已经在跑；另两块要先把
- *  「用什么生成」定下来，所以它们如实写着还差什么，而不是给一个点进去什么都没发生的空壳。 */
-type Tab = "music" | "scene" | "motion";
+/** 专区的四块。音乐是唯一端到端跑通的；「我的素材」是三块共用的地基（上传 → 私有存放 →
+ *  生成 → 看效果 → 修正 → 历史），它本身不依赖任何生成模型，所以先建它。 */
+type Tab = "music" | "assets" | "scene" | "motion";
 
 /** 五台推子。`mood` 与 `vocals` 的候选来自后端（`music.MOODS` / 词表），**不在前端另列一份**：
  *  曾经这里写死过 `["calm", "neutral", "tense", "triumphant", "warm", "dark"]`，而曲库校验用的
@@ -24,6 +25,7 @@ export default function VideoZonePage() {
   const [tab, setTab] = useState<Tab>("music");
   const TABS: { id: Tab; label: string; icon: typeof Music2 }[] = [
     { id: "music", label: t("Music"), icon: Music2 },
+    { id: "assets", label: t("My material"), icon: FolderOpen },
     { id: "scene", label: t("Scenes"), icon: Sparkles },
     { id: "motion", label: t("Expressions and motion"), icon: Play },
   ];
@@ -42,6 +44,7 @@ export default function VideoZonePage() {
         ))}
       </nav>
       {tab === "music" && <MusicBlock />}
+      {tab === "assets" && <StudioBlock />}
       {tab === "scene" && <SceneBlock />}
       {tab === "motion" && <MotionBlock />}
     </div>
@@ -422,11 +425,267 @@ function MusicBlock() {
   );
 }
 
+// ------------------------------------------------ 我的素材（私有工作室）
+/**
+ * 三块共用的地基：上传你自己的素材 → 私有存放 → 由它生成 → 看效果 → 修正 → 留成历史。
+ *
+ * ⚠️⚠️ **与其它库故意相反**：器械参考库是「拷进每个群、成员随便看」；这里是**你自己的脸和你的
+ * 录像**。素材不在任何群的工作目录里、不进知识库、不参与导出，成员只能通过显式引用拿到**产出**。
+ * 页面上这句话不是客套，它是这一块唯一的设计约束 —— 所以上传区旁边就写着它。
+ *
+ * 「生成」那一环还没接上（模型与工作流都已就位，但一次要几十分钟才出结果，接上必须真跑一遍才算数），
+ * 所以这里**不放一个点了没反应的按钮**，而是把事实写在它该在的位置。
+ */
+function StudioBlock() {
+  const { t } = useI18n();
+  const confirm = useConfirm();
+  const [data, setData] = useState<StudioAssets | null>(null);
+  const [problem, setProblem] = useState("");
+  const [kind, setKind] = useState("");
+  const [sel, setSel] = useState("");
+  const [takes, setTakes] = useState<StudioTake[]>([]);
+  const [shots, setShots] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  // blob URL 自己回收。用 ref 记账，**不是**用 `shots` 当依赖 —— 那样每加一张缩略图就会把之前
+  // 所有 URL 一起回收掉，页面上的图全变成破图。
+  const urls = useRef<string[]>([]);
+  const tried = useRef<Set<string>>(new Set());
+  useEffect(() => () => { for (const u of urls.current) URL.revokeObjectURL(u); }, []);
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api.studioAssets(kind ? { kind } : {}));
+      setProblem("");
+    } catch (e) {
+      setProblem((e as Error).message);
+    }
+  }, [kind]);
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!sel) { setTakes([]); return; }
+    let live = true;
+    void api.studioTakes(sel).then((r) => { if (live) setTakes(r.takes); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [sel]);
+
+  /** 缩略图懒取：`<img src>` 带不上令牌，所以走一次带表头的 fetch 换成 blob URL。 */
+  const grab = useCallback(async (id: string) => {
+    if (tried.current.has(id)) return;
+    tried.current.add(id);
+    try {
+      const u = await api.studioAssetBlob(id);
+      urls.current.push(u);
+      setShots((s) => ({ ...s, [id]: u }));
+    } catch {
+      tried.current.delete(id);       // 失败了允许下次再试，否则这张永远是空的
+    }
+  }, []);
+
+  // 拿到列表后给**照片**取一次缩略图。视频和音频只显示图标 —— 为了一个方块去解一份几十 MB 的
+  // 文件不值得，而用户要认的是"这是哪张脸"，照片才需要真看一眼。
+  useEffect(() => {
+    for (const a of data?.assets ?? []) if (a.kind === "photo") void grab(a.id);
+  }, [data, grab]);
+
+  const upload = async (files: FileList | null) => {
+    const list = Array.from(files ?? []);
+    if (!list.length) return;
+    setBusy(true);
+    let ok = 0;
+    try {
+      for (const f of list) {
+        try {
+          await api.uploadStudioAsset(f, { title: f.name.replace(/\.[^.]+$/, "") });
+          ok += 1;
+        } catch (e) {
+          notify(`${f.name}: ${(e as Error).message}`);
+        }
+      }
+      if (ok) await load();
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const removeAsset = async (a: StudioAsset) => {
+    if (!(await confirm(t("Delete \"{name}\" and every take made from it?", { name: a.title }),
+                        { okText: t("Delete") }))) return;
+    try {
+      await api.delStudioAsset(a.id);
+      if (sel === a.id) setSel("");
+      await load();
+      notify(t("Deleted \"{name}\"", { name: a.title }));
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const retag = async (a: StudioAsset) => {
+    const raw = window.prompt(t("Tags, separated by commas"), a.tags.join(", "));
+    if (raw === null) return;
+    try {
+      await api.patchStudioAsset(a.id, { tags: raw.split(",").map((s) => s.trim()).filter(Boolean) });
+      await load();
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const mark = async (take: StudioTake, patch: { reviewed?: boolean; chosen?: boolean }) => {
+    try {
+      const { take: now } = await api.patchStudioTake(take.id, patch);
+      setTakes((list) => list.map((x) => (x.id === now.id ? now : x)));
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const removeTake = async (take: StudioTake) => {
+    if (!(await confirm(t("Delete this take?"), { okText: t("Delete") }))) return;
+    try {
+      await api.delStudioTake(take.id);
+      setTakes((list) => list.filter((x) => x.id !== take.id));
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const KINDS: { id: string; label: string }[] = [
+    { id: "", label: t("All") },
+    { id: "photo", label: t("Photos") },
+    { id: "video", label: t("Video") },
+    { id: "audio", label: t("Audio") },
+  ];
+  const current = data?.assets.find((a) => a.id === sel) ?? null;
+
+  return (
+    <div className="vz-two">
+      <section className="vz-panel">
+        <h3><FolderOpen size={15} /> {t("My material")}
+          {data && <span className="vz-count">{data.assets.length}</span>}
+        </h3>
+        <p className="vz-hint">
+          {t("Kept on this machine only: not in any group's workspace, not in a knowledge base, not in an export. Members reach a take through an explicit reference; they never reach the original.")}
+        </p>
+
+        <div className="vz-upload">
+          <input ref={fileRef} type="file" multiple hidden
+                 accept="image/*,video/*,audio/*"
+                 onChange={(e) => void upload(e.target.files)} />
+          <button className="btn primary vz-go" disabled={busy}
+                  onClick={() => fileRef.current?.click()}>
+            {busy ? <LoaderCircle size={15} className="vz-spin" /> : <Upload size={15} />}
+            {t("Add photos, video or audio")}
+          </button>
+        </div>
+
+        <div className="vz-chips" style={{ marginTop: 10 }}>
+          {KINDS.map((k) => (
+            <button key={k.id} className={"vz-chip" + (kind === k.id ? " on" : "")}
+                    onClick={() => setKind(k.id)}>{k.label}</button>
+          ))}
+        </div>
+
+        {problem && <p className="vz-note bad" style={{ marginTop: 10 }}>
+          <CircleAlert size={14} /> {problem}</p>}
+        {/* 读不出 sidecar 的素材点名，不静默 —— 不能再描述的东西就不能拿来生成。 */}
+        {!!data?.errors.length && (
+          <p className="vz-note bad" style={{ marginTop: 10 }}>
+            <CircleAlert size={14} /> {t("{n} item(s) cannot be read", { n: data.errors.length })}: {data.errors.slice(0, 3).map((e) => e.name).join("；")}
+          </p>
+        )}
+        {data && !data.assets.length && !problem && (
+          <p className="vz-dim" style={{ marginTop: 10 }}>
+            {t("Nothing here yet. Add a photo of yourself, a recorded expression, or some footage — that is what the other blocks generate from.")}
+          </p>
+        )}
+      </section>
+
+      <section className="vz-panel">
+        <h3><Clock3 size={15} /> {current
+          ? t("Takes from \"{name}\"", { name: current.title })
+          : t("Pick something on the left")}</h3>
+
+        {!data?.assets.length ? (
+          <p className="vz-dim">{t("Your generation history shows up here, one list per piece of material.")}</p>
+        ) : (
+          <ul className="vz-tracks">
+            {data.assets.map((a) => (
+              <li key={a.id} className={"vz-track" + (sel === a.id ? " on" : "")}>
+                <button className="vz-thumb" onClick={() => setSel(sel === a.id ? "" : a.id)}
+                        title={a.title}>
+                  {a.kind === "photo" && (shots[a.id]
+                    ? <img src={shots[a.id]} alt="" /> : <ImageIcon size={16} />)}
+                  {a.kind === "video" && <Film size={16} />}
+                  {a.kind === "audio" && <AudioLines size={16} />}
+                </button>
+                <div className="vz-track-body">
+                  <b>{a.title}</b>
+                  <span className="vz-meta">
+                    {t(a.kind === "photo" ? "Photos" : a.kind === "video" ? "Video" : "Audio")}
+                    {" · "}{(a.bytes / 1024 / 1024).toFixed(1)} MB
+                    {!!a.tags.length && <> · {a.tags.join(", ")}</>}
+                  </span>
+                </div>
+                <button className="icon-btn" aria-label={t("Tags")} onClick={() => void retag(a)}>#</button>
+                <button className="icon-btn" aria-label={t("Delete")} onClick={() => void removeAsset(a)}>
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {current && (
+          <>
+            <div className="vz-preview" style={{ marginTop: 12 }}>
+              <span className="vz-preview-label">{t("Generation — not wired up yet")}</span>
+              <p className="vz-hint" style={{ margin: 0 }}>
+                {t("The models and the workflow for this are already on this machine, but one run takes tens of minutes, so it gets connected only when it can be watched end to end. Until then this list is where those runs will appear.")}
+              </p>
+            </div>
+            {!takes.length && <p className="vz-dim">{t("No takes yet.")}</p>}
+            <ul className="vz-tracks">
+              {takes.map((k) => (
+                <li key={k.id} className={"vz-track" + (k.chosen ? " on" : "")}>
+                  <div className="vz-track-body">
+                    <b>{k.name || k.id}</b>
+                    <span className="vz-meta">
+                      {t(k.state === "done" ? "Done" : k.state === "running" ? "Running" : "Failed")}
+                      {" · "}{new Date(k.created * 1000).toLocaleString()}
+                      {k.seconds ? ` · ${k.seconds.toFixed(1)}s` : ""}
+                      {k.reviewed ? ` · ${t("Seen")}` : ""}
+                      {k.chosen ? ` · ${t("Chosen")}` : ""}
+                    </span>
+                    {!!k.prompt && <span className="vz-hint">{k.prompt}</span>}
+                    {!!k.error && <span className="vz-warn"><TriangleAlert size={12} /> {k.error}</span>}
+                  </div>
+                  <button className="icon-btn" aria-label={t("Seen")}
+                          onClick={() => void mark(k, { reviewed: !k.reviewed })}>👁</button>
+                  <button className="icon-btn" aria-label={t("Chosen")}
+                          onClick={() => void mark(k, { chosen: !k.chosen })}>★</button>
+                  <button className="icon-btn" aria-label={t("Delete")} onClick={() => void removeTake(k)}>
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
 // ------------------------------------------------------- not built yet
-/** 这两块**故意**先只写清现状与门槛，而不是搭一个能点但生成不出来的空壳。
+/**
+ * 这两块**故意**先只写清现状与门槛，而不是搭一个能点但生成不出来的空壳。
  *
  *  用户要的场景是 (b)：画面里的环境（手术室、血管内视角、诊室）—— 那需要文生图；要的动作是
- *  (b)：数字人的表情与动作 —— 那需要口型/表情驱动。两者的瓶颈都不是界面，是把渲染链接上，
+ *  (b)：数字人的表情与动作 —— 那需要口型/表情驱动。两者的瓶颈都不是界面，是把渲染链接上。
  *  而这一步有确定的事实：云端文生图在限流、本机没有 SDXL、InfiniteTalk 实测 9 分钟一条。
  *  把这些写在页面上，用户能据此决定先推哪条；写一个假的"生成中"不能。 */
 function SceneBlock() {

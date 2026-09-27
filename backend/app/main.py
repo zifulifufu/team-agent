@@ -52,6 +52,7 @@ from . import import_sources
 from . import layouts
 from . import music
 from . import toolcall
+from . import studio
 from . import voices
 from . import net
 from .obsidian import ObsidianSync
@@ -343,6 +344,10 @@ def create_app(
     # what it is. Read at startup for the same reason as the other three — a broken sidecar is then
     # a fact you can see, instead of a track that silently carries no metadata.
     music.use_folder(store.data_dir / music.FOLDER_NAME)
+    # The private studio: the user's own footage, and every take generated from it. Read at startup
+    # like the rest — but ⚠️ this shelf keeps to itself: it is not in any group's workspace and not
+    # in a knowledge base, because the material is the user's own face and their own recordings.
+    studio.use_folder(store.data_dir / studio.FOLDER_NAME)
     memory = MemoryService(store, router)
     # Hooks: the user's own code at six fixed points. Written once by the example below, off
     # until switched on, and every run goes through a subprocess (see app/hooks.py).
