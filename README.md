@@ -215,7 +215,7 @@ Attachments are any kind of file. The kind is decided by the file's own bytes, n
 | Kind | What the members get |
 | --- | --- |
 | Documents (pdf, docx, xlsx, pptx, txt, md, csv, json, html) | The text, extracted on this machine when the file is uploaded. **No vision model is involved**, so this works with any model. When nothing can be extracted (a scanned PDF) the members are told exactly that, rather than being handed a bare filename. |
-| Images | Given to the model directly when the answering member's model can see; otherwise described once by the *vision model*, and the description is what members read. |
+| Images | Given to the model directly when the answering member's model can see; otherwise described once by the *vision model*, and the description is what members read. With no model to describe it, **the text printed on it is read on this machine instead** (macOS's own recogniser — no model, no account, nothing sent anywhere) and that text is what members get, labelled as text and not as a description of the picture. |
 | Video | Duration and resolution, plus a few evenly spaced stills (ffmpeg), treated like images. The audio track is not transcribed. |
 | Audio | Transcribed on this machine when a transcriber is installed (see below). With none, named with its size and left in the workspace. |
 | Anything else | Named with its size, and available in the workspace for a member to open with its own tools. |
@@ -225,7 +225,9 @@ Permissions & control (`external_calls_enabled`), and **cloud vision** (`vision_
 vision off, a picture is looked at by a local vision model if one exists, and never leaves the
 machine. If no model here can look at a picture, the members are told exactly that — they say they
 cannot see it instead of inventing content, and the settings page tells you what to install
-(`ollama pull qwen2.5vl:3b` is a good local choice).
+(`ollama pull qwen2.5vl:3b` is a good local choice). What they are *not* left without is the words on
+it: `read_image_text` reads those out here, with no model at all, and both the attachment path and the
+members themselves can reach for it.
 
 *Settings → General → Which model looks at pictures* offers **only models that can really look**. A
 gateway lists its chat models and its **image generators** side by side, so `gpt-image-…` and
@@ -268,6 +270,19 @@ Note that a transcriber is found **by name** along PATH plus `/opt/homebrew/bin`
 `~/.local/bin`, `/usr/bin` and `/bin` — so `pipx install mlx-whisper` (or `pip install --user …`),
 which land in `~/.local/bin`, are found as they are, while one installed inside this app's own
 virtualenv is not: write the full path under *Transcribe audio* for that.
+
+**Reading the text off a picture is the same kind of thing, and it costs nothing.** The built-in tool
+`read_image_text` reads the words printed on a screenshot, an error dialog, a table, a slide or a frame
+of a video, **on this machine, with no model, no account and nothing sent anywhere** — macOS ships the
+recogniser that powers Preview's Live Text, so this is a small wrapper around a system framework rather
+than a download. The program is judged **by its own answer** (`ocr --languages`) rather than by its
+name, so some unrelated binary that happens to be called `ocr` is refused and named instead of being
+read as "this picture has no text"; `TEAM_AGENT_OCR` points the app at a different one. It is **not a
+substitute for looking**: it returns characters, not a description, and both the tool's own answer and
+the attachment path say so in as many words — a member told "here is what the picture says" when all
+that happened was a recognition pass will describe a chart from its axis labels and believe it has
+understood the chart. Lines the recogniser was not sure about are **counted and named** rather than
+dropped, because text that quietly disappears is the one failure nobody can see.
 
 Referencing something with `@` in the composer offers the group's members first, and once a
 character is typed it also offers files, folders and documents, inserting a token the backend

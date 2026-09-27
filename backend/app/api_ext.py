@@ -26,6 +26,7 @@ from . import strengths as strength_lib, updater, video, media
 from . import teamrec, cooperation
 from . import advisor
 from . import handoff
+from . import localocr
 from . import attachments as attachments_lib
 from . import vision
 from .approvals import Approvals, risk_label, risk_of
@@ -1390,6 +1391,12 @@ def build_router(c: Ctx) -> APIRouter:
             # above and for the same reason: "nothing found" on its own is a dead end, so the row
             # carries what would install one.
             "handoff": handoff.info(),
+            # Reading the text out of a picture, which needs no model and no network. Reported in
+            # the same honest shape as the rows above — and it matters most precisely when the row
+            # next to it says nothing can look at images, because it is then that a reader needs to
+            # know pictures are not a total dead end.
+            "text_from_image": {"ready": bool(localocr.available()[0]),
+                                "reason": localocr.available()[1]},
             "upload_max_mb": int(store.get_settings()["upload_max_mb"]),
         }
 

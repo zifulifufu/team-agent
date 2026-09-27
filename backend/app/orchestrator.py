@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable
 
 from . import external, planner, scoring, vision, cooperation, teamrec, strengths
 from . import attachments as attachments_lib
-from . import coderun, comfyui, imagegen, localcmd, media, proclog, video
+from . import coderun, comfyui, imagegen, localcmd, localocr, media, proclog, video
 from .approvals import Approvals
 from .external import ExternalError, ExternalRunner
 from .library import Library
@@ -683,9 +683,24 @@ class Orchestrator:
         text = run.described.get(key) or (row.get("vision_text") or None)
         if not text:
             text = await self._describe(row, workspace, key, path.name, kind, blobs, run)
-        if not text:
-            return f"{header} — {vision.reason_missing(self.store, self.router)}", []
-        return f"{header}\n{text}", []
+        if text:
+            return f"{header}\n{text}", []
+        # Nobody here can look at a picture, and the reader is owed both halves of that: *why* no
+        # model looked, and whatever this machine can still get out of the file on its own. On a
+        # machine with no vision model and cloud vision off, an attached screenshot used to produce
+        # only the first half — which is a true and useless answer to a member that just wanted the
+        # words in an error dialog. The reason stays in the sentence rather than being replaced by
+        # the text: a reader handed words with no explanation would take them for a description.
+        if localocr.available()[0] and pictures:
+            try:
+                blocks = await asyncio.to_thread(localocr.read, pictures)
+            except localocr.OcrError as e:
+                print("local text reading failed:", repr(e))
+                blocks = []
+            if any(b.get("text") for b in blocks):
+                return (f"{header} — {vision.reason_missing(self.store, self.router)}\n"
+                        f"{localocr.render(blocks)}"), []
+        return f"{header} — {vision.reason_missing(self.store, self.router)}", []
 
     async def _describe(self, row: dict, workspace: Path, key: str, name: str, kind: str,
                         blobs: list[tuple[str, bytes]], run: "RunState") -> str:

@@ -109,6 +109,12 @@ export default function GeneralPage() {
       ? vision?.blocked_cloud
         ? t("A model here can see, but sending images to a cloud model is switched off (see Permissions & control).")
         : t("No model here can look at images. Pull a local vision model in Ollama (for example `ollama pull qwen2.5vl:3b`) and pick it above, or connect a cloud provider and allow cloud vision.")
+          // The one thing that keeps this sentence from being a dead end. "Nothing can look" is
+          // true, and it is not the same as "pictures are useless": the words printed on one are
+          // still read here. Said only where it is measured to be available.
+          + (caps?.text_from_image?.ready
+            ? " " + t("Pictures are not a dead end in the meantime: the text printed on one is read here, on this machine, with no model and nothing sent anywhere.")
+            : "")
       : "",
     vision?.model_id
       ? t("Attached pictures and video frames are looked at by this model; members whose own model cannot see get its description.")
@@ -142,7 +148,9 @@ export default function GeneralPage() {
         ? t("a model can see, but the switch is off")
         : vision.configured_sees === false
           ? t("{name} — cannot look at images", { name: namedLabel })
-          : t("no model here can look at images");
+          : caps?.text_from_image?.ready
+            ? t("no model here can look — the text on a picture is still read here")
+            : t("no model here can look at images");
 
   // The process engineer, said in one line: where it is, and what its ledgers hold. Counted from the
   // files themselves, so a group whose log was deleted by hand reads as one with no log.

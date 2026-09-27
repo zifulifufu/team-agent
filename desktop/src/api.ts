@@ -1864,7 +1864,7 @@ export const api = {
   vision: () => get<VisionStatus>("/api/vision"),
   /** What this machine can do with files: which document kinds are read locally, whether
    *  ffmpeg is there for video frames, and who can look at pictures. */
-  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string }; handoff: { targets: { key: string; label: string; ready: boolean; install: string }[]; ready: string[] } }>("/api/capabilities"),
+  machineCapabilities: () => get<{ vision: VisionStatus; documents: string[]; video_frames: boolean; audio_transcribe: boolean; transcriber_install: string; upload_max_mb: number; advisor: { ready: boolean; reason: string; label: string; installed: string[]; install: string }; handoff: { targets: { key: string; label: string; ready: boolean; install: string }[]; ready: string[] }; text_from_image: { ready: boolean; reason: string } }>("/api/capabilities"),
   /** Hand the process log's open entries to the coding agents on this machine — the ones allowed to
    *  **edit files** in that group's own workspace. Returns at once; poll with `processHandoffJob`.
    *  The button that calls this *is* the approval, which is why members cannot reach it. */

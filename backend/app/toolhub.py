@@ -12,7 +12,7 @@ Every call is recorded in the message's tool trace and is visible below the bubb
 from __future__ import annotations
 
 from . import (animate, assemble, attachments, coderun, comfyui, embed, ffmpeg, figure, i18n,
-                 imagegen, layouts, media, musicwork, net, study, video, vision)
+                 imagegen, layouts, localocr, media, musicwork, net, study, video, vision)
 
 import asyncio
 import json
@@ -1000,6 +1000,46 @@ BUILTIN_SPECS: dict[str, dict] = {
                                         "记住的那份说的是旧版本的时候"}},
             "required": []},
     },
+    "read_image_text": {
+        "description": "Read the text printed on pictures in this group's workspace — the words only, "
+                       "and it happens **on this machine, free, with no model and nothing sent "
+                       "anywhere**. Use it for anything whose content IS text: a screenshot, an error "
+                       "dialog, a table, a slide, a page with burned-in captions, a frame of a video "
+                       "(`at_seconds` picks the moment). **Pass `paths` to read several in one call.** "
+                       "⚠️ This is NOT looking at the picture: you get the characters found on it and "
+                       "nothing else — no layout, no colour, no judgement of whether it looks right. "
+                       "When the answer needs the picture understood rather than transcribed, say so; "
+                       "do not build a claim about how something looks out of the text on it. A picture "
+                       "with no text on it comes back saying so, which is a real answer and not a failure.",
+        "description_zh": "读本群工作目录里图片上的文字 —— 只给字,而且**在本机完成、免费、不用模型、不外发**。"
+                          "凡是内容本身就是文字的都用它:截图、报错弹窗、表格、幻灯片、带硬字幕的页面、"
+                          "视频的某一帧(`at_seconds` 选时刻)。**要读几张就用 `paths` 一次给过来。**"
+                          "⚠️ 这不是「看」图:你拿到的是图上识别出的字符,没有别的 —— 没有版式、没有配色、"
+                          "也不判断它好不好看。需要的是「看懂画面」而不是「照抄文字」时请直说,"
+                          "不要拿图上的字去编关于它看起来怎样的结论。图上没有文字时它会照实说,"
+                          "那也是真答案,不是失败。",
+        # `read`, on the same reasoning as `review_picture` and `review_audio`: it changes nothing,
+        # writes nothing, and sends nothing off the machine. The one thing it *runs* is a local
+        # recogniser — and that alone does not decide the tier, which is exactly the precedent
+        # `render_document` set (it runs soffice and pdftoppm and is still `write`, because what it
+        # does is write files). Marking this `exec` would put an approval prompt, and a read-only
+        # round's tool list, in front of the cheapest reading step there is.
+        "risk": "read",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string",
+                     "description": "One picture, or a video whose frame you want the text of. Inside "
+                                    "this group's workspace, e.g. screenshots/error.png",
+                     "description_zh": "一张图片,或你想读文字的那一帧所在视频。本群工作目录内的相对路径,"
+                                       "例如 screenshots/error.png"},
+            "paths": {"type": "array", "items": {"type": "string"},
+                      "description": "Several at once (up to 12), read in one call",
+                      "description_zh": "一次给几个(最多 12 个),一趟读完"},
+            "at_seconds": {"type": "number",
+                           "description": "For a video: which moment to read, in seconds; halfway by "
+                                          "default",
+                           "description_zh": "视频:读第几秒那一帧,默认取中间"}},
+            "required": []},
+    },
     "review_audio": {
         "description": "Hear an audio file, or the sound track of a video, inside this group's workspace: "
                        "how long it is, whether there is any sound in it at all, and a transcript of what "
@@ -1183,6 +1223,12 @@ def _age_label(when: float) -> str:
 # being readable before it stops being cheap. Bounded rather than unbounded because the whole point
 # of the batch is that it is *one* call.
 PICTURE_BATCH = 12
+
+# The suffix to park one extracted frame under before handing it to the text recogniser. A hint for
+# the filesystem only: the recogniser sniffs the bytes, so a wrong guess here would not change what
+# is read — but `.png` on a JPEG is the kind of thing somebody spends an afternoon on later.
+_FRAME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+              "image/gif": ".gif", "image/bmp": ".bmp"}
 
 # What `_frame_of` can hand to a vision endpoint as-is. Deliberately narrower than the extensions
 # `kind_of_name` calls images: the provider takes `image/png`, `image/jpeg`, `image/webp`, `image/gif`
@@ -1380,6 +1426,16 @@ class ToolHub:
         # one thing a drawing or a render needs before it is signed off is somebody looking at it.
         if self._can_review():
             add("review_picture", specs["review_picture"], source="builtin")
+        # Offered whenever this machine can read the text out of a picture — which needs no model,
+        # no account and no network. Kept *outside* the `_can_review()` branch above on purpose:
+        # the two answer different questions, and folding them together would take the reading tool
+        # away on exactly the machine that has nothing else (that is not hypothetical — the comment
+        # on `review_audio` below records the commit where `study_video` was folded into that branch
+        # and silently withdrew a tool from every group without a vision model). ⚠️ Not `ctx.problems`
+        # either: that list is posted into the chat once per turn, and most machines will not have
+        # this program — Settings → General is where the missing piece belongs.
+        if localocr.available()[0]:
+            add("read_image_text", specs["read_image_text"], source="builtin")
         if document_preview.available():
             add("render_document", specs["render_document"], source="builtin")
         # Offered whenever the machine can measure a file, which is whenever ffprobe is here — the
@@ -1646,6 +1702,8 @@ something is. Tools that have nothing to say mid-flight simply ignore it."""
             return await self._ask_advisor(ctx, args)
         if name == "review_picture":
             return await self._review_picture(ctx, args)
+        if name == "read_image_text":
+            return await self._read_image_text(ctx, args)
         if name == "study_video":
             return await self._study_video(ctx, args)
         if name == "review_audio":
@@ -2334,6 +2392,92 @@ something is. Tools that have nothing to say mid-flight simply ignore it."""
             return [str(p).strip() for p in many if str(p).strip()]
         one = str(args.get("path") or "").strip()
         return [one] if one else []
+
+    async def _read_image_text(self, ctx: ToolContext, args: dict) -> tuple[str, bool, list[dict]]:
+        """Read the text off pictures here, with no model at all.
+
+        The cheaper half of what `review_picture` does, and deliberately its own tool: that one
+        answers "what is in the picture" and needs something that can see, this one answers "what is
+        printed on it" and needs nothing but this machine. A member holding a screenshot and asking
+        about the words in an error dialog should not be told that no vision model is configured —
+        that sentence is true and useless.
+
+        Frames of a video come through `_frame_of`, the same route `review_picture` takes, so the
+        "picture or video" judgement and the temporary-file discipline are not written a second time.
+        Nothing is left in the workspace: a frame goes to a temporary file and is removed here, or a
+        later `assemble_video` would pick it up as a shot.
+        """
+        ok, why = localocr.available()
+        if not ok:
+            return why, False, []
+        workspace = self.store.workspace_dir(ctx.group["id"])
+        rels = self._asked_paths(args)
+        if not rels:
+            return i18n.pick_now(
+                "No picture given: pass `path`, or `paths` for several at once.",
+                "没有给图片:传 `path`,或用 `paths` 一次给几个。"), False, []
+        if len(rels) > localocr.MAX_IMAGES:
+            return i18n.pick_now(
+                f"{len(rels)} paths in one call, and the most this reads is {localocr.MAX_IMAGES}. "
+                "Split them.",
+                f"一次给了 {len(rels)} 个路径,最多读 {localocr.MAX_IMAGES} 个。请分几次。"), False, []
+
+        targets: list[Path] = []       # what the recogniser is pointed at
+        labels: list[str] = []         # what each one is called in the answer
+        cleanup: list[Path] = []
+        try:
+            for rel in rels:
+                try:
+                    target = assemble._local(workspace, rel,
+                                             i18n.pick_now("No picture given.", "没有给图片。"))
+                except assemble.AssembleError as e:
+                    return str(e), False, []
+                if not target.is_file():
+                    return i18n.pick_now(
+                        f"There is no file at \"{rel}\" inside this group's workspace. Use the path an "
+                        "earlier tool reported, or list the workspace first.",
+                        f"本群工作目录里没有「{rel}」这个文件。请用前面工具报出来的路径,"
+                        "或先列一下工作目录。"), False, []
+                try:
+                    at = await asyncio.to_thread(self._moment_of, target, args)
+                    if at is None:
+                        targets.append(target)
+                        labels.append(rel)
+                        continue
+                    got = await asyncio.to_thread(self._frame_of, target, at, cleanup)
+                except (figure.FigureError, OSError) as e:
+                    return i18n.pick_now(f"Could not read that file: {e}",
+                                         f"读不到这个文件:{e}"), False, []
+                if got is None:
+                    return i18n.pick_now(
+                        f"\"{rel}\" is not a picture or a video this app can read.",
+                        f"「{rel}」不是本程序能读的图片或视频。"), False, []
+                mime, data = got
+                # A frame has to exist as a file: the recogniser is a separate program and is handed
+                # paths. The suffix is only a hint — it decides which file to open, not how to read it.
+                fd, name = tempfile.mkstemp(prefix="ocr-text-", suffix=_FRAME_EXT.get(mime, ".png"))
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                frame = Path(name)
+                cleanup.append(frame)
+                targets.append(frame)
+                labels.append(i18n.pick_now(f"{rel} (the frame at {at:g}s)",
+                                            f"{rel}(第 {at:g} 秒那一帧)"))
+
+            try:
+                blocks = await asyncio.to_thread(localocr.read, targets)
+            except localocr.OcrError as e:
+                return str(e), False, []
+            for block, label in zip(blocks, labels):
+                block["file"] = label
+            text = localocr.render(blocks)
+        finally:
+            for gone in cleanup:
+                try:
+                    gone.unlink()
+                except OSError:
+                    pass
+        return text, True, []
 
     async def _load_pictures(self, workspace: Path, todo: list[dict], limit: int,
                              cleanup: list[Path]) -> tuple[list[tuple[str, bytes]], str, str]:

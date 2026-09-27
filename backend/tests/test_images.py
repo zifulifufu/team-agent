@@ -10,11 +10,12 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
-from app import images
+from app import images, localocr
 from app.main import create_app
 from app.orchestrator import RunState
 from tests.conftest import FakeLLM
 from tests.test_collab import setup
+from tests.test_localocr import stub_ocr
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64                  # magic bytes are all that is checked
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
@@ -186,6 +187,47 @@ def test_a_model_that_cannot_see_is_told_so_instead_of_guessing(vision_setup):
         st.update_model(m["id"], {"strengths": ["chinese"]})
     got = prepared(orch, st, g, host)
     assert not got.pictures and "no model here can look at images" in got.block
+    assert "NOT a description" not in got.block, "没有可读程序时,不该冒出 OCR 那套话"
+
+
+def test_with_nothing_to_look_the_text_on_the_picture_still_arrives(vision_setup, tmp_path,
+                                                                   monkeypatch):
+    """The dead end this exists to close.
+
+    A screenshot attached on a machine with no vision model used to produce exactly one sentence:
+    configure a model. True, and useless to a member that only wanted the words in an error dialog.
+    Now the text comes too — and the reason comes *with* it, because words without the explanation
+    read as a description of the picture, which nobody produced.
+    """
+    orch, st, g, host = vision_setup
+    st.add_model("ollama", "qwen2.5:7b")                        # text only, like the test above
+    st.update_agent(host["id"], {"model_id": "ollama/qwen2.5:7b"})
+    for m in st.list_models():
+        st.update_model(m["id"], {"strengths": ["chinese"]})
+    monkeypatch.setenv(localocr.OVERRIDE_ENV, str(stub_ocr(tmp_path)))
+
+    got = prepared(orch, st, g, host)
+    assert not got.pictures, "还是没有人能看图,图不能因此被发出去"
+    assert "no model here can look at images" in got.block, "要说清为什么没有人看过"
+    assert "读到的一行" in got.block, "图里的文字要送到"
+    assert "NOT a description" in got.block, "而且要说明这是图上的字,不是对画面的描述"
+
+
+def test_a_picture_with_no_text_on_it_is_unchanged_by_the_fallback(vision_setup, tmp_path,
+                                                                  monkeypatch):
+    """`render` always speaks. When there is nothing on the picture, the member must still get the
+    plain "nobody can look" answer rather than a paragraph about an empty result."""
+    orch, st, g, host = vision_setup
+    st.add_model("ollama", "qwen2.5:7b")
+    st.update_agent(host["id"], {"model_id": "ollama/qwen2.5:7b"})
+    for m in st.list_models():
+        st.update_model(m["id"], {"strengths": ["chinese"]})
+    monkeypatch.setenv(localocr.OVERRIDE_ENV, str(stub_ocr(tmp_path)))
+    monkeypatch.setattr(localocr, "MIN_CONF", 2.0)              # everything reads as too faint
+
+    got = prepared(orch, st, g, host)
+    assert "no model here can look at images" in got.block
+    assert "NOT a description" not in got.block
 
 
 def test_a_cloud_model_needs_the_image_switch(vision_setup):
