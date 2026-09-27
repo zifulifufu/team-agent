@@ -221,3 +221,25 @@ def test_the_tool_refuses_a_defect_it_cannot_evidence(store, make_router):
     assert not unknown.ok and "P-19700101-1" in unknown.text
     bad_action = asyncio.run(orch.toolhub.call(ctx, "process_log", {"action": "read"}))
     assert not bad_action.ok and "scan" in bad_action.text
+
+
+def test_a_round_that_ran_out_of_turns_is_recorded_even_with_no_task_board():
+    """⚠️ Empty `open_tasks` is the **common** case in a relay round, not an edge case.
+
+    `run.unfinished` is only filled in by `_execute_plan`, so a round that ran as plain turn-taking
+    arrives here with nothing to list — and gating the entry on `open_tasks` dropped the record for
+    exactly the round that had no board to say it any other way, while the caller's own comment
+    promised the opposite ("a round that stopped because it ran out of turns still has work in it …
+    the entry is what makes it countable a week later", measured 2026-09-27). The user was told the
+    round was cut short; the ledger said nothing, so it could never be counted or fed forward.
+    """
+    alone = proclog.auto_round_defects(exhausted=True, open_tasks=[])
+    assert [e["key"] for e in alone] == ["round-exhausted"]
+    assert alone[0]["severity"] == "major" and alone[0]["stage"] == "planning"
+
+    # With a board the same entry has to name what was left — that half already worked.
+    with_board = proclog.auto_round_defects(exhausted=True, open_tasks=["t1 字幕轨"])
+    assert "t1 字幕轨" in with_board[0]["symptom"]
+
+    # And a round that ended normally says nothing about running out of turns.
+    assert proclog.auto_round_defects(exhausted=False, open_tasks=["t1"]) == []

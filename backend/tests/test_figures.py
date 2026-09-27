@@ -470,3 +470,32 @@ def test_a_file_with_no_sound_track_is_not_dressed_up_as_a_recording(store, make
 
     assert not out.ok
     assert "12.0" in out.text
+
+
+def test_a_full_stop_never_lands_on_a_line_of_its_own():
+    """⚠️ The guard in `wrap` existed but could never fire.
+
+    It tested `not cur`, and `cur` is empty only at the *start* of a line — so the case its own
+    comment cites (a line filled to the limit whose next character is a full stop) went down the
+    `else` branch, and the rendered film kept the lone `。` on a line of its own: exactly the
+    reviewer complaint the comment says had been fixed (measured 2026-09-27).
+    """
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGBA", (720, 1280))
+    draw = ImageDraw.Draw(im)
+    f = figure.font(57)
+    limit = int(draw.textlength("一二三四五六七八", font=f))   # exactly eight characters wide
+
+    # Eight characters fill the line; the full stop rides along instead of starting a new one.
+    assert figure.wrap("一二三四五六七八。", f, limit, draw) == ["一二三四五六七八。"]
+    # ⚠️ Deliberately *not* a fixed list of lines for the longer sentence: Chinese punctuation is
+    # narrower than a character, so where exactly it breaks shifts with the font. What has to hold
+    # is the intent — nothing is lost, and no line *starts* with punctuation.
+    longer = figure.wrap("血流进入瘤囊，然后填塞。", f, limit, draw)
+    assert "".join(longer) == "血流进入瘤囊，然后填塞。", longer
+    assert all(ln[0] not in figure.NO_START for ln in longer), longer
+
+    # ⚠️ But a paragraph that *begins* with punctuation has no previous line to join. It has to be
+    # allowed to start one, or those characters would be silently dropped instead of moved.
+    assert figure.wrap("。（以造影为准）", f, limit, draw)[0].startswith("。")

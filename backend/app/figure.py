@@ -104,12 +104,23 @@ def wrap(text: str, f, limit: int, draw) -> list[str]:
         for ch in para:
             if cur and draw.textlength(cur + ch, font=f) <= limit:
                 cur += ch
-            elif not cur and ch in NO_START and lines:
-                lines[-1] += ch
-            else:
+                continue
+            # ⚠️ `ch in NO_START` has to be tested **here** — on the character being pushed onto a
+            # new line — and not on `not cur`. `cur` is empty only at the *start* of a line, so the
+            # old branch could never fire in the case the comment above cites: a line filled to the
+            # limit whose next character is a full stop went down the `else` branch and the film kept
+            # the lone `。` on a line of its own (measured 2026-09-27, against the same reviewer
+            # feedback that comment describes). The fix is the same either way: a few pixels of
+            # overflow beats punctuation stranded on its own.
+            if ch in NO_START and (cur or lines):
                 if cur:
-                    lines.append(cur)
-                cur = ch
+                    cur += ch
+                else:
+                    lines[-1] += ch     # nothing on this line yet: pull it back to the previous one
+                continue
+            if cur:
+                lines.append(cur)
+            cur = ch
         lines.append(cur)
     return [ln for ln in lines if ln.strip()] or [""]
 

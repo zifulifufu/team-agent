@@ -1708,9 +1708,6 @@ class Orchestrator:
     ) -> None:
         gid = group["id"]
         plan.integration = {"status": "pending", "message_id": "", "error": ""}
-        pm = self.store.add_message(gid, "plan", None, i18n.pick_now("Task board", "任务板"), planner.summarize(plan), meta=plan.to_meta())
-        plan.message_id = pm["id"]
-        await emit({"type": "message", "message": pm})
         by_id = {m["id"]: m for m in members}
         outputs: dict[str, str] = {}
         blocked = self._blocked_members(members, self.store.get_settings())
@@ -1720,7 +1717,17 @@ class Orchestrator:
             m = self.store.update_message(plan.message_id, content=planner.summarize(plan), meta=plan.to_meta())
             await emit({"type": "plan", "message": m})
 
+        # ⚠️ The board's own first emit belongs **inside** this try, and so does the `add_message`
+        # that precedes it. The board is written to the database with `status="running"` and every
+        # task `pending` before that await, while the two handlers that rewrite running/pending into
+        # stopped/skipped live at the bottom of this try. A cancel landing on that first emit used to
+        # escape both, leaving a board that says "in progress" for ever: `planner.headline`'s `live`
+        # true for that group until some later round happened to produce another board, and nothing
+        # anywhere recording that the round was stopped (measured 2026-09-27).
         try:
+            pm = self.store.add_message(gid, "plan", None, i18n.pick_now("Task board", "任务板"), planner.summarize(plan), meta=plan.to_meta())
+            plan.message_id = pm["id"]
+            await emit({"type": "message", "message": pm})
             for i, task in enumerate(plan.tasks, 1):
                 if task.status == "skipped" and task.error:
                     await push()  # unavailable verification does not stop unrelated production

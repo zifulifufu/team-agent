@@ -266,6 +266,35 @@ async def test_cancel_marks_plan_stopped(store, make_router):
     assert not any(m["sender_name"] == "Copywriter" for m in store.list_messages(g["id"]))
 
 
+async def test_a_cancel_landing_on_the_boards_own_first_emit_still_stops_it(store, make_router):
+    """⚠️ The narrowest cancel window there is, and the one that used to leak.
+
+    The board is written with `status="running"` and every task `pending` **before** the emit that
+    first shows it, while the handlers that rewrite those into `stopped`/`skipped` live further down
+    the same `try`. A cancel landing on that emit therefore escaped both: the board read "in
+    progress" for ever, `planner.headline`'s `live` stayed true for that group, and nothing anywhere
+    recorded that the round had been stopped. The test above cancels *during* a member's turn and so
+    never touched this window (measured 2026-09-27).
+    """
+    class CancelOnTheBoard(Collector):
+        async def __call__(self, ev):
+            await super().__call__(ev)
+            msg = ev.get("message") or {}
+            if ev.get("type") == "message" and msg.get("sender_type") == "plan":
+                raise asyncio.CancelledError()
+
+    orch, g = setup(store, make_router, FakeLLM(default=plan_script()))
+    with pytest.raises(asyncio.CancelledError):
+        await orch.handle_user_message(g["id"], "写通知", CancelOnTheBoard())
+    board = next(m for m in store.list_messages(g["id"]) if m["sender_type"] == "plan")["meta"]
+    assert board["status"] == "stopped", board["status"]
+    # ⚠️ Deliberately not a fixed list: the cancel lands **before** any task starts, so every task
+    # is `skipped` here and none is `stopped` — pinning the exact list would pin the timing of the
+    # cancel rather than the thing that matters, which is that nothing is left mid-flight.
+    statuses = [t["status"] for t in board["tasks"]]
+    assert statuses and not ({"running", "pending"} & set(statuses)), statuses
+
+
 # --------------------------------------------------------------- the tool loop
 def write_plugin(store, orch):
     (store.data_dir / "plugins" / "demo.py").write_text(

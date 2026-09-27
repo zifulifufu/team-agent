@@ -598,14 +598,28 @@ def auto_round_defects(*, invalid_plan: str = "", exhausted: bool = False, open_
             "hint": L("this is the commonest way a round produces nothing — worth fixing at the source",
                       "这是「整轮什么也没产出」最常见的原因,值得从根上治"),
         })
-    if exhausted and open_tasks:
+    if exhausted:
+        # ⚠️ Empty `open_tasks` is the **common** case, not an edge case: `run.unfinished` is only
+        # filled in by `_execute_plan`, so a round that ran as plain turn-taking (no task board at
+        # all) arrives here with nothing to list. Gating on `open_tasks` therefore dropped the entry
+        # for exactly the round that has no board to say it any other way — while the caller's own
+        # comment promises the opposite ("a round that stopped because it ran out of turns still has
+        # work in it ... the entry is what makes it countable a week later", measured 2026-09-27).
+        # The user was told the round was cut short; the ledger said nothing, so it could never be
+        # counted or fed into the next round.
+        if open_tasks:
+            symptom = L(f"the round ended (max_hops) with {len(open_tasks)} task(s) not finished: "
+                        f"{', '.join(open_tasks[:4])}",
+                        f"这一轮到达上限结束,还有 {len(open_tasks)} 个任务没做完:{'、'.join(open_tasks[:4])}")
+        else:
+            symptom = L("the round ended (max_hops) without a task board, so nothing records what "
+                        "was left undone",
+                        "这一轮到达上限结束,而且没有任务板,所以没有任何地方记下剩下的是什么")
         out.append({
             "key": "round-exhausted",
             "title": L("The round ran out of turns with work unfinished",
                        "轮数用完时还有任务没做完"),
-            "symptom": L(f"the round ended (max_hops) with {len(open_tasks)} task(s) not finished: "
-                         f"{', '.join(open_tasks[:4])}",
-                         f"这一轮到达上限结束,还有 {len(open_tasks)} 个任务没做完:{'、'.join(open_tasks[:4])}"),
+            "symptom": symptom,
             "evidence": L("the app's own note about the turn limit, plus the task board",
                           "程序自己发的轮数上限提示,加上任务板"),
             "severity": "major", "stage": "planning",
