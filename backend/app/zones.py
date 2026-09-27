@@ -167,8 +167,15 @@ def _zone(body: dict, *, zid: str) -> dict:
         "name": name, "name_zh": name_zh,
         "blurb": blurb, "blurb_zh": blurb_zh,
         "icon": icon, "state": state,
-        # Which group template starts a team here. Empty means this zone has no roster yet, and
-        # the page says so instead of offering a button onto nothing.
+        # Which group template starts a team here. Empty means this zone has no roster yet.
+        #
+        # ⚠️ **注册表专用，不进响应。** 它曾经被声明、被送到前端，而全前端没有一处读它 ——
+        # 「算出来了但用户看不见」正是这个项目反复在治的那种病（`Plan.dropped` 在正文里躺了
+        # 好几周）。页面真正回答「这里能不能起手」的是 `templates` 那一块：每一行在
+        # `create_group_from_template` 自己那次查找找得到时带上 `action`（见 `api_zones`），
+        # 所以可点的行**逐行**对得上端点，而不是靠「这个专区有没有模板」这一件事。
+        # 这里留着它是因为上面两条注册表守卫读它（模板存在、`in_template` 与之对齐），
+        # 以及将来起群时那份名单要用它。`detail()` 那边是白名单，送不出去。
         "template": _text(body.get("template"), "template"),
     }
     for s in SURFACES:
@@ -751,12 +758,14 @@ def detail(zone_id: str) -> "dict | None":
         return None
     # The second language is dropped at the boundary, not carried along: a page that received both
     # would pick between them, and that pick is a second answer to "which language is this".
-    # So is a surface the page does not draw — handing over `roles` anyway would be data nothing
-    # renders, which is the failure this project keeps finding (`Plan.dropped` rode into a message
-    # body for weeks and no page ever read it). `roles` stays in the registry, where it is
-    # validated and where the group this zone will start can find it.
-    out = {k: v for k, v in got.items()
-           if k not in ("name", "blurb") + SURFACES and not k.endswith("_zh")}
+    #
+    # ⚠️ **白名单，不是「除了我记得要丢的，其余都发」。** 原来这里写的是
+    # `k not in ("name", "blurb") + SURFACES` —— 于是注册表里**每一个新键都默认随响应出门**。
+    # 实测就是这样漏出去的：`template`（这个专区用哪个群模板起手）被声明、被送到前端，
+    # 而全前端没有一处读它；`roles` 当初也差点这样。判据是「**页面到底画哪些**」，
+    # 所以这里逐个点名，将来给注册表加键时不会不声不响地多送一份数据。
+    # （注册表自己仍然保留 `template`/`roles`：上面几条守卫读的是它们，将来起群时的名单也是它们。）
+    out = {k: got[k] for k in ("id", "icon", "state")}
     out["name"] = _say(got, "name")
     out["blurb"] = _say(got, "blurb")
     for surface in DRAWN:

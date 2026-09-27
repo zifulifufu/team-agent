@@ -1173,7 +1173,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     # The video zone: the parts a person drives directly (composing music, and later scenes and
     # motion). Its routes call the same composers the tools do rather than a second copy of them.
     app.include_router(build_video_zone_router(_ctx))
-    app.include_router(build_zones_router())
+    app.include_router(build_zones_router(_ctx.store))
     # Kept reachable for the same reason `store`/`router`/`orch` are above: a long-running job's
     # state lives on it, and a test that wants to see the state of a run has nowhere else to look.
     app.state.ctx = _ctx

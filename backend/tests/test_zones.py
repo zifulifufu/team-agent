@@ -247,3 +247,111 @@ def test_the_undrawn_surface_is_still_held_to_its_guards():
     assert marked, "视频专区的分工表里一条 in_template 都没有，守卫成了空跑"
     for it in marked:
         assert it["member"] in members, it
+
+
+# ------------------------------------------------------------------ which rows do something
+def _zone_page(tmp_path, zone_id: str) -> dict:
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    from tests.conftest import FakeLLM
+
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="OK"))
+    cl = TestClient(app, base_url="http://127.0.0.1")
+    return {"zone": cl.get(f"/api/zones/{zone_id}").json()["zone"], "cl": cl}
+
+
+def test_a_starting_point_carries_an_action_only_when_it_can_really_start_something(tmp_path):
+    """⚠️ The pressable row and the endpoint behind it answer the *same* question.
+
+    `zones.py` calls templates "the starting points you pick from", while `ZonePage` renders every
+    surface as a read-only index row — which is right for the video zone (it has a workbench to act
+    in) and wrong for the three that have none, where the page offered nothing that did anything at
+    all. The flag comes from the very lookup `POST /api/templates/{id}/create-group` performs, so a
+    button can never be one that endpoint would refuse — and this test presses every single one of
+    them to hold that.
+    """
+    page = _zone_page(tmp_path, "writing")
+    items = {it["id"]: it for it in page["zone"]["templates"]["items"]}
+
+    assert items["report"]["action"] == "create-group"       # a real template
+    assert "action" not in items["outline"], "planned 的起点不能长出按钮"   # declared, not built
+
+    pressed = [it for it in page["zone"]["templates"]["items"] if it.get("action")]
+    assert pressed, "一个可点的起点都没有 —— 这条断言会变成空跑"
+    for it in pressed:
+        r = page["cl"].post(f"/api/templates/{it['id']}/create-group", json={})
+        assert r.status_code == 200, (it["id"], r.text)
+        assert r.json()["id"], it["id"]                     # 真的建出了一个群
+
+
+def test_the_video_zones_rows_are_composer_presets_and_not_starting_points(tmp_path):
+    """⚠️ One surface, two kinds of thing — and the distinction is *derived*, not hardcoded.
+
+    The video zone's `templates` are filled from `musicprompt.PRESETS` (a style for the composer),
+    not from the group-template table. They share a surface with the writing zone's real templates,
+    so the only thing separating them is the lookup above — which is why this test exists: an
+    `action` appearing here would mean a button that tries to create a group from "minimal piano".
+    """
+    page = _zone_page(tmp_path, "video")
+    items = page["zone"]["templates"]["items"]
+
+    assert items, "视频专区的模板块是空的,这条断言会变成空跑"
+    assert not any(it.get("action") for it in items), [it["id"] for it in items if it.get("action")]
+    assert {p["id"] for p in musicprompt.PRESETS} & {it["id"] for it in items}, "那些 id 不是作曲预设"
+
+
+def test_the_three_zones_without_a_workbench_each_offer_a_real_starting_point(tmp_path):
+    """写作/故事/创作三个专区**一个工作台都没有** —— 一个都没有的话,这一页就一个可交互元素都没有,
+    而专区自己的定义是「一个去做东西的地方」。三个专区在注册表里各自点名了一个群模板,所以
+    三行都要带 `action`,而且**都要真的建得出群**(不是「有个按钮」,是端点收下了它)。
+    """
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    from tests.conftest import FakeLLM
+
+    app = create_app(tmp_path / "data", completion_fn=FakeLLM(default="OK"))
+    cl = TestClient(app, base_url="http://127.0.0.1")
+
+    checked = 0
+    for zid, tid in (("writing", "report"), ("story", "writing"), ("creation", "brainstorm")):
+        got = cl.get(f"/api/zones/{zid}").json()["zone"]
+        items = {it["id"]: it for it in got["templates"]["items"]}
+        assert items[tid].get("action") == "create-group", (zid, tid, items.get(tid))
+        r = cl.post(f"/api/templates/{tid}/create-group", json={})
+        assert r.status_code == 200 and r.json()["id"], (zid, tid, r.text)
+        checked += 1
+    assert checked == 3, "三个专区没有全验到,这条断言会变成空跑"
+
+
+def test_every_row_a_builtin_zone_calls_ready_is_reachable():
+    """`ready` 是承诺:内置专区里每一条标 ready 的模板条目,要么真的能起点(建群端点找得到它),
+    要么在视频专区那种**有说明的**例外里 —— 那一块装的是作曲风格预设,和群模板共用一块 surface。
+
+    ⚠️ 用户自己写的专区文件不受这条约束(它读的是注册表)。它守的是内置这四份:今天恰好都对得上,
+    所以「一条 ready 行永远不可能是一个到不了的地方」这件事**必须写成断言**,而不是靠此刻的好运。
+    """
+    real = {t["id"] for t in presets.TEMPLATES}
+    styles = {p["id"] for p in musicprompt.PRESETS}
+    checked = 0
+    for zid, z in zones.BUILTIN.items():
+        for it in z["templates"]["items"]:
+            if it["state"] != "ready":
+                continue
+            checked += 1
+            assert it["id"] in real or (zid == "video" and it["id"] in styles), \
+                f"{zid}:「{it['label']}」标着 ready,但它既不是群模板也不是作曲预设"
+    assert checked, "一条 ready 的模板条目都没有,这条守卫没验到东西"
+
+
+def test_the_response_carries_only_the_keys_the_page_reads():
+    """⚠️ 白名单,不是「除了我记得要丢的,其余都发」。
+
+    `detail()` 原来是「除 name/blurb/四块之外的键全部送出」—— 于是给注册表加一个键,它就默认
+    跟着出门。实测就是这样漏的:`template`(这个专区用哪个群模板起手)被声明、被送到前端、
+    而全前端**没有一处读它**,等于不存在。同一条路上 `roles` 当初也差点一起送出去。
+    """
+    got = zones.detail("video")
+    assert set(got) == {"id", "name", "blurb", "icon", "state", *zones.DRAWN}
+    assert "template" not in got, "它已经没有渲染路径了 —— 再送出去就是第二份「等于不存在」"
+    # 但**注册表里**它必须还在:上面两条守卫读它,将来这个专区起群时那份名单也是它。
+    assert zones.BUILTIN["video"]["template"] == "video"

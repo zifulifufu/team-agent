@@ -207,7 +207,7 @@ export default function App() {
         {/* 专区:一个「做东西的地方」。**不套 CapabilityWorkspace** —— 那是设置类页面的外壳
             (它带群上下文和"接入本群"一类的动作),而专区里的东西不属于某个群,它是给键盘前
             这个人用的。哪几个专区、各自有什么,全由后端 `zones.py` 说,这一行只负责把 id 交给它。 */}
-        {view.kind === "zone" && <div className="tool-page"><ZonePage key={view.id} id={view.id} /></div>}
+        {view.kind === "zone" && <div className="tool-page"><ZonePage key={view.id} id={view.id} onOpen={(gid) => setView({ kind: "chat", gid, autoSend: "" })} /></div>}
       </main>
       {/* 成果栏:聊天框的右侧。**只在聊天里出现** —— 产物属于这次对话(WorkBuddy 的面板也是这样,
           离开对话它就不在),而设置页里挂一列「这个项目产出了什么」是没有对象的。 */}

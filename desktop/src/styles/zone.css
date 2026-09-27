@@ -17,6 +17,15 @@
 .zone-badge.ready { color: var(--ok); border-color: currentColor; background: transparent; }
 .zone-badge.planned { color: var(--text-3); }
 
+/* 头部那一行「今天能用什么 / 还缺什么」。它是**从三块的数据算出来的**（见 `ZonePage` 的 `usable`），
+   所以样式只做一件有语义的事：能用的用正文色说，还没建的压到次要色。⚠️ 选择器要带 `.zone-head`
+   才压得住上面 `.zone-head p` 的次要色 —— 否则这一行的前半句会跟着一起变灰。 */
+.zone-head .zone-summary {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 2px 0 8px; color: var(--text); font-size: 12.5px; line-height: 1.65;
+}
+.zs-missing { color: var(--text-3); }
+
 .zone-dim { display: block; margin: 0 0 10px; color: var(--text-2); font-size: 12.5px; line-height: 1.65; }
 .zone-note { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 12px; font-size: 12.5px; line-height: 1.6; }
 .zone-note svg { flex: 0 0 auto; margin-top: 2px; }
@@ -59,6 +68,17 @@
 }
 .zi-note { margin: 4px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .zi-none { color: var(--text-3); font-size: 11.5px; }
+
+/* 一个**真的能起点**的起点 —— 这一条下面有东西可做。只有后端标了 `action` 的行才有这个按钮：
+   那个标记来自「建群时那次查找」本身，所以这里不会长出一个点了没反应的按钮。 */
+.zi-start { margin-top: 8px; }
+/* 起群失败时贴在那**一行**上的原话。它必须在这里 —— 页头在按钮上方，用户点完看不到任何变化
+   就等于「静默失败」，而这行字本来就在说。 */
+.zi-start-err {
+  display: flex; align-items: flex-start; gap: 6px; margin: 7px 0 0;
+  color: var(--danger); font-size: 12px; line-height: 1.6;
+}
+.zi-start-err svg { flex: 0 0 auto; margin-top: 2px; }
 
 .zone-pill {
   margin-left: auto; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600;

@@ -1431,6 +1431,10 @@ export interface ZoneItem {
   id: string; label: string; note: string; state: ZoneItemState;
   /** 资料库那一块才有：这一栏现在有几件。 */
   count?: number;
+  /** 模板那一块才有，而且**只在真的能起点的时候**才有。后端是用「要建群时那次查找」
+   *  判定的，所以带了这个字段的条目点下去不会落空；没带的（含视频专区那些作曲风格预设）
+   *  保持只读。 */
+  action?: "create-group";
   /** 分工那一块才有。`member` 是内置成员名，`in_template` = 本专区的群模板已经带了这个位子。 */
   member?: string; in_template?: boolean; skills?: string[]; tools?: string[];
 }
@@ -1449,8 +1453,9 @@ export interface ZoneRow {
  *  送过来却不渲染的东西等于不存在，这正是这个项目反复在治的那种病。它将来是「从这个专区
  *  起一个群」时那份名单。 */
 export interface ZoneDetail extends ZoneRow {
-  /** 从这个群模板起一手；空串 = 这个专区还没有名单。 */
-  template: string;
+  /** ⚠️ 这里原来有一个 `template: string`（这个专区用哪个群模板起手）。**已删**：后端声明过、
+   *  送过、而全前端没有一处读它 —— 「算出来了但用户看不见」等于不存在。现在回答「能不能起手」
+   *  的是**逐行**的 `ZoneItem.action`，它来自建群端点自己那次查找，所以按钮点下去一定有着落。 */
   library: ZoneSurface; templates: ZoneSurface; workflows: ZoneSurface;
 }
 /** 用户自己写的专区文件读不了时**点名**，不静默跳过。 */

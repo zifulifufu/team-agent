@@ -35,12 +35,28 @@ const ZH: Record<string, string> = {
   "Lyrics (optional — leave empty for an instrumental)": "歌词（可选 —— 留空则作纯音乐）",
   "Zones": "专区",
   "Planned": "规划中",
+  // 专区条目/专区的状态词。⚠️ 这四条**必须存在**：`ZonePage` 的 `STATE_LABEL` 是逐条
+  // `t("…")` 调用的（就是为了让 check-i18n.py 看得见）——之前它是「先拼表、运行时再查」，
+  // 于是 `Ready`/`Partly ready` 压根没进这张表，中文界面下徽章直接显示英文。
+  "Ready": "可用",
+  "Partly ready": "部分可用",
+  // ⚠️ 不复用上面那条 `"Blocked": "禁止"`（那是权限页「总是禁止」的语境）。专区里 `blocked`
+  // 的意思是「东西建好了，但本机有一样缺的挡着」（缺节点包、账号没额度、本机没图像模型）。
+  "Blocked here": "本机挡着",
   "The zones could not be read from the backend": "读不到专区清单 —— 后端没有回应。",
   "{n} zone file(s) could not be read": "{n} 个专区文件读不了",
   "Opening…": "正在打开…",
   "This zone could not be opened": "这个专区打不开",
   "Workflows": "工作流",
   "Nothing declared here yet.": "这里还什么都没声明。",
+  // 模板那一块里**真的能起点**的条目才有的按钮。它出现，就说明后端拿「建群时那次查找」确认过
+  // 这个模板在；其它条目（planned 的、以及视频专区那些作曲风格预设）保持只读。
+  "Start a group from this": "从它起一个群",
+  // 头部那一行摘要：**从三块的数据算出来**，点出今天能用的是哪几件、还差几件。
+  // 它存在的理由是徽标与条目会互相矛盾（写作专区徽标写「规划中」，里面却有 3 条 ready）。
+  "Usable today: {names}": "今天能用:{names}",
+  "Nothing here is usable yet": "这里还没有能用起来的东西",
+  "{n} not built yet": "还有 {n} 项没建",
   // ---- 视频专区
   "Music": "音乐",
   "Scenes": "场景",

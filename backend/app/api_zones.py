@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from . import i18n, zones
+from . import i18n, templates, zones
 
 
-def build_zones_router() -> APIRouter:
+def build_zones_router(store) -> APIRouter:
     r = APIRouter()
 
     @r.get("/api/zones")
@@ -33,6 +33,22 @@ def build_zones_router() -> APIRouter:
             raise HTTPException(404, i18n.pick_now(
                 f"There is no zone called \"{zone_id}\". Known zones: {known}.",
                 f"没有叫「{zone_id}」的专区。现有的专区:{known}。"))
+        # ⚠️ Which of a zone's starting points a person can actually **start** from.
+        #
+        # `zones.py` calls templates "the starting points you pick from", while `ZonePage.tsx` renders
+        # all three surfaces as read-only index rows ("not a pile of buttons"). Both are defensible
+        # and they do not agree: read-only is right for a zone that has a workbench (the video zone,
+        # where the composer is the place you act) and wrong for the three that have none — those
+        # pages offered no control that did anything at all, which is what "an empty shell" feels
+        # like. So the rows that genuinely have somewhere to go get an `action`, and the rest keep
+        # being what they are: an honest statement of what is and is not built.
+        #
+        # The permission is not invented here: it is exactly the lookup
+        # `create_group_from_template` performs, so a row can never offer a button that the endpoint
+        # behind it would refuse.
+        for item in got.get("templates", {}).get("items", []):
+            if item.get("state") == "ready" and templates.find_template(store, item["id"]):
+                item["action"] = "create-group"
         return {"zone": got, "errors": zones.errors()}
 
     return r

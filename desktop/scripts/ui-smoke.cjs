@@ -62,11 +62,34 @@ function token() {
     // substitution then succeeds on that line with an empty capture. `head -1` took that empty
     // match and the script reported "could not read the app token — is the app running?" while the
     // token was on the next line. Requiring a real token length skips it.
-    "/usr/bin/pgrep -fl 'team-agent-token' 2>/dev/null | sed -n 's/.*--team-agent-token=\\([A-Za-z0-9_-]\\{8,\\}\\).*/\\1/p' | head -1",
+    "/usr/bin/pgrep -fl 'team-agent-token' 2>/dev/null | sed -n 's/.*--team-agent-token=\\([A-Za-z0-9_-]\\{8,\\}\\).*/\\1/p' | sort -u",
     { shell: "/bin/zsh" },
-  ).toString().trim();
-  if (!out) fail("could not read the app token — is the app running?");
-  return out;
+  ).toString().trim().split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!out.length) fail("could not read the app token — is the app running?");
+  // ⚠️ **Take the one the backend accepts, not the first one found.** Two copies of the app can be
+  // alive at once (a leftover window whose backend was killed, plus the one just started) and each
+  // renderer carries its own token; the stale one is answered 401 by the *live* backend. Picking
+  // blindly is what produced `(api_groups || []).map is not a function` twenty lines into `main()`
+  // — a 401 body is an object, so the real cause ("wrong token") looked like a broken page.
+  for (const candidate of out) {
+    let code = "";
+    try {
+      code = execSync(
+        "/usr/bin/curl -s -o /dev/null -w '%{http_code}' -H 'X-Team-Agent-Token: " + candidate +
+        "' " + APP + "/api/zones", { shell: "/bin/zsh" },
+      ).toString().trim();
+    } catch { code = ""; }
+    if (code === "200") {
+      if (out.length > 1) {
+        console.log("       (" + out.length + " tokens found on this machine; using the one the " +
+                    "backend accepts — more than one copy of the app may be running)");
+      }
+      return candidate;
+    }
+  }
+  fail("read " + out.length + " token(s) from running app processes and the backend at " + APP +
+       " accepted none of them. A second copy of the app is the usual reason — check with " +
+       "`pgrep -fl team-agent-token`.");
 }
 
 /** A loopback server for dist/, so the bundle's module scripts are same-origin. */
@@ -2974,6 +2997,36 @@ async function main() {
         await sleep(400);
         await shotTo(shotPath(".review-shown"), fixture.session);
       }
+      // ------------------------------------------------------- 专区那一行的起点:**按下去**
+      // ⚠️⚠️ 前面那一节验的是「按钮在、看得见、是可点的」,却**从不按它** —— 而这次改动唯一真正的
+      // 风险就在按下去之后:建群 → 刷新列表 → 再切过去。少了「刷新」这一步,`App` 那条
+      // 「打开中的群不在列表里就回首页」会立刻把用户弹回首页,而「按钮在不在」对此完全无感。
+      // 在 fixture 上按是安全的:那是 /tmp 里另起的一份数据,不是用户的真实项目。
+      console.log("— 从一个起点起群:按下去之后落在哪一页");
+      await fval(`(function () {
+        var items = [].slice.call(document.querySelectorAll('.sidebar .side-nav[aria-label] .nav-item'));
+        var target = items.filter(function (x) { return /Writing|\\u5199\\u4f5c/.test(x.textContent); })[0];
+        if (target) target.click();
+        return !!target; })()`);
+      await sleep(1500);
+      const before = await fval(`(function () {
+        return { rows: document.querySelectorAll('.sidebar .conv').length,
+                 buttons: document.querySelectorAll('.zone-surface.zs-templates .zi-start').length }; })()`);
+      expect(before.buttons > 0, "写作专区在这个后端上也给出了可点的起点:" + JSON.stringify(before));
+      await fval(`(function () {
+        document.querySelector('.zone-surface.zs-templates .zi-start').click(); return 'ok'; })()`);
+      await sleep(5000);
+      const after = await fval(`(function () {
+        return { rows: document.querySelectorAll('.sidebar .conv').length,
+                 home: !!document.querySelector('.home'),
+                 chat: !!document.querySelector('.chat') }; })()`);
+      expect(after.rows === before.rows + 1,
+        "按一下真的建出了一个群 (" + before.rows + " → " + after.rows + ")");
+      // ⚠️ 这条**实测过它会红**:把 `ZonePage.startFrom` 里那句 `await reload()` 撤掉再跑一遍,
+      // 它立刻失败 —— 群确实建出来了(1 → 2),但页面既不在新群、也不在首页。所以它验的是
+      // 「按下去之后用户真的到了新群」,而不是「按钮存在」。
+      expect(after.chat && !after.home, "按下去之后落在新群的对话里:" + JSON.stringify(after));
+
       fixture.stop();
     }
   }
@@ -3102,6 +3155,82 @@ async function main() {
     "分工与技能不再画在专区页上 (zs-roles " + zonePage.rolesBlock + " 块 / 位子 " + zonePage.roleRows + " 个)");
   expect(zonePage.bench && zonePage.benchTabs > 0, "视频专区带工作台 (" + zonePage.benchTabs + " 个标签页)");
   if (SHOT) await shotTo(shotPath(".zone"));
+
+  // ---------------------------------------------------------------- 「起点」那一块
+  // ⚠️ 上面点的是**第一个**专区（视频），它那一块是**作曲风格预设**，一个按钮都不该有；
+  // 有按钮的是写作/故事/创作 —— 那里有真的群模板。所以这里按名字切过去再验。
+  // ⚠️ 验证的是「用户看不看得见」:按钮要有宽高、不是 disabled，而不只是 DOM 里存在。
+  await val(`(function () {
+    var items = [].slice.call(document.querySelectorAll('.sidebar .side-nav[aria-label] .nav-item'));
+    var target = items.filter(function (x) { return /Writing|\\u5199\\u4f5c/.test(x.textContent); })[0];
+    if (target) target.click();
+    return !!target;
+  })()`);
+  await sleep(700);
+  const starts = await val(`(function () {
+    var panel = document.querySelector('.zone-surface.zs-templates');
+    if (!panel) return { there: false, title: '' };
+    var items = [].slice.call(panel.querySelectorAll('.zone-item'));
+    var btns = [].slice.call(panel.querySelectorAll('.zi-start'));
+    return { there: true,
+             title: String((document.querySelector('.zone-head h2') || {}).textContent || '').trim(),
+             items: items.length, buttons: btns.length,
+             sized: btns.filter(function (b) { var r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).length,
+             pressable: btns.filter(function (b) { return !b.disabled; }).length,
+             label: btns.length ? String(btns[0].textContent).trim() : '' };
+  })()`);
+  expect(starts.there && starts.items > 0,
+    "切到了有模板的专区:\"" + starts.title + "\" 那一块有 " + starts.items + " 条");
+  // ⚠️ 钉死「看的是哪个专区」:story / creation 也各有 1 个可点行,假如这次导航静默失败、落到
+  // 它们上面,下面几条(有按钮、不是每条都有)照样全绿 —— 那就是**在错误的页面上通过**。
+  expect(/Writing|写作/.test(starts.title), "看的确实是写作专区:" + JSON.stringify(starts.title));
+  expect(starts.buttons > 0 && starts.sized === starts.buttons,
+    "能起点的条目真的画出了按钮(有宽高):" + JSON.stringify(starts));
+  expect(starts.pressable === starts.buttons, "按钮当时是可点的,不是禁用态:" + JSON.stringify(starts));
+  expect(starts.buttons < starts.items,
+    "不是每一条都有按钮 —— planned 的保持只读:" + JSON.stringify(starts));
+  console.log("       可点的起点 " + starts.buttons + "/" + starts.items + " 条,按钮文案:「" + starts.label + "」");
+
+  // ---------------------------------------------------------------- 头部摘要 + 排序
+  // 用户 2026-09-27:「不要有规划中，不能留空」。徽标只说得出一件事(这个专区 ready 还是 planned),
+  // 而写作专区里躺着 3 条 ready 的模板 —— 徽标说「还不能用」、条目说「能用」,用户不知道该信哪个。
+  // 所以头部多了一行**由数据算出来**的摘要。⚠️ 它必须真的画出来:算出来却不渲染 = 等于不存在,
+  // 而这一页的 `template` 字段就是这么白白丢了很久的。
+  const summary = await val(`(function () {
+    var p = document.querySelector('.zone-head .zone-summary');
+    var counts = [].slice.call(document.querySelectorAll('.zone-surface > h3 .zone-count'))
+                        .map(function (c) { return String(c.textContent).trim(); });
+    var rows = [].slice.call(document.querySelectorAll('.zone-surface.zs-templates .zone-item'));
+    var states = rows.map(function (li) { return (li.className.match(/st-([a-z]+)/) || [])[1]; });
+    return { there: !!p, text: p ? String(p.textContent).trim() : '', counts: counts, states: states };
+  })()`);
+  expect(summary.there && summary.text.length > 0, "专区头部有一行摘要:" + JSON.stringify(summary));
+  // 这一页的模板块是「3 条能用 + 1 条没建」,所以摘要里**两半都要在**:能用的点名额、没建的说件数。
+  expect(/今天能用|Usable today/.test(summary.text) && /还有|not built yet/.test(summary.text),
+    "摘要同时说了能用什么、还缺多少:" + JSON.stringify(summary.text));
+  // 计数从「一共几条」改成「能用几条 / 一共几条」:缺多少不必展开任何一行就能读出来。
+  expect(summary.counts.length > 0 && summary.counts.every(function (c) { return /^\d+\/\d+$/.test(c); }),
+    "每块的计数是「能用/总数」:" + JSON.stringify(summary.counts));
+  // 能用的行排在前面(稳定排序 —— 同一状态的若干行保持声明顺序)。
+  var seenPlanned = -1, lastReady = -1;
+  summary.states.forEach(function (s, i) {
+    if (s === "planned" && seenPlanned < 0) seenPlanned = i;
+    if (s === "ready") lastReady = i;
+  });
+  expect(seenPlanned < 0 || lastReady < seenPlanned,
+    "能用的行排在没建的行前面:" + JSON.stringify(summary.states));
+  console.log("       摘要:「" + summary.text + "」 计数 " + JSON.stringify(summary.counts));
+
+  // ⚠️ Put the page back. The checks that follow look at the **video** zone's composer
+  // (`.zone-bench .vz-panel`), and this block just navigated to a different zone — without this the
+  // next assertion reads `null.textareas` and takes the whole run down. (That is exactly what the
+  // first version of this block did.)
+  await val(`(function () {
+    var items = [].slice.call(document.querySelectorAll('.sidebar .side-nav[aria-label] .nav-item'));
+    if (items[0]) items[0].click();
+    return true;
+  })()`);
+  await sleep(700);
 
   console.log("— 作曲面板:一句话就够了");
   // 用户 2026-09-27:「用户填提示词后自动选择音乐生成方式……情绪也没必要放到面板上，这些都在算法里面，
