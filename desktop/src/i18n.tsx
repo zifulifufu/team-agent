@@ -24,12 +24,18 @@ const PREF_KEY = "ta.lang";
 
 /** 中文词典:键 = 源码里的英文原文。 */
 const ZH: Record<string, string> = {
+  "Zones": "专区",
+  "Planned": "规划中",
+  "The zones could not be read from the backend": "读不到专区清单 —— 后端没有回应。",
+  "{n} zone file(s) could not be read": "{n} 个专区文件读不了",
+  "Opening…": "正在打开…",
+  "This zone could not be opened": "这个专区打不开",
+  "Workflows": "工作流",
+  "Nothing declared here yet.": "这里还什么都没声明。",
   // ---- 视频专区
-  "Video zone": "视频专区",
   "Music": "音乐",
   "Scenes": "场景",
   "Expressions and motion": "表情动作",
-  "Make the pieces a film is built from — here, by hand, and keep them. Members in a group chat can use the same engines through their tools.": "在这里亲手做出片子的零件，并留存下来。群聊里的成员通过各自的工具用的也是同一套引擎。",
   "Compose": "作曲",
   "Checking this machine…": "正在检查本机…",
   "ACE-Step is ready on this machine ({url})": "本机 ACE-Step 已就绪（{url}）",

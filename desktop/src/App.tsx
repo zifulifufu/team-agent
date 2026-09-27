@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useData } from "./data";
 import { useI18n } from "./i18n";
 import { prefs } from "./theme";
@@ -12,29 +12,18 @@ import HomePage from "./pages/HomePage";
 import ChatView from "./pages/ChatView";
 import AgentsPage from "./pages/AgentsPage";
 import LibraryPage from "./pages/LibraryPage";
-import VideoZonePage from "./pages/VideoZonePage";
+import ZonePage from "./pages/ZonePage";
 import AppearancePage from "./settings/AppearancePage";
-import CapabilityWorkspace, { type CapabilityArea } from "./settings/CapabilityWorkspace";
-import SkillsPage from "./settings/SkillsPage";
-import PluginsPage from "./settings/PluginsPage";
-import McpPage from "./settings/McpPage";
-import ExternalPage from "./settings/ExternalPage";
-import ChannelsPage from "./settings/ChannelsPage";
-import HooksPage from "./settings/HooksPage";
-import SettingsModal, { type PageProps, type SettingsTab } from "./settings/SettingsModal";
+import SettingsModal, { type SettingsTab } from "./settings/SettingsModal";
 
-/** The pages that are the main area rather than a tab inside Settings. Prompts, the library
- *  and memory are the other way round: they are Settings tabs, so a link to one of them keeps
- *  Settings open and just switches tab (see `goTab`). */
-const AREA_PAGES: Record<"skills" | "plugins" | "mcp" | "hooks" | "external" | "channels", ComponentType<PageProps>> = {
-  skills: SkillsPage, plugins: PluginsPage, mcp: McpPage, hooks: HooksPage, external: ExternalPage,
-  channels: ChannelsPage,
-};
-
-/** Settings ids that name one of those pages, as the `View` that shows it. */
+/** Settings ids that are a **page in the main area** rather than a tab inside Settings.
+ *
+ *  Appearance is the only one left. Skills, plugins, hooks, MCP, agents and local tools and chat
+ *  channels were the others until 2026-09-27: the user asked for them to sit in the settings
+ *  panel's own nav, next to Prompts and Library (`settings/SettingsModal.tsx`, the Capabilities
+ *  group), so `goTab` no longer closes Settings to show them — it just switches tab.
+ */
 const AREA_VIEWS: Partial<Record<SettingsTab, View>> = {
-  skills: { kind: "skills" }, plugins: { kind: "plugins" }, mcp: { kind: "mcp" },
-  hooks: { kind: "hooks" }, external: { kind: "external" }, channels: { kind: "channels" },
   appearance: { kind: "appearance" },
 };
 
@@ -138,10 +127,6 @@ export default function App() {
   /** 侧栏那个「成员 (N)」入口:只开成员那一栏。已经开着时再点一下 = 收起(和它一直以来的一键
    *  开合一模一样)。 */
   const onMembersEntry = () => {
-    if (view.kind in AREA_PAGES) {
-      setView(railGroup ? { kind: "chat", gid: railGroup.id } : { kind: "agents" });
-      setMemberRail(true); setMaxed(null); return;
-    }
     if (rail) { setMemberRail(false); return; }
     setMemberRail(true);
     setMaxed((m) => (m === "rail" ? null : m));
@@ -166,7 +151,6 @@ export default function App() {
       setSettings(t);
     }
   };
-  const AreaPage = view.kind in AREA_PAGES ? AREA_PAGES[view.kind as keyof typeof AREA_PAGES] : null;
   // After a group is created from the template gallery, go straight into it: close Settings and switch to that group
   const openGroup = (gid: string) => {
     setSettings(null);
@@ -174,7 +158,7 @@ export default function App() {
   };
 
   return (
-    <div className={"shell" + (maxed && !AreaPage ? " maxed-" + maxed : "")}>
+    <div className={"shell" + (maxed ? " maxed-" + maxed : "")}>
       {/* Always mounted, never unmounted: the sidebar collapses to its own top strip, so the control
           that put it away is still on screen and in the same place to bring it back. When this was
           `{!collapsed && <Sidebar/>}`, the way back lived inside the main area instead — 173px away
@@ -187,11 +171,11 @@ export default function App() {
         collapsed={collapsed}
         onCollapse={() => setSide(!collapsed)}
         version={APP_VERSION}
-        rail={rail && !AreaPage}
+        rail={rail}
         onRail={onMembersEntry}
         memberCount={railGroup ? railCount : null}
       />
-      {!collapsed && rail && !AreaPage && (
+      {!collapsed && rail && (
         <MemberRail
           group={railGroup}
           count={railCount}
@@ -214,17 +198,16 @@ export default function App() {
           />
         )}
         {view.kind === "agents" && <AgentsPage onSettings={goTab} />}
-        {AreaPage && <div className="tool-page"><CapabilityWorkspace area={view.kind as CapabilityArea} groupId={capGroupId} onGroup={setCapGroupId} onTab={goTab} onOpenGroup={openGroup}><AreaPage key={view.kind} onTab={goTab} /></CapabilityWorkspace></div>}
         {/* A group's own library is a drill-down from its chat, and it goes "back" to the
             library tab in Settings, which is where the overview of every document lives. */}
         {view.kind === "library" && (
           <LibraryPage key={view.gid} groupId={view.gid} onBack={() => goTab("library")} />
         )}
         {view.kind === "appearance" && <div className="tool-page"><AppearancePage /></div>}
-        {/* 视频专区:三块能力(场景 / 表情动作 / 音乐)自己成页。**不套 CapabilityWorkspace** ——
-            那是设置类页面的外壳(它带群上下文和"接入本群"一类的动作),而专区里的东西不属于某个群,
-            它是给键盘前这个人用的。 */}
-        {view.kind === "video-zone" && <div className="tool-page"><VideoZonePage /></div>}
+        {/* 专区:一个「做东西的地方」。**不套 CapabilityWorkspace** —— 那是设置类页面的外壳
+            (它带群上下文和"接入本群"一类的动作),而专区里的东西不属于某个群,它是给键盘前
+            这个人用的。哪几个专区、各自有什么,全由后端 `zones.py` 说,这一行只负责把 id 交给它。 */}
+        {view.kind === "zone" && <div className="tool-page"><ZonePage key={view.id} id={view.id} /></div>}
       </main>
       {/* 成果栏:聊天框的右侧。**只在聊天里出现** —— 产物属于这次对话(WorkBuddy 的面板也是这样,
           离开对话它就不在),而设置页里挂一列「这个项目产出了什么」是没有对象的。 */}
@@ -239,7 +222,8 @@ export default function App() {
         />
       )}
       <Toaster />
-      {settings && <SettingsModal tab={settings} onTab={goTab} onClose={() => setSettings(null)} onOpenGroup={openGroup} />}
+      {settings && <SettingsModal tab={settings} onTab={goTab} onClose={() => setSettings(null)}
+                                onOpenGroup={openGroup} capGroupId={capGroupId} onCapGroup={setCapGroupId} />}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, type ComponentType } from "react";
-import { ArrowLeft, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Compass, Cpu, Database, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Package, Server, ShieldCheck, SlidersHorizontal, ThumbsUp } from "lucide-react";
+import { ArrowLeft, Anchor, BarChart3, BookOpen, Brain, type LucideIcon, Boxes, Compass, Cpu, Database, GitBranch, HardDrive, Info, LayoutTemplate, MessageSquareText, Package, Plug, Puzzle, Server, ShieldCheck, SlidersHorizontal, Sparkles, TerminalSquare, ThumbsUp, Webhook } from "lucide-react";
 import { useData } from "../data";
 import { useI18n } from "../i18n";
 import ProvidersPage from "./ProvidersPage";
@@ -18,6 +18,13 @@ import AboutPage from "./AboutPage";
 import LibraryPage from "../pages/LibraryPage";
 import MemoryPage from "../pages/MemoryPage";
 import PromptsPage from "../pages/PromptsPage";
+import SkillsPage from "./SkillsPage";
+import PluginsPage from "./PluginsPage";
+import McpPage from "./McpPage";
+import HooksPage from "./HooksPage";
+import ExternalPage from "./ExternalPage";
+import ChannelsPage from "./ChannelsPage";
+import CapabilityWorkspace, { type CapabilityArea } from "./CapabilityWorkspace";
 
 export type SettingsTab =
   | "providers" | "routing" | "local"
@@ -30,6 +37,14 @@ export interface PageProps {
   onTab: (t: SettingsTab) => void;
   /** Jump straight into a group after creating it from the template gallery (only that page needs it, hence optional). */
   onOpenGroup?: (gid: string) => void;
+  /** Which group the capability pages are attached to, and how to change it.
+   *
+   *  Only the six capability pages read these. They used to live in App, because those pages were
+   *  drawn in the main area with a group bar of their own; they are settings tabs now, so the bar
+   *  (and the group it points at) keeps travelling with them — otherwise "attach this skill to a
+   *  group" would lose the group it was about. */
+  capGroupId?: string | null;
+  onCapGroup?: (id: string) => void;
 }
 
 /** The library, as a settings tab: the overview of every document. A single group's library is
@@ -39,6 +54,23 @@ export interface PageProps {
 function LibraryTab() {
   return <LibraryPage />;
 }
+
+/** A capability page, wrapped in the bar that says **which group** the attach buttons act on.
+ *
+ *  ⚠️ Called at module scope, once per page — never inside the component. A wrapper defined during
+ *  render is a new component type on every render, which remounts the page (and throws away the
+ *  search box the user was typing in) on every keystroke of unrelated state.
+ */
+const capTab = (area: CapabilityArea, Page: ComponentType<PageProps>): ComponentType<PageProps> =>
+  function CapabilityTab({ onTab, onOpenGroup, capGroupId, onCapGroup }: PageProps) {
+    return (
+      <CapabilityWorkspace area={area} groupId={capGroupId ?? null}
+        onGroup={(id) => onCapGroup?.(id)} onTab={onTab}
+        onOpenGroup={onOpenGroup ?? (() => undefined)}>
+        <Page onTab={onTab} onOpenGroup={onOpenGroup} />
+      </CapabilityWorkspace>
+    );
+  };
 
 const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: LucideIcon; page: ComponentType<PageProps> }[] }[] = [
   {
@@ -50,17 +82,29 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
     ],
   },
   {
-    // Prompts, the library and memory are listed here and nowhere else; skills, plugins and MCP
-    // have their own entry in the sidebar's Tools column instead, and both live in the main
-    // area (App routes those ids there, so a link from inside Settings — Gallery → "tick the
-    // skills" — lands in the right place). External agents and chat channels are the reverse
-    // case: they are in the sidebar, because they are set up once and watched, not tuned here.
     title: "Tools",
     items: [
       { id: "prompts", label: "Prompts", icon: MessageSquareText, page: PromptsPage },
       { id: "library", label: "Library", icon: BookOpen, page: LibraryTab },
       { id: "memory", label: "Memory", icon: Brain, page: MemoryPage },
       { id: "gallery", label: "Template gallery", icon: LayoutTemplate, page: GalleryPage },
+    ],
+  },
+  {
+    // 这一组 2026-09-27 从侧栏搬进来：用户要的是「移到用户设置面板提示词、资料库那个工具栏里」。
+    // 它们和上面那四项是同一类东西 —— 配一次、以后偶尔回来改一处 —— 而侧栏那一格业主已改成**
+    // 专区**（做东西的地方）。搬进来之后，`App.goTab` 对这几个 id 不再关掉设置、跳主区域。
+    //
+    // ⚠️ 每一条都套着 `CapabilityWorkspace`：它是「这些能力接到哪个群」的那条栏。丢掉它，
+    // 页面上的「接入本群 / 从本群移出」按钮就没有群可指了（它们读的是那个 context）。
+    title: "Capabilities",
+    items: [
+      { id: "skills", label: "Skills", icon: Sparkles, page: capTab("skills", SkillsPage) },
+      { id: "plugins", label: "Plugins", icon: Puzzle, page: capTab("plugins", PluginsPage) },
+      { id: "mcp", label: "MCP", icon: Plug, page: capTab("mcp", McpPage) },
+      { id: "hooks", label: "Hooks", icon: Anchor, page: capTab("hooks", HooksPage) },
+      { id: "external", label: "Agents and local tools", icon: TerminalSquare, page: capTab("external", ExternalPage) },
+      { id: "channels", label: "Chat channels", icon: Webhook, page: capTab("channels", ChannelsPage) },
     ],
   },
   {
@@ -82,7 +126,13 @@ const GROUPS: { title: string; items: { id: SettingsTab; label: string; icon: Lu
   },
 ];
 
-export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { tab: SettingsTab; onTab: (t: SettingsTab) => void; onClose: () => void; onOpenGroup?: (gid: string) => void }) {
+export default function SettingsModal({ tab, onTab, onClose, onOpenGroup, capGroupId, onCapGroup }: {
+  tab: SettingsTab; onTab: (t: SettingsTab) => void; onClose: () => void;
+  onOpenGroup?: (gid: string) => void;
+  /** 能力那六个页面「接到哪个群」的那条栏所需的两个值（见 `capTab`）。 */
+  capGroupId?: string | null;
+  onCapGroup?: (id: string) => void;
+}) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       // With a dialog open (adding a provider, say), Esc closes the dialog first
@@ -126,7 +176,8 @@ export default function SettingsModal({ tab, onTab, onClose, onOpenGroup }: { ta
           ))}
         </nav>
         <div className="settings-content">
-          <Page key={tab} onTab={onTab} onOpenGroup={onOpenGroup} />
+          <Page key={tab} onTab={onTab} onOpenGroup={onOpenGroup}
+                capGroupId={capGroupId} onCapGroup={onCapGroup} />
         </div>
       </div>
     </div>

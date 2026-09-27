@@ -258,6 +258,27 @@ async function startFixture(send, ui) {
 
 async function main() {
   if (!fs.existsSync(path.join(DIST, "index.html"))) fail("dist/ is missing — run the frontend build first");
+  // ⚠️ 机械守卫：注入进页面的那几段模板必须是**括号配对**的。
+  //
+  // 为什么值得单查一次（2026-09-27 实测）：给那段查询补一个字段时手滑丢掉了返回对象的 `}`，
+  // 于是页面里抛 SyntaxError，而下游每一条断言都只说「找不到 .zone / 找不到那个标题」——
+  // 「我删了个括号」看起来跟「页面根本没渲染」一模一样，白跑了一整轮五分钟。
+  // 这个形状的自伤（模板字符串里结构不完整）在第 5 分钟才被发现，第 5 毫秒就能发现。
+  {
+    const src = fs.readFileSync(__filename, "utf8");
+    const re = /val\(`([^`\\]*(?:\\.[^`\\]*)*)`\)/g;
+    const bad = [];
+    for (let m; (m = re.exec(src)); ) {
+      const body = m[1].trim();
+      if (!body.startsWith("(function")) continue;
+      const open = (body.match(/\{/g) || []).length;
+      const close = (body.match(/\}/g) || []).length;
+      if (!body.endsWith("})()") || open !== close)
+        bad.push("line " + src.slice(0, m.index).split("\n").length + ": { ×" + open + " / } ×" + close);
+    }
+    if (bad.length)
+      fail("一段注入页面的模板括号不配对，页面里会抛 SyntaxError（而不是「找不到元素」）:\n  " + bad.join("\n  "));
+  }
   const server = await serveDist();
   const ui = server.address().port;
   // A fixed port, deliberately. This used to be `ui + 1000`, and the UI port comes from the ephemeral
@@ -3001,6 +3022,147 @@ async function main() {
     console.log("       合成 DOM 量到:徽标 " + style.badge.box.w + "×" + style.badge.box.h +
                 " / 块高 " + style.block.box.h + " / 条目 " + style.items);
   }
+
+  console.log("— 专区:侧栏剩下的是「做东西的地方」,能力中心搬进了用户面板");
+  // 用户 2026-09-27:「把技能、插件、钩子、MCP、智能体与本地工具、聊天通道都放到用户面板里面,
+  // 这个地方留着给后续的专区用……每个专区有专门的资料库、模版、工作流、不同分工可选择的工具
+  // 或者 skills 等」。所以这里验两条意图:
+  //   ① 侧栏那一组现在是**专区**,点进去是一个专区页,页面上有那四块;
+  //   ② 那六样配置入口**还能到**,只是入口换到了用户面板里。
+  // ⚠️ 断言按**结构**读(有几项、有没有图标、四块在不在),不按文案 —— 文案会改,
+  // 而这里要问的是「用户还够得着吗」。
+  const zoneNav = await val(`(function () {
+    var nav = document.querySelector('.sidebar .side-nav[aria-label]');
+    if (!nav) return null;
+    var items = [].slice.call(nav.querySelectorAll('.nav-item'));
+    return { label: nav.getAttribute('aria-label'),
+             n: items.length,
+             withIcon: items.filter(function (b) { return !!b.querySelector('svg'); }).length,
+             href: items[0] ? String(items[0].textContent).replace(/\\s+/g, ' ').trim() : '',
+             // 那六个配置页的名字**不该**还留在这一组里
+             capability: /Skills|Plugins|Hooks|MCP|Chat channels|Agents and local/.test(nav.textContent) };
+  })()`);
+  expect(!!zoneNav, "侧栏有「专区」那一组 (aria-label=" + (zoneNav && zoneNav.label) + ")");
+  expect(zoneNav.n > 0, "专区那一组里有专区 (" + zoneNav.n + " 项)");
+  expect(zoneNav.withIcon === zoneNav.n, "每个专区都有图标 (" + zoneNav.withIcon + "/" + zoneNav.n + ")");
+  expect(!zoneNav.capability, "那六个配置入口不再占着侧栏这一组");
+  await click(".sidebar .side-nav[aria-label] .nav-item");
+  await sleep(700);
+  const zonePage = await val(`(function () {
+    var z = document.querySelector('.zone');
+    if (!z) return { there: false };
+    var surfaces = [].slice.call(z.querySelectorAll('.zone-surface'));
+    var h2 = z.querySelector('.zone-head h2');
+    var roles = z.querySelector('.zone-surface.zs-roles .zone-role');
+    var p = z.querySelector('.zone-head p');
+    var r = h2 ? h2.getBoundingClientRect() : null;
+    return { there: true,
+             title: h2 ? String(h2.textContent).replace(/\\s+/g, ' ').trim() : '',
+             // 标题要在窗口里、占得到地方 ——「有代码」不等于「用户看得到」
+             titleW: r ? Math.round(r.width) : 0,
+             titleH: r ? Math.round(r.height) : 0,
+             // 判「它是不是个标题」只能拿它和**同一页的正文**比:字号更大、字重更重。
+             // ⚠️ 第一版这里是拿标题的颜色和容器 .zone 的颜色比 —— 两处都从 body 继承,永远相等,
+             // 那条断言从来不可能是第二个结果。断言本身不成立时,它红或绿都没有意义。
+             titlePx: h2 ? parseFloat(getComputedStyle(h2).fontSize) : 0,
+             titleWeight: h2 ? getComputedStyle(h2).fontWeight : '',
+             blurbPx: p ? parseFloat(getComputedStyle(p).fontSize) : 0,
+             inView: r ? (r.left >= -1 && r.right <= innerWidth + 1) : false,
+             surfaces: surfaces.length,
+             surfaceTitles: surfaces.map(function (s) { return String(s.querySelector('h3') ? s.querySelector('h3').textContent : '').replace(/\\s+/g, ' ').trim(); }),
+             blurb: (z.querySelector('.zone-head p') || {}).textContent || '',
+             // 视频专区应该有工作台(那四个标签页),别的专区没有
+             bench: !!z.querySelector('.zone-bench'),
+             benchTabs: z.querySelectorAll('.zone-bench .vz-tab').length,
+             roleRows: z.querySelectorAll('.zone-role').length,
+             // 第四块(分工与技能)该**不在**这一页上 —— 用两个选择器各查一次,是因为
+             // 「块还在只是没内容」和「块整个没了」是两件事,而用户要的是后者。
+             rolesBlock: z.querySelectorAll('.zone-surface.zs-roles').length };
+  })()`);
+  expect(zonePage.there, "点一个专区进得去");
+  expect(zonePage.titleW > 0 && zonePage.titleH > 0 && zonePage.inView,
+    "专区标题真的占了地方、而且在窗口里 (" + zonePage.titleW + "×" + zonePage.titleH + ", inView=" + zonePage.inView + ")");
+  expect(zonePage.titlePx > zonePage.blurbPx && zonePage.blurbPx > 0,
+    "标题比说明文字更像标题 (标题 " + zonePage.titlePx + "px vs 说明 " + zonePage.blurbPx + "px, 字重 " + zonePage.titleWeight + ")");
+  expect(String(zonePage.blurb).trim().length > 10, "标题下面有说明:" + String(zonePage.blurb).slice(0, 40));
+  // 三块 —— 用户 2026-09-27 明确「在视频专区里面的各个面板里不需要放分工、工具与技能」，
+  // 所以这里既验「三块在」，也验「第四块不在」——少一块和**该少的那一块没少**都是问题。
+  expect(zonePage.surfaces === 3, "一个专区是三块 (资料库/模板/工作流, 实际 " + zonePage.surfaces + ")");
+  expect(zonePage.surfaceTitles.every(function (x) { return x.length > 1; }), "三块都有标题:" + zonePage.surfaceTitles.join(" / "));
+  expect(zonePage.rolesBlock === 0 && zonePage.roleRows === 0,
+    "分工与技能不再画在专区页上 (zs-roles " + zonePage.rolesBlock + " 块 / 位子 " + zonePage.roleRows + " 个)");
+  expect(zonePage.bench && zonePage.benchTabs > 0, "视频专区带工作台 (" + zonePage.benchTabs + " 个标签页)");
+  if (SHOT) await shotTo(shotPath(".zone"));
+
+  console.log("— 那六样:搬到了设置面板的工具栏(提示词、资料库那一栏)");
+  // 用户 2026-09-27:「技术、插件、钩子、MCP、智能体与本地工具、聊天通道都移到用户设置面板
+  // 提示词、资料库那个工具栏里」。所以验三件事:
+  //   ① 用户面板里**不再**有它们(否则是两处入口,改一处就有一处是旧的);
+  //   ② 设置面板的导航里有,和 Prompts/Library 同一个工具栏;
+  //   ③ 点一下**不关设置** —— 它们是设置里的一页了,不再是主区域的整页。
+  const capPanel = () => val(`(function () {
+    var m = document.querySelector('.sidebar .user-menu');
+    if (!m) return null;
+    var items = [].slice.call(m.querySelectorAll('button[role="menuitem"]'));
+    return { texts: items.map(function (b) { return String(b.textContent).replace(/\\s+/g, ' ').trim(); }),
+             hasSwitch: !!m.querySelector('.menu-row') };
+  })()`);
+  const capBefore = await capPanel();
+  if (!capBefore) { await click(".sidebar .user-row"); await sleep(400); }
+  const capMenu = await capPanel();
+  expect(!!capMenu, "用户面板打开了");
+  const capWanted = ["Skills", "Plugins", "MCP", "Hooks", "Agents and local tools", "Chat channels"];
+  const capLeft = capWanted.filter(function (w) {
+    return (capMenu.texts || []).some(function (x) { return x.indexOf(w) >= 0; });
+  });
+  expect(capLeft.length === 0, "那六样已经从用户面板里搬走 (还留着:" + (capLeft.join("、") || "无") + ")");
+  expect(capMenu.hasSwitch, "离线开关还在用户面板里 (没有连带搬走)");
+  await clickByText('.sidebar .user-menu button[role="menuitem"]', "/Settings|\\u8bbe\\u7f6e/");
+  await sleep(900);
+  const sNav = await val(`(function () {
+    var s = document.querySelector('.settings');
+    if (!s) return null;
+    var nav = s.querySelector('.settings-nav');
+    var items = [].slice.call(nav.querySelectorAll('.nav-item'));
+    var titles = [].slice.call(nav.querySelectorAll('.nav-group-title')).map(function (x) {
+      return String(x.textContent).replace(/\\s+/g, ' ').trim(); });
+    var b = [].filter.call(items, function (x) { return /Skills/.test(x.textContent); })[0];
+    return { opened: true, groups: titles,
+             n: items.length,
+             texts: items.map(function (x) { return String(x.textContent).replace(/\\s+/g, ' ').trim(); }),
+             skillsX: b ? Math.round(b.getBoundingClientRect().left) : null };
+  })()`);
+  expect(!!sNav, "设置面板打得开");
+  const sMissing = capWanted.filter(function (w) {
+    return !(sNav.texts || []).some(function (x) { return x.indexOf(w) >= 0; });
+  });
+  expect(sMissing.length === 0, "六样都在设置面板的工具栏里 (缺:" + (sMissing.join("、") || "无") + ")");
+  expect(sNav.texts.some(function (x) { return x.indexOf("Prompts") >= 0 || x.indexOf("Library") >= 0; }),
+    "和提示词/资料库在同一个工具栏里 (" + sNav.groups.join(" / ") + ")");
+  console.log("       设置导航 " + sNav.n + " 项,分组:" + sNav.groups.join(" / "));
+  await clickByText(".settings .settings-nav .nav-item", "/^\\s*Skills\\s*$/");
+  await sleep(900);
+  const sAfter = await val(`(function () { return {
+    settingsOpen: !!document.querySelector('.settings'),
+    active: (function () { var b = document.querySelector('.settings .settings-nav .nav-item.on');
+      return b ? String(b.textContent).replace(/\\s+/g, ' ').trim() : ''; })(),
+    bar: !!document.querySelector('.settings-content .cap-workspace'),
+    // 主区域是**被盖住**、不是被换掉：设置是浮层，底下那一页还在 DOM 里。
+    mainTitle: (function () { var h = document.querySelector('main .zone-head h2');
+      return h ? String(h.textContent).replace(/\\s+/g, ' ').trim() : ''; })(),
+  }; })()`);
+  expect(sAfter.settingsOpen, "点它之后设置面板还开着 (不再跳主区域)");
+  expect(/Skills/.test(sAfter.active), "而且当前项就是它:" + sAfter.active);
+  // 「接到哪个群」那条栏必须跟着过来 —— 那六个页面上的「接入本群」按钮读的就是它,
+  // 丢了它这些按钮就没有群可指。
+  expect(sAfter.bar, "能力页仍然带着「接到哪个群」那条栏");
+  // ⚠️ 不是「专区页消失了」—— 设置是浮层，底下那一页本来就还在（第一版这句写成
+  // `!document.querySelector('.zone')`，**它永远不可能为真**，等于一条恒红的断言）。
+  // 要问的是**主区域换没换**：还是刚才那个专区，没有被这次导航换掉。
+  expect(sAfter.mainTitle === zonePage.title && sAfter.mainTitle !== "",
+    "主区域还是刚才那个专区，没有被换掉 (" + sAfter.mainTitle + ")");
+  await esc();
+  await sleep(400);
 
   if (SHOT) {
     const shot = await send("Page.captureScreenshot", {}, sessionId);

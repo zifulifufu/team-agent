@@ -26,6 +26,7 @@ from .api_ext import Ctx, build_router
 from .api_external import build_external_router
 from .api_gallery import build_gallery_router
 from .api_video_zone import build_video_zone_router
+from .api_zones import build_zones_router
 from .api_channels import build_channels
 from .api_hooks import build_hooks_router
 from .api_import import build_import_router
@@ -46,6 +47,7 @@ from . import names
 from .memory import MemoryService
 from . import templates
 from . import teamsetup
+from . import zones
 from . import i18n
 from . import images
 from . import import_sources
@@ -348,6 +350,10 @@ def create_app(
     # like the rest — but ⚠️ this shelf keeps to itself: it is not in any group's workspace and not
     # in a knowledge base, because the material is the user's own face and their own recordings.
     studio.use_folder(store.data_dir / studio.FOLDER_NAME)
+    # The zones the user writes themselves: one JSON per zone, for a zone that needs no new engine.
+    # Read at startup like the other four, and for the same reason — a file that cannot be parsed is
+    # a fact you can see, rather than a zone that silently is not in the sidebar.
+    zones.use_folder(store.data_dir / "zones")
     memory = MemoryService(store, router)
     # Hooks: the user's own code at six fixed points. Written once by the example below, off
     # until switched on, and every run goes through a subprocess (see app/hooks.py).
@@ -1164,6 +1170,7 @@ run" assessment per model (a rule-of-thumb estimate, not a guarantee)."""
     # The video zone: the parts a person drives directly (composing music, and later scenes and
     # motion). Its routes call the same composers the tools do rather than a second copy of them.
     app.include_router(build_video_zone_router(_ctx))
+    app.include_router(build_zones_router())
     # Kept reachable for the same reason `store`/`router`/`orch` are above: a long-running job's
     # state lives on it, and a test that wants to see the state of a run has nowhere else to look.
     app.state.ctx = _ctx

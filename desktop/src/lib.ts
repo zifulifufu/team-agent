@@ -1,5 +1,6 @@
 export const APP_VERSION = "0.5.1";
 
+import { BookOpen, Clapperboard, Compass, Film, Layers, Palette, PenLine, Sparkles } from "lucide-react";
 import { modelLabel, type Model, type RoutePreview } from "./api";
 import { tr } from "./i18n";
 
@@ -208,3 +209,15 @@ export function humanBytes(bytes?: number): string {
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
+
+/** 专区的图标：后端给的是**名字**（`zones.py` 里那份白名单），这里映射到组件。
+ *
+ *  ⚠️ **只有这一份** —— 侧栏和专区页面都读它。写两份的话，加一个图标名就会只改一处，
+ *  而漏掉的那一处表现为「页面上的图标和侧栏里的不是同一个」。
+ *  ⚠️ 认不出来的名字退回 `Layers`：后端已经拦住了拼错的名字，所以走到这里的只可能是
+ *  比前端更新的后端 —— 那时画一个中性的图形比画错一个图标好。
+ */
+export const ZONE_ICONS: Record<string, typeof Sparkles> = {
+  Clapperboard, PenLine, BookOpen, Palette, Sparkles, Compass, Layers, Film,
+};
+export const zoneIcon = (name: string): typeof Sparkles => ZONE_ICONS[name] ?? Layers;

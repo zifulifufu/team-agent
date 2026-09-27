@@ -31,10 +31,9 @@ export default function VideoZonePage() {
   ];
   return (
     <div className="vz">
-      <header className="vz-head">
-        <h2>{t("Video zone")}</h2>
-        <p>{t("Make the pieces a film is built from — here, by hand, and keep them. Members in a group chat can use the same engines through their tools.")}</p>
-      </header>
+      {/* ⚠️ 这里**没有标题**：标题、说明和状态徽标现在由专区外壳画，内容来自后端 `zones.py`。
+          一份标题写在两个地方，改一处就会剩下一处旧文案 —— 而且用户在侧栏点进来时读到的
+          应该是同一个名字。 */}
       <nav className="vz-tabs" role="tablist">
         {TABS.map((x) => (
           <button key={x.id} role="tab" aria-selected={tab === x.id}

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Activity, Anchor, Archive, ArchiveRestore, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clapperboard, Compass, Folder, FolderPen, Info, Layers, ListFilter, MessageSquarePlus, Package, PanelLeftClose, PanelLeftOpen, Palette, PencilLine, Plug, Puzzle, Search, Settings, Sparkles, TerminalSquare, Trash2, Users, Webhook, WifiOff } from "lucide-react";
+import { Activity, Archive, ArchiveRestore, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Compass, Folder, FolderPen, Info, Layers, ListFilter, MessageSquarePlus, Package, PanelLeftClose, PanelLeftOpen, Palette, PencilLine, Search, Settings, Sparkles, Trash2, Users, WifiOff } from "lucide-react";
 import { api, relTime, type Group } from "../api";
-import { humanBytes, NAME_MAX, shortName } from "../lib";
+import { humanBytes, NAME_MAX, shortName, zoneIcon } from "../lib";
 import { useData } from "../data";
 import { Switch, useConfirm, useOutside } from "../ui";
 import { useI18n } from "../i18n";
@@ -14,37 +14,16 @@ export type View =
   | { kind: "home" }
   | { kind: "chat"; gid: string; autoSend?: string }
   | { kind: "agents" }
-  | { kind: "skills" }
-  | { kind: "plugins" }
-  | { kind: "mcp" }
-  | { kind: "external" }
-  | { kind: "channels" }
-  | { kind: "hooks" }
-  // 视频专区:场景、表情动作、音乐生成在一起,由**用户自己定义并挑选**。它是页面而不是设置
-  // 面板 —— 那三样是「做东西」,不是「配置东西」,放设置里会让人以为要先配什么才能用。
-  | { kind: "video-zone" }
+  // 专区:一个「做东西的地方」,不是一块配置。哪几个专区、各自叫什么,由后端 `zones.py` 说 ——
+  // 前端不留第二份清单,否则加一个专区要改两处,而漏掉的那一处只会表现为「侧栏里没有它」。
+  | { kind: "zone"; id: string }
   // A group's own library, opened from a chat. The overview of every document lives in
   // Settings, so this view always belongs to one group.
   | { kind: "library"; gid: string }
   | { kind: "appearance" };
 
-/** The Tools section of the sidebar: each entry is its own page.
- *
- *  Prompts, the library and memory are deliberately *not* here — they are Settings tabs, which
- *  is where the rest of the configuration lives. External agents and chat channels are the
- *  other way round: they are things you set up once and then keep an eye on, so they sit here
- *  rather than behind a settings menu.
- */
-const TOOL_NAV: { kind: "video-zone" | "skills" | "plugins" | "mcp" | "hooks" | "external" | "channels"; label: string; icon: typeof Sparkles }[] = [
-  // 排在最前:它是这三样里唯一"点进去就能做出东西"的入口。
-  { kind: "video-zone", label: "Video zone", icon: Clapperboard },
-  { kind: "skills", label: "Skills", icon: Sparkles },
-  { kind: "plugins", label: "Plugins", icon: Puzzle },
-  { kind: "mcp", label: "MCP", icon: Plug },
-  { kind: "hooks", label: "Hooks", icon: Anchor },
-  { kind: "external", label: "Agents and local tools", icon: TerminalSquare },
-  { kind: "channels", label: "Chat channels", icon: Webhook },
-];
+/** 专区的图标由后端给名字（`zones.py` 里那份白名单），映射在 `lib.ts` —— 专区页面也读那一份。 */
+
 
 /** Which projects the list shows. Three states and no fourth: they are the whole of it, so the three
  *  numbers add up to the number of projects — a tab called "All" that quietly left the archived ones
@@ -119,7 +98,7 @@ function taskState(g: Group): string | null {
 }
 
 export default function Sidebar({ view, onView, onSettings, collapsed, onCollapse, version, rail, onRail, memberCount }: Props) {
-  const { groups, settings, online, reload, reloadGroups, updateCount, appUpdateCount } = useData();
+  const { groups, settings, online, reload, reloadGroups, updateCount, appUpdateCount, zones, zoneErrors } = useData();
   const confirm = useConfirm();
   const { t } = useI18n();
   const [open, setOpen] = useState(true);
@@ -346,14 +325,30 @@ export default function Sidebar({ view, onView, onSettings, collapsed, onCollaps
           <Users size={16} /> {t("Members and tools")}{memberCount !== null && <span className="count">({memberCount})</span>}
         </button>
       </nav>
-      <div className="nav-cap">{t("Capability center")}</div>
-      <nav className="side-nav" aria-label={t("Capability center")}>
-        {TOOL_NAV.map((item) => (
-          <button key={item.kind} className={"nav-item" + (view.kind === item.kind ? " on" : "")} onClick={() => onView({ kind: item.kind } as View)}>
-            <item.icon size={16} /> {t(item.label)}
-          </button>
-        ))}
+      {/* 专区。这一格原来是「能力中心」那一列(技能/插件/钩子/MCP/外部成员/聊天通道),那六样
+          搬到用户面板去了 —— 它们是「配一次、以后盯着」的东西,不是打开这个程序要做的事。
+          留在这里的是**做东西的地方**:每个专区有它自己的资料库、模板、工作流、以及分工与技能。
+          ⚠️ 清单来自后端 `zones.py`,前端不留第二份:加一个专区只该改一处。
+          ⚠️ 读不到时**不退回一份写死的清单** —— 那会让侧栏显示一个后端其实没有的专区,
+          点进去才发现。读不到就说读不到,`aria-label` 也留着(侧栏排布的断言按它找这一组)。 */}
+      <div className="nav-cap">{t("Zones")}</div>
+      <nav className="side-nav" aria-label={t("Zones")}>
+        {zones.map((z) => {
+          const Icon = zoneIcon(z.icon);
+          return (
+            <button key={z.id} title={z.blurb}
+              className={"nav-item" + (view.kind === "zone" && view.id === z.id ? " on" : "")}
+              onClick={() => onView({ kind: "zone", id: z.id })}>
+              <Icon size={16} /> {z.name}
+              {z.state !== "ready" && <span className="nav-soon">{t("Planned")}</span>}
+            </button>
+          );
+        })}
+        {!zones.length && <div className="side-empty">{t("The zones could not be read from the backend")}</div>}
       </nav>
+      {!!zoneErrors.length && (
+        <div className="side-empty">{t("{n} zone file(s) could not be read", { n: zoneErrors.length })}</div>
+      )}
 
       {/* 导航在上、项目列表在下 —— the order this panel started with, and the one the user asked to
           have back: the tools you reach for are fixed at the top, and the project list is the part

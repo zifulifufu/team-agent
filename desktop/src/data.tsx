@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, type Agent, type Group, type Model, type ModelHealth, type Provider, type Settings } from "./api";
+import { api, type Agent, type Group, type Model, type ModelHealth, type Provider, type Settings, type ZoneRow } from "./api";
 
 interface Data {
   online: boolean;
@@ -8,6 +8,10 @@ interface Data {
   providers: Provider[];
   models: Model[];
   settings: Settings | null;
+  /** 侧栏那一条专区的清单。**只有身份** —— 每一块的内容由专区页面自己去读。 */
+  zones: ZoneRow[];
+  /** 用户自己写的专区文件读不了的，点名带出来 */
+  zoneErrors: { file: string; why: string }[];
   reload: () => Promise<void>;
   /** After the whole database is replaced (restoring a backup): re-read everything and let the pages in the main area reload, rather than leaving stale content behind */
   refreshAll: () => Promise<void>;
@@ -34,6 +38,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [zones, setZones] = useState<ZoneRow[]>([]);
+  const [zoneErrors, setZoneErrors] = useState<{ file: string; why: string }[]>([]);
   const [updateCount, setUpdateCount] = useState(0);
   const [appUpdateCount, setAppUpdateCount] = useState(0);
   const [health, setHealth] = useState<Record<string, ModelHealth>>({});
@@ -41,11 +47,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const reload = useCallback(async () => {
     try {
-      const [a, g, p, s, h] = await Promise.all([
+      const [a, g, p, s, h, z] = await Promise.all([
         api.agents(), api.groups(), api.providers(), api.settings(),
         api.modelsHealth().catch(() => null), // Changing a key or an enabled flag has to move the lights too
+        // ⚠️ `.catch` 而不是让它把 `reload` 一起拖垮：这一个接口挂掉不该让整个应用显示成「后台没连上」
+        // —— 那会把「侧栏少了一栏」升级成「整个应用都不可用」，而这两件事的下一步完全不同。
+        api.zones().catch(() => null),
       ]);
       if (h) setHealth(h.health);
+      if (z) { setZones(z.zones); setZoneErrors(z.errors); }
       setAgents(a);
       setGroups(g);
       setProviders(p);
@@ -150,8 +160,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ online, agents, groups, providers, models, settings, reload, refreshAll, epoch, reloadGroups, updateCount, appUpdateCount, reloadUpdates, health, reloadHealth, checkHealth }),
-    [online, agents, groups, providers, models, settings, reload, refreshAll, epoch, reloadGroups, updateCount, appUpdateCount, reloadUpdates, health, reloadHealth, checkHealth],
+    () => ({ online, agents, groups, providers, models, settings, zones, zoneErrors, reload, refreshAll, epoch, reloadGroups, updateCount, appUpdateCount, reloadUpdates, health, reloadHealth, checkHealth }),
+    [online, agents, groups, providers, models, settings, zones, zoneErrors, reload, refreshAll, epoch, reloadGroups, updateCount, appUpdateCount, reloadUpdates, health, reloadHealth, checkHealth],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

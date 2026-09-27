@@ -1388,6 +1388,42 @@ export interface MusicVocabulary {
 /** What the model would actually receive, and anything wrong with it. */
 export interface MusicPreview { tags: string; warnings: string[]; }
 
+// --------------------------------------------------------------------- zones
+/** 一个专区里某一件东西的状态。
+ *
+ *  `blocked`（建了、但本机有个东西挡着）和 `planned`（还没建）**故意分开** —— 它们的下一步
+ *  不一样，用一个词概括会把用户送去错的那一步。 */
+export type ZoneItemState = "ready" | "partial" | "blocked" | "planned";
+
+export interface ZoneItem {
+  id: string; label: string; note: string; state: ZoneItemState;
+  /** 资料库那一块才有：这一栏现在有几件。 */
+  count?: number;
+  /** 分工那一块才有。`member` 是内置成员名，`in_template` = 本专区的群模板已经带了这个位子。 */
+  member?: string; in_template?: boolean; skills?: string[]; tools?: string[];
+}
+
+/** 四块之一。`items` 为空就是空着 —— 后端不会为了「看起来满」编内容。 */
+export interface ZoneSurface { note: string; items: ZoneItem[] }
+
+/** 侧栏画的那一行：只有身份。 */
+export interface ZoneRow {
+  id: string; name: string; icon: string; state: "ready" | "planned"; blurb: string;
+}
+
+/** 一个专区页上画的三块：资料库 / 模板 / 工作流。
+ *
+ *  ⚠️ 注册表里还有第四块 `roles`（分工与技能），但**这一页不画它**，后端也不再送过来 ——
+ *  送过来却不渲染的东西等于不存在，这正是这个项目反复在治的那种病。它将来是「从这个专区
+ *  起一个群」时那份名单。 */
+export interface ZoneDetail extends ZoneRow {
+  /** 从这个群模板起一手；空串 = 这个专区还没有名单。 */
+  template: string;
+  library: ZoneSurface; templates: ZoneSurface; workflows: ZoneSurface;
+}
+/** 用户自己写的专区文件读不了时**点名**，不静默跳过。 */
+export interface ZoneFileError { file: string; why: string }
+
 // ---------------------------------------------------------- the private studio
 /** 用户自己的素材（脸、录像、录音）。⚠️ 与其它库**故意相反**：它不在任何群的工作目录里、
  *  不进知识库、不参与导出 —— 成员只能通过显式引用拿到由它生成的**产出**，拿不到原始素材。 */
@@ -1499,6 +1535,11 @@ export const api = {
   /** Heartbeat: is the backend alive? (no token needed) */
   ping: () => get<{ ok: boolean }>("/api/health"),
   presets: () => get<Preset[]>("/api/presets"),
+  // ---- Zones. Two calls on purpose: the sidebar redraws constantly and needs a name and an icon;
+  // a zone page needs live shelf counts and the composer's preset list. One call for both would put
+  // a directory scan behind every redraw of the navigation.
+  zones: () => get<{ zones: ZoneRow[]; errors: ZoneFileError[] }>("/api/zones"),
+  zone: (id: string) => get<{ zone: ZoneDetail; errors: ZoneFileError[] }>(`/api/zones/${encodeURIComponent(id)}`),
   // ---- Video zone. Music first: it is the one block whose engine is already on this machine.
   /** The shelf, plus whether this machine can compose another one right now. */
   videoZoneMusic: () => get<MusicShelf>("/api/video-zone/music"),

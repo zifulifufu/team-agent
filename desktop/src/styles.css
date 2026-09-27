@@ -238,6 +238,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .nav-item.on { background: var(--active); font-weight: 600; }
 .nav-item svg { color: var(--text-2); flex: none; }
 .nav-cap { padding: 12px 18px 4px; color: var(--text-2); font-size: 12px; font-weight: 500; letter-spacing: 0.02em; }
+/* 还没做起来的专区:名字后面一个小小的词,而不是把它藏起来或者画成一个能用的样子。
+   用户要的是「这个地方留着给后续的专区用」—— 那就得看得见有哪些是留着的。 */
+.nav-soon {
+  margin-left: auto; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-3); font-size: 10px; font-weight: 500;
+}
 /* 项目列表的标题:带数量,点一下把列表折起来。它固定在工具那一组下面 —— 导航在上、列表在下。 */
 .side-section { display: flex; align-items: center; gap: 4px; padding: 14px 18px 6px; color: var(--text-2); font-size: 12px; font-weight: 500; letter-spacing: 0.02em; text-align: left; }
 .side-section:hover { color: var(--text-2); }

@@ -1,0 +1,75 @@
+/* 专区页。三块(资料库 / 模板 / 工作流)共用一套骨架，所以类都以 `zone-` 开头。
+   工作台那一块用的是视频专区自己的样式（`videozone.css`），这里只给它一个位置。 */
+
+.zone { padding: 22px 26px 52px; max-width: 1000px; }
+.zone-head h2 {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  margin: 0 0 7px; font-size: 19px; font-weight: 650; color: var(--text);
+}
+.zone-head h2 svg { color: var(--text-2); }
+.zone-head p { margin: 0 0 6px; max-width: 780px; color: var(--text-2); font-size: 13px; line-height: 1.65; }
+
+/* 「这个专区现在能不能用」的那个词。它是唯一按状态上色的东西 —— 页面其余部分都是中性的。 */
+.zone-badge {
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); color: var(--text-2); background: var(--hover);
+}
+.zone-badge.ready { color: var(--ok); border-color: currentColor; background: transparent; }
+.zone-badge.planned { color: var(--text-3); }
+
+.zone-dim { display: block; margin: 0 0 10px; color: var(--text-2); font-size: 12.5px; line-height: 1.65; }
+.zone-note { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 12px; font-size: 12.5px; line-height: 1.6; }
+.zone-note svg { flex: 0 0 auto; margin-top: 2px; }
+.zone-note.bad { color: var(--danger); }
+.zone-empty { margin: 0; color: var(--text-3); font-size: 12.5px; }
+
+/* 工作台在最上面：用户点进一个专区是为了做东西，四块索引是「这里有什么」。 */
+.zone-bench { margin: 6px 0 22px; border-bottom: 1px solid var(--border); }
+/* 工作台里面自带左右内边距(它原来是一整页)，嵌进来时把外层那一份去掉，
+   否则它比下面四块缩进一格，看着像从属关系错了。 */
+.zone-bench > .vz { padding: 0 0 18px; max-width: none; }
+
+.zone-surface { margin-bottom: 22px; }
+.zone-surface > h3 {
+  display: flex; align-items: center; gap: 7px; margin: 0 0 8px;
+  font-size: 14px; font-weight: 650; color: var(--text);
+}
+.zone-surface > h3 svg { color: var(--text-2); }
+.zone-count {
+  margin-left: 2px; padding: 0 7px; border-radius: 9px; background: var(--hover);
+  color: var(--text-2); font-size: 11.5px; font-weight: 500;
+}
+
+/* 每一项一行。左边一条 3px 的竖线是**状态**（与徽标同一件事的两处读法），
+   所以被挡住的那几项在列表里也一眼看得出来，不用逐个读徽标。 */
+.zone-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.zone-item {
+  padding: 9px 11px 9px 12px; border: 1px solid var(--border); border-radius: 10px;
+  border-left-width: 3px; border-left-color: var(--border-strong);
+}
+.zone-item.st-ready { border-left-color: var(--ok); }
+.zone-item.st-partial { border-left-color: var(--warn); }
+.zone-item.st-blocked { border-left-color: var(--danger); }
+.zone-item.st-planned { border-left-color: var(--border-strong); }
+.zi-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zi-head b { font-size: 13px; font-weight: 600; color: var(--text); }
+.zi-count {
+  padding: 0 7px; border-radius: 9px; background: var(--hover);
+  color: var(--text-2); font-size: 11.5px; font-weight: 500;
+}
+.zi-note { margin: 4px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.zi-none { color: var(--text-3); font-size: 11.5px; }
+
+.zone-pill {
+  margin-left: auto; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600;
+  border: 1px solid var(--border); color: var(--text-2); white-space: nowrap;
+}
+.zone-pill.ready { color: var(--ok); border-color: currentColor; }
+.zone-pill.partial { color: var(--warn); border-color: currentColor; }
+.zone-pill.blocked { color: var(--danger); border-color: currentColor; }
+.zone-pill.planned { color: var(--text-3); }
+
+/* 四块在窄窗口下不要挤成一条线 */
+@media (max-width: 760px) {
+  .zone { padding: 16px 16px 44px; }
+}
