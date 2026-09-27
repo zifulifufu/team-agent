@@ -36,6 +36,7 @@ from .attachments import MAX_PER_MESSAGE as MAX_ATTACHMENTS
 from . import channels
 from . import coderun
 from . import comfyui
+from . import embed
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
 from .hooks import HookManager, ensure_example_hooks
@@ -423,6 +424,22 @@ def create_app(
             await orch.drain()
             await hooks.drain()      # let a running observer finish rather than cutting it off
             await mcp.shutdown()
+            # Stop the servers this app started itself, and do it here rather than anywhere else
+            # because this is the only place that runs on every exit (Electron's `before-quit` sends
+            # SIGTERM, uvicorn runs the lifespan on the way down).
+            #
+            # ⚠️ Both are launched with `start_new_session=True` — that is what lets a startup timeout
+            # kill their whole tree, and it is also why nothing else would ever stop them: as session
+            # leaders they do not receive the signal that ends this process. Left running, ComfyUI
+            # keeps a loaded diffusion model in RAM and the embedding server keeps its model and its
+            # port, until the machine is rebooted. Measured on this project: quit the app and ComfyUI
+            # was still answering on 8188.
+            #
+            # ⚠️ Order matters only in that both must happen; each stops **only** what this process
+            # started, so a server the user launched themselves is left alone (`embed.stop`,
+            # `LocalRuntime.stop` both say so where they are defined).
+            toolhub.comfy_runtime.stop()
+            embed.stop()
 
     # The interactive docs live outside /api, so `require_token` never covers them: with a token in
     # use, any local page could still read the whole API surface from /openapi.json. They are served

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import i18n
+from . import coderun, i18n
 
 
 class LocalRuntime:
@@ -84,3 +84,36 @@ class LocalRuntime:
                     return False, i18n.pick_now(
                         f"ComfyUI startup failed: {type(error).__name__}: {error}",
                         f"ComfyUI 启动失败:{type(error).__name__}: {error}")
+
+    def stop(self) -> list[int]:
+        """Stop the instances **this process started**, and only those. Returns their pids.
+
+        ⚠️ This is the only thing that ever stops them, and the reason is the `start_new_session=True`
+        two lines up. That flag is not decoration: it is what makes a startup timeout able to kill the
+        whole tree (`coderun.kill_group`). The price is that the child becomes its own **session
+        leader**, so it never receives the signal that ends this process — quit the app and ComfyUI
+        keeps running, holding a loaded diffusion model in RAM until the machine is rebooted. Measured
+        on this project: the app could be quit and the server was still answering on its port.
+
+        An instance that was already answering when `ensure` looked is deliberately **not** in
+        `_children` (a second copy of the same weights is worse than sharing one), and it is left
+        untouched here on purpose: it may be one the user started themselves, and this app does not
+        own it.
+
+        ⚠️ The `wait()` after the kill is not tidiness. A child that is killed but never waited for
+        stays a **zombie**, and `os.kill(pid, 0)` still succeeds against a zombie — so it keeps
+        showing up as a live process for as long as this one runs, which is precisely what "it did
+        not close" looks like from the outside. Measured end to end: right after the kill the port
+        was already refusing connections while the pid still looked alive.
+        """
+        stopped: list[int] = []
+        for child in self._children.values():
+            if child.poll() is None:
+                coderun.kill_group(child.pid)
+                stopped.append(child.pid)
+                try:
+                    child.wait(timeout=5)   # reap it — see the note below
+                except subprocess.TimeoutExpired:
+                    pass
+        self._children.clear()
+        return stopped

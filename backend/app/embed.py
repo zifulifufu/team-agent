@@ -21,7 +21,7 @@ confident nonsense.
 
 from __future__ import annotations
 
-from . import i18n
+from . import coderun, i18n
 
 import asyncio
 import os
@@ -192,6 +192,13 @@ async def health(settings: dict, *, client: httpx.AsyncClient | None = None,
             await c.aclose()
 
 
+# The servers this **process** started, keyed by pid. A server that was already up when `ensure`
+# looked is reused on purpose and is deliberately absent here — it may be the user's own, and `stop`
+# must not kill a process this app did not start. The `Popen` is kept rather than its pid alone
+# because a killed child that is never waited for stays a zombie (see `stop`).
+_STARTED: dict[int, subprocess.Popen] = {}
+
+
 def start(settings: dict, *, data_dir: str = "", allow_download: bool = False) -> dict:
     """Start the local server detached, once. Returns `{"started": bool, "pid": int, "reason": str}`.
 
@@ -233,7 +240,39 @@ def start(settings: dict, *, data_dir: str = "", allow_download: bool = False) -
             f"Could not start the embedding server: {e}", f"嵌入服务没能启动:{e}")}
     finally:
         log.close()
+    _STARTED[p.pid] = p
     return {"started": True, "pid": p.pid, "reason": ""}
+
+
+def stop() -> list[int]:
+    """Stop the embedding servers **this process** started. Returns the pids that were still alive.
+
+    ⚠️ Without this the server is immortal, and only because of the `start_new_session=True` above —
+    the flag that lets a timeout kill the whole tree also makes the child its own session leader, so
+    the signal that ends this process never reaches it. Quit the app and the sentence-transformers
+    model stays in RAM (and keeps its port) until the machine is rebooted.
+
+    ⚠️ Only what is in `_STARTED`: `ensure` *reuses* a server that is already answering — loading a
+    2 GB model twice is worse than sharing one — and such a server may be the user's own
+    `scripts/embed-server.py`. It is not this app's to kill.
+
+    ⚠️ The `wait()` after the kill is not tidiness. A killed child that is never waited for stays a
+    **zombie**, and `os.kill(pid, 0)` still succeeds against one — so it keeps showing up as a live
+    process for as long as this one runs. That is exactly what "it did not close" looks like from the
+    outside (measured on ComfyUI, which has the same shape).
+    """
+    stopped: list[int] = []
+    for pid, proc in sorted(_STARTED.items()):
+        if proc.poll() is not None:
+            continue                     # it exited on its own, and `poll` has already reaped it
+        coderun.kill_group(pid)
+        stopped.append(pid)
+        try:
+            proc.wait(timeout=5)         # reap it, or it stays a zombie until this process exits
+        except subprocess.TimeoutExpired:
+            pass
+    _STARTED.clear()
+    return stopped
 
 
 async def ensure(settings: dict, *, data_dir: str = "", wait: float = 0.0,
