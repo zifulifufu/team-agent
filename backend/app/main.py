@@ -36,6 +36,7 @@ from .attachments import MAX_PER_MESSAGE as MAX_ATTACHMENTS
 from . import channels
 from . import coderun
 from . import comfyui
+from . import cleanup
 from . import embed
 from .discovery import DiscoveryError, fetch_model_ids
 from .health import HealthBoard
@@ -405,6 +406,24 @@ def create_app(
                 images.sweep(store, store.data_dir)
             except Exception as e:  # noqa: BLE001 — housekeeping must never stop startup
                 print("attachment sweep failed:", e)
+            # And the same for the group workspaces: a film that rendered leaves its parts behind in
+            # `.assemble/`. Measured 2026-09-28 on this machine: **150.4 MB of parts across two video
+            # groups, against 117 MB and 33 MB of actual films** — and a further 17.5 MB left alone
+            # because those renders have no film. Startup is the one moment nothing is rendering,
+            # which is what makes this safe to do without asking. Same bargain as the sweep above — it
+            # never `rm`s anything, it moves finished-with folders to the Trash, and a folder whose
+            # film is not in the workspace, or that anything wrote to in the last six hours, is left
+            # exactly where it is (see `cleanup`).
+            try:
+                swept = await asyncio.to_thread(cleanup.sweep_all, store)
+                if swept["moved"] or swept["refused"]:
+                    print(f"workspace sweep: moved {len(swept['moved'])} finished scratch folder(s) "
+                          f"to the Trash ({swept['bytes'] / 1048576:.1f} MB) across "
+                          f"{swept['groups']} group(s)"
+                          + (f"; {len(swept['refused'])} could not be trashed here and were left alone"
+                             if swept["refused"] else ""))
+            except Exception as e:  # noqa: BLE001 — housekeeping must never stop startup
+                print("workspace sweep failed:", e)
             threading.Thread(target=_warm_model_stack, daemon=True).start()
             # A polled channel (Telegram) fetches its own messages, so it has to be running
             # for the app to receive anything. Off unless a channel is both enabled and
@@ -413,33 +432,27 @@ def create_app(
         try:
             yield
         finally:
-            for t in bg:
-                t.cancel()
-            if background:
-                await chan.shutdown()
-            active = [t for group_tasks in tasks.values() for t in group_tasks if not t.done()]
-            for t in active:
-                t.cancel()
-            await asyncio.gather(*active, *bg, return_exceptions=True)
-            await orch.drain()
-            await hooks.drain()      # let a running observer finish rather than cutting it off
-            await mcp.shutdown()
-            # Stop the servers this app started itself, and do it here rather than anywhere else
-            # because this is the only place that runs on every exit (Electron's `before-quit` sends
-            # SIGTERM, uvicorn runs the lifespan on the way down).
-            #
-            # ⚠️ Both are launched with `start_new_session=True` — that is what lets a startup timeout
-            # kill their whole tree, and it is also why nothing else would ever stop them: as session
-            # leaders they do not receive the signal that ends this process. Left running, ComfyUI
-            # keeps a loaded diffusion model in RAM and the embedding server keeps its model and its
-            # port, until the machine is rebooted. Measured on this project: quit the app and ComfyUI
-            # was still answering on 8188.
-            #
-            # ⚠️ Order matters only in that both must happen; each stops **only** what this process
-            # started, so a server the user launched themselves is left alone (`embed.stop`,
-            # `LocalRuntime.stop` both say so where they are defined).
-            toolhub.comfy_runtime.stop()
-            embed.stop()
+            try:
+                for t in bg:
+                    t.cancel()
+                if background:
+                    await chan.shutdown()
+                active = [t for group_tasks in tasks.values() for t in group_tasks if not t.done()]
+                for t in active:
+                    t.cancel()
+                await asyncio.gather(*active, *bg, return_exceptions=True)
+                await orch.drain()
+                await hooks.drain()
+                await mcp.shutdown()
+            finally:
+                # Detached model servers do not inherit the parent's exit signal.
+                # Even if another cleanup fails, attempt BOTH owned-server stops;
+                # existing user-managed services remain untouched. This runs on
+                # normal shutdown/SIGTERM, not SIGKILL or a process crash.
+                try:
+                    toolhub.comfy_runtime.stop()
+                finally:
+                    embed.stop()
 
     # The interactive docs live outside /api, so `require_token` never covers them: with a token in
     # use, any local page could still read the whole API surface from /openapi.json. They are served
