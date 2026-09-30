@@ -315,7 +315,11 @@ PRESETS: list[dict] = [
         "kind": "comfyui",
         "base_url": "http://127.0.0.1:8188",
         "is_local": True,          # your own machine — no credential, and no outbound call
-        "models": list(media.BUILTIN_MEDIA_MODELS["comfyui"]["video"]),
+        # Both families, because one ComfyUI answers for both: the video workflows and the still
+        # one. Which of them a dropdown shows is decided by `use` on the row (`imagegen`/`video`),
+        # not by this list.
+        "models": [*media.BUILTIN_MEDIA_MODELS["comfyui"]["video"],
+                   *media.BUILTIN_MEDIA_MODELS["comfyui"]["image"]],
         "hint": "Not a chat model, and not a hosted service either: this drives a ComfyUI you run yourself, so a clip "
                 "costs nothing but your own machine's time. Leave the address at http://127.0.0.1:8188 unless your "
                 "ComfyUI listens elsewhere. It must be running (`python main.py` in ComfyUI's directory) and it must "

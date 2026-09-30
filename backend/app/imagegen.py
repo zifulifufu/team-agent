@@ -38,14 +38,17 @@ from pathlib import Path
 import httpx
 from PIL import Image
 
-from . import i18n, media, net
+from . import comfyui, i18n, media, net
 from .media import offline_reason
 from .provider_errors import quota_exhausted
 
 # The provider kinds this module can drive. A subset of `media.MEDIA_KINDS`: the video tool
 # must never pick an image provider, and the other way round. `metachat_media` is in both
-# subsets because its one key reaches an image API *and* a video API.
-KINDS: tuple[str, ...] = ("openai_image", "metachat_media")
+# subsets because its one key reaches an image API *and* a video API. `comfyui` is in both for
+# the same shape of reason — it is a graph runner, and one instance answers for both families —
+# and `comfyui.WORKFLOWS` is what keeps the two apart: a row's `use` decides which tool may ask
+# for it, and the graph builders refuse the other kind by name.
+KINDS: tuple[str, ...] = ("openai_image", "metachat_media", comfyui.KIND)
 
 # What OpenAI's image models accept. A gateway may support more, but offering a size the
 # model then refuses produces a paid failure, so the list stays conservative.
@@ -61,6 +64,9 @@ PROMPT_NOTE_ZH = "描述画面本身 —— 主体、构图、风格、光线,�
 
 SUBMIT_TIMEOUT = 120.0
 DOWNLOAD_TIMEOUT = 120.0
+# How often a local ComfyUI job is asked whether it is done. Two seconds is quick enough that a
+# small picture does not look stalled and slow enough not to spin on `/history` for minutes.
+POLL_SECONDS = 2.0
 
 # MetaChat's API takes a named aspect ratio rather than a pixel size, so our three sizes are mapped
 # onto the ratios every one of its families documents. A second setting saying almost the same
@@ -189,6 +195,25 @@ def metachat_payload(prompt: str, *, model: str, size: str) -> dict:
     values = {"aspect": META_ASPECTS.get(size, "1:1"), "num": 1}
     return {"prompt": prompt.strip(), "model": (model or "").strip(),
             "params": {k: values[k] for k in job["params"] if k in values}}
+
+
+def comfy_payload(prompt: str, *, model: str, size: str, seed: int = 0) -> dict:
+    """What a local ComfyUI render needs: the whole API graph, not a request body.
+
+    A third payload builder rather than a branch inside `build_payload`, because there is no HTTP
+    request to shape here — `comfyui.image_payload_for` resolves the workflow and turns the size
+    into pixels, and what it hands back is what `POST /prompt` takes verbatim. Keeping it here means
+    the tool's three kinds each have one place that decides what "the payload" is, and the tool
+    itself only picks between them.
+    """
+    if not (model or "").strip():
+        raise ImageError(i18n.pick_now(
+            "Drawing is set to ComfyUI, which draws with a *workflow* rather than a model id, and "
+            "none is chosen — so nothing was drawn. Pick one under Permissions & control → Image "
+            "generation (this build ships \"z-image-turbo\" for a still picture).",
+            "绘画用的是 ComfyUI,它用「工作流」而不是模型 id 来画,但没有选定用哪个,所以没有画。"
+            "请在「权限与操控 → 绘画」里选一个(本版本为静态图自带了「z-image-turbo」)。"))
+    return comfyui.image_payload_for(model, prompt=prompt, size=size, seed=seed)
 
 
 def decode_b64(value: str) -> bytes:
@@ -399,6 +424,18 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
     image itself reads as a size at every call site, and `size_label(b"...")` fails with a
     comparison error far from its cause.
     """
+    if provider.get("kind") == comfyui.KIND:
+        if reference_images:
+            raise ImageError(i18n.pick_now(
+                "The ComfyUI workflow this app ships for stills takes a prompt only — it has no "
+                "node to put a reference image into. References were not discarded; no generation "
+                "was submitted. Use a workflow of your own that loads an image, or an "
+                "OpenAI-compatible image member for /images/edits.",
+                "本程序为静态图自带的 ComfyUI 工作流只吃提示词 —— 它没有可以放参考图的节点。"
+                "参考图没有被丢弃,本次未提交生成。可以改用你自己的工作流(里面要有读图节点),"
+                "或改用支持 /images/edits 的 OpenAI 兼容绘图成员。"))
+        return await _comfy_generate(provider, payload, max_bytes=max_bytes,
+                                     deadline_s=deadline_s, client=client)
     if provider.get("kind") == "metachat_media":
         if reference_images:
             raise ImageError(i18n.pick_now(
@@ -452,6 +489,67 @@ async def generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s:
         raise ImageError(i18n.pick_now(
             f"the image is larger than this group allows ({media.size_label(max_bytes)})",
             f"图片超过了本群允许的大小({media.size_label(max_bytes)})"))
+    return {"data": blob, "size": len(blob), "seconds": time.time() - started, "url": link}
+
+
+# ------------------------------------------------------------------ ComfyUI's graph job
+async def _comfy_generate(provider: dict, payload: dict, *, max_bytes: int, deadline_s: float,
+                          client: httpx.AsyncClient | None = None) -> dict:
+    """One picture from a local ComfyUI: submit the graph, wait for it, fetch the file it wrote.
+
+    A separate function rather than a branch inside `generate`, for the same reason
+    `_metachat_generate` is one: this is a *job* (submit, poll, then read a file from the instance),
+    not a request that answers with the picture. The three steps themselves are **not** a second
+    implementation — `comfyui.submit` / `status_of` / `link_of` are the ones the video tool uses, so
+    a fix to how a job is followed, or to how ComfyUI's own node error is dug out of `messages`,
+    cannot land on one path and miss the other.
+    """
+    base = (provider.get("base_url") or "").strip()
+    own = client is None
+    c = client or net.client(base, timeout=SUBMIT_TIMEOUT)
+    started = time.time()
+    try:
+        try:
+            pid = await comfyui.submit(provider, payload, client=c)
+        except comfyui.VideoError as e:
+            # ComfyUI's module cannot raise *our* exception (it is the lower layer of both tools),
+            # so the translation happens once, here, where the kind is known.
+            raise ImageError(str(e)) from None
+        state, detail = "running", {}
+        while True:
+            try:
+                state, detail = await comfyui.status_of(provider, pid, client=c)
+            except comfyui.VideoError as e:
+                raise ImageError(str(e)) from None
+            if state != "running":
+                break
+            if time.time() - started >= max(MIN_DEADLINE, deadline_s):
+                raise ImageError(i18n.pick_now(
+                    f"ComfyUI was still drawing after {int(max(MIN_DEADLINE, deadline_s))}s, so this "
+                    "attempt was given up on. Raise the image timeout on the Permissions & control "
+                    "page if this machine needs longer — and check the ComfyUI window, which may "
+                    "still be working on it.",
+                    f"ComfyUI 在 {int(max(MIN_DEADLINE, deadline_s))} 秒后还在画,本次已放弃等待。"
+                    "如果这台机器需要更久,请在「权限与操控」页把绘画超时调大 —— 也可以看一下 ComfyUI 的窗口,"
+                    "它可能仍在继续。"))
+            await asyncio.sleep(POLL_SECONDS)
+        if state == "failed":
+            raise ImageError(i18n.pick_now(
+                f"ComfyUI could not draw this picture: {detail.get('error') or 'it reported a failure'}",
+                f"ComfyUI 画不出这张图:{detail.get('error') or '它报告了失败'}"))
+        link = comfyui.link_of(detail)
+        if not link:
+            raise ImageError(i18n.pick_now(
+                "ComfyUI finished but reported no picture file, so there is nothing to show. Its "
+                "own window usually says more.",
+                "ComfyUI 完成了,但没有报告任何图片文件,所以没有可展示的东西。它自己的窗口通常有更多信息。"))
+        # The path comes from the instance and is joined with *our* configured address — nothing the
+        # instance returns is followed as a URL. `fetch` then applies the same local-address rule it
+        # applies to a gateway's link (see `may_fetch`): a local ComfyUI's own file is allowed.
+        blob = await fetch(media.api_url(base, link), max_bytes=max_bytes, client=c, base=base)
+    finally:
+        if own:
+            await c.aclose()
     return {"data": blob, "size": len(blob), "seconds": time.time() - started, "url": link}
 
 
@@ -601,6 +699,21 @@ async def probe(provider: dict, model: str, *, client: httpx.AsyncClient | None 
     if not base:
         return False, i18n.pick_now("no address is configured for this provider",
                                     "这个服务商没有填地址")
+    if provider.get("kind") == comfyui.KIND:
+        # What can be checked without drawing: is the instance there, does it have the nodes, and
+        # does it have the files *this* workflow names. `comfyui.probe` owns all three — and giving
+        # it a copy of the provider whose advertised model is the one being tested is what makes it
+        # answer about the right workflow rather than about whichever name happens to be first in
+        # the provider's list (one ComfyUI answers for both a still and a clip here).
+        name = (model or "").strip()
+        seen = {**provider, "models": ([name] if name else list(provider.get("models") or []))}
+        own = client is None
+        c = client or net.client(base, timeout=15.0)
+        try:
+            return await comfyui.probe(seen, client=c)
+        finally:
+            if own:
+                await c.aclose()
     if provider.get("kind") == "metachat_media":
         own = client is None
         c = client or net.client(base, timeout=15.0)

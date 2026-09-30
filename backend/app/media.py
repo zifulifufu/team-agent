@@ -192,10 +192,19 @@ BUILTIN_MEDIA_MODELS: dict[str, dict[str, tuple[str, ...]]] = {
     # what the user picks there is a graph this app ships (`comfyui.WORKFLOWS`, which names the
     # checkpoint/encoder/VAE files inside it). A test pins the two lists together, because a name
     # here that no workflow answers to would be a settings entry that fails on submit.
-    # The second name is declared rather than installed: ComfyUI has the nodes, several GB of
+    # The second video name is declared rather than installed: ComfyUI has the nodes, several GB of
     # weights are missing. It is in the list on purpose — the dropdown entry is how the user finds
     # out what a talking-head workflow would need, and `probe` names the files.
-    "comfyui": {"video": ("wan2.2-ti2v-5b", "infinite-talk")},
+    # ⚠️ Grouped by **what the workflow makes**, and it has to stay that way: the image entry is
+    # offered under Image generation and the video ones under Video, so a name in the wrong group is
+    # a dropdown entry that fails on submit (`comfyui.image_payload_for` refuses a video workflow
+    # and `payload_for` refuses a picture one). The pinning test checks this grouping, not just the
+    # union — before `z-image-turbo` existed both lists were the same set, which is exactly how a
+    # test can pass while the invariant it names is not the one being held.
+    "comfyui": {
+        "video": ("wan2.2-ti2v-5b", "infinite-talk"),
+        "image": ("z-image-turbo",),
+    },
 }
 
 # For `purpose_of`: a model we ship a job for is what that job says it is. Neither "mj-v82" nor
