@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from app import comfyui, discovery, media, video
+from app import comfyui, discovery, imagegen, media, video
 
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 4096
 WORKFLOW = comfyui.DEFAULT_WORKFLOW
@@ -39,15 +39,20 @@ VAE = "wan2.2_vae.safetensors"
 
 
 def object_info(*, unet: str = UNET, clip: str = CLIP, vae: str = VAE,
-                without: tuple[str, ...] = ()) -> dict:
+                without: tuple[str, ...] = (), workflow: str = WORKFLOW) -> dict:
     """An `/object_info` reply, near enough to the real one's shape.
 
     Each loader declares its file list as the first element of a `[list, {...}]` spec — that is the
     shape `comfyui._choices` reads, and the shape measured against ComfyUI 0.35.0.
+
+    ⚠️ `workflow` decides which node classes are declared, because a picture and a clip do not use
+    the same nodes: a fake built from the video graph is missing `ConditioningZeroOut` and
+    `EmptySD3LatentImage`, and the probe then reports those as *absent from the instance* — a
+    failure about the test's own fake rather than about the code.
     """
     out: dict = {n["class_type"]: {"input": {"required": {}}}
-                 for n in comfyui.graph(WORKFLOW, prompt="test", width=256, height=256,
-                                       frames=25, seed=1, prefix="test").values()
+                 for n in comfyui.graph(workflow, prompt="test", width=256, height=256,
+                                        frames=25, seed=1, prefix="test").values()
                  if n["class_type"] not in without}
     for cls, field, name in (("UNETLoader", "unet_name", unet),
                              ("CLIPLoader", "clip_name", clip),
@@ -209,13 +214,28 @@ def test_the_payload_reports_the_seed_it_actually_sent():
 def test_the_shipped_workflow_names_and_the_settings_list_are_the_same_thing():
     """Two tables hold the same names — `media.BUILTIN_MEDIA_MODELS` (what the settings dropdown
     offers) and `comfyui.WORKFLOWS` (what can actually render). A name in one and not the other is
-    a settings entry that fails on submit, so they are pinned together here."""
+    a settings entry that fails on submit, so they are pinned together here.
+
+    ⚠️ Pinned **per use**, not as one set. Both lists used to be the same set of names, so a single
+    union comparison held — and it kept passing for the wrong reason once a still-picture workflow
+    existed, because "video" would have had to equal the union of both families. Grouping by `use`
+    is the invariant that actually matters: the image dropdown must offer the image workflows and
+    nothing else, the video one the video workflows and nothing else.
+    """
     # Both tables, because both are offered in the dropdown: `WORKFLOWS` are the ones that render,
     # `SETUP_WORKFLOWS` the ones declared before their weights are installed. A name in the settings
     # list and in neither table is a settings entry that fails on submit.
-    assert set(media.BUILTIN_MEDIA_MODELS["comfyui"]["video"]) == \
-        set(comfyui.WORKFLOWS) | set(comfyui.SETUP_WORKFLOWS)
+    shipped = {name: row["use"] for name, row in
+               {**comfyui.WORKFLOWS, **comfyui.SETUP_WORKFLOWS}.items()}
+    offered = media.BUILTIN_MEDIA_MODELS["comfyui"]
+    for use in ("video", "image"):
+        assert set(offered[use]) == {n for n, u in shipped.items() if u == use}, \
+            f"the {use} dropdown and the {use} workflows must be the same names"
+    assert set(offered) == {"video", "image"}, "every family the table names is offered"
+    assert set(offered["video"]) | set(offered["image"]) == set(shipped), \
+        "and every shipped workflow is offered somewhere"
     assert media.purpose_of(WORKFLOW) == "video"
+    assert media.purpose_of("z-image-turbo") == "image"
     assert "comfyui" in video.KINDS and "comfyui" in media.MEDIA_KINDS
     assert "comfyui" not in video.ARK_KIND, "sanity: the constant is not the kind"
 
@@ -263,7 +283,7 @@ def test_a_workflow_the_user_wrote_is_offered_next_to_the_one_we_ship(user_workf
     """Why the folder exists at all: a graph built in ComfyUI's own UI becomes a choice in this
     app's settings without anybody editing Python."""
     write_workflow(user_workflows, "my-lipsync", {"use": "video", "graph": a_graph()})
-    assert comfyui.names() == ["infinite-talk", "my-lipsync", WORKFLOW]
+    assert comfyui.names() == ["infinite-talk", "my-lipsync", WORKFLOW, IMAGE]
     assert comfyui.workflow_of("my-lipsync")["graph"] == a_graph()
     assert comfyui.workflow_of("my-lipsync")["user"] is True
 
@@ -647,8 +667,11 @@ async def test_refreshing_models_for_comfyui_asks_the_instance_nothing():
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(boom)) as c:
         got = await discovery.fetch_models(PROV | {"base_url": "http://127.0.0.1:8188"}, client=c)
-    assert [m["id"] for m in got] == sorted(media.BUILTIN_MEDIA_MODELS["comfyui"]["video"])
-    assert {m["mode"] for m in got} == {"video"}, "and they are all marked for what they are"
+    both = [*media.BUILTIN_MEDIA_MODELS["comfyui"]["video"],
+            *media.BUILTIN_MEDIA_MODELS["comfyui"]["image"]]
+    assert [m["id"] for m in got] == sorted(both)
+    assert {m["mode"] for m in got} == {"video", "image"}, \
+        "and each is marked for what it is — one instance answers for both families"
 
 
 # ------------------------------------------------------------------ through the tool
@@ -866,3 +889,133 @@ async def test_the_real_socket_probe_answers_over_http(tmp_path):
         srv.shutdown()
     assert ok is True and "0.35.0" in said
     assert [m for m, _ in _Stub.seen] == ["GET", "GET"], "system_stats then object_info, nothing else"
+
+
+# ------------------------------------------------------------------ the still-picture family
+IMAGE = "z-image-turbo"
+IMAGE_UNET = "z_image_turbo_bf16.safetensors"
+IMAGE_CLIP = "qwen_3_4b.safetensors"
+IMAGE_VAE = "ae.safetensors"
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 512
+
+
+def test_the_image_graph_is_the_blueprint_s_own_arrangement():
+    """Every value here is read off ComfyUI's `blueprints/Text to Image (Z-Image-Turbo).json`, so a
+    later edit that "tidies" one of them has to argue with the blueprint rather than with a memory.
+    """
+    g = comfyui.image_graph(comfyui.WORKFLOWS[IMAGE], prompt="a red cube", width=1024, height=1024,
+                            seed=5, prefix="p")
+    assert g["28"]["inputs"] == {"unet_name": IMAGE_UNET, "weight_dtype": "default"}
+    # ⚠️ The encoder is `lumina2`. The wrong string is refused by name, and the candidate list the
+    # refusal prints looks like it contains the right thing — which is exactly how this gets "fixed"
+    # into a broken graph.
+    assert g["30"]["inputs"] == {"clip_name": IMAGE_CLIP, "type": "lumina2", "device": "default"}
+    assert comfyui.WORKFLOWS[IMAGE]["clip_type"] == "lumina2"
+    assert g["29"]["inputs"]["vae_name"] == IMAGE_VAE
+    # Z-Image's latent is SD3-shaped; `EmptyLatentImage` would be the 4-channel one.
+    assert g["13"]["class_type"] == "EmptySD3LatentImage"
+    assert g["11"]["inputs"]["shift"] == 3.0
+    ks = g["3"]["inputs"]
+    assert (ks["steps"], ks["cfg"], ks["sampler_name"], ks["scheduler"], ks["denoise"]) == \
+        (8, 1.0, "res_multistep", "simple", 1.0), "the turbo checkpoint's own numbers"
+    assert ks["negative"] == ["33", 0] and g["33"]["class_type"] == "ConditioningZeroOut"
+    assert g["33"]["inputs"]["conditioning"] == ["27", 0], \
+        "the negative is the positive conditioning zeroed out — there is no negative prompt here"
+    assert g["9"]["class_type"] == "SaveImage", \
+        "the blueprint hands its image back to the canvas; the file is the part we add"
+    assert "a red cube" in json.dumps(g)
+
+
+def test_a_size_is_rounded_the_way_the_model_needs_and_refused_when_it_is_readable():
+    p = comfyui.image_payload_for(IMAGE, prompt="x", size="1024x1536", seed=0)
+    assert (p["width"], p["height"]) == (1024, 1536) and p["size"] == "1024x1536"
+    # 0 means "unspecified" in the tool schema, and KSampler would take it literally.
+    assert p["seed"] > 0 and p["graph"]["3"]["inputs"]["seed"] == p["seed"]
+    assert comfyui.image_payload_for(IMAGE, prompt="x", size="1024x1024", seed=9)["seed"] == 9
+    # Both sides a multiple of 16, and the long side capped at what the checkpoint was built for.
+    w, h = comfyui.image_size("1000x1000", long_side_max=1536)
+    assert w % 16 == 0 and h % 16 == 0
+    w, h = comfyui.image_size("4096x2048", long_side_max=1536)
+    assert max(w, h) <= 1536 and w > h, "the aspect is kept, the long side is what gives"
+    for bad in ("", "big", "1024", "1024x"):
+        with pytest.raises(comfyui.VideoError):
+            comfyui.image_size(bad, long_side_max=1536)
+
+
+def test_each_family_refuses_the_other_s_workflow_by_name():
+    """The two tools share one instance and one dropdown mechanism, so the only thing keeping a
+    drawing workflow out of the video tool is an explicit refusal — and a KeyError on `frames`
+    would read as a broken build instead of as a wrong pick."""
+    with pytest.raises(comfyui.VideoError) as e:
+        comfyui.payload_for(IMAGE, prompt="x", ratio="16:9", seconds=5, short_edge=480, seed=1)
+    assert "Image generation" in str(e.value)
+    with pytest.raises(comfyui.VideoError) as e:
+        comfyui.image_payload_for(WORKFLOW, prompt="x", size="1024x1024", seed=1)
+    assert "video tool" in str(e.value)
+    # A name nobody ships is named as such rather than being described as the wrong family: an
+    # unknown name resolves to the *default* workflow first, and "wan2.2-ti2v-5b renders a clip"
+    # is a confusing thing to be told when what was typed does not exist.
+    with pytest.raises(comfyui.VideoError) as e:
+        comfyui.image_payload_for("does-not-exist", prompt="x", size="1024x1024", seed=1)
+    assert "does-not-exist" in str(e.value)
+    # An unset name never reaches the graph builder: `comfy_payload` refuses it with the sentence
+    # the tool shows, before anything is submitted.
+    with pytest.raises(imagegen.ImageError) as e:
+        imagegen.comfy_payload("x", model="", size="1024x1024")
+    assert "z-image-turbo" in str(e.value)
+
+
+async def test_a_still_goes_through_the_same_submit_poll_fetch_as_a_clip(monkeypatch):
+    """`imagegen` owns no transport of its own for this kind: it drives `comfyui.submit` /
+    `status_of` / `link_of`, the same three calls the clip path makes, then fetches the file."""
+    monkeypatch.setattr(imagegen, "POLL_SECONDS", 0.01)
+    srv = FakeComfy(clip=PNG, filename="still_00001_.png")
+    payload = imagegen.comfy_payload("a red cube", model=IMAGE, size="1024x1024")
+    got = await imagegen.generate(PROV, payload, max_bytes=4 * 1024 * 1024, deadline_s=30,
+                                  client=srv.client())
+    assert got["data"] == PNG and got["size"] == len(PNG)
+    assert srv.paths[0] == "/prompt" and "/history/" in "".join(srv.paths)
+    assert srv.paths[-1] == "/view", "and it reads the file the instance reported"
+    assert srv.queries[-1]["filename"] == ["still_00001_.png"]
+    submitted = srv.bodies[-1]["prompt"]
+    assert submitted["28"]["inputs"]["unet_name"] == IMAGE_UNET
+    assert "a red cube" in json.dumps(submitted)
+
+
+async def test_a_still_that_fails_is_reported_with_comfyui_s_own_node_error(monkeypatch):
+    monkeypatch.setattr(imagegen, "POLL_SECONDS", 0.01)
+    srv = FakeComfy(history={
+        "status": {"status_str": "error",
+                   "messages": [["execution_error", {"node_id": 3, "node_type": "KSampler",
+                                                     "exception_message": "out of memory"}]]}})
+    payload = imagegen.comfy_payload("x", model=IMAGE, size="1024x1024")
+    with pytest.raises(imagegen.ImageError) as e:
+        await imagegen.generate(PROV, payload, max_bytes=1024, deadline_s=30, client=srv.client())
+    assert "KSampler" in str(e.value) and "out of memory" in str(e.value)
+
+
+async def test_testing_a_drawing_provider_asks_about_the_workflow_being_tested():
+    """One ComfyUI answers for both families and the probe keys off the provider's own `models`
+    list — so a test that did not name the workflow would be answered about whichever name happens
+    to come first, and would say "ready" about a workflow that was never checked."""
+    srv = FakeComfy(info=object_info(unet=IMAGE_UNET, clip=IMAGE_CLIP, vae=IMAGE_VAE,
+                                     workflow=IMAGE))
+    ok, said = await imagegen.probe(PROV, IMAGE, client=srv.client())
+    assert ok is True and IMAGE in said
+    assert WORKFLOW not in said, "the clip workflow is not what was asked about"
+    assert "clip" not in said, "and a drawing workflow is not reported as one"
+
+    # A node that is absent and a *file* that is absent are two different diagnoses, and the second
+    # is the one the user can act on — so the second fake keeps the node and leaves its file list
+    # without the VAE the workflow names.
+    missing = FakeComfy(info=object_info(unet=IMAGE_UNET, clip=IMAGE_CLIP,
+                                         vae="some_other_vae.safetensors", workflow=IMAGE),
+                        stats={"system": {"comfyui_version": "0.35.0"}})
+    ok, said = await imagegen.probe(PROV, IMAGE, client=missing.client())
+    assert ok is False and IMAGE_VAE in said, "and it names the file that is actually missing"
+
+    old = FakeComfy(info=object_info(workflow=IMAGE, without=("ConditioningZeroOut",)))
+    ok, said = await imagegen.probe(PROV, IMAGE, client=old.client())
+    assert ok is False and "ConditioningZeroOut" in said, \
+        "a node this install does not have is named as a node, not as a missing file"

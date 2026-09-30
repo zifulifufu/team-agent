@@ -2176,6 +2176,15 @@ something is. Tools that have nothing to say mid-flight simply ignore it."""
                     "请在「权限与操控 → 绘画」里选一个。",
                 ), False, []
             payload = imagegen.metachat_payload(prompt, model=model, size=size)
+        elif prov["kind"] == comfyui.KIND:
+            # A graph runner rather than a service: the payload *is* the whole API graph, resolved
+            # from the workflow's own row. A name that is empty, unknown, or belongs to the other
+            # family is refused by the builder — and that refusal is a sentence for the user, so it
+            # is returned here rather than allowed to escape as an exception.
+            try:
+                payload = imagegen.comfy_payload(prompt, model=model, size=size)
+            except (imagegen.ImageError, comfyui.VideoError) as e:
+                return str(e), False, []
         else:
             payload = imagegen.build_payload(prompt, model=model, size=size)
         try:

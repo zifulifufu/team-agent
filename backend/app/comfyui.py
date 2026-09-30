@@ -124,6 +124,41 @@ WORKFLOWS: dict[str, dict] = {
         # with the same prompt, seed and 848x480 dimensions; see ComfyUI issue #15921.
         "sampler": "euler",
     },
+    # A still picture rather than a clip, so it is the second member of the *image* family in the
+    # same sense `wan2.2-ti2v-5b` is the first of the video one: same shape of row, same `needs`
+    # contract, and the probe can name a missing file for it just as well.
+    #
+    # The numbers come from ComfyUI's own `blueprints/Text to Image (Z-Image-Turbo).json`, read off
+    # that graph rather than guessed: 8 steps at CFG 1 is what a turbo-distilled checkpoint ships
+    # with, `res_multistep`/`simple` is the sampler pair in the blueprint, and there is **no
+    # negative prompt** — the template zeroes the positive conditioning out instead
+    # (`ConditioningZeroOut`), which is why no negative is offered here.
+    "z-image-turbo": {
+        "use": "image",
+        "needs": (
+            ("UNETLoader", "unet_name", "z_image_turbo_bf16.safetensors"),
+            ("CLIPLoader", "clip_name", "qwen_3_4b.safetensors"),
+            ("VAELoader", "vae_name", "ae.safetensors"),
+        ),
+        # ⚠️⚠️ The encoder is loaded as `lumina2`, not `z_image` or `qwen_image` — that is the
+        # blueprint's own value, and the wrong one is refused with `value_not_in_list` while the
+        # candidate list it prints looks like it contains the right thing. Verified against a
+        # running 0.35.0: `CLIPLoader.input.required.type` offers 28 entries and this is one.
+        "clip_type": "lumina2",
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler": "res_multistep",
+        "scheduler": "simple",
+        # AuraFlow sampling with the blueprint's `shift`; like the video graph's 8.0 this is the
+        # checkpoint's own value, not a taste knob.
+        "shift": 3.0,
+        # Z-Image's own latent is SD3-shaped (16 channels), which is why the graph uses
+        # `EmptySD3LatentImage` and not `EmptyLatentImage`.
+        "latent_node": "EmptySD3LatentImage",
+        # Both sides must be a multiple of 16, and 1536 is the largest side the blueprint's own
+        # resolution presets use. Anything above that is the model repeating itself.
+        "long_side_max": 1536,
+    },
 }
 
 DEFAULT_WORKFLOW = "wan2.2-ti2v-5b"
@@ -607,6 +642,11 @@ def graph(model: str, *, prompt: str, width: int, height: int, frames: int, seed
         return render_graph(w, prompt=prompt, negative=negative, width=width, height=height,
                             frames=frames, seed=seed, prefix=prefix, image=image,
                             last_image=last_image, audio=audio)
+    # A picture and a clip are different graphs, not one graph with different numbers: the image one
+    # has no frame count, no fps and no negative prompt. Dispatching on the row's own `use` means the
+    # two cannot drift into each other — and the video path below is left exactly as it was.
+    if w.get("use") == "image":
+        return image_graph(w, prompt=prompt, width=width, height=height, seed=seed, prefix=prefix)
     return {
         "37": {"class_type": "UNETLoader",
                "inputs": {"unet_name": w["needs"][0][2], "weight_dtype": "default"}},
@@ -632,6 +672,111 @@ def graph(model: str, *, prompt: str, width: int, height: int, frames: int, seed
         # this time would leave a file whose name lies about its contents.
         "58": {"class_type": "SaveVideo",
                "inputs": {"video": ["57", 0], "filename_prefix": prefix, "format": "mp4"}},
+    }
+
+
+def image_graph(w: dict, *, prompt: str, width: int, height: int, seed: int, prefix: str) -> dict:
+    """One still picture: the API graph for a row whose `use` is `image`.
+
+    Node ids are the ones inside ComfyUI's own blueprint, for the same reason the video graph keeps
+    its template's ids — a graph exported from the user's UI can be compared against this one line
+    by line. The picture is the subgraph's output; the `SaveImage` at the end is ours, because the
+    blueprint hands its image back to the canvas instead of writing a file.
+    """
+    return {
+        "28": {"class_type": "UNETLoader",
+               "inputs": {"unet_name": w["needs"][0][2], "weight_dtype": "default"}},
+        # `type` is the row's own value: Z-Image's encoder is loaded as `lumina2`, and a wrong
+        # string here is refused by name rather than silently loading a different architecture.
+        "30": {"class_type": "CLIPLoader",
+               "inputs": {"clip_name": w["needs"][1][2], "type": w["clip_type"],
+                          "device": "default"}},
+        "29": {"class_type": "VAELoader", "inputs": {"vae_name": w["needs"][2][2]}},
+        "27": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["30", 0], "text": prompt}},
+        # ⚠️ The negative conditioning is the positive one zeroed out — this is the blueprint's own
+        # arrangement, and it is why no negative prompt is offered for this workflow. Adding a
+        # second `CLIPTextEncode` here would be a different graph from the one that was measured.
+        "33": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["27", 0]}},
+        "13": {"class_type": w["latent_node"],
+               "inputs": {"width": int(width), "height": int(height), "batch_size": 1}},
+        "11": {"class_type": "ModelSamplingAuraFlow",
+               "inputs": {"model": ["28", 0], "shift": float(w["shift"])}},
+        "3": {"class_type": "KSampler",
+              "inputs": {"model": ["11", 0], "positive": ["27", 0], "negative": ["33", 0],
+                         "latent_image": ["13", 0], "seed": int(seed), "steps": int(w["steps"]),
+                         "cfg": float(w["cfg"]), "sampler_name": w["sampler"],
+                         "scheduler": w.get("scheduler", "simple"), "denoise": 1.0}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["29", 0]}},
+        # `png`, not `auto`: the image tool saves every picture as `.png`, and a server that chose
+        # JPEG this time would leave a file whose name lies about its contents.
+        "9": {"class_type": "SaveImage",
+              "inputs": {"images": ["8", 0], "filename_prefix": prefix}},
+    }
+
+
+def image_size(value: str, *, long_side_max: int) -> tuple[int, int]:
+    """(width, height) from the image tool's own size string, e.g. `"1024x1536"`.
+
+    Both sides are rounded to a multiple of 16 for the same reason `size_for` does it — VAE 8 times
+    patch 2 — and the long side is capped at what the checkpoint was built for. Unparsable input is
+    refused rather than defaulted: `imagegen.SIZES` has already vetted what the tool accepts, so a
+    string that reaches here and cannot be read is a caller's bug, and drawing at some other size
+    than the one asked for is the kind of surprise this file refuses elsewhere too.
+    """
+    try:
+        a, b = (int(x) for x in str(value or "").lower().split("x"))
+    except (TypeError, ValueError):
+        raise VideoError(i18n.pick_now(
+            f"\"{value}\" is not a size this workflow can be drawn at; it wants WIDTHxHEIGHT.",
+            f"「{value}」不是这份工作流能画的尺寸;它要的是 宽x高。")) from None
+    width, height = max(128, round(a / 16) * 16), max(128, round(b / 16) * 16)
+    longest = max(width, height)
+    if longest > long_side_max:
+        scale = long_side_max / longest
+        width = max(128, round(width * scale / 16) * 16)
+        height = max(128, round(height * scale / 16) * 16)
+    return width, height
+
+
+def image_payload_for(model: str, *, prompt: str, size: str, seed: int) -> dict:
+    """Everything the image tool needs for one still, in the same shape `payload_for` returns for a
+    clip: a dict the caller hands to `submit` without knowing what is inside it.
+
+    A separate function rather than a flag on `payload_for`, because nothing is shared beyond the
+    seed rule: there are no frames, no fps and no seconds here, and `size` is the image settings'
+    own string rather than an aspect ratio plus a short edge.
+    """
+    name, note = resolve(model)
+    w = workflow_of(name)
+    if w.get("setup"):
+        raise VideoError(setup_diagnosis(w, name))
+    # A name nobody ships is refused as an unknown name, not as the wrong family: `resolve` falls
+    # back to the *default* workflow, which is a clip, and "wan2.2-ti2v-5b renders a clip" is a
+    # confusing thing to be told when what was typed does not exist at all.
+    asked = (model or "").strip()
+    if asked and asked not in available():
+        raise VideoError(i18n.pick_now(
+            f"\"{asked}\" is not a workflow this app knows, so nothing was drawn. Known: "
+            f"{', '.join(names())}.",
+            f"「{asked}」不是本程序认识的工作流,所以没有画。现有的:{'、'.join(names())}。"))
+    if w.get("use") != "image":
+        raise VideoError(i18n.pick_now(
+            f"\"{name}\" renders a clip, not a still picture. It belongs to the video tool; the "
+            "image tool needs a workflow whose purpose is a picture.",
+            f"「{name}」生成的是视频,不是静态图。它属于视频工具;绘画工具要的是一份「用途=图片」的工作流。"))
+    width, height = image_size(size, long_side_max=int(w["long_side_max"]))
+    # Same rule as the clip path: 0 is what "not specified" means in the tool schema, and KSampler
+    # would take it literally, so every unspecified call would draw the same picture.
+    resolved = int(seed) if int(seed or 0) > 0 else int(time.time() * 1000) % (2 ** 31)
+    return {
+        "workflow": name,
+        "asked_for": (model or "").strip(),
+        "note": note,
+        "prompt": prompt,
+        "width": width, "height": height, "size": f"{width}x{height}",
+        "seed": resolved,
+        "graph": image_graph(w, prompt=prompt, width=width, height=height, seed=resolved,
+                             prefix="team-agent/%s" % _slug(prompt)),
     }
 
 
@@ -1061,15 +1206,20 @@ async def probe(prov: dict, *, client: httpx.AsyncClient) -> tuple[bool, str]:
     if w.get("setup"):
         return False, setup_diagnosis(w, name)
     n = len(w["needs"])
+    # ⚠️ What comes out of this is a still or a clip depending on the row, so the sentence must not
+    # name either one: a drawing workflow reported as "a clip renders on this machine" is the kind of
+    # small falsehood that makes a user doubt the rest of the message.
+    what = i18n.pick_now("A render here costs nothing but this machine's time.",
+                         "生成在这台机器上完成,不按次计费。")
     return True, i18n.pick_now(
         (f"ComfyUI {version} at {base} has the nodes and the {n} file(s) the \"{name}\" workflow "
-         "needs. A clip renders on this machine with no per-clip cost.") if n else
+         f"needs. {what}") if n else
         (f"ComfyUI {version} at {base} has every node the \"{name}\" workflow uses, and that "
-         "workflow names no extra file. A clip renders on this machine with no per-clip cost."),
+         f"workflow names no extra file. {what}"),
         (f"{base} 上的 ComfyUI {version} 有需要的节点,也有「{name}」工作流要的 {n} 个文件。"
-         "生成在这台机器上完成,不按次计费。") if n else
+         f"{what}") if n else
         (f"{base} 上的 ComfyUI {version} 有「{name}」工作流用到的全部节点,而且这份工作流不需要额外的模型文件。"
-         "生成在这台机器上完成,不按次计费。"),
+         f"{what}"),
     )
 
 
@@ -1143,6 +1293,14 @@ def payload_for(model: str, *, prompt: str, ratio: str, seconds: int, short_edge
     # clip that looks finished and is a different workflow entirely.
     if w.get("setup"):
         raise VideoError(setup_diagnosis(w, name))
+    # A picture workflow in the video tool is refused for the same reason: the alternative is a
+    # KeyError on `frames`/`fps` deep inside the arithmetic below, which reads as a broken build
+    # rather than as "you picked a drawing workflow in the wrong tool".
+    if w.get("use") == "image":
+        raise VideoError(i18n.pick_now(
+            f"\"{name}\" draws a still picture, not a clip — it is offered under Image generation, "
+            "not under Video.",
+            f"「{name}」画的是静态图,不是视频 —— 它出现在「绘画」里,不在「视频」里。"))
     width, height = size_for(ratio, short_edge, long_side_max=int(w["long_side_max"]))
     frames = frames_for(seconds, fps=int(w["fps"]))
     # Resolved **once**: the caller reports this seed back to the user, and computing it again for
